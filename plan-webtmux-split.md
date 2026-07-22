@@ -95,38 +95,60 @@ string into both the pty command and the controller.
 
 ## Phase 0 — Worktree  [P0]
 
-- [ ] **0.1** From `/workspace/webtmux`: `git worktree add /workspace/webtmux-split -b
+- [x] **0.1** From `/workspace/webtmux`: `git worktree add /workspace/webtmux-split -b
       split-view`; `git config --global --add safe.directory /workspace/webtmux-split`;
-      copy this plan into the worktree; commit it on `split-view`. *(~20m, P0)*
+      copy this plan into the worktree; commit it on `split-view`. *(~20m, P0)* — DONE.
+      Worktree branched from `local-main` @ c8ff235 (already carries this plan).
 
 ## Phase A — Backend: per-connection controller + session threading  [P0]
 
-- [ ] **A.1 SPIKE** Nail the tmux target syntax for setting *one* grouped session's
+- [x] **A.1 SPIKE** Nail the tmux target syntax for setting *one* grouped session's
       current window: create base `services`, two grouped sessions `web-a`/`web-b`, and
       confirm `select-window -t web-a:<index>` moves only `web-a` (and `list-windows -t
       web-a` reflects it) while `web-b`/`services` are unaffected. Record the exact working
-      form. *(~20m, P0)*
-- [ ] **A.2** Decide + implement the session-name threading mechanism (prefer per-pty env
+      form. *(~20m, P0)* — **DONE (ran in a tmux container; agent host has no tmux).**
+      **Working form: `select-window -t <sessionName>:<windowIndex>`.** Confirmed it moves
+      ONLY that grouped session's current window; `services`/`web-b` unaffected;
+      `list-windows -t <session>` reports a *per-session* `#{window_active}` flag, so
+      `RefreshLayout` already reads each session's own current window. Bare `-t @id` is the
+      ambiguous form to avoid across grouped sessions.
+- [x] **A.2** Decide + implement the session-name threading mechanism (prefer per-pty env
       var injected by the connection handler; fallback query-arg). Verify the Go side can
       read the chosen name at connection time (in `factory.New` params/headers or the
-      handler). *(~40m, P0)*
-- [ ] **A.3** Make the layout controller **per-connection**: stop creating the singleton in
+      handler). *(~40m, P0)* — **DONE.** Mechanism: new `InitMessage.Session` field
+      (client→server, sanitized to `[A-Za-z0-9_-]`, `server/handlers.go:sanitizeSessionName`);
+      injected into the pty via the existing header→`HTTP_*` env channel as
+      `HTTP_WEBTMUX_SESSION`. No `--permit-arguments`, no client argv. Only injected for a
+      non-primary (grouped) region; primary keeps the shared attach.
+- [x] **A.3** Make the layout controller **per-connection**: stop creating the singleton in
       `server.Run`; create a `tmux.Controller` in the connection handler
       (`generateHandleWS`/`processWSConn`) using the connection's session name (from A.2),
       and `SetTmuxController` that per-connection instance. Default (no name) = `services`
-      (unchanged single-view). *(~45m, P0)*
-- [ ] **A.4** Qualify controller window ops to its own session using the A.1 form:
+      (unchanged single-view). *(~45m, P0)* — **DONE.** Removed `server.tmuxCtrl` singleton;
+      per-conn controller created in `processWSConn`; `handleTmuxEvents` now takes the
+      controller as a param.
+- [x] **A.4** Qualify controller window ops to its own session using the A.1 form:
       `SelectWindow` (and any window-scoped op) targets `<sessionName>:<index>`; confirm
       `RefreshLayout` already reads `list-windows -t <sessionName>` (it does — the
       controller holds `sessionName`). Keep `@id`→index mapping from the layout. *(~35m,
-      P0)*
-- [ ] **A.5** `attach-web.sh`: accept the session name as input (env var/arg from A.2) and
+      P0)* — **DONE.** `SelectWindow` maps `@id`→index via layout cache (`windowIndex`) and
+      targets `<session>:<index>`; copy-mode/scroll/new-window already used `c.sessionName`.
+      Added a bounded has-session retry in `Start()` so the controller doesn't race
+      attach-web.sh and create a *standalone* same-named session.
+- [x] **A.5** `attach-web.sh`: accept the session name as input (env var/arg from A.2) and
       use it as the grouped session (`new-session -t "$BASE" -s "$NAME"`); keep `web-$$`
-      as the fallback when unset. Primary/shared path (no name) unchanged. *(~25m, P1)*
-- [ ] **A.6** Backend acceptance (no frontend yet): open **two** raw websocket/pty
+      as the fallback when unset. Primary/shared path (no name) unchanged. *(~25m, P1)* —
+      **DONE.** Reads `HTTP_WEBTMUX_SESSION`; named grouped region > legacy `WEBTMUX_GROUPED`
+      auto `web-$$` > shared base. **Cross-repo note:** attach-web.sh lives in the *scripts*
+      repo (`scripts/webtmux-docker/`, baked via BuildKit overlay), NOT this worktree —
+      edited + committed there separately.
+- [x] **A.6** Backend acceptance (no frontend yet): open **two** raw websocket/pty
       connections with distinct session names, drive each controller to a *different*
       window, and confirm via `tmux list-windows -t web-a/-b` they hold independent current
-      windows while sharing the list. *(~35m, P0)*
+      windows while sharing the list. *(~35m, P0)* — **DONE (real server, in a golang+tmux
+      container).** Two ws clients (Session=web-a/web-b) → grouped sessions `group=services`,
+      3 shared windows; driven to windows 2 and 1 independently; `services` unaffected at 0.
+      **ACCEPTANCE: PASS.** (Harness lives outside the repo at `/workspace/.a6-scratch`.)
 
 ## Phase B — Frontend: extract a reusable TerminalUnit (behavior-preserving)  [P0]
 

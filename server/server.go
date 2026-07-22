@@ -22,7 +22,6 @@ import (
 	"webtmux/bindata"
 	"webtmux/pkg/homedir"
 	"webtmux/pkg/randomstring"
-	"webtmux/pkg/tmux"
 	"webtmux/webtty"
 )
 
@@ -36,10 +35,12 @@ type Server struct {
 	titleTemplate    *noesctmpl.Template
 	manifestTemplate *template.Template
 
-	// Tmux support
+	// Tmux support. The layout controller is created PER CONNECTION in the WS
+	// handler (see processWSConn) using that connection's session name, so each
+	// browser region reflects/controls only its own current window. These fields
+	// hold the detected base session + socket used as the default/primary target.
 	tmuxSession string
 	tmuxSocket  string
-	tmuxCtrl    *tmux.Controller
 }
 
 // New creates a new instance of Server.
@@ -173,21 +174,10 @@ func (server *Server) Run(ctx context.Context, options ...RunOption) error {
 		opt(opts)
 	}
 
-	// Start tmux controller if we detected a tmux session
+	// Layout controllers are created per-connection in the WS handler (each
+	// targeting that connection's grouped/shared session); nothing to start here.
 	if server.tmuxSession != "" {
-		var err error
-		server.tmuxCtrl, err = tmux.NewController(server.tmuxSession, server.tmuxSocket)
-		if err != nil {
-			log.Printf("Warning: failed to create tmux controller: %v", err)
-		} else {
-			if err := server.tmuxCtrl.Start(); err != nil {
-				log.Printf("Warning: failed to start tmux controller: %v", err)
-				server.tmuxCtrl = nil
-			} else {
-				log.Printf("Tmux controller started for session: %s", server.tmuxSession)
-				defer server.tmuxCtrl.Stop()
-			}
-		}
+		log.Printf("Tmux mode enabled; base session %q, per-connection controllers", server.tmuxSession)
 	}
 
 	counter := newCounter(time.Duration(server.options.Timeout) * time.Second)

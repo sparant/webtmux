@@ -15,8 +15,27 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/pkg/errors"
 
+	"webtmux/pkg/tmux"
 	"webtmux/webtty"
 )
+
+// sanitizeSessionName restricts a client-supplied tmux session name to a safe
+// charset ([A-Za-z0-9_-], capped length). The name flows into tmux target
+// syntax and a pty env var, so anything outside this set is dropped rather than
+// escaped. Returns "" if nothing usable remains (caller falls back to the base).
+func sanitizeSessionName(s string) string {
+	if len(s) > 64 {
+		s = s[:64]
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '-' || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
 
 func (server *Server) generateHandleWS(ctx context.Context, cancel context.CancelFunc, counter *counter) http.HandlerFunc {
 	once := new(int64)
@@ -121,6 +140,31 @@ func (server *Server) processWSConn(ctx context.Context, conn *websocket.Conn, h
 		return errors.Wrapf(err, "failed to parse arguments")
 	}
 	params := query.Query()
+
+	// Per-connection tmux session (split-view). The client picks a grouped
+	// session name (init.Session); we sanitize it and, when tmux mode is on,
+	// thread it into BOTH the pty and this connection's layout controller.
+	// Empty / absent => the detected base session (services) — single-view path,
+	// unchanged. sessionName is "" when tmux mode is off.
+	sessionName := ""
+	if server.tmuxSession != "" {
+		sessionName = sanitizeSessionName(init.Session)
+		if sessionName == "" {
+			sessionName = server.tmuxSession
+		}
+		// Inject the chosen name into the pty as an env var (via the header ->
+		// HTTP_* env channel localcommand already implements). attach-web.sh
+		// reads HTTP_WEBTMUX_SESSION to join/create the matching grouped session.
+		// Only inject for a non-primary (grouped) region; the primary keeps the
+		// shared attach so it stays in sync with the ssh console.
+		if sessionName != server.tmuxSession {
+			if headers == nil {
+				headers = map[string][]string{}
+			}
+			headers["Webtmux-Session"] = []string{sessionName}
+		}
+	}
+
 	var slave Slave
 	slave, err = server.factory.New(params, headers)
 	if err != nil {
@@ -165,12 +209,22 @@ func (server *Server) processWSConn(ctx context.Context, conn *websocket.Conn, h
 		return errors.Wrapf(err, "failed to create webtty")
 	}
 
-	// Set up tmux controller if available
-	if server.tmuxCtrl != nil {
-		tty.SetTmuxController(server.tmuxCtrl)
-
-		// Start goroutine to listen for tmux events and broadcast layout updates
-		go server.handleTmuxEvents(ctx, tty)
+	// Set up a PER-CONNECTION tmux controller targeting this connection's session
+	// (grouped region or the shared base). Each connection owns its own controller
+	// so its sidebar reflects/controls only its own current window — the crux of
+	// the split-view feature. tmux mode is on iff a base session was detected.
+	if server.tmuxSession != "" {
+		ctrl, err := tmux.NewController(sessionName, server.tmuxSocket)
+		if err != nil {
+			log.Printf("Warning: failed to create tmux controller for %q: %v", sessionName, err)
+		} else if err := ctrl.Start(); err != nil {
+			log.Printf("Warning: failed to start tmux controller for %q: %v", sessionName, err)
+		} else {
+			defer ctrl.Stop()
+			tty.SetTmuxController(ctrl)
+			// Poll for layout changes and broadcast updates for THIS session.
+			go server.handleTmuxEvents(ctx, tty, ctrl)
+		}
 	}
 
 	err = tty.Run(ctx)
@@ -178,9 +232,10 @@ func (server *Server) processWSConn(ctx context.Context, conn *websocket.Conn, h
 	return err
 }
 
-// handleTmuxEvents polls for tmux layout changes and sends updates to the client
-func (server *Server) handleTmuxEvents(ctx context.Context, tty *webtty.WebTTY) {
-	if server.tmuxCtrl == nil {
+// handleTmuxEvents polls the given per-connection controller for tmux layout
+// changes and sends updates to that connection's client.
+func (server *Server) handleTmuxEvents(ctx context.Context, tty *webtty.WebTTY, ctrl *tmux.Controller) {
+	if ctrl == nil {
 		return
 	}
 
@@ -195,8 +250,8 @@ func (server *Server) handleTmuxEvents(ctx context.Context, tty *webtty.WebTTY) 
 			return
 		case <-ticker.C:
 			// Refresh and check if layout changed
-			server.tmuxCtrl.RefreshLayout()
-			layout := server.tmuxCtrl.GetLayout()
+			ctrl.RefreshLayout()
+			layout := ctrl.GetLayout()
 			if layout == nil {
 				continue
 			}

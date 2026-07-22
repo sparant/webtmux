@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Controller manages tmux interactions for a session
@@ -37,10 +38,22 @@ func NewController(sessionName string, socket string) (*Controller, error) {
 
 // Start initializes the controller and gets initial layout
 func (c *Controller) Start() error {
-	// Check if tmux session exists, create if not (both via runTmux so the
-	// socket flag is applied — otherwise these hit the wrong server).
-	if _, err := c.runTmux("has-session", "-t", c.sessionName); err != nil {
-		// Session doesn't exist, create it
+	// Wait briefly for the session to exist. For a grouped split region the pty's
+	// attach-web.sh creates the session (`new-session -t <base> -s <name>`) at
+	// about the same moment this runs, so we must NOT race in and create a
+	// *standalone* session of the same name (it would not be grouped with the
+	// base). Poll has-session for up to ~2s; only if it never appears do we fall
+	// back to creating one (the base-session bootstrap when webtmux starts first).
+	exists := false
+	for i := 0; i < 20; i++ {
+		if _, err := c.runTmux("has-session", "-t", "="+c.sessionName); err == nil {
+			exists = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !exists {
+		// Session never appeared — create it (base bootstrap / non-grouped default).
 		if _, createErr := c.runTmux("new-session", "-d", "-s", c.sessionName); createErr != nil {
 			return fmt.Errorf("failed to create tmux session %s: %w", c.sessionName, createErr)
 		}
@@ -204,14 +217,48 @@ func (c *Controller) SelectPane(paneID string) error {
 	return nil
 }
 
-// SelectWindow switches to the specified window
+// SelectWindow switches THIS controller's session to the specified window.
+//
+// Grouped sessions share the window list (same @ids + indexes) but keep an
+// independent current window, so a bare `select-window -t @id` is ambiguous
+// across the group. We qualify the target to this session by window INDEX —
+// `select-window -t <session>:<index>` — which the A.1 spike confirmed moves
+// only this session. The client sends a window @id, so we map @id -> index via
+// the layout cache (refreshing once if it's not found).
 func (c *Controller) SelectWindow(windowID string) error {
-	_, err := c.runTmux("select-window", "-t", windowID)
-	if err != nil {
+	idx, ok := c.windowIndex(windowID)
+	if !ok {
+		// Stale cache — refresh once and retry the lookup.
+		c.RefreshLayout()
+		idx, ok = c.windowIndex(windowID)
+	}
+
+	target := windowID // last-resort fallback: bare @id (single-session correctness)
+	if ok {
+		target = fmt.Sprintf("%s:%d", c.sessionName, idx)
+	}
+
+	if _, err := c.runTmux("select-window", "-t", target); err != nil {
 		return err
 	}
 	c.RefreshLayout()
 	return nil
+}
+
+// windowIndex returns the window_index for a given window @id from the cached
+// layout (grouped sessions share indexes, so this session's index matches).
+func (c *Controller) windowIndex(windowID string) (int, bool) {
+	c.layoutMu.RLock()
+	defer c.layoutMu.RUnlock()
+	if c.layoutCache == nil {
+		return 0, false
+	}
+	for _, w := range c.layoutCache.Windows {
+		if w.ID == windowID {
+			return w.Index, true
+		}
+	}
+	return 0, false
 }
 
 // RenameWindow renames a window by id. tmux disables automatic-rename for a
