@@ -276,7 +276,7 @@ class WebtmuxSidebar extends LitElement {
   modeRow() {
     return html`
       <div class="mode-row">
-        <div class="shortcut-hint">Toggle panel: <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>B</kbd></div>
+        <div class="shortcut-hint">Toggle panel: <kbd>⌃ Control</kbd>+<kbd>⌥ Option</kbd>+<kbd>B</kbd></div>
         <button
           class="mode-btn"
           @click=${this.toggleOverlay}
