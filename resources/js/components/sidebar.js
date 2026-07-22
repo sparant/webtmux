@@ -240,12 +240,10 @@ class WebtmuxSidebar extends LitElement {
     // Window id currently being renamed inline ('' = none).
     this.editingWindow = '';
 
-    // Listen for layout updates
-    window.addEventListener('tmux-layout-update', (e) => {
-      this.layout = e.detail;
-      this.activePane = e.detail.activePaneId;
-      this.activeWindow = e.detail.activeWindowId;
-    });
+    // The TerminalUnit that owns this sidebar sets `this.unit = <unit>` when it
+    // binds, and pushes layout/activePane/activeWindow onto us directly (scoped —
+    // no global event), so a split's N sidebars each reflect only their own unit.
+    this.unit = null;
   }
 
   updated(changedProperties) {
@@ -260,7 +258,7 @@ class WebtmuxSidebar extends LitElement {
       // Toggling in/out of flow changes #terminal's width; its ResizeObserver
       // re-fits xterm. A deferred fit() nudge covers the reflow timing.
       this.classList.toggle('overlay', this.overlay);
-      setTimeout(() => { try { window.webtmux?.fitAddon?.fit(); } catch (e) {} }, 80);
+      setTimeout(() => { try { this.unit?.fit(); } catch (e) {} }, 80);
     }
   }
 
@@ -280,9 +278,9 @@ class WebtmuxSidebar extends LitElement {
 
   toggleScrollMode() {
     this.scrollMode = this.scrollMode === 'passthrough' ? 'buffer' : 'passthrough';
-    // Apply live to the terminal app (also persists); fall back to localStorage.
-    if (window.webtmux?.setScrollMode) {
-      window.webtmux.setScrollMode(this.scrollMode);
+    // Apply live to this unit's terminal app (also persists); fall back to LS.
+    if (this.unit?.setScrollMode) {
+      this.unit.setScrollMode(this.scrollMode);
     } else {
       localStorage.setItem('webtmux-scroll-mode', this.scrollMode);
     }
@@ -387,7 +385,7 @@ class WebtmuxSidebar extends LitElement {
   }
 
   selectWindow(windowId) {
-    window.webtmux?.selectWindow(windowId);
+    this.unit?.selectWindow(windowId);
   }
 
   startRename(windowId) {
@@ -412,15 +410,15 @@ class WebtmuxSidebar extends LitElement {
     if (this.editingWindow !== windowId) return;   // already handled (guards blur+Enter)
     this.editingWindow = '';
     const name = e.target.value.trim();
-    if (name) window.webtmux?.renameWindow(windowId, name);
+    if (name) this.unit?.renameWindow(windowId, name);
   }
 
   switchSession(sessionName) {
-    window.webtmux?.switchSession(sessionName);
+    this.unit?.switchSession(sessionName);
   }
 
   newWindow() {
-    window.webtmux?.newWindow();
+    this.unit?.newWindow();
   }
 }
 

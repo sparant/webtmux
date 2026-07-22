@@ -152,17 +152,31 @@ string into both the pty command and the controller.
 
 ## Phase B — Frontend: extract a reusable TerminalUnit (behavior-preserving)  [P0]
 
-- [ ] **B.1** Extract a `TerminalUnit` class from `WebTmux`: encapsulate xterm + fitAddon +
+- [x] **B.1** Extract a `TerminalUnit` class from `WebTmux`: encapsulate xterm + fitAddon +
       ResizeObserver + ws connection/reconnect + input/key/copy/scroll/selection handlers +
       the bound sidebar element, all keyed to a `sessionName` and a root DOM element. No
-      behavior change: the app still renders exactly one unit. *(~45m, P0)*
-- [ ] **B.2** Move the singleton globals off `window.webtmux`: sidebar actions
+      behavior change: the app still renders exactly one unit. *(~45m, P0)* — **DONE.** New
+      `resources/js/terminal-unit.js` (`TerminalUnit` + exported `MSG`); keyed to
+      `{sessionName, terminalEl, sidebar, primary}`; added `focus()`, `fit()`, `destroy()`
+      for the split. `webtmux.js` is now a thin bootstrap creating one primary unit + the
+      global Ctrl+Alt+B shortcut (moved out of the unit so N units don't each register it).
+- [x] **B.2** Move the singleton globals off `window.webtmux`: sidebar actions
       (`selectWindow`, `renameWindow`, `setScrollMode`, `fitAddon.fit`, layout events) must
       resolve to **their own unit**, not a global. Each unit dispatches layout updates
-      scoped to its sidebar; each sidebar calls back into its owning unit. *(~45m, P0)*
-- [ ] **B.3** Regression check: single-view still works end-to-end (connect, sidebar
+      scoped to its sidebar; each sidebar calls back into its owning unit. *(~45m, P0)* —
+      **DONE.** Unit binds `sidebar.unit = this` and pushes `layout/activePane/activeWindow`
+      straight onto its sidebar (removed the global `tmux-layout-update` listener from the
+      sidebar). Sidebar actions now call `this.unit?.*`. `window.webtmux` kept only as a
+      compat shim for mobile-controls (single-terminal, never splits) → primary unit, which
+      still broadcasts the global layout event mobile listens to.
+- [x] **B.3** Regression check: single-view still works end-to-end (connect, sidebar
       reflects/controls window, rename, scroll toggle, copy, collapse, shortcut) — build +
-      manual. Commit the refactor before any split work. *(~30m, P0)*
+      manual. Commit the refactor before any split work. *(~30m, P0)* — **STATIC+BUILD DONE:**
+      all 3 modules pass `node --check`; `make build` syncs assets (incl. terminal-unit.js)
+      and compiles; coupling grep confirms no stray `window.webtmux`/global-listener leaks;
+      backend acceptance still green. Full **browser** end-to-end (render/click/rename/
+      collapse) is folded into **D.4** (the build-image + verify gate) to avoid a
+      double heavyweight browser run — B and C verified together there.
 
 ## Phase C — Frontend: the split  [P0]
 
