@@ -92,6 +92,13 @@ class WebTmux {
     this.fitAddon.fit();
     this.terminal.focus();
 
+    // Global sidebar toggle (Ctrl+Alt+B / mac Control+Option+B). Registered on
+    // window in the CAPTURE phase so it works regardless of what has keyboard
+    // focus — the terminal, a sidebar window tab, or nothing. (It used to live
+    // only in the terminal's key handler, so it silently died whenever focus
+    // left the terminal.) stopPropagation keeps xterm from also seeing the key.
+    this.setupGlobalShortcuts();
+
     // Setup resize observer
     const resizeObserver = new ResizeObserver(() => {
       this.fitAddon.fit();
@@ -107,15 +114,8 @@ class WebTmux {
       // Only handle keydown events
       if (ev.type !== 'keydown') return true;
 
-      // Ctrl+Alt+B toggles the sidebar. Requires Alt so it never collides with
-      // tmux's Ctrl-b prefix, and we capture it here so the terminal never sees
-      // it. ev.code (physical key) dodges Option-key char remapping on macOS.
-      if (ev.ctrlKey && ev.altKey && !ev.metaKey && ev.code === 'KeyB') {
-        const sb = document.querySelector('webtmux-sidebar');
-        if (sb) sb.toggleCollapsed();
-        ev.preventDefault();
-        return false;
-      }
+      // (Ctrl+Alt+B sidebar toggle now lives in setupGlobalShortcuts so it works
+      // even when the terminal isn't focused.)
 
       // Allow Cmd+C / Ctrl+C to copy selected text
       if ((ev.metaKey || ev.ctrlKey) && ev.key === 'c') {
@@ -209,6 +209,21 @@ class WebTmux {
 
     // Expose for components
     window.webtmux = this;
+  }
+
+  // Global keyboard shortcuts that must work regardless of focus (terminal,
+  // sidebar, or nothing). Capture phase + stopPropagation so xterm never sees
+  // the key. Requires Alt so it can't collide with tmux's Ctrl-b prefix; uses
+  // ev.code (physical key) to dodge macOS Option-key char remapping.
+  setupGlobalShortcuts() {
+    window.addEventListener('keydown', (ev) => {
+      if (ev.ctrlKey && ev.altKey && !ev.metaKey && ev.code === 'KeyB') {
+        const sb = document.querySelector('webtmux-sidebar');
+        if (sb) sb.toggleCollapsed();
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+    }, true);
   }
 
   setupTouchHandling() {
