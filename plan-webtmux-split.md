@@ -248,8 +248,17 @@ browser portions of **B.3**, **D.1**, and **D.4**.
 - [x] **D.5** Merge back: `scripts/git-merge-worktree.sh /workspace/webtmux-split --target
       local-main --remove`; on conflict/non-ff, rebase and retry — never force. Confirm the
       plan is marked complete on `local-main`. Then the host rebuild picks it up. *(~25m,
-      P0)* — see merge log below (local-main advanced via the cherry-picked hotfix, so
-      `split-view` was rebased onto it first).
+      P0)* — see merge log below.
+
+**D.5 merge log:** `local-main` had advanced concurrently (another writer) — the cherry-picked
+Ctrl+Alt+B hotfix (`a6ce66e`), an arrow-key window-nav sidebar feature (`e04432d`), and a new
+`plan-webtmux-capture-expose.md` (`dc8406b`). A plain ff was impossible and a per-commit rebase
+conflicted on `sidebar.js` (concurrent arrow-key feature vs this branch's de-globalization).
+Resolution: folded the arrow-key feature into the de-globalized sidebar (its `dismiss()` now uses
+`this.unit?.terminal?.focus()`), then merged `local-main` into `split-view` (taking the reconciled
+`sidebar.js`/`webtmux.js`, regenerating bindata), re-verified build+vet + the full split browser
+e2e (ALL_OK) with the capture-expose plan carried in cleanly, then ff-merged into `local-main`
+via `git-merge-worktree.sh --remove`.
 
 ## Next steps
 
