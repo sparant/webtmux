@@ -10,6 +10,7 @@ class WebtmuxSidebar extends LitElement {
     overlay: { type: Boolean },
     scrollMode: { type: String },
     pinned: { type: Boolean },
+    editingWindow: { type: String },
   };
 
   static styles = css`
@@ -167,6 +168,18 @@ class WebtmuxSidebar extends LitElement {
       color: #fff;
     }
 
+    .window-edit {
+      background: #0f3460;
+      color: #fff;
+      border: 1px solid #e94560;
+      border-radius: 4px;
+      padding: 6px 10px;
+      font-size: 15px;
+      width: 130px;
+      font-family: inherit;
+      outline: none;
+    }
+
     .session-info {
       color: #666;
       font-size: 14px;
@@ -224,6 +237,8 @@ class WebtmuxSidebar extends LitElement {
     this.scrollMode = localStorage.getItem('webtmux-scroll-mode') || 'buffer';
     // Pinned = stay open when clicking into the terminal (default: auto-hide).
     this.pinned = localStorage.getItem('webtmux-pinned') === 'true';
+    // Window id currently being renamed inline ('' = none).
+    this.editingWindow = '';
 
     // Listen for layout updates
     window.addEventListener('tmux-layout-update', (e) => {
@@ -341,14 +356,25 @@ class WebtmuxSidebar extends LitElement {
 
       <h3>Windows</h3>
       <div class="window-tabs">
-        ${this.layout.windows?.map(win => html`
-          <button
-            class="window-tab ${win.id === this.activeWindow ? 'active' : ''}"
-            @click=${() => this.selectWindow(win.id)}
-          >
-            ${win.index}: ${win.name || 'bash'}
-          </button>
-        `)}
+        ${this.layout.windows?.map(win => win.id === this.editingWindow
+          ? html`
+            <input
+              class="window-edit"
+              .value=${win.name || ''}
+              @keydown=${(e) => this.onRenameKey(e, win.id)}
+              @blur=${(e) => this.commitRename(e, win.id)}
+              @click=${(e) => e.stopPropagation()}
+            >`
+          : html`
+            <button
+              class="window-tab ${win.id === this.activeWindow ? 'active' : ''}"
+              @click=${() => this.selectWindow(win.id)}
+              @dblclick=${() => this.startRename(win.id)}
+              title="Double-click to rename"
+            >
+              ${win.index}: ${win.name || 'bash'}
+            </button>`
+        )}
         <button class="window-tab" @click=${() => this.newWindow()}>+</button>
       </div>
 
@@ -362,6 +388,31 @@ class WebtmuxSidebar extends LitElement {
 
   selectWindow(windowId) {
     window.webtmux?.selectWindow(windowId);
+  }
+
+  startRename(windowId) {
+    this.editingWindow = windowId;
+    this.updateComplete.then(() => {
+      const input = this.renderRoot.querySelector('.window-edit');
+      if (input) { input.focus(); input.select(); }
+    });
+  }
+
+  onRenameKey(e, windowId) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      this.commitRename(e, windowId);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      this.editingWindow = '';   // cancel
+    }
+  }
+
+  commitRename(e, windowId) {
+    if (this.editingWindow !== windowId) return;   // already handled (guards blur+Enter)
+    this.editingWindow = '';
+    const name = e.target.value.trim();
+    if (name) window.webtmux?.renameWindow(windowId, name);
   }
 
   switchSession(sessionName) {

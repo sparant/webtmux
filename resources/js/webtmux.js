@@ -23,6 +23,7 @@ const MSG = {
   TmuxScrollDown: 'C',
   TmuxNewWindow: 'D',
   TmuxSwitchSession: 'E',
+  TmuxRenameWindow: 'F',
 
   // Output (server -> client)
   Output: '1',
@@ -473,6 +474,11 @@ class WebTmux {
 
   selectWindow(windowId) {
     this.sendMessage(MSG.TmuxSelectWindow, windowId);
+  }
+
+  renameWindow(windowId, name) {
+    // "<windowID> <name>" — windowID is "@N" so the first space delimits.
+    this.sendMessage(MSG.TmuxRenameWindow, windowId + ' ' + name);
   }
 
   splitPane(horizontal) {

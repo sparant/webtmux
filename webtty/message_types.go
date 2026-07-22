@@ -66,4 +66,6 @@ const (
 	TmuxNewWindow = 'D'
 	// Switch session by name
 	TmuxSwitchSession = 'E'
+	// Rename a window (payload: "<windowID> <new name>")
+	TmuxRenameWindow = 'F'
 )

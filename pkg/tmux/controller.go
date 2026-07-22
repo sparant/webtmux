@@ -214,6 +214,17 @@ func (c *Controller) SelectWindow(windowID string) error {
 	return nil
 }
 
+// RenameWindow renames a window by id. tmux disables automatic-rename for a
+// manually-renamed window, so the name sticks.
+func (c *Controller) RenameWindow(windowID, name string) error {
+	_, err := c.runTmux("rename-window", "-t", windowID, name)
+	if err != nil {
+		return err
+	}
+	c.RefreshLayout()
+	return nil
+}
+
 // SwitchSession switches to the specified session
 func (c *Controller) SwitchSession(sessionName string) error {
 	_, err := c.runTmux("switch-client", "-t", sessionName)

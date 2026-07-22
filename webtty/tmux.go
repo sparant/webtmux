@@ -3,6 +3,7 @@ package webtty
 import (
 	"encoding/json"
 	"strconv"
+	"strings"
 
 	"github.com/pkg/errors"
 	"webtmux/pkg/tmux"
@@ -15,6 +16,7 @@ type TmuxController interface {
 	SelectPane(paneID string) error
 	SelectWindow(windowID string) error
 	SwitchSession(sessionName string) error
+	RenameWindow(windowID, name string) error
 	SplitPane(horizontal bool) error
 	ClosePane(paneID string) error
 	EnterCopyMode() error
@@ -138,6 +140,20 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 		}
 		return wt.SendTmuxLayout()
 
+	case TmuxRenameWindow:
+		// payload = "<windowID> <new name>"; windowIDs are "@N" (no spaces), so
+		// split on the first space and keep the rest as the (possibly-spaced) name.
+		s := string(payload)
+		idx := strings.IndexByte(s, ' ')
+		if idx < 0 {
+			return nil
+		}
+		windowID, name := s[:idx], s[idx+1:]
+		if err := wt.tmuxCtrl.RenameWindow(windowID, name); err != nil {
+			return errors.Wrap(err, "failed to rename window")
+		}
+		return wt.SendTmuxLayout()
+
 	default:
 		return errors.Errorf("unknown tmux message type: %c", msgType)
 	}
@@ -148,7 +164,7 @@ func isTmuxMessage(msgType byte) bool {
 	switch msgType {
 	case TmuxSelectPane, TmuxSelectWindow, TmuxSplitPane, TmuxClosePane,
 		TmuxCopyMode, TmuxSendCommand, TmuxScrollUp, TmuxScrollDown, TmuxNewWindow,
-		TmuxSwitchSession:
+		TmuxSwitchSession, TmuxRenameWindow:
 		return true
 	default:
 		return false
