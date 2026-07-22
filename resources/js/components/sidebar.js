@@ -7,12 +7,13 @@ class WebtmuxSidebar extends LitElement {
     activePane: { type: String },
     activeWindow: { type: String },
     collapsed: { type: Boolean },
+    overlay: { type: Boolean },
   };
 
   static styles = css`
     :host {
       display: block;
-      width: 220px;
+      width: 330px;
       background: #16213e;
       border-left: 1px solid #0f3460;
       padding: 12px;
@@ -20,10 +21,44 @@ class WebtmuxSidebar extends LitElement {
       transition: width 0.2s, padding 0.2s;
     }
 
+    /* Overlay ("hover") mode: float over the right of the terminal instead of
+       taking a flex column (which would shrink the terminal). position:fixed
+       removes the host from the #app flex flow, so #terminal-container expands to
+       full width and its ResizeObserver re-fits xterm automatically. */
+    :host(.overlay) {
+      position: fixed;
+      top: 0;
+      right: 0;
+      height: 100%;
+      z-index: 50;
+      box-shadow: -8px 0 24px rgba(0, 0, 0, 0.5);
+    }
+
     :host(.collapsed) {
       width: 40px;
       padding: 8px;
       overflow: hidden;
+    }
+
+    .mode-row {
+      margin-bottom: 12px;
+    }
+
+    .mode-btn {
+      width: 100%;
+      background: #1a1a2e;
+      border: 1px solid #0f3460;
+      border-radius: 4px;
+      color: #4a9eff;
+      padding: 9px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .mode-btn:hover {
+      border-color: #4a9eff;
+      color: #fff;
     }
 
     .toggle-btn {
@@ -63,7 +98,7 @@ class WebtmuxSidebar extends LitElement {
 
     h3 {
       color: #e94560;
-      font-size: 12px;
+      font-size: 16px;
       text-transform: uppercase;
       letter-spacing: 1px;
       margin: 0 0 12px 0;
@@ -81,8 +116,8 @@ class WebtmuxSidebar extends LitElement {
       color: #888;
       border: 1px solid #0f3460;
       border-radius: 4px;
-      padding: 4px 8px;
-      font-size: 11px;
+      padding: 6px 10px;
+      font-size: 15px;
       cursor: pointer;
       transition: all 0.2s;
     }
@@ -103,7 +138,7 @@ class WebtmuxSidebar extends LitElement {
       background: #1a1a2e;
       border: 1px solid #0f3460;
       border-radius: 4px;
-      height: 150px;
+      height: 200px;
       margin-bottom: 16px;
     }
 
@@ -117,7 +152,7 @@ class WebtmuxSidebar extends LitElement {
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 10px;
+      font-size: 14px;
       color: #666;
     }
 
@@ -155,7 +190,7 @@ class WebtmuxSidebar extends LitElement {
       border-radius: 4px;
       color: #888;
       padding: 8px;
-      font-size: 11px;
+      font-size: 15px;
       cursor: pointer;
       transition: all 0.2s;
       display: flex;
@@ -176,7 +211,7 @@ class WebtmuxSidebar extends LitElement {
 
     .session-info {
       color: #666;
-      font-size: 10px;
+      font-size: 14px;
       margin-top: 16px;
       padding-top: 12px;
       border-top: 1px solid #0f3460;
@@ -194,8 +229,8 @@ class WebtmuxSidebar extends LitElement {
       color: #888;
       border: 1px solid #0f3460;
       border-radius: 4px;
-      padding: 4px 8px;
-      font-size: 11px;
+      padding: 6px 10px;
+      font-size: 15px;
       cursor: pointer;
       transition: all 0.2s;
     }
@@ -212,7 +247,7 @@ class WebtmuxSidebar extends LitElement {
     }
 
     .session-tab .win-count {
-      font-size: 9px;
+      font-size: 12px;
       opacity: 0.7;
       margin-left: 4px;
     }
@@ -224,6 +259,9 @@ class WebtmuxSidebar extends LitElement {
     this.activePane = '';
     this.activeWindow = '';
     this.collapsed = false;
+    // Hover-overlay vs side-by-side. Default hover (float over the terminal);
+    // persisted across reloads.
+    this.overlay = localStorage.getItem('webtmux-overlay') !== 'false';
 
     // Listen for layout updates
     window.addEventListener('tmux-layout-update', (e) => {
@@ -241,10 +279,35 @@ class WebtmuxSidebar extends LitElement {
         this.classList.remove('collapsed');
       }
     }
+    if (changedProperties.has('overlay')) {
+      // Toggling in/out of flow changes #terminal's width; its ResizeObserver
+      // re-fits xterm. A deferred fit() nudge covers the reflow timing.
+      this.classList.toggle('overlay', this.overlay);
+      setTimeout(() => { try { window.webtmux?.fitAddon?.fit(); } catch (e) {} }, 80);
+    }
   }
 
   toggleCollapsed() {
     this.collapsed = !this.collapsed;
+  }
+
+  toggleOverlay() {
+    this.overlay = !this.overlay;
+    localStorage.setItem('webtmux-overlay', String(this.overlay));
+  }
+
+  modeRow() {
+    return html`
+      <div class="mode-row">
+        <button
+          class="mode-btn"
+          @click=${this.toggleOverlay}
+          title="Hover = float over the terminal; Side-by-side = shrink the terminal to sit beside the pane"
+        >
+          ${this.overlay ? '▣ Hover over terminal' : '⇔ Side-by-side'}
+        </button>
+      </div>
+    `;
   }
 
   render() {
@@ -256,8 +319,9 @@ class WebtmuxSidebar extends LitElement {
       return html`
         <button class="toggle-btn" @click=${this.toggleCollapsed}>${toggleIcon}</button>
         <div class="sidebar-content">
+          ${this.modeRow()}
           <h3>tmux</h3>
-          <p style="color: #666; font-size: 12px;">Connecting...</p>
+          <p style="color: #666; font-size: 16px;">Connecting...</p>
         </div>
       `;
     }
@@ -270,6 +334,7 @@ class WebtmuxSidebar extends LitElement {
     return html`
       <button class="toggle-btn" @click=${this.toggleCollapsed}>${toggleIcon}</button>
       <div class="sidebar-content">
+      ${this.modeRow()}
       ${showSessions ? html`
         <h3>Sessions</h3>
         <div class="session-tabs">
