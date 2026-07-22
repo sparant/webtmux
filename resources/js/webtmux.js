@@ -123,6 +123,9 @@ class WebTmux {
           navigator.clipboard.writeText(selection).catch(err => {
             console.warn('Failed to copy:', err);
           });
+          // If we were scrolled into tmux copy-mode (buffer mode), drop back to
+          // normal (edit) mode after copying so typing resumes at the prompt.
+          if (this.inCopyMode) this.exitCopyMode();
           return false; // Handled
         }
         // No selection - let it pass through as Ctrl+C (interrupt)
@@ -298,7 +301,10 @@ class WebTmux {
 
     container.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
-      this.terminal.focus();            // Ask: click brings keyboard focus
+      this.terminal.focus();            // click brings keyboard focus
+      // Clicking into the terminal collapses the sidebar out of the way.
+      const sb = document.querySelector('webtmux-sidebar');
+      if (sb && !sb.collapsed) sb.collapsed = true;
       startX = e.clientX; startY = e.clientY; dragging = false;
     });
 
