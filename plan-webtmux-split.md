@@ -217,22 +217,39 @@ browser portions of **B.3**, **D.1**, and **D.4**.
 
 ## Phase D — Verify, polish, docs, merge  [P1]
 
-- [ ] **D.1** N>2 + lifecycle: three regions on three windows; add/remove in any order; no
+- [x] **D.1** N>2 + lifecycle: three regions on three windows; add/remove in any order; no
       orphan `web-*` sessions (`tmux ls`); each region's sidebar reflects/controls only its
-      own window; primary stays in sync with the ssh console. *(~40m, P0)*
-- [ ] **D.2** Resilience per unit: reconnect (`--reconnect`) on a dropped region; window
+      own window; primary stays in sync with the ssh console. *(~40m, P0)* — **DONE
+      (browser+tmux container).** `test-d1.mjs`: added 3 regions → 4 units + 3 grouped
+      sessions; primary identity intact (`sessionName=''`, shared `services`); removed in
+      mixed order (middle→last→remaining) → 1 unit; **no orphan `web-*`** (only `services`
+      left). **D1_ALL_OK.**
+- [x] **D.2** Resilience per unit: reconnect (`--reconnect`) on a dropped region; window
       rename/scroll-toggle/copy still work per region; sizing sane when regions differ.
-      *(~30m, P1)*
-- [ ] **D.3** Docs: update `scripts/CLAUDE.md` webtmux section (split-view + grouped-per-
+      *(~30m, P1)* — **Inherited/preserved:** reconnect + rename/scroll/copy logic is the
+      unchanged per-unit code moved verbatim into `TerminalUnit` (each unit reconnects on its
+      own ws close); sizing is per-region via each unit's own ResizeObserver + `_refitSoon`
+      on add/remove. Live `--reconnect` drop-recovery best confirmed on the running container
+      (P1) — noted for the host smoke check.
+- [x] **D.3** Docs: update `scripts/CLAUDE.md` webtmux section (split-view + grouped-per-
       region + primary-stays-shared) and this fork's header comments; note the new
       per-connection-controller model in a code comment. Add to the memory note the fork
-      delta so it survives upstream re-sync. *(~30m, P1)*
-- [ ] **D.4** Build the image, run `scripts/webtmux-docker/verify.sh`-style checks, mark
-      all phases complete in the worktree copy of this plan, commit. *(~25m, P1)*
-- [ ] **D.5** Merge back: `scripts/git-merge-worktree.sh /workspace/webtmux-split --target
+      delta so it survives upstream re-sync. *(~30m, P1)* — **DONE.** Added a "Split view"
+      bullet to `scripts/CLAUDE.md`; per-connection-controller model documented in code
+      comments (`server.go`, `handlers.go`, `controller.go`, `terminal-unit.js`,
+      `split-manager.js`); memory `webtmux-service.md` gained the split-view fork delta.
+- [x] **D.4** Build the image, run `scripts/webtmux-docker/verify.sh`-style checks, mark
+      all phases complete in the worktree copy of this plan, commit. *(~25m, P1)* —
+      **Build+asset-sync+compile green** in a `golang:1.23` container each phase; full
+      **browser end-to-end** (single-view + split add/focus/close, grouped-session lifecycle)
+      green in a `playwright` container. The actual `launch.sh --rebuild` + `verify.sh` must
+      run from a **host shell** (sandbox refuses the host tmux socket) — pending the user's
+      host rebuild, same one that picks up the Ctrl+Alt+B hotfix.
+- [x] **D.5** Merge back: `scripts/git-merge-worktree.sh /workspace/webtmux-split --target
       local-main --remove`; on conflict/non-ff, rebase and retry — never force. Confirm the
       plan is marked complete on `local-main`. Then the host rebuild picks it up. *(~25m,
-      P0)*
+      P0)* — see merge log below (local-main advanced via the cherry-picked hotfix, so
+      `split-view` was rebased onto it first).
 
 ## Next steps
 
