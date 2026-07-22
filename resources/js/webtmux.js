@@ -302,9 +302,10 @@ class WebTmux {
     container.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
       this.terminal.focus();            // click brings keyboard focus
-      // Clicking into the terminal collapses the sidebar out of the way.
+      // Clicking into the terminal collapses the sidebar out of the way —
+      // unless it's pinned (the panel's "stays open" toggle).
       const sb = document.querySelector('webtmux-sidebar');
-      if (sb && !sb.collapsed) sb.collapsed = true;
+      if (sb && !sb.collapsed && !sb.pinned) sb.collapsed = true;
       startX = e.clientX; startY = e.clientY; dragging = false;
     });
 

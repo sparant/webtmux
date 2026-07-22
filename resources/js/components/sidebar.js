@@ -9,6 +9,7 @@ class WebtmuxSidebar extends LitElement {
     collapsed: { type: Boolean },
     overlay: { type: Boolean },
     scrollMode: { type: String },
+    pinned: { type: Boolean },
   };
 
   static styles = css`
@@ -40,6 +41,21 @@ class WebtmuxSidebar extends LitElement {
       flex-direction: column;
       gap: 8px;
       margin-bottom: 12px;
+    }
+
+    .shortcut-hint {
+      color: #888;
+      font-size: 13px;
+    }
+
+    .shortcut-hint kbd {
+      background: #1a1a2e;
+      border: 1px solid #0f3460;
+      border-radius: 4px;
+      padding: 1px 6px;
+      color: #4a9eff;
+      font-family: monospace;
+      font-size: 12px;
     }
 
     .mode-btn {
@@ -206,6 +222,8 @@ class WebtmuxSidebar extends LitElement {
     this.overlay = localStorage.getItem('webtmux-overlay') !== 'false';
     // Scroll-wheel behavior mirror of the app's setting ('buffer' | 'passthrough').
     this.scrollMode = localStorage.getItem('webtmux-scroll-mode') || 'buffer';
+    // Pinned = stay open when clicking into the terminal (default: auto-hide).
+    this.pinned = localStorage.getItem('webtmux-pinned') === 'true';
 
     // Listen for layout updates
     window.addEventListener('tmux-layout-update', (e) => {
@@ -240,6 +258,11 @@ class WebtmuxSidebar extends LitElement {
     localStorage.setItem('webtmux-overlay', String(this.overlay));
   }
 
+  togglePin() {
+    this.pinned = !this.pinned;
+    localStorage.setItem('webtmux-pinned', String(this.pinned));
+  }
+
   toggleScrollMode() {
     this.scrollMode = this.scrollMode === 'passthrough' ? 'buffer' : 'passthrough';
     // Apply live to the terminal app (also persists); fall back to localStorage.
@@ -253,6 +276,7 @@ class WebtmuxSidebar extends LitElement {
   modeRow() {
     return html`
       <div class="mode-row">
+        <div class="shortcut-hint">Toggle panel: <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>B</kbd></div>
         <button
           class="mode-btn"
           @click=${this.toggleOverlay}
@@ -266,6 +290,13 @@ class WebtmuxSidebar extends LitElement {
           title="Buffer = wheel scrolls tmux history (copy-mode); Pass to app = wheel goes to the program (Claude/vim/less scroll themselves)"
         >
           ${this.scrollMode === 'passthrough' ? '🖱 Scroll → app' : '🖱 Scroll → buffer'}
+        </button>
+        <button
+          class="mode-btn"
+          @click=${this.togglePin}
+          title="Pinned = the panel stays open when you click into the terminal; otherwise it auto-hides on terminal click"
+        >
+          ${this.pinned ? '📌 Pinned (stays open)' : '📌 Auto-hide on click'}
         </button>
       </div>
     `;
