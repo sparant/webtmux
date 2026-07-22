@@ -318,6 +318,14 @@ class WebTmux {
       if (!dragging) {
         if (Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY) < 5) return;
         dragging = true;
+        // Enter tmux copy-mode as soon as a drag starts. This takes the pane out
+        // of the app's mouse grab (Claude/vim), so xterm does a LOCAL text
+        // selection immediately instead of forwarding the drag to the app —
+        // matching the behavior you otherwise only get after scrolling first.
+        if (!this.inCopyMode) {
+          this.sendMessage(MSG.TmuxCopyMode, '1');
+          this.inCopyMode = true;
+        }
       }
       // Auto-scroll only when dragging near/past the top or bottom edge.
       const rect = container.getBoundingClientRect();
