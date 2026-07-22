@@ -123,6 +123,8 @@ class WebTmux {
           navigator.clipboard.writeText(selection).catch(err => {
             console.warn('Failed to copy:', err);
           });
+          // Clear the highlight once copied.
+          this.terminal.clearSelection();
           // If we were scrolled into tmux copy-mode (buffer mode), drop back to
           // normal (edit) mode after copying so typing resumes at the prompt.
           if (this.inCopyMode) this.exitCopyMode();
