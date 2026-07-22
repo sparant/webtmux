@@ -8,6 +8,7 @@ class WebtmuxSidebar extends LitElement {
     activeWindow: { type: String },
     collapsed: { type: Boolean },
     overlay: { type: Boolean },
+    scrollMode: { type: String },
   };
 
   static styles = css`
@@ -34,13 +35,10 @@ class WebtmuxSidebar extends LitElement {
       box-shadow: -8px 0 24px rgba(0, 0, 0, 0.5);
     }
 
-    :host(.collapsed) {
-      width: 40px;
-      padding: 8px;
-      overflow: hidden;
-    }
-
     .mode-row {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
       margin-bottom: 12px;
     }
 
@@ -67,10 +65,10 @@ class WebtmuxSidebar extends LitElement {
       right: 8px;
       background: #1a1a2e;
       border: 1px solid #0f3460;
-      border-radius: 4px;
-      color: #888;
-      width: 24px;
-      height: 24px;
+      border-radius: 6px;
+      color: #ccc;
+      width: 34px;
+      height: 34px;
       cursor: pointer;
       display: flex;
       align-items: center;
@@ -83,9 +81,29 @@ class WebtmuxSidebar extends LitElement {
       color: #fff;
     }
 
+    /* Collapsed: the whole pane disappears; only a bigger toggle button floats
+       over the top-right of the terminal (Ctrl+Alt+B also toggles it). */
+    :host(.collapsed) {
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      width: auto;
+      height: auto;
+      padding: 0;
+      background: transparent;
+      border: none;
+      overflow: visible;
+      box-shadow: none;
+      z-index: 60;
+    }
+
     :host(.collapsed) .toggle-btn {
       position: static;
-      margin: 0 auto;
+      width: 44px;
+      height: 44px;
+      background: #16213e;
+      border: 1px solid #0f3460;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.6);
     }
 
     :host(.collapsed) .sidebar-content {
@@ -131,82 +149,6 @@ class WebtmuxSidebar extends LitElement {
       background: #e94560;
       border-color: #e94560;
       color: #fff;
-    }
-
-    .minimap {
-      position: relative;
-      background: #1a1a2e;
-      border: 1px solid #0f3460;
-      border-radius: 4px;
-      height: 200px;
-      margin-bottom: 16px;
-    }
-
-    .pane {
-      position: absolute;
-      background: #0f3460;
-      border: 1px solid #16213e;
-      border-radius: 2px;
-      cursor: pointer;
-      transition: all 0.2s;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 14px;
-      color: #666;
-    }
-
-    .pane:hover {
-      border-color: #e94560;
-      background: #1a3a5c;
-    }
-
-    .pane.active {
-      border-color: #e94560;
-      background: #1a3a5c;
-      box-shadow: 0 0 8px rgba(233, 69, 96, 0.3);
-    }
-
-    .pane.active::after {
-      content: '';
-      position: absolute;
-      top: 2px;
-      right: 2px;
-      width: 6px;
-      height: 6px;
-      background: #e94560;
-      border-radius: 50%;
-    }
-
-    .actions {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-    }
-
-    .action-btn {
-      background: #1a1a2e;
-      border: 1px solid #0f3460;
-      border-radius: 4px;
-      color: #888;
-      padding: 8px;
-      font-size: 15px;
-      cursor: pointer;
-      transition: all 0.2s;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 4px;
-    }
-
-    .action-btn:hover {
-      border-color: #e94560;
-      color: #fff;
-    }
-
-    .action-btn svg {
-      width: 14px;
-      height: 14px;
     }
 
     .session-info {
@@ -262,6 +204,8 @@ class WebtmuxSidebar extends LitElement {
     // Hover-overlay vs side-by-side. Default hover (float over the terminal);
     // persisted across reloads.
     this.overlay = localStorage.getItem('webtmux-overlay') !== 'false';
+    // Scroll-wheel behavior mirror of the app's setting ('buffer' | 'passthrough').
+    this.scrollMode = localStorage.getItem('webtmux-scroll-mode') || 'buffer';
 
     // Listen for layout updates
     window.addEventListener('tmux-layout-update', (e) => {
@@ -296,6 +240,16 @@ class WebtmuxSidebar extends LitElement {
     localStorage.setItem('webtmux-overlay', String(this.overlay));
   }
 
+  toggleScrollMode() {
+    this.scrollMode = this.scrollMode === 'passthrough' ? 'buffer' : 'passthrough';
+    // Apply live to the terminal app (also persists); fall back to localStorage.
+    if (window.webtmux?.setScrollMode) {
+      window.webtmux.setScrollMode(this.scrollMode);
+    } else {
+      localStorage.setItem('webtmux-scroll-mode', this.scrollMode);
+    }
+  }
+
   modeRow() {
     return html`
       <div class="mode-row">
@@ -306,14 +260,21 @@ class WebtmuxSidebar extends LitElement {
         >
           ${this.overlay ? '▣ Hover over terminal' : '⇔ Side-by-side'}
         </button>
+        <button
+          class="mode-btn"
+          @click=${this.toggleScrollMode}
+          title="Buffer = wheel scrolls tmux history (copy-mode); Pass to app = wheel goes to the program (Claude/vim/less scroll themselves)"
+        >
+          ${this.scrollMode === 'passthrough' ? '🖱 Scroll → app' : '🖱 Scroll → buffer'}
+        </button>
       </div>
     `;
   }
 
   render() {
     const toggleIcon = this.collapsed
-      ? html`<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>`
-      : html`<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>`;
+      ? html`<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>`
+      : html`<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>`;
 
     if (!this.layout) {
       return html`
@@ -325,8 +286,6 @@ class WebtmuxSidebar extends LitElement {
         </div>
       `;
     }
-
-    const activeWindow = this.layout.windows?.find(w => w.id === this.activeWindow);
 
     const sessions = this.layout.sessions || [];
     const showSessions = sessions.length > 1;
@@ -362,74 +321,12 @@ class WebtmuxSidebar extends LitElement {
         <button class="window-tab" @click=${() => this.newWindow()}>+</button>
       </div>
 
-      <h3>Panes</h3>
-      <div class="minimap">
-        ${activeWindow?.panes?.map(pane => {
-          // Calculate percentage positions
-          const totalWidth = activeWindow.panes.reduce((max, p) => Math.max(max, p.left + p.width), 0);
-          const totalHeight = activeWindow.panes.reduce((max, p) => Math.max(max, p.top + p.height), 0);
-
-          const left = (pane.left / totalWidth) * 100;
-          const top = (pane.top / totalHeight) * 100;
-          const width = (pane.width / totalWidth) * 100;
-          const height = (pane.height / totalHeight) * 100;
-
-          return html`
-            <div
-              class="pane ${pane.id === this.activePane ? 'active' : ''}"
-              style="left: ${left}%; top: ${top}%; width: ${width}%; height: ${height}%"
-              @click=${() => this.selectPane(pane.id)}
-              title="${pane.command}"
-            >
-              ${pane.index}
-            </div>
-          `;
-        })}
-      </div>
-
-      <h3>Actions</h3>
-      <div class="actions">
-        <button class="action-btn" @click=${() => this.splitPane(true)}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="3" width="18" height="18" rx="2"/>
-            <line x1="12" y1="3" x2="12" y2="21"/>
-          </svg>
-          Split H
-        </button>
-        <button class="action-btn" @click=${() => this.splitPane(false)}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="3" width="18" height="18" rx="2"/>
-            <line x1="3" y1="12" x2="21" y2="12"/>
-          </svg>
-          Split V
-        </button>
-        <button class="action-btn" @click=${() => this.newWindow()}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="3" width="18" height="18" rx="2"/>
-            <line x1="12" y1="8" x2="12" y2="16"/>
-            <line x1="8" y1="12" x2="16" y2="12"/>
-          </svg>
-          New Win
-        </button>
-        <button class="action-btn" @click=${() => this.closePane()}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="18" y1="6" x2="6" y2="18"/>
-            <line x1="6" y1="6" x2="18" y2="18"/>
-          </svg>
-          Close
-        </button>
-      </div>
-
       <div class="session-info">
         Session: ${this.layout.sessionName}<br>
-        ${this.layout.windows?.length || 0} windows, ${activeWindow?.panes?.length || 0} panes
+        ${this.layout.windows?.length || 0} windows
       </div>
       </div>
     `;
-  }
-
-  selectPane(paneId) {
-    window.webtmux?.selectPane(paneId);
   }
 
   selectWindow(windowId) {
@@ -440,16 +337,8 @@ class WebtmuxSidebar extends LitElement {
     window.webtmux?.switchSession(sessionName);
   }
 
-  splitPane(horizontal) {
-    window.webtmux?.splitPane(horizontal);
-  }
-
   newWindow() {
     window.webtmux?.newWindow();
-  }
-
-  closePane() {
-    window.webtmux?.closePane(this.activePane);
   }
 }
 

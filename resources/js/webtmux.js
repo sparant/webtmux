@@ -43,6 +43,11 @@ class WebTmux {
     this.reconnectInterval = null;
     this.bufferSize = 1024 * 1024;
     this.inCopyMode = false;
+    // Scroll-wheel behavior: 'buffer' (default) = wheel drives tmux copy-mode
+    // history scrolling; 'passthrough' = let xterm forward the wheel to the app
+    // (so a TUI like Claude, vim, less handles its own scrolling). Persisted +
+    // toggled from the sidebar. Read here so the handlers below see it on load.
+    this.scrollMode = localStorage.getItem('webtmux-scroll-mode') || 'buffer';
     this.layout = null;
     this.pendingSessionSwitch = null;
     this.oscBuffer = ''; // Buffer for OSC sequence detection
@@ -100,6 +105,16 @@ class WebTmux {
     this.terminal.attachCustomKeyEventHandler((ev) => {
       // Only handle keydown events
       if (ev.type !== 'keydown') return true;
+
+      // Ctrl+Alt+B toggles the sidebar. Requires Alt so it never collides with
+      // tmux's Ctrl-b prefix, and we capture it here so the terminal never sees
+      // it. ev.code (physical key) dodges Option-key char remapping on macOS.
+      if (ev.ctrlKey && ev.altKey && !ev.metaKey && ev.code === 'KeyB') {
+        const sb = document.querySelector('webtmux-sidebar');
+        if (sb) sb.toggleCollapsed();
+        ev.preventDefault();
+        return false;
+      }
 
       // Allow Cmd+C / Ctrl+C to copy selected text
       if ((ev.metaKey || ev.ctrlKey) && ev.key === 'c') {
@@ -180,6 +195,9 @@ class WebTmux {
     // Setup touch/scroll handling for copy mode
     this.setupTouchHandling();
 
+    // Click-to-focus + drag-to-select with edge auto-scroll
+    this.setupMouseSelection();
+
     // Connect WebSocket
     this.connect();
 
@@ -197,6 +215,8 @@ class WebTmux {
     }, { passive: true });
 
     container.addEventListener('touchmove', (e) => {
+      // Passthrough mode: leave touch scrolling to the app (mirror the wheel).
+      if (this.scrollMode === 'passthrough') return;
       const deltaY = touchStartY - e.touches[0].clientY;
       const threshold = 30;
 
@@ -222,6 +242,11 @@ class WebTmux {
 
     // Mouse wheel for desktop scroll -> copy mode
     this.terminal.attachCustomWheelEventHandler((event) => {
+      // Passthrough mode: don't hijack the wheel — let xterm forward it to the
+      // app (mouse-wheel sequences), so Claude/vim/less scroll themselves.
+      if (this.scrollMode === 'passthrough') {
+        return true;
+      }
       // Only intercept scroll up (entering history) - deltaY < 0 = wheel up
       if (event.deltaY < 0) {
         if (!this.inCopyMode) {
@@ -244,6 +269,57 @@ class WebTmux {
 
       return true; // Allow normal handling when not in copy mode
     });
+  }
+
+  // Click focuses the terminal; dragging to the top/bottom edge auto-scrolls the
+  // tmux buffer (entering copy-mode) so a text selection can extend past the
+  // visible screen. Only active in 'buffer' scroll mode (passthrough leaves the
+  // mouse entirely to the app). We never preventDefault, so xterm's own text
+  // selection keeps working underneath.
+  setupMouseSelection() {
+    const container = document.getElementById('terminal');
+    let startX = 0, startY = 0, dragging = false, edgeDir = 0, timer = null;
+
+    const setEdge = (dir) => {
+      if (dir === edgeDir) return;
+      edgeDir = dir;
+      if (timer) { clearInterval(timer); timer = null; }
+      if (dir !== 0) {
+        timer = setInterval(() => {
+          if (!this.inCopyMode) {
+            this.sendMessage(MSG.TmuxCopyMode, '1');
+            this.inCopyMode = true;
+          }
+          this.sendMessage(edgeDir < 0 ? MSG.TmuxScrollUp : MSG.TmuxScrollDown, '2');
+        }, 120);
+      }
+    };
+    const endDrag = () => { dragging = false; setEdge(0); };
+
+    container.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      this.terminal.focus();            // Ask: click brings keyboard focus
+      startX = e.clientX; startY = e.clientY; dragging = false;
+    });
+
+    container.addEventListener('mousemove', (e) => {
+      if ((e.buttons & 1) === 0) { endDrag(); return; }   // only while left-dragging
+      if (this.scrollMode === 'passthrough') return;      // leave the mouse to the app
+      if (!dragging) {
+        if (Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY) < 5) return;
+        dragging = true;
+      }
+      // Auto-scroll only when dragging near/past the top or bottom edge.
+      const rect = container.getBoundingClientRect();
+      const edge = 28;
+      let dir = 0;
+      if (e.clientY < rect.top + edge) dir = -1;          // older history
+      else if (e.clientY > rect.bottom - edge) dir = 1;   // newer
+      setEdge(dir);
+    });
+
+    window.addEventListener('mouseup', endDrag);
+    container.addEventListener('mouseleave', () => setEdge(0));
   }
 
   connect() {
@@ -414,6 +490,17 @@ class WebTmux {
   exitCopyMode() {
     this.sendMessage(MSG.TmuxCopyMode, '0');
     this.inCopyMode = false;
+  }
+
+  // Switch scroll-wheel behavior ('buffer' | 'passthrough'); called from the
+  // sidebar toggle. Leaving copy mode on switch to passthrough avoids getting
+  // stuck scrolled up in history.
+  setScrollMode(mode) {
+    this.scrollMode = mode === 'passthrough' ? 'passthrough' : 'buffer';
+    localStorage.setItem('webtmux-scroll-mode', this.scrollMode);
+    if (this.scrollMode === 'passthrough' && this.inCopyMode) {
+      this.exitCopyMode();
+    }
   }
 
   // Handle OSC 52 clipboard sequences from tmux
