@@ -7,12 +7,16 @@ class WebtmuxSidebar extends LitElement {
     activePane: { type: String },
     activeWindow: { type: String },
     collapsed: { type: Boolean },
+    overlay: { type: Boolean },
+    scrollMode: { type: String },
+    pinned: { type: Boolean },
+    editingWindow: { type: String },
   };
 
   static styles = css`
     :host {
       display: block;
-      width: 220px;
+      width: 330px;
       background: #16213e;
       border-left: 1px solid #0f3460;
       padding: 12px;
@@ -20,10 +24,56 @@ class WebtmuxSidebar extends LitElement {
       transition: width 0.2s, padding 0.2s;
     }
 
-    :host(.collapsed) {
-      width: 40px;
-      padding: 8px;
-      overflow: hidden;
+    /* Overlay ("hover") mode: float over the right of the terminal instead of
+       taking a flex column (which would shrink the terminal). position:fixed
+       removes the host from the #app flex flow, so #terminal-container expands to
+       full width and its ResizeObserver re-fits xterm automatically. */
+    :host(.overlay) {
+      position: fixed;
+      top: 0;
+      right: 0;
+      height: 100%;
+      z-index: 50;
+      box-shadow: -8px 0 24px rgba(0, 0, 0, 0.5);
+    }
+
+    .mode-row {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .shortcut-hint {
+      color: #888;
+      font-size: 13px;
+    }
+
+    .shortcut-hint kbd {
+      background: #1a1a2e;
+      border: 1px solid #0f3460;
+      border-radius: 4px;
+      padding: 1px 6px;
+      color: #4a9eff;
+      font-family: monospace;
+      font-size: 12px;
+    }
+
+    .mode-btn {
+      width: 100%;
+      background: #1a1a2e;
+      border: 1px solid #0f3460;
+      border-radius: 4px;
+      color: #4a9eff;
+      padding: 9px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .mode-btn:hover {
+      border-color: #4a9eff;
+      color: #fff;
     }
 
     .toggle-btn {
@@ -32,10 +82,10 @@ class WebtmuxSidebar extends LitElement {
       right: 8px;
       background: #1a1a2e;
       border: 1px solid #0f3460;
-      border-radius: 4px;
-      color: #888;
-      width: 24px;
-      height: 24px;
+      border-radius: 6px;
+      color: #ccc;
+      width: 34px;
+      height: 34px;
       cursor: pointer;
       display: flex;
       align-items: center;
@@ -48,9 +98,29 @@ class WebtmuxSidebar extends LitElement {
       color: #fff;
     }
 
+    /* Collapsed: the whole pane disappears; only a bigger toggle button floats
+       over the top-right of the terminal (Ctrl+Alt+B also toggles it). */
+    :host(.collapsed) {
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      width: auto;
+      height: auto;
+      padding: 0;
+      background: transparent;
+      border: none;
+      overflow: visible;
+      box-shadow: none;
+      z-index: 60;
+    }
+
     :host(.collapsed) .toggle-btn {
       position: static;
-      margin: 0 auto;
+      width: 44px;
+      height: 44px;
+      background: #16213e;
+      border: 1px solid #0f3460;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.6);
     }
 
     :host(.collapsed) .sidebar-content {
@@ -61,9 +131,16 @@ class WebtmuxSidebar extends LitElement {
       position: relative;
     }
 
+    /* The panel takes keyboard focus so ↑/↓ navigate windows; hide the default
+       focus ring (it would box the whole pane) and show a subtle left accent. */
+    .sidebar-content:focus,
+    .sidebar-content:focus-visible {
+      outline: none;
+    }
+
     h3 {
       color: #e94560;
-      font-size: 12px;
+      font-size: 16px;
       text-transform: uppercase;
       letter-spacing: 1px;
       margin: 0 0 12px 0;
@@ -81,8 +158,8 @@ class WebtmuxSidebar extends LitElement {
       color: #888;
       border: 1px solid #0f3460;
       border-radius: 4px;
-      padding: 4px 8px;
-      font-size: 11px;
+      padding: 6px 10px;
+      font-size: 15px;
       cursor: pointer;
       transition: all 0.2s;
     }
@@ -98,85 +175,21 @@ class WebtmuxSidebar extends LitElement {
       color: #fff;
     }
 
-    .minimap {
-      position: relative;
-      background: #1a1a2e;
-      border: 1px solid #0f3460;
-      border-radius: 4px;
-      height: 150px;
-      margin-bottom: 16px;
-    }
-
-    .pane {
-      position: absolute;
+    .window-edit {
       background: #0f3460;
-      border: 1px solid #16213e;
-      border-radius: 2px;
-      cursor: pointer;
-      transition: all 0.2s;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 10px;
-      color: #666;
-    }
-
-    .pane:hover {
-      border-color: #e94560;
-      background: #1a3a5c;
-    }
-
-    .pane.active {
-      border-color: #e94560;
-      background: #1a3a5c;
-      box-shadow: 0 0 8px rgba(233, 69, 96, 0.3);
-    }
-
-    .pane.active::after {
-      content: '';
-      position: absolute;
-      top: 2px;
-      right: 2px;
-      width: 6px;
-      height: 6px;
-      background: #e94560;
-      border-radius: 50%;
-    }
-
-    .actions {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-    }
-
-    .action-btn {
-      background: #1a1a2e;
-      border: 1px solid #0f3460;
-      border-radius: 4px;
-      color: #888;
-      padding: 8px;
-      font-size: 11px;
-      cursor: pointer;
-      transition: all 0.2s;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 4px;
-    }
-
-    .action-btn:hover {
-      border-color: #e94560;
       color: #fff;
-    }
-
-    .action-btn svg {
-      width: 14px;
-      height: 14px;
+      border: 1px solid #e94560;
+      border-radius: 4px;
+      padding: 6px 10px;
+      font-size: 15px;
+      width: 130px;
+      font-family: inherit;
+      outline: none;
     }
 
     .session-info {
       color: #666;
-      font-size: 10px;
+      font-size: 14px;
       margin-top: 16px;
       padding-top: 12px;
       border-top: 1px solid #0f3460;
@@ -194,8 +207,8 @@ class WebtmuxSidebar extends LitElement {
       color: #888;
       border: 1px solid #0f3460;
       border-radius: 4px;
-      padding: 4px 8px;
-      font-size: 11px;
+      padding: 6px 10px;
+      font-size: 15px;
       cursor: pointer;
       transition: all 0.2s;
     }
@@ -212,7 +225,7 @@ class WebtmuxSidebar extends LitElement {
     }
 
     .session-tab .win-count {
-      font-size: 9px;
+      font-size: 12px;
       opacity: 0.7;
       margin-left: 4px;
     }
@@ -224,6 +237,15 @@ class WebtmuxSidebar extends LitElement {
     this.activePane = '';
     this.activeWindow = '';
     this.collapsed = false;
+    // Hover-overlay vs side-by-side. Default hover (float over the terminal);
+    // persisted across reloads.
+    this.overlay = localStorage.getItem('webtmux-overlay') !== 'false';
+    // Scroll-wheel behavior mirror of the app's setting ('buffer' | 'passthrough').
+    this.scrollMode = localStorage.getItem('webtmux-scroll-mode') || 'buffer';
+    // Pinned = stay open when clicking into the terminal (default: auto-hide).
+    this.pinned = localStorage.getItem('webtmux-pinned') === 'true';
+    // Window id currently being renamed inline ('' = none).
+    this.editingWindow = '';
 
     // Listen for layout updates
     window.addEventListener('tmux-layout-update', (e) => {
@@ -239,7 +261,15 @@ class WebtmuxSidebar extends LitElement {
         this.classList.add('collapsed');
       } else {
         this.classList.remove('collapsed');
+        // Opening the panel grabs keyboard focus so ↑/↓ navigate windows.
+        this.focusPanel();
       }
+    }
+    if (changedProperties.has('overlay')) {
+      // Toggling in/out of flow changes #terminal's width; its ResizeObserver
+      // re-fits xterm. A deferred fit() nudge covers the reflow timing.
+      this.classList.toggle('overlay', this.overlay);
+      setTimeout(() => { try { window.webtmux?.fitAddon?.fit(); } catch (e) {} }, 80);
     }
   }
 
@@ -247,29 +277,78 @@ class WebtmuxSidebar extends LitElement {
     this.collapsed = !this.collapsed;
   }
 
+  toggleOverlay() {
+    this.overlay = !this.overlay;
+    localStorage.setItem('webtmux-overlay', String(this.overlay));
+  }
+
+  togglePin() {
+    this.pinned = !this.pinned;
+    localStorage.setItem('webtmux-pinned', String(this.pinned));
+  }
+
+  toggleScrollMode() {
+    this.scrollMode = this.scrollMode === 'passthrough' ? 'buffer' : 'passthrough';
+    // Apply live to the terminal app (also persists); fall back to localStorage.
+    if (window.webtmux?.setScrollMode) {
+      window.webtmux.setScrollMode(this.scrollMode);
+    } else {
+      localStorage.setItem('webtmux-scroll-mode', this.scrollMode);
+    }
+  }
+
+  modeRow() {
+    return html`
+      <div class="mode-row">
+        <div class="shortcut-hint">Toggle panel: <kbd>⌃ Control</kbd>+<kbd>⌥ Option</kbd>+<kbd>B</kbd></div>
+        <button
+          class="mode-btn"
+          @click=${this.toggleOverlay}
+          title="Hover = float over the terminal; Side-by-side = shrink the terminal to sit beside the pane"
+        >
+          ${this.overlay ? '▣ Hover over terminal' : '⇔ Side-by-side'}
+        </button>
+        <button
+          class="mode-btn"
+          @click=${this.toggleScrollMode}
+          title="Buffer = wheel scrolls tmux history (copy-mode); Pass to app = wheel goes to the program (Claude/vim/less scroll themselves)"
+        >
+          ${this.scrollMode === 'passthrough' ? '🖱 Scroll → app' : '🖱 Scroll → buffer'}
+        </button>
+        <button
+          class="mode-btn"
+          @click=${this.togglePin}
+          title="Pinned = the panel stays open when you click into the terminal; otherwise it auto-hides on terminal click"
+        >
+          ${this.pinned ? '📌 Pinned (stays open)' : '📌 Auto-hide on click'}
+        </button>
+      </div>
+    `;
+  }
+
   render() {
     const toggleIcon = this.collapsed
-      ? html`<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>`
-      : html`<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>`;
+      ? html`<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>`
+      : html`<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>`;
 
     if (!this.layout) {
       return html`
         <button class="toggle-btn" @click=${this.toggleCollapsed}>${toggleIcon}</button>
-        <div class="sidebar-content">
+        <div class="sidebar-content" tabindex="0" @keydown=${this.onKeyDown}>
+          ${this.modeRow()}
           <h3>tmux</h3>
-          <p style="color: #666; font-size: 12px;">Connecting...</p>
+          <p style="color: #666; font-size: 16px;">Connecting...</p>
         </div>
       `;
     }
-
-    const activeWindow = this.layout.windows?.find(w => w.id === this.activeWindow);
 
     const sessions = this.layout.sessions || [];
     const showSessions = sessions.length > 1;
 
     return html`
       <button class="toggle-btn" @click=${this.toggleCollapsed}>${toggleIcon}</button>
-      <div class="sidebar-content">
+      <div class="sidebar-content" tabindex="0" @keydown=${this.onKeyDown}>
+      ${this.modeRow()}
       ${showSessions ? html`
         <h3>Sessions</h3>
         <div class="session-tabs">
@@ -286,105 +365,131 @@ class WebtmuxSidebar extends LitElement {
 
       <h3>Windows</h3>
       <div class="window-tabs">
-        ${this.layout.windows?.map(win => html`
-          <button
-            class="window-tab ${win.id === this.activeWindow ? 'active' : ''}"
-            @click=${() => this.selectWindow(win.id)}
-          >
-            ${win.index}: ${win.name || 'bash'}
-          </button>
-        `)}
-        <button class="window-tab" @click=${() => this.newWindow()}>+</button>
-      </div>
-
-      <h3>Panes</h3>
-      <div class="minimap">
-        ${activeWindow?.panes?.map(pane => {
-          // Calculate percentage positions
-          const totalWidth = activeWindow.panes.reduce((max, p) => Math.max(max, p.left + p.width), 0);
-          const totalHeight = activeWindow.panes.reduce((max, p) => Math.max(max, p.top + p.height), 0);
-
-          const left = (pane.left / totalWidth) * 100;
-          const top = (pane.top / totalHeight) * 100;
-          const width = (pane.width / totalWidth) * 100;
-          const height = (pane.height / totalHeight) * 100;
-
-          return html`
-            <div
-              class="pane ${pane.id === this.activePane ? 'active' : ''}"
-              style="left: ${left}%; top: ${top}%; width: ${width}%; height: ${height}%"
-              @click=${() => this.selectPane(pane.id)}
-              title="${pane.command}"
+        ${this.layout.windows?.map(win => win.id === this.editingWindow
+          ? html`
+            <input
+              class="window-edit"
+              .value=${win.name || ''}
+              @keydown=${(e) => this.onRenameKey(e, win.id)}
+              @blur=${(e) => this.commitRename(e, win.id)}
+              @click=${(e) => e.stopPropagation()}
+            >`
+          : html`
+            <button
+              class="window-tab ${win.id === this.activeWindow ? 'active' : ''}"
+              @click=${() => this.selectWindow(win.id)}
+              @dblclick=${() => this.startRename(win.id)}
+              title="Double-click to rename"
             >
-              ${pane.index}
-            </div>
-          `;
-        })}
-      </div>
-
-      <h3>Actions</h3>
-      <div class="actions">
-        <button class="action-btn" @click=${() => this.splitPane(true)}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="3" width="18" height="18" rx="2"/>
-            <line x1="12" y1="3" x2="12" y2="21"/>
-          </svg>
-          Split H
-        </button>
-        <button class="action-btn" @click=${() => this.splitPane(false)}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="3" width="18" height="18" rx="2"/>
-            <line x1="3" y1="12" x2="21" y2="12"/>
-          </svg>
-          Split V
-        </button>
-        <button class="action-btn" @click=${() => this.newWindow()}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="3" width="18" height="18" rx="2"/>
-            <line x1="12" y1="8" x2="12" y2="16"/>
-            <line x1="8" y1="12" x2="16" y2="12"/>
-          </svg>
-          New Win
-        </button>
-        <button class="action-btn" @click=${() => this.closePane()}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="18" y1="6" x2="6" y2="18"/>
-            <line x1="6" y1="6" x2="18" y2="18"/>
-          </svg>
-          Close
-        </button>
+              ${win.index}: ${win.name || 'bash'}
+            </button>`
+        )}
+        <button class="window-tab" @click=${() => this.newWindow()}>+</button>
       </div>
 
       <div class="session-info">
         Session: ${this.layout.sessionName}<br>
-        ${this.layout.windows?.length || 0} windows, ${activeWindow?.panes?.length || 0} panes
+        ${this.layout.windows?.length || 0} windows
       </div>
       </div>
     `;
   }
 
-  selectPane(paneId) {
-    window.webtmux?.selectPane(paneId);
+  // When the panel (or a control inside it) has keyboard focus, ↑/↓ move to the
+  // previous/next window so you can flip through windows with the arrow keys
+  // while the pane is open. Any other key falls through to normal handling.
+  onKeyDown(e) {
+    // Don't hijack arrows while renaming a window inline (caret movement).
+    if (this.editingWindow) return;
+    const tag = e.target?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      this.navigateWindow(-1);
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      this.navigateWindow(1);
+    } else if (e.key === 'Escape') {
+      // Escape always dismisses the panel, wherever focus sits inside it.
+      e.preventDefault();
+      this.dismiss();
+    } else if (e.key === 'Enter' && tag !== 'BUTTON') {
+      // Enter dismisses too, but only from the panel itself — on a button
+      // (window tab, +, mode toggle) Enter still activates that control.
+      e.preventDefault();
+      this.dismiss();
+    }
+  }
+
+  // Collapse the panel and hand keyboard focus back to the terminal, so typing
+  // resumes at the prompt right after dismissing.
+  dismiss() {
+    this.collapsed = true;
+    try { window.webtmux?.terminal?.focus(); } catch (e) {}
+  }
+
+  // Step delta windows from the active one (wrapping), by the sidebar's own
+  // window order, and select it. Refocus the panel afterwards: selecting a
+  // window re-renders the tabs, which would otherwise drop keyboard focus (and
+  // break a second arrow press) if focus had been on a now-replaced tab button.
+  navigateWindow(delta) {
+    const windows = this.layout?.windows || [];
+    if (windows.length === 0) return;
+    let idx = windows.findIndex(w => w.id === this.activeWindow);
+    if (idx === -1) idx = 0;
+    const next = (idx + delta + windows.length) % windows.length;
+    const target = windows[next];
+    if (target) {
+      this.selectWindow(target.id);
+      this.focusPanel();
+    }
+  }
+
+  // Give keyboard focus to the panel so arrow-key window navigation works
+  // immediately (called when the panel opens and after each navigation).
+  focusPanel() {
+    this.updateComplete.then(() => {
+      const el = this.renderRoot.querySelector('.sidebar-content');
+      if (el) el.focus({ preventScroll: true });
+    });
   }
 
   selectWindow(windowId) {
     window.webtmux?.selectWindow(windowId);
   }
 
+  startRename(windowId) {
+    this.editingWindow = windowId;
+    this.updateComplete.then(() => {
+      const input = this.renderRoot.querySelector('.window-edit');
+      if (input) { input.focus(); input.select(); }
+    });
+  }
+
+  onRenameKey(e, windowId) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      this.commitRename(e, windowId);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      this.editingWindow = '';   // cancel
+    }
+  }
+
+  commitRename(e, windowId) {
+    if (this.editingWindow !== windowId) return;   // already handled (guards blur+Enter)
+    this.editingWindow = '';
+    const name = e.target.value.trim();
+    if (name) window.webtmux?.renameWindow(windowId, name);
+  }
+
   switchSession(sessionName) {
     window.webtmux?.switchSession(sessionName);
   }
 
-  splitPane(horizontal) {
-    window.webtmux?.splitPane(horizontal);
-  }
-
   newWindow() {
     window.webtmux?.newWindow();
-  }
-
-  closePane() {
-    window.webtmux?.closePane(this.activePane);
   }
 }
 
