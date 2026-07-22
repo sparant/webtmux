@@ -133,6 +133,13 @@ class WebtmuxSidebar extends LitElement {
       position: relative;
     }
 
+    /* The panel takes keyboard focus so ↑/↓ navigate windows; hide the default
+       focus ring (it would box the whole pane) and show a subtle left accent. */
+    .sidebar-content:focus,
+    .sidebar-content:focus-visible {
+      outline: none;
+    }
+
     h3 {
       color: #e94560;
       font-size: 16px;
@@ -254,6 +261,8 @@ class WebtmuxSidebar extends LitElement {
         this.classList.add('collapsed');
       } else {
         this.classList.remove('collapsed');
+        // Opening the panel grabs keyboard focus so ↑/↓ navigate windows.
+        this.focusPanel();
       }
     }
     if (changedProperties.has('overlay')) {
@@ -353,7 +362,7 @@ class WebtmuxSidebar extends LitElement {
     if (!this.layout) {
       return html`
         <button class="toggle-btn" @click=${this.toggleCollapsed}>${toggleIcon}</button>
-        <div class="sidebar-content">
+        <div class="sidebar-content" tabindex="0" @keydown=${this.onKeyDown}>
           ${this.modeRow()}
           <h3>tmux</h3>
           <p style="color: #666; font-size: 16px;">Connecting...</p>
@@ -366,7 +375,7 @@ class WebtmuxSidebar extends LitElement {
 
     return html`
       <button class="toggle-btn" @click=${this.toggleCollapsed}>${toggleIcon}</button>
-      <div class="sidebar-content">
+      <div class="sidebar-content" tabindex="0" @keydown=${this.onKeyDown}>
       ${this.modeRow()}
       ${showSessions ? html`
         <h3>Sessions</h3>
@@ -412,6 +421,66 @@ class WebtmuxSidebar extends LitElement {
       </div>
       </div>
     `;
+  }
+
+  // When the panel (or a control inside it) has keyboard focus, ↑/↓ move to the
+  // previous/next window so you can flip through windows with the arrow keys
+  // while the pane is open. Any other key falls through to normal handling.
+  onKeyDown(e) {
+    // Don't hijack arrows while renaming a window inline (caret movement).
+    if (this.editingWindow) return;
+    const tag = e.target?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      this.navigateWindow(-1);
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      this.navigateWindow(1);
+    } else if (e.key === 'Escape') {
+      // Escape always dismisses the panel, wherever focus sits inside it.
+      e.preventDefault();
+      this.dismiss();
+    } else if (e.key === 'Enter' && tag !== 'BUTTON') {
+      // Enter dismisses too, but only from the panel itself — on a button
+      // (window tab, +, mode toggle) Enter still activates that control.
+      e.preventDefault();
+      this.dismiss();
+    }
+  }
+
+  // Collapse the panel and hand keyboard focus back to THIS unit's terminal, so
+  // typing resumes at the prompt right after dismissing.
+  dismiss() {
+    this.collapsed = true;
+    try { this.unit?.terminal?.focus(); } catch (e) {}
+  }
+
+  // Step delta windows from the active one (wrapping), by the sidebar's own
+  // window order, and select it. Refocus the panel afterwards: selecting a
+  // window re-renders the tabs, which would otherwise drop keyboard focus (and
+  // break a second arrow press) if focus had been on a now-replaced tab button.
+  navigateWindow(delta) {
+    const windows = this.layout?.windows || [];
+    if (windows.length === 0) return;
+    let idx = windows.findIndex(w => w.id === this.activeWindow);
+    if (idx === -1) idx = 0;
+    const next = (idx + delta + windows.length) % windows.length;
+    const target = windows[next];
+    if (target) {
+      this.selectWindow(target.id);
+      this.focusPanel();
+    }
+  }
+
+  // Give keyboard focus to the panel so arrow-key window navigation works
+  // immediately (called when the panel opens and after each navigation).
+  focusPanel() {
+    this.updateComplete.then(() => {
+      const el = this.renderRoot.querySelector('.sidebar-content');
+      if (el) el.focus({ preventScroll: true });
+    });
   }
 
   selectWindow(windowId) {
