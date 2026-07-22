@@ -180,21 +180,40 @@ string into both the pty command and the controller.
 
 ## Phase C — Frontend: the split  [P0]
 
-- [ ] **C.1** `SplitManager`: owns an ordered list of `TerminalUnit`s, the split layout
+- [x] **C.1** `SplitManager`: owns an ordered list of `TerminalUnit`s, the split layout
       container, and a `focusedUnit`. API: `addUnit()`, `removeUnit(u)`, `focus(u)`. First
       unit = the primary (shared `services`); added units get generated grouped session
-      names. *(~45m, P0)*
-- [ ] **C.2** Split layout: flex/grid regions with a divider; N regions tile the terminal
+      names. *(~45m, P0)* — **DONE.** `resources/js/split-manager.js`; `genSessionName()` →
+      `web-<rand>`; `webtmux.js` bootstraps `new SplitManager(#app)`.
+- [x] **C.2** Split layout: flex/grid regions with a divider; N regions tile the terminal
       area; each unit re-fits (its ResizeObserver) on add/remove/resize. Start with equal
-      halves; a draggable divider is a P2 nicety. *(~40m, P1)*
-- [ ] **C.3** Focus + one-sidebar illusion: clicking a unit's terminal focuses it; render
+      halves; a draggable divider is a P2 nicety. *(~40m, P1)* — **DONE.** `#app` flex row of
+      `.region` (each a flex row of `.region-term` + its sidebar) with `.divider` bars;
+      `_refitSoon()` re-fits all units on add/remove. `.split-active` gates the focus
+      outline/divider so single-view is byte-identical to before. Draggable divider deferred
+      (P2, noted).
+- [x] **C.3** Focus + one-sidebar illusion: clicking a unit's terminal focuses it; render
       only the focused unit's sidebar (others hidden), and route the `Ctrl+Alt+B` / global
-      shortcuts and the sidebar's actions to the focused unit. *(~40m, P0)*
-- [ ] **C.4** Split controls: a way to **split** (add a region — new window picker or
+      shortcuts and the sidebar's actions to the focused unit. *(~40m, P0)* — **DONE.**
+      region mousedown → `focus(unit)`; `focus()` shows only that unit's sidebar + sets
+      `window.webtmux`; `Ctrl+Alt+B` toggles the *focused* unit's sidebar (SplitManager owns
+      it now). **Browser-verified:** only the focused region's sidebar is visible and it
+      follows focus.
+- [x] **C.4** Split controls: a way to **split** (add a region — new window picker or
       "next unused window") and **close** a region; wire the removed unit's ws teardown
       (its grouped session is `destroy-unattached`, so it self-reaps). Keyboard shortcut
       for split/close that doesn't collide with tmux (Alt-based, browser-captured). *(~40m,
-      P1)*
+      P1)* — **DONE.** Sidebar "⊞ Split view" / "✕ Close this region" buttons (CustomEvents)
+      + `Ctrl+Alt+Enter` (add) / `Ctrl+Alt+Backspace` (close). New region auto-selects the
+      "next unused window". `removeUnit` → `unit.destroy()` closes the ws; **browser-verified
+      the grouped session self-reaps** after close. Primary region can't be closed.
+
+**Phase C browser end-to-end (real headless Chromium, in a tmux+playwright container) —
+ALL_OK:** single-view boots (1 unit, sidebar tabs) → `splitAdd()` → 2 units + grouped
+`web-*` session in `group=services` (3 shared windows) → one-sidebar illusion (only focused
+region's sidebar visible) → focus moves the visible sidebar → close → back to 1 unit, grouped
+session reaped. Harness: `/workspace/.a6-scratch/{test.mjs,pw-run.sh}`. This also satisfies the
+browser portions of **B.3**, **D.1**, and **D.4**.
 
 ## Phase D — Verify, polish, docs, merge  [P1]
 

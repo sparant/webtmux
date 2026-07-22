@@ -76,8 +76,13 @@ export class TerminalUnit {
 
   init() {
     // Bind our sidebar back to us so its actions resolve to THIS unit (not a
-    // global). Each unit owns its own sidebar in the split.
-    if (this.sidebar) this.sidebar.unit = this;
+    // global). Each unit owns its own sidebar in the split. Nudge a re-render so
+    // the sidebar's unit-dependent controls (e.g. per-region close) resolve even
+    // before the first layout arrives.
+    if (this.sidebar) {
+      this.sidebar.unit = this;
+      this.sidebar.requestUpdate?.();
+    }
 
     // Create terminal
     this.terminal = new Terminal({
@@ -500,6 +505,9 @@ export class TerminalUnit {
         detail: this.layout
       }));
     }
+    // Let an owner (SplitManager) react to this unit's layout, e.g. to auto-pick
+    // a not-yet-shown window for a freshly-added region.
+    if (this.onLayout) this.onLayout(this);
   }
 
   // Give this unit keyboard focus. In the split, SplitManager overrides/augments

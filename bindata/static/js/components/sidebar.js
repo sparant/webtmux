@@ -26,8 +26,10 @@ class WebtmuxSidebar extends LitElement {
 
     /* Overlay ("hover") mode: float over the right of the terminal instead of
        taking a flex column (which would shrink the terminal). position:fixed
-       removes the host from the #app flex flow, so #terminal-container expands to
-       full width and its ResizeObserver re-fits xterm automatically. */
+       removes the host from its region's flex flow, so the region's .region-term
+       expands to full width and its ResizeObserver re-fits xterm automatically.
+       (In a split, the focused region's overlay sidebar floats at the viewport's
+       right edge — the single visible sidebar of the one-sidebar illusion.) */
     :host(.overlay) {
       position: fixed;
       top: 0;
@@ -286,9 +288,37 @@ class WebtmuxSidebar extends LitElement {
     }
   }
 
+  addRegion() {
+    this.dispatchEvent(new CustomEvent('webtmux-split-add', { bubbles: true, composed: true }));
+  }
+
+  closeRegion() {
+    this.dispatchEvent(new CustomEvent('webtmux-split-close', {
+      bubbles: true, composed: true, detail: { unit: this.unit },
+    }));
+  }
+
   modeRow() {
+    // "Close this region" only makes sense for an added (non-primary) region.
+    const canClose = this.unit && !this.unit.primary;
     return html`
       <div class="mode-row">
+        <button
+          class="mode-btn"
+          @click=${this.addRegion}
+          title="Add another terminal region (a grouped tmux session sharing the window list). Shortcut: Ctrl+Alt+Enter"
+        >
+          ⊞ Split view (add region)
+        </button>
+        ${canClose ? html`
+          <button
+            class="mode-btn"
+            @click=${this.closeRegion}
+            title="Close this region. Shortcut: Ctrl+Alt+Backspace"
+          >
+            ✕ Close this region
+          </button>
+        ` : ''}
         <div class="shortcut-hint">Toggle panel: <kbd>⌃ Control</kbd>+<kbd>⌥ Option</kbd>+<kbd>B</kbd></div>
         <button
           class="mode-btn"
