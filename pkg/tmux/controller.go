@@ -11,6 +11,7 @@ import (
 // Controller manages tmux interactions for a session
 type Controller struct {
 	sessionName string
+	socket      string // tmux -S socket path; "" = tmux's default socket
 
 	layoutCache *Layout
 	layoutMu    sync.RWMutex
@@ -19,10 +20,14 @@ type Controller struct {
 	closeChan chan struct{}
 }
 
-// NewController creates a new tmux controller for the given session
-func NewController(sessionName string) (*Controller, error) {
+// NewController creates a new tmux controller for the given session on the given
+// socket. A non-empty socket (e.g. the mounted host socket /host-tmux/default)
+// is passed as `tmux -S <socket>` to EVERY command, so the layout sidebar reads
+// the real host server rather than the container's empty default socket.
+func NewController(sessionName string, socket string) (*Controller, error) {
 	c := &Controller{
 		sessionName: sessionName,
+		socket:      socket,
 		eventChan:   make(chan Event, 100),
 		closeChan:   make(chan struct{}),
 	}
@@ -32,12 +37,11 @@ func NewController(sessionName string) (*Controller, error) {
 
 // Start initializes the controller and gets initial layout
 func (c *Controller) Start() error {
-	// Check if tmux session exists, create if not
-	cmd := exec.Command("tmux", "has-session", "-t", c.sessionName)
-	if err := cmd.Run(); err != nil {
+	// Check if tmux session exists, create if not (both via runTmux so the
+	// socket flag is applied — otherwise these hit the wrong server).
+	if _, err := c.runTmux("has-session", "-t", c.sessionName); err != nil {
 		// Session doesn't exist, create it
-		createCmd := exec.Command("tmux", "new-session", "-d", "-s", c.sessionName)
-		if createErr := createCmd.Run(); createErr != nil {
+		if _, createErr := c.runTmux("new-session", "-d", "-s", c.sessionName); createErr != nil {
 			return fmt.Errorf("failed to create tmux session %s: %w", c.sessionName, createErr)
 		}
 	}
@@ -289,8 +293,13 @@ func (c *Controller) NewWindow() error {
 	return nil
 }
 
-// runTmux executes a tmux command with the given arguments
+// runTmux executes a tmux command with the given arguments, prefixing the
+// `-S <socket>` flag when a socket path is configured so every layout query and
+// action targets the mounted host server.
 func (c *Controller) runTmux(args ...string) (string, error) {
+	if c.socket != "" {
+		args = append([]string{"-S", c.socket}, args...)
+	}
 	cmd := exec.Command("tmux", args...)
 	output, err := cmd.Output()
 	if err != nil {

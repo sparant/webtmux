@@ -38,6 +38,7 @@ type Server struct {
 
 	// Tmux support
 	tmuxSession string
+	tmuxSocket  string
 	tmuxCtrl    *tmux.Controller
 }
 
@@ -105,17 +106,41 @@ func New(factory Factory, options *Options) (*Server, error) {
 		manifestTemplate: manifestTemplate,
 	}
 
-	// Detect tmux session from command
+	// Detect tmux session + socket from env or command
 	server.tmuxSession = server.detectTmuxSession()
+	server.tmuxSocket = server.detectTmuxSocket()
 	if server.tmuxSession != "" {
-		log.Printf("Detected tmux session: %s", server.tmuxSession)
+		log.Printf("Detected tmux session: %s (socket: %q)", server.tmuxSession, server.tmuxSocket)
 	}
 
 	return server, nil
 }
 
+// detectTmuxSocket returns the `tmux -S` socket path the layout controller must
+// talk to. WEBTMUX_SOCKET wins (needed when the command is a wrapper script that
+// hides the tmux args, e.g. our host-socket setup); otherwise parse `-S <path>`
+// out of the command. Empty => tmux's default socket.
+func (server *Server) detectTmuxSocket() string {
+	if s := os.Getenv("WEBTMUX_SOCKET"); s != "" {
+		return s
+	}
+	_, argv := server.factory.Command()
+	for i, arg := range argv {
+		if arg == "-S" && i+1 < len(argv) {
+			return argv[i+1]
+		}
+	}
+	return ""
+}
+
 // detectTmuxSession checks if we're running tmux and extracts the session name
 func (server *Server) detectTmuxSession() string {
+	// WEBTMUX_SESSION wins so the layout controller starts even when the command
+	// is a wrapper script (which hides the `tmux … -s <name>` args).
+	if s := os.Getenv("WEBTMUX_SESSION"); s != "" {
+		return s
+	}
+
 	cmd, argv := server.factory.Command()
 
 	// Check if command is tmux
@@ -151,7 +176,7 @@ func (server *Server) Run(ctx context.Context, options ...RunOption) error {
 	// Start tmux controller if we detected a tmux session
 	if server.tmuxSession != "" {
 		var err error
-		server.tmuxCtrl, err = tmux.NewController(server.tmuxSession)
+		server.tmuxCtrl, err = tmux.NewController(server.tmuxSession, server.tmuxSocket)
 		if err != nil {
 			log.Printf("Warning: failed to create tmux controller: %v", err)
 		} else {
