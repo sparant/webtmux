@@ -23,6 +23,10 @@ const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min
 class WebtmuxExpose extends LitElement {
   static properties = {
     open: { type: Boolean, reflect: true },
+    // How many tiles are visible at once, as an N×N block: 2 => 2×2 (4),
+    // 3 => 3×3 (9). Reflected so the grid CSS above can key off it. Overflow
+    // still scrolls — this only controls how many fit on screen at once.
+    density: { type: Number, reflect: true },
     _sort: { state: true }, // 'session' | 'recent'
   };
 
@@ -99,13 +103,15 @@ class WebtmuxExpose extends LitElement {
       background: #0f3460;
       color: #eaf0ff;
     }
-    /* 3 columns => ~9 tiles visible (3×3); the grid scrolls vertically for more.
-       grid-auto-rows is an EXPLICIT viewport-based height so ~3 rows fill the
-       screen. This is deliberate: the grid is a flex item with overflow-y:auto,
-       so its flex min-height collapses to 0 and, with *auto* rows, the browser
-       distributes the shrunken height across ALL rows (squashing 37 tiles into
-       one screen). A fixed row track can't be distributed away, so the extra
-       rows overflow and scroll as intended. min-height:0 keeps it the scroller. */
+    /* The grid shows an N×N block at once (density: 2 => 2×2 = 4, 3 => 3×3 = 9)
+       and scrolls vertically for the rest. grid-auto-rows is an EXPLICIT
+       viewport-based height so exactly N rows fill the screen. This is
+       deliberate: the grid is a flex item with overflow-y:auto, so its flex
+       min-height collapses to 0 and, with *auto* rows, the browser distributes
+       the shrunken height across ALL rows (squashing 37 tiles into one screen).
+       A fixed row track can't be distributed away, so the extra rows overflow
+       and scroll as intended. min-height:0 keeps it the scroller. The column
+       count and row height key off the reflected `density` attribute below. */
     .grid {
       flex: 1 1 auto;
       min-height: 0;
@@ -115,6 +121,14 @@ class WebtmuxExpose extends LitElement {
       grid-auto-rows: max(200px, calc((100vh - 120px) / 3));
       gap: 16px;
       align-content: start;
+    }
+    :host([density='2']) .grid {
+      grid-template-columns: repeat(2, 1fr);
+      grid-auto-rows: max(200px, calc((100vh - 120px) / 2));
+    }
+    :host([density='3']) .grid {
+      grid-template-columns: repeat(3, 1fr);
+      grid-auto-rows: max(200px, calc((100vh - 120px) / 3));
     }
     .tile {
       cursor: pointer;
@@ -189,6 +203,7 @@ class WebtmuxExpose extends LitElement {
   constructor() {
     super();
     this.open = false;
+    this.density = 2; // first open shows a 2×2 block; a toggle steps it to 3×3
     this.cache = null; // shared CaptureCache — set by SplitManager
     this.manager = null; // SplitManager — set by SplitManager
     this._tiles = []; // { term? } live xterm instances, for disposal
@@ -234,8 +249,12 @@ class WebtmuxExpose extends LitElement {
 
   // ---- open / close lifecycle -------------------------------------------------
 
-  openOverlay() {
-    if (this.open) return;
+  openOverlay(density = 2) {
+    if (this.open) {
+      this.setDensity(density);
+      return;
+    }
+    this.density = density;
     this.open = true;
     // Start the cursor on the focused region's current window. (Access recency is
     // owned by SplitManager — the focused window was already recorded when focused
@@ -263,8 +282,24 @@ class WebtmuxExpose extends LitElement {
     this._cursor = -1;
   }
 
+  // Cycle the overlay: closed → 2×2 → 3×3 → closed. Each toggle (Ctrl-Alt-E)
+  // steps to the next state, growing how many tiles are visible before dismissing.
   toggle() {
-    this.open ? this.closeOverlay() : this.openOverlay();
+    if (!this.open) this.openOverlay(2);
+    else if (this.density < 3) this.setDensity(3);
+    else this.closeOverlay();
+  }
+
+  // Change how many tiles fill the screen without a teardown. The tile DOM is
+  // imperative (not Lit-managed), so it survives the attribute flip; we only need
+  // to re-letterbox each live xterm to its resized frame and keep the cursor in view.
+  setDensity(density) {
+    if (!this.open || this.density === density) return;
+    this.density = density;
+    this.updateComplete.then(() => {
+      for (const rec of this._tiles) this._rescale(rec);
+      this._paintCursor();
+    });
   }
 
   disconnectedCallback() {
