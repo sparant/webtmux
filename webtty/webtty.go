@@ -52,7 +52,12 @@ func New(masterConn Master, slave Slave, options ...Option) (*WebTTY, error) {
 		columns:     0,
 		rows:        0,
 
-		bufferSize: 1024,
+		// bufferSize bounds a SINGLE client->server message (wsWrapper.Read errors,
+		// tearing down the connection, if a message exceeds it) and the server->client
+		// output chunk size. The old 1024 default meant any paste over ~760 raw bytes
+		// (base64 inflates 4/3) dropped the WebSocket and lost the input. The client
+		// now chunks input well under this, so this is headroom + fewer output frames.
+		bufferSize: 128 * 1024,
 		decoder:    &NullCodec{},
 	}
 

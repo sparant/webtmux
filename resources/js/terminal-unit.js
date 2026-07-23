@@ -215,10 +215,7 @@ export class TerminalUnit {
         this.sendMessage(MSG.TmuxCopyMode, '0');
         this.inCopyMode = false;
       }
-      // Encode string to bytes, then to base64 (matches original gotty)
-      const bytes = this.encoder.encode(data);
-      const binary = String.fromCharCode(...bytes);
-      this.sendMessage(MSG.Input, btoa(binary));
+      this.sendInput(data);
     });
 
     // Setup touch/scroll handling for copy mode
@@ -486,6 +483,27 @@ export class TerminalUnit {
       this.ws.send(type + payload);
     } else {
       console.warn('WebSocket not ready, state:', this.ws?.readyState);
+    }
+  }
+
+  // Send terminal input (keystrokes OR a paste) to the server as one or more
+  // base64 Input messages. A large paste arrives from xterm as a SINGLE onData
+  // call; sending it as one message overflowed the server's per-message read
+  // buffer — which tore down the WebSocket and dropped the paste ("lost TTY") —
+  // and `String.fromCharCode(...bytes)` on a big array threw a RangeError. So we
+  // chunk the RAW bytes: each chunk is independently base64-encoded and decoded
+  // server-side, and concatenating them in order reproduces the original input.
+  // CHUNK is well under the server bufferSize even after base64's 4/3 growth.
+  sendInput(data) {
+    const bytes = this.encoder.encode(data);
+    if (bytes.length === 0) { this.sendMessage(MSG.Input, ''); return; }
+    const CHUNK = 8192;
+    for (let off = 0; off < bytes.length; off += CHUNK) {
+      const slice = bytes.subarray(off, off + CHUNK);
+      // Build the binary string without spread (avoids the arg-count / stack limit).
+      let binary = '';
+      for (let i = 0; i < slice.length; i++) binary += String.fromCharCode(slice[i]);
+      this.sendMessage(MSG.Input, btoa(binary));
     }
   }
 
