@@ -214,7 +214,12 @@ func (server *Server) processWSConn(ctx context.Context, conn *websocket.Conn, h
 	// so its sidebar reflects/controls only its own current window — the crux of
 	// the split-view feature. tmux mode is on iff a base session was detected.
 	if server.tmuxSession != "" {
-		ctrl, err := tmux.NewController(sessionName, server.tmuxSocket)
+		// A grouped split pane (session != the shared base) is a single-client
+		// session, so its controller FOLLOWS that client wherever the user drives it
+		// (native Ctrl+B), keeping the layout correlated with reality. The primary
+		// (base session, many clients) doesn't follow.
+		follow := sessionName != server.tmuxSession
+		ctrl, err := tmux.NewController(sessionName, server.tmuxSocket, follow)
 		if err != nil {
 			log.Printf("Warning: failed to create tmux controller for %q: %v", sessionName, err)
 		} else if err := ctrl.Start(); err != nil {

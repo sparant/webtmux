@@ -14,6 +14,17 @@ type Controller struct {
 	sessionName string
 	socket      string // tmux -S socket path; "" = tmux's default socket
 
+	// Follow the pane's real tmux client. A pane is a live tmux client (the pty)
+	// the user can drive natively (Ctrl+B w/s) to any session — so a fixed session
+	// name goes stale/miscorrelated. For grouped split panes we DISCOVER the pane's
+	// client (the sole client of its grouped session) and read #{client_session}
+	// each refresh, so the layout always reflects where the pane actually is.
+	// baseSession = the session it started on (client discovery + fallback). The
+	// primary (shared base) doesn't follow — many clients — it tracks via SwitchSession.
+	follow      bool
+	baseSession string
+	clientTTY   string
+
 	layoutCache *Layout
 	layoutMu    sync.RWMutex
 
@@ -24,16 +35,62 @@ type Controller struct {
 // NewController creates a new tmux controller for the given session on the given
 // socket. A non-empty socket (e.g. the mounted host socket /host-tmux/default)
 // is passed as `tmux -S <socket>` to EVERY command, so the layout sidebar reads
-// the real host server rather than the container's empty default socket.
-func NewController(sessionName string, socket string) (*Controller, error) {
+// the real host server rather than the container's empty default socket. follow=
+// true (grouped split panes) tracks the pane's tmux client wherever it roams.
+func NewController(sessionName string, socket string, follow bool) (*Controller, error) {
 	c := &Controller{
 		sessionName: sessionName,
+		baseSession: sessionName,
+		follow:      follow,
 		socket:      socket,
 		eventChan:   make(chan Event, 100),
 		closeChan:   make(chan struct{}),
 	}
 
 	return c, nil
+}
+
+// session returns the session the pane is CURRENTLY on. Without follow, that's the
+// controller's own name (mutated by SwitchSession). With follow, it's the pane's
+// tmux client's current session (so native Ctrl+B session hops are reflected),
+// falling back to the base session if the client can't be read yet.
+func (c *Controller) session() string {
+	if !c.follow {
+		return c.sessionName
+	}
+	if c.clientTTY == "" {
+		c.discoverClient()
+	}
+	if c.clientTTY != "" {
+		// Find OUR client in the global client list by its tty and read the session
+		// it's currently on (survives the client roaming to another session).
+		if out, err := c.runTmux("list-clients", "-F", "#{client_tty},#{client_session}"); err == nil {
+			for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+				parts := strings.SplitN(strings.TrimSpace(line), ",", 2)
+				if len(parts) == 2 && parts[0] == c.clientTTY {
+					if s := strings.TrimSpace(parts[1]); s != "" {
+						return s
+					}
+				}
+			}
+		}
+	}
+	return c.baseSession
+}
+
+// discoverClient finds the pane's tmux client tty. A grouped split session has
+// exactly one client (the pane's pty), so we read it off the base session before
+// the client ever roams away. Cached once found.
+func (c *Controller) discoverClient() {
+	out, err := c.runTmux("list-clients", "-t", c.baseSession, "-F", "#{client_tty}")
+	if err != nil {
+		return
+	}
+	if lines := strings.Split(strings.TrimSpace(out), "\n"); len(lines) > 0 {
+		if tty := strings.TrimSpace(lines[0]); tty != "" {
+			c.clientTTY = tty
+		}
+	}
 }
 
 // Start initializes the controller and gets initial layout
@@ -87,8 +144,9 @@ func (c *Controller) GetLayout() *Layout {
 
 // RefreshLayout fetches the current tmux layout
 func (c *Controller) RefreshLayout() error {
+	sess := c.session() // where the pane actually is (follows a roaming client)
 	// Get session info
-	sessionOut, err := c.runTmux("display-message", "-t", c.sessionName, "-p", "#{session_id},#{session_name}")
+	sessionOut, err := c.runTmux("display-message", "-t", sess, "-p", "#{session_id},#{session_name}")
 	if err != nil {
 		return err
 	}
@@ -115,19 +173,19 @@ func (c *Controller) RefreshLayout() error {
 			}
 			winCount, _ := strconv.Atoi(parts[2])
 			attached := parts[3] == "1"
-			sess := Session{
+			session := Session{
 				ID:       parts[0],
 				Name:     parts[1],
 				Windows:  winCount,
 				Attached: attached,
-				Active:   parts[1] == c.sessionName,
+				Active:   parts[1] == sess,
 			}
-			layout.Sessions = append(layout.Sessions, sess)
+			layout.Sessions = append(layout.Sessions, session)
 		}
 	}
 
 	// Get windows
-	windowsOut, err := c.runTmux("list-windows", "-t", c.sessionName, "-F", "#{window_id},#{window_name},#{window_index},#{window_active}")
+	windowsOut, err := c.runTmux("list-windows", "-t", sess, "-F", "#{window_id},#{window_name},#{window_index},#{window_active}")
 	if err != nil {
 		return err
 	}
@@ -235,7 +293,7 @@ func (c *Controller) SelectWindow(windowID string) error {
 
 	target := windowID // last-resort fallback: bare @id (single-session correctness)
 	if ok {
-		target = fmt.Sprintf("%s:%d", c.sessionName, idx)
+		target = fmt.Sprintf("%s:%d", c.session(), idx)
 	}
 
 	if _, err := c.runTmux("select-window", "-t", target); err != nil {
@@ -289,7 +347,7 @@ func (c *Controller) SplitPane(horizontal bool) error {
 	if horizontal {
 		flag = "-h"
 	}
-	_, err := c.runTmux("split-window", "-t", c.sessionName, flag)
+	_, err := c.runTmux("split-window", "-t", c.session(), flag)
 	if err != nil {
 		return err
 	}
@@ -309,20 +367,20 @@ func (c *Controller) ClosePane(paneID string) error {
 
 // EnterCopyMode enters copy mode on the active pane
 func (c *Controller) EnterCopyMode() error {
-	_, err := c.runTmux("copy-mode", "-t", c.sessionName)
+	_, err := c.runTmux("copy-mode", "-t", c.session())
 	return err
 }
 
 // ExitCopyMode exits copy mode
 func (c *Controller) ExitCopyMode() error {
-	_, err := c.runTmux("send-keys", "-t", c.sessionName, "-X", "cancel")
+	_, err := c.runTmux("send-keys", "-t", c.session(), "-X", "cancel")
 	return err
 }
 
 // ScrollUp scrolls up in copy mode
 func (c *Controller) ScrollUp(lines int) error {
 	for i := 0; i < lines; i++ {
-		_, err := c.runTmux("send-keys", "-t", c.sessionName, "-X", "scroll-up")
+		_, err := c.runTmux("send-keys", "-t", c.session(), "-X", "scroll-up")
 		if err != nil {
 			return err
 		}
@@ -333,7 +391,7 @@ func (c *Controller) ScrollUp(lines int) error {
 // ScrollDown scrolls down in copy mode
 func (c *Controller) ScrollDown(lines int) error {
 	for i := 0; i < lines; i++ {
-		_, err := c.runTmux("send-keys", "-t", c.sessionName, "-X", "scroll-down")
+		_, err := c.runTmux("send-keys", "-t", c.session(), "-X", "scroll-down")
 		if err != nil {
 			return err
 		}
@@ -343,7 +401,7 @@ func (c *Controller) ScrollDown(lines int) error {
 
 // NewWindow creates a new window
 func (c *Controller) NewWindow() error {
-	_, err := c.runTmux("new-window", "-t", c.sessionName)
+	_, err := c.runTmux("new-window", "-t", c.session())
 	if err != nil {
 		return err
 	}
