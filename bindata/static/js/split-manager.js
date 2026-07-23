@@ -214,8 +214,37 @@ export class SplitManager {
   // from the server-wide capture cache (so windows in OTHER sessions still show),
   // falling back to the snapshot taken at access time. Mark the focused region's
   // current window active. Never dropped for being outside the focused session.
+  // Drop recents whose window no longer exists. A region's layout.windows is the
+  // live window list for its session; grouped/primary regions all share the base
+  // (services) list. So a recent window is deleted if it's absent from the union
+  // of all regions' live windows AND its session is one a region currently covers
+  // (we only prune sessions we can actually observe — never false-positive a
+  // window in a session no region is on).
+  _pruneDeletedRecents() {
+    if (!this.recentWindows.length) return;
+    const live = new Set();
+    const covered = new Set();
+    for (const u of this.units) {
+      if (!u.layout) continue;
+      covered.add(u.layout.sessionName);
+      for (const w of (u.layout.windows || [])) live.add(w.id);
+    }
+    if (!live.size) return;
+    const kept = this.recentWindows.filter(e => live.has(e.id) || !covered.has(e.session));
+    if (kept.length !== this.recentWindows.length) this.recentWindows = kept;
+  }
+
+  // Remove a window from the recent strip WITHOUT touching tmux (the window keeps
+  // running) — the per-tab × affordance.
+  removeRecent(id) {
+    const before = this.recentWindows.length;
+    this.recentWindows = this.recentWindows.filter(e => e.id !== id);
+    if (this.recentWindows.length !== before) this._refreshToolbar();
+  }
+
   _refreshToolbar() {
     if (!this.toolbar) return;
+    this._pruneDeletedRecents();
     const activeId = this.focusedUnit?.layout?.activeWindowId;
     const cache = this.captureCache?.byWindow;
     this.toolbar.recent = this.recentWindows.map(e => {

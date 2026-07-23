@@ -57,6 +57,22 @@ class WebtmuxToolbar extends LitElement {
     .tab .sess { color: #4a9eff; font-size: 11px; opacity: 0.85; flex: 0 0 auto; }
     .tab.active .sess { color: #ffd7de; }
     .tab .wname { overflow: hidden; text-overflow: ellipsis; }
+    /* Per-tab remove-from-recents affordance: hidden until the tab is hovered. */
+    .tab .close {
+      display: none;
+      flex: 0 0 auto;
+      align-self: center;
+      margin-left: 2px;
+      width: 16px;
+      height: 16px;
+      line-height: 16px;
+      text-align: center;
+      border-radius: 3px;
+      color: #aaa;
+      font-size: 15px;
+    }
+    .tab:hover .close { display: inline-block; }
+    .tab .close:hover { background: #e94560; color: #fff; }
     .sidebar-toggle {
       flex: 0 0 auto;
       background: #1a1a2e;
@@ -90,7 +106,11 @@ class WebtmuxToolbar extends LitElement {
             class="tab ${w.active ? 'active' : ''}"
             title="${w.session} — window ${w.index}: ${w.name}"
             @click=${() => this.manager?.pickRecentWindow(w)}
-          ><span class="sess">${w.session}:${w.index}</span><span class="wname">${w.name}</span></button>
+          ><span class="sess">${w.session}:${w.index}</span><span class="wname">${w.name}</span><span
+              class="close"
+              title="Remove from recents (does not close the window)"
+              @click=${(e) => { e.stopPropagation(); this.manager?.removeRecent(w.id); }}
+            >×</span></button>
         `)}
       </div>
       <button
