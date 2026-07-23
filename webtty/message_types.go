@@ -71,4 +71,9 @@ const (
 	TmuxRenameWindow = 'F'
 	// Request capture buffers (payload JSON: {"windows":["@3",...]|"all","force":bool})
 	TmuxCaptureRequest = 'G'
+	// Reorder a window to a new ordinal position (payload: "<windowID> <targetPos>",
+	// targetPos 0-based in index order). Drag-and-drop from the sidebar.
+	TmuxMoveWindow = 'H'
+	// Create a fresh session and switch this pane's view to it (no payload).
+	TmuxNewSession = 'I'
 )

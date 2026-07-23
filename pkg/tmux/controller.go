@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -442,6 +443,102 @@ func (c *Controller) RenameWindow(windowID, name string) error {
 	}
 	c.RefreshLayout()
 	return nil
+}
+
+// windowOrderAndPos returns the current window indices in ascending (display)
+// order plus the ordinal position of windowID within that order (-1 if absent).
+// Grouped sessions share the window list, so this order is the same for every
+// pane. Read under the layout lock from the cache the 500ms poll keeps warm.
+func (c *Controller) windowOrderAndPos(windowID string) ([]int, int) {
+	c.layoutMu.RLock()
+	defer c.layoutMu.RUnlock()
+	if c.layoutCache == nil {
+		return nil, -1
+	}
+	idxs := make([]int, 0, len(c.layoutCache.Windows))
+	srcIndex, found := 0, false
+	for _, w := range c.layoutCache.Windows {
+		idxs = append(idxs, w.Index)
+		if w.ID == windowID {
+			srcIndex, found = w.Index, true
+		}
+	}
+	sort.Ints(idxs)
+	if !found {
+		return idxs, -1
+	}
+	for p, ix := range idxs {
+		if ix == srcIndex {
+			return idxs, p
+		}
+	}
+	return idxs, -1
+}
+
+// MoveWindow reorders windowID so it lands at ordinal position targetPos (0-based,
+// in index order) within the shared window list. It is realized as a sequence of
+// adjacent swap-window calls that "bubble" the window across the fixed index slots
+// — unlike move-window, swap-window never collides with an occupied index, and
+// because grouped sessions share the window list one reorder moves it for every
+// pane. The client sends the desired final position; we compute the swaps.
+func (c *Controller) MoveWindow(windowID string, targetPos int) error {
+	order, srcPos := c.windowOrderAndPos(windowID)
+	if srcPos < 0 {
+		// Stale cache — refresh once and retry the lookup.
+		c.RefreshLayout()
+		order, srcPos = c.windowOrderAndPos(windowID)
+	}
+	if srcPos < 0 || len(order) == 0 {
+		return fmt.Errorf("move-window: window %s not found in layout", windowID)
+	}
+	if targetPos < 0 {
+		targetPos = 0
+	}
+	if targetPos > len(order)-1 {
+		targetPos = len(order) - 1
+	}
+	sess := c.session()
+	// swap-window exchanges the two windows AND their indices, so bubbling the
+	// source one fixed index slot at a time walks it to the target position while
+	// the intervening windows shift by one — exactly an insertion reorder.
+	for srcPos < targetPos {
+		if err := c.swapWindows(sess, order[srcPos], order[srcPos+1]); err != nil {
+			return err
+		}
+		srcPos++
+	}
+	for srcPos > targetPos {
+		if err := c.swapWindows(sess, order[srcPos], order[srcPos-1]); err != nil {
+			return err
+		}
+		srcPos--
+	}
+	c.RefreshLayout()
+	return nil
+}
+
+func (c *Controller) swapWindows(sess string, a, b int) error {
+	_, err := c.runTmux("swap-window",
+		"-s", fmt.Sprintf("%s:%d", sess, a),
+		"-t", fmt.Sprintf("%s:%d", sess, b))
+	return err
+}
+
+// NewSession creates a fresh, empty tmux session and switches THIS pane's view to
+// it — parity with NewWindow (which creates + focuses a window). tmux auto-names
+// the session (next free numeric name); -P -F prints the chosen name so we can
+// switch onto it. A split pane re-groups onto the new session via SwitchSession.
+func (c *Controller) NewSession() error {
+	out, err := c.runTmux("new-session", "-d", "-P", "-F", "#{session_name}")
+	if err != nil {
+		return err
+	}
+	name := strings.TrimSpace(out)
+	if name == "" {
+		c.RefreshLayout()
+		return nil
+	}
+	return c.SwitchSession(name)
 }
 
 // SwitchSession moves THIS pane's view to the specified session.

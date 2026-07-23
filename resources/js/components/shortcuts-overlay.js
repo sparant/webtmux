@@ -8,19 +8,26 @@
 // ?=list-keys. Split-add has no unmodified tmux letter (% / " need Shift) so it
 // keeps Enter; Exposé is webtmux-only so it keeps E.
 import { LitElement, html, css } from 'lit';
+import { MOD_LABEL, MOD_CHIPS } from '../os.js';
+
+// The two modifier keycaps, labelled for the CONNECTING client's OS (⌃⌥ on a Mac,
+// Ctrl/Alt on Windows/Linux) — the page may be viewed from any of them even though
+// the server is Linux.
+const M = MOD_CHIPS;
 
 // Each group: a heading + rows of { keys: [..], desc }. Keys render as <kbd>.
 const GROUPS = [
   {
-    title: 'Global — Ctrl+Alt (Ctrl+Option on macOS)',
+    title: `Global — ${MOD_LABEL}`,
     rows: [
-      { keys: ['⌃', '⌥', 'W'], desc: 'Toggle the sidebar (windows & sessions) — tmux ⌃b w' },
-      { keys: ['⌃', '⌥', 'E'], desc: 'Exposé — every window across all sessions' },
-      { keys: ['⌃', '⌥', '⏎'], desc: 'Split view — add another terminal region' },
-      { keys: ['⌃', '⌥', 'X'], desc: 'Close the focused region — tmux ⌃b x' },
-      { keys: ['⌃', '⌥', 'P'], desc: 'Recents — previous window (left) — tmux ⌃b p' },
-      { keys: ['⌃', '⌥', 'N'], desc: 'Recents — next window (right) — tmux ⌃b n' },
-      { keys: ['⌃', '⌥', '/'], desc: 'Show this shortcuts list — tmux ⌃b ?' },
+      { keys: [...M, 'W'], desc: 'Toggle the sidebar (windows & sessions) — tmux ⌃b w' },
+      { keys: [...M, 'E'], desc: 'Exposé — every window across all sessions' },
+      { keys: [...M, '⏎'], desc: 'Split view — add another terminal region' },
+      { keys: [...M, 'X'], desc: 'Close the focused region — tmux ⌃b x' },
+      { keys: [...M, 'P'], desc: 'Recents — previous window (left) — tmux ⌃b p' },
+      { keys: [...M, 'N'], desc: 'Recents — next window (right) — tmux ⌃b n' },
+      { keys: [...M, ','], desc: 'Rename the current window — tmux ⌃b ,' },
+      { keys: [...M, '/'], desc: 'Show this shortcuts list — tmux ⌃b ?' },
     ],
   },
   {
@@ -210,7 +217,7 @@ class WebtmuxShortcuts extends LitElement {
             </div>
           `)}
         `)}
-        <div class="foot">On Windows / Linux, ⌃⌥ is Ctrl+Alt. These chords sit above tmux's own ⌃b prefix, so both keymaps coexist.</div>
+        <div class="foot">${MOD_LABEL} chords sit above tmux's own ⌃b prefix, so both keymaps coexist.</div>
       </div>
     `;
   }

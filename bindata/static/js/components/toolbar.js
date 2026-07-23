@@ -3,12 +3,31 @@
 // (up to 5 {id,index,name,active}) and `collapsed`, and handles clicks via
 // `manager.pickRecentWindow(id)` / `manager.sidebar.toggleCollapsed()`.
 import { LitElement, html, css } from 'lit';
+import { chord } from '../os.js';
+
+// Scroll-wheel modes, in the order the toolbar button cycles them. Kept in sync
+// with SCROLL_MODES in terminal-unit.js. `label` is the compact toolbar text;
+// `hint` is the tooltip. (This control moved here from the sidebar.)
+const SCROLL_ORDER = ['app', 'buffer', 'adaptive-mode', 'adaptive-probe'];
+const SCROLL_META = {
+  'app':            { label: '🖱 app',   hint: 'Wheel always goes to the program (Claude/vim/less scroll themselves)' },
+  'buffer':         { label: '🖱 buf',   hint: 'Wheel always scrolls tmux history (copy-mode)' },
+  'adaptive-mode':  { label: '🖱 auto',  hint: 'Auto: mouse-tracking / full-screen apps get the wheel; a plain shell scrolls history' },
+  'adaptive-probe': { label: '🖱 auto+', hint: 'Auto+: like auto, but probes the ambiguous case — tries the app, then scrolls history if it did not react' },
+};
+function normalizeScroll(m) {
+  if (m === 'passthrough') return 'app';
+  return SCROLL_ORDER.includes(m) ? m : 'adaptive-probe';
+}
 
 class WebtmuxToolbar extends LitElement {
   static properties = {
     recent: { type: Array },
     collapsed: { type: Boolean },
     panes: { type: Array },
+    // Current scroll-wheel mode (mirror of the focused unit's setting). Cycled by
+    // the toolbar's scroll button; one of SCROLL_ORDER.
+    scrollMode: { type: String },
     // True when the focused split region's active pane is in tmux copy/view mode.
     // Reflected to the `copymode` attribute so :host() can recolor the whole bar.
     copyMode: { type: Boolean, reflect: true, attribute: 'copymode' },
@@ -102,6 +121,45 @@ class WebtmuxToolbar extends LitElement {
       font-size: 16px;
     }
     .sidebar-toggle:hover { border-color: #e94560; color: #fff; }
+
+    /* Toolbar action buttons (moved out of the sidebar): split-add, Exposé, scroll
+       mode, keyboard shortcuts. Icon-only by default; the stateful scroll button
+       adds .text for a small current-mode label. Grouped to the right, just left
+       of the copy-mode pill. */
+    .tbtn {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      height: 32px;
+      box-sizing: border-box;
+      padding: 0 9px;
+      background: #1a1a2e;
+      color: #ccc;
+      border: 1px solid #0f3460;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 16px;
+      white-space: nowrap;
+    }
+    .tbtn:hover { border-color: #4a9eff; color: #fff; }
+    /* Stateful button (scroll mode): show a small text label beside the glyph. */
+    .tbtn.text {
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      color: #9fc4ff;
+      font-family: Menlo, Monaco, "Courier New", monospace;
+    }
+    /* A thin divider separating the action group from the recent-tabs strip. */
+    .tsep {
+      flex: 0 0 auto;
+      width: 1px;
+      height: 22px;
+      background: #0f3460;
+      margin: 0 2px;
+    }
 
     /* Copy-mode status pill (second from the right). Shows the focused pane's mode
        and toggles it on click. Green-ish = NORMAL, amber = COPY. */
@@ -211,6 +269,10 @@ class WebtmuxToolbar extends LitElement {
     super();
     this.recent = [];
     this.collapsed = false;
+    // Scroll-wheel mode mirror (moved here from the sidebar). Seeded from the same
+    // persisted key the terminal reads, so the label is right on first paint.
+    this.scrollMode = normalizeScroll(
+      (typeof localStorage !== 'undefined' && localStorage.getItem('webtmux-scroll-mode')) || '');
     this.copyMode = false; // focused pane in tmux copy/view mode (SplitManager sets)
     this.panes = [];       // [bool] per pane in order; true = focused. [] hides the dots.
     this.manager = null;   // SplitManager, set directly
@@ -221,9 +283,22 @@ class WebtmuxToolbar extends LitElement {
     this._tipTimer = null; // pending show timer for the quick tab tooltip
   }
 
-  // Quick-tooltip delay (ms). Much snappier than the browser's native ~1s title
-  // delay, but long enough that sweeping the pointer across tabs doesn't flash.
-  static _TIP_DELAY = 180;
+  // Quick-tooltip delay (ms). Still snappier than the browser's native ~1s title
+  // delay, but a deliberate hover pause so tooltips don't flash the instant the
+  // pointer touches a tab/button or sweeps across the strip.
+  static _TIP_DELAY = 600;
+
+  // Cycle the scroll-wheel mode (app -> buffer -> auto -> auto+) and apply it live
+  // to the focused unit's terminal (which also persists it). This control used to
+  // live in the sidebar; the manager wires `this.manager`.
+  cycleScroll() {
+    const i = SCROLL_ORDER.indexOf(normalizeScroll(this.scrollMode));
+    const next = SCROLL_ORDER[(i + 1) % SCROLL_ORDER.length];
+    this.scrollMode = next;
+    const u = this.manager?.focusedUnit;
+    if (u?.setScrollMode) u.setScrollMode(next);
+    else if (typeof localStorage !== 'undefined') localStorage.setItem('webtmux-scroll-mode', next);
+  }
 
   disconnectedCallback() {
     super.disconnectedCallback();
@@ -284,6 +359,35 @@ class WebtmuxToolbar extends LitElement {
         `;})}
       </div>
       <div class="wt-tip"></div>
+      <span class="tsep"></span>
+      <button
+        class="tbtn"
+        aria-label="Split view — add a terminal region"
+        @mouseenter=${(e) => this._tipEnter(e, `Split view — add another terminal region. Shortcut: ${chord('⏎ Enter')}`)}
+        @mouseleave=${() => this._tipLeave()}
+        @click=${() => { this._tipLeave(); this.manager?.splitAdd(); }}
+      >⊞</button>
+      <button
+        class="tbtn"
+        aria-label="Exposé — all windows"
+        @mouseenter=${(e) => this._tipEnter(e, `Exposé — a thumbnail of every window across all sessions. Shortcut: ${chord('E')}`)}
+        @mouseleave=${() => this._tipLeave()}
+        @click=${() => { this._tipLeave(); this.manager?.expose?.toggle(); }}
+      >▦</button>
+      <button
+        class="tbtn text"
+        aria-label="Scroll-wheel mode"
+        @mouseenter=${(e) => this._tipEnter(e, (SCROLL_META[normalizeScroll(this.scrollMode)] || SCROLL_META['adaptive-probe']).hint)}
+        @mouseleave=${() => this._tipLeave()}
+        @click=${() => { this._tipLeave(); this.cycleScroll(); }}
+      >${(SCROLL_META[normalizeScroll(this.scrollMode)] || SCROLL_META['adaptive-probe']).label}</button>
+      <button
+        class="tbtn"
+        aria-label="Keyboard shortcuts"
+        @mouseenter=${(e) => this._tipEnter(e, `Keyboard shortcuts. Shortcut: ${chord('/')}`)}
+        @mouseleave=${() => this._tipLeave()}
+        @click=${() => { this._tipLeave(); this.manager?.shortcuts?.toggle(); }}
+      >⌨</button>
       ${this.panes.length > 1 ? html`
         <div class="dots" title="Panes — green is the focused pane">
           ${this.panes.map((focused, i) => html`<span
@@ -298,8 +402,10 @@ class WebtmuxToolbar extends LitElement {
       ><span class="mdot"></span>${this.copyMode ? 'COPY' : 'NORMAL'}</button>
       <button
         class="sidebar-toggle"
-        title="Toggle sidebar (Ctrl+Alt+W)"
-        @click=${() => this.manager?.sidebar?.toggleCollapsed()}
+        aria-label="Toggle sidebar"
+        @mouseenter=${(e) => this._tipEnter(e, `Toggle the windows & sessions sidebar. Shortcut: ${chord('W')}`)}
+        @mouseleave=${() => this._tipLeave()}
+        @click=${() => { this._tipLeave(); this.manager?.sidebar?.toggleCollapsed(); }}
       >${this.collapsed ? '☰' : '✕'}</button>
     `;
   }

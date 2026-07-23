@@ -18,6 +18,8 @@ type TmuxController interface {
 	SelectWindow(windowID string) error
 	SwitchSession(sessionName string) error
 	RenameWindow(windowID, name string) error
+	MoveWindow(windowID string, targetPos int) error
+	NewSession() error
 	SplitPane(horizontal bool) error
 	ClosePane(paneID string) error
 	EnterCopyMode() error
@@ -174,6 +176,29 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 		}
 		return wt.SendTmuxLayout()
 
+	case TmuxMoveWindow:
+		// payload = "<windowID> <targetPos>"; windowIDs are "@N" (no spaces).
+		s := string(payload)
+		idx := strings.IndexByte(s, ' ')
+		if idx < 0 {
+			return nil
+		}
+		windowID := s[:idx]
+		targetPos, err := strconv.Atoi(strings.TrimSpace(s[idx+1:]))
+		if err != nil {
+			return nil
+		}
+		if err := wt.tmuxCtrl.MoveWindow(windowID, targetPos); err != nil {
+			return errors.Wrap(err, "failed to move window")
+		}
+		return wt.SendTmuxLayout()
+
+	case TmuxNewSession:
+		if err := wt.tmuxCtrl.NewSession(); err != nil {
+			return errors.Wrap(err, "failed to create new session")
+		}
+		return wt.SendTmuxLayout()
+
 	default:
 		return errors.Errorf("unknown tmux message type: %c", msgType)
 	}
@@ -235,7 +260,7 @@ func isTmuxMessage(msgType byte) bool {
 	switch msgType {
 	case TmuxSelectPane, TmuxSelectWindow, TmuxSplitPane, TmuxClosePane,
 		TmuxCopyMode, TmuxSendCommand, TmuxScrollUp, TmuxScrollDown, TmuxNewWindow,
-		TmuxSwitchSession, TmuxRenameWindow, TmuxCaptureRequest:
+		TmuxSwitchSession, TmuxRenameWindow, TmuxMoveWindow, TmuxNewSession, TmuxCaptureRequest:
 		return true
 	default:
 		return false

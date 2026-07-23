@@ -29,6 +29,8 @@ export const MSG = {
   TmuxSwitchSession: 'E',
   TmuxRenameWindow: 'F',
   TmuxCaptureRequest: 'G',
+  TmuxMoveWindow: 'H',
+  TmuxNewSession: 'I',
 
   // Output (server -> client)
   Output: '1',
@@ -814,6 +816,19 @@ export class TerminalUnit {
 
   newWindow() {
     this.sendMessage(MSG.TmuxNewWindow, '');
+  }
+
+  // Reorder a window to ordinal position `targetPos` (0-based, in index order)
+  // within the shared window list — the server bubbles it there via swap-window.
+  // Driven by drag-and-drop in the sidebar.
+  moveWindow(windowId, targetPos) {
+    this.sendMessage(MSG.TmuxMoveWindow, windowId + ' ' + targetPos);
+  }
+
+  // Create a fresh session and switch this pane's view to it (the server picks the
+  // name). Parity with newWindow(); driven by the sidebar's Sessions "+" button.
+  newSession() {
+    this.sendMessage(MSG.TmuxNewSession, '');
   }
 
   switchSession(sessionName) {

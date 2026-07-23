@@ -408,6 +408,8 @@ export class SplitManager {
       };
     });
     this.toolbar.collapsed = !!this.sidebar?.collapsed;
+    // Keep the toolbar's scroll-mode label reflecting the focused pane's setting.
+    if (focused?.scrollMode) this.toolbar.scrollMode = focused.scrollMode;
   }
 
   // Navigate to a window from ANY switcher (toolbar recent-strip, Exposé tile):
@@ -496,6 +498,18 @@ export class SplitManager {
 
   closeFocused() {
     if (this.focusedUnit && !this.focusedUnit.primary) this.removeUnit(this.focusedUnit);
+  }
+
+  // Ctrl+Alt+, (tmux's `,` = rename-window): open the sidebar if it's collapsed
+  // and begin inline-renaming the focused pane's current window. The sidebar owns
+  // the rename input, so wait for it to render before starting.
+  renameActiveWindow() {
+    const u = this.focusedUnit;
+    const id = u?.layout?.activeWindowId;
+    if (!id) return;
+    const sb = this.sidebar;
+    if (sb.collapsed) sb.collapsed = false;
+    sb.updateComplete.then(() => sb.startRename(id));
   }
 
   // #app gets .split-active only with >1 region, so single-view keeps its exact
@@ -593,6 +607,9 @@ export class SplitManager {
           break;
         case 'Slash':                                  // tmux '?' (list-keys): shortcuts overlay
           this.shortcuts?.toggle();
+          break;
+        case 'Comma':                                  // tmux ',' (rename-window): rename current
+          this.renameActiveWindow();
           break;
         default:
           return;                                      // not ours — let it through

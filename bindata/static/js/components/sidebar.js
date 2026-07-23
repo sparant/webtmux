@@ -1,22 +1,6 @@
 // Sidebar component with minimap
 import { LitElement, html, css } from 'lit';
-
-// Scroll-wheel modes, in the order the sidebar button cycles them. Kept in sync
-// with SCROLL_MODES in terminal-unit.js. Each has a short button label + tooltip.
-const SCROLL_ORDER = ['app', 'buffer', 'adaptive-mode', 'adaptive-probe'];
-const SCROLL_META = {
-  'app':            { label: '🖱 Scroll → app',      hint: 'Wheel always goes to the program (Claude/vim/less scroll themselves)' },
-  'buffer':         { label: '🖱 Scroll → buffer',   hint: 'Wheel always scrolls tmux history (copy-mode)' },
-  'adaptive-mode':  { label: '🖱 Scroll → auto',     hint: 'Auto: mouse-tracking / full-screen apps get the wheel; a plain shell scrolls history' },
-  'adaptive-probe': { label: '🖱 Scroll → auto+',    hint: 'Auto+: like auto, but probes the ambiguous case — tries the app, then scrolls history if it did not react' },
-};
-function normalizeScroll(m) {
-  if (m === 'passthrough') return 'app';
-  // Default (unset / unknown) is 'auto+' (adaptive-probe): the smartest mode —
-  // full-screen / mouse-tracking apps get the wheel, a plain shell scrolls history,
-  // and the ambiguous case is probed. Kept in sync with terminal-unit's default.
-  return SCROLL_ORDER.includes(m) ? m : 'adaptive-probe';
-}
+import { MOD_KEYS, chord } from '../os.js';
 
 class WebtmuxSidebar extends LitElement {
   static properties = {
@@ -25,9 +9,12 @@ class WebtmuxSidebar extends LitElement {
     activeWindow: { type: String },
     collapsed: { type: Boolean },
     overlay: { type: Boolean },
-    scrollMode: { type: String },
     pinned: { type: Boolean },
     editingWindow: { type: String },
+    // Window id currently being dragged for reorder ('' = none).
+    draggingWindow: { type: String },
+    // Window id currently under the drag pointer (drop target highlight).
+    dragOverWindow: { type: String },
     // Window ids currently displayed by OTHER split regions — not selectable here
     // (two panes on one window share it / stay in sync). Set by the SplitManager.
     disabledWindows: { type: Array },
@@ -102,57 +89,6 @@ class WebtmuxSidebar extends LitElement {
       color: #fff;
     }
 
-    .toggle-btn {
-      position: absolute;
-      top: 8px;
-      right: 8px;
-      background: #1a1a2e;
-      border: 1px solid #0f3460;
-      border-radius: 6px;
-      color: #ccc;
-      width: 34px;
-      height: 34px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 10;
-    }
-
-    .toggle-btn:hover {
-      border-color: #e94560;
-      color: #fff;
-    }
-
-    /* Collapsed: the whole pane disappears; only a bigger toggle button floats
-       over the top-right of the terminal (Ctrl+Alt+W also toggles it). */
-    :host(.collapsed) {
-      position: fixed;
-      top: 10px;
-      right: 10px;
-      width: auto;
-      height: auto;
-      padding: 0;
-      background: transparent;
-      border: none;
-      overflow: visible;
-      box-shadow: none;
-      z-index: 60;
-    }
-
-    :host(.collapsed) .toggle-btn {
-      position: static;
-      width: 44px;
-      height: 44px;
-      background: #16213e;
-      border: 1px solid #0f3460;
-      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.6);
-    }
-
-    :host(.collapsed) .sidebar-content {
-      display: none;
-    }
-
     .sidebar-content {
       position: relative;
     }
@@ -215,6 +151,18 @@ class WebtmuxSidebar extends LitElement {
     .window-tab.disabled:hover {
       border-color: #0f3460;
       color: #888;
+    }
+
+    /* Drag-and-drop reordering: the row being dragged dims, and the row under the
+       pointer shows a bright top accent marking where it will land. */
+    .window-tab[draggable] { cursor: grab; }
+    .window-tab.dragging {
+      opacity: 0.4;
+      cursor: grabbing;
+    }
+    .window-tab.drag-over {
+      border-top: 2px solid #4a9eff;
+      box-shadow: 0 -2px 6px rgba(74, 158, 255, 0.4);
     }
 
     .window-edit {
@@ -283,13 +231,13 @@ class WebtmuxSidebar extends LitElement {
     // Hover-overlay vs side-by-side. Default hover (float over the terminal);
     // persisted across reloads.
     this.overlay = localStorage.getItem('webtmux-overlay') !== 'false';
-    // Scroll-wheel behavior mirror of the app's setting — one of SCROLL_ORDER
-    // below. Legacy 'passthrough' maps to 'app'.
-    this.scrollMode = normalizeScroll(localStorage.getItem('webtmux-scroll-mode'));
     // Pinned = stay open when clicking into the terminal (default: auto-hide).
     this.pinned = localStorage.getItem('webtmux-pinned') === 'true';
     // Window id currently being renamed inline ('' = none).
     this.editingWindow = '';
+    // Drag-and-drop reorder state.
+    this.draggingWindow = '';
+    this.dragOverWindow = '';
     // Windows shown by other split regions (disabled here). SplitManager updates it.
     this.disabledWindows = [];
 
@@ -361,72 +309,20 @@ class WebtmuxSidebar extends LitElement {
     localStorage.setItem('webtmux-pinned', String(this.pinned));
   }
 
-  toggleScrollMode() {
-    // Cycle app -> buffer -> adaptive-mode -> adaptive-probe -> app.
-    const i = SCROLL_ORDER.indexOf(normalizeScroll(this.scrollMode));
-    this.scrollMode = SCROLL_ORDER[(i + 1) % SCROLL_ORDER.length];
-    // Apply live to this unit's terminal app (also persists); fall back to LS.
-    if (this.unit?.setScrollMode) {
-      this.unit.setScrollMode(this.scrollMode);
-    } else {
-      localStorage.setItem('webtmux-scroll-mode', this.scrollMode);
-    }
-  }
-
-  addRegion() {
-    this.dispatchEvent(new CustomEvent('webtmux-split-add', { bubbles: true, composed: true }));
-  }
-
   closeRegion() {
     this.dispatchEvent(new CustomEvent('webtmux-split-close', {
       bubbles: true, composed: true, detail: { unit: this.unit },
     }));
   }
 
-  openExpose() {
-    this.dispatchEvent(new CustomEvent('webtmux-expose-open', { bubbles: true, composed: true }));
-  }
-
-  openShortcuts() {
-    this.dispatchEvent(new CustomEvent('webtmux-shortcuts-open', { bubbles: true, composed: true }));
-  }
-
+  // The sidebar keeps only the controls that shape the PANEL itself (hover vs
+  // side-by-side, pinned) plus the contextual close-region. Action buttons —
+  // split-add, Exposé, scroll mode, keyboard shortcuts — now live on the toolbar.
   modeRow() {
     // "Close this region" only makes sense for an added (non-primary) region.
     const canClose = this.unit && !this.unit.primary;
     return html`
       <div class="mode-row">
-        <button
-          class="mode-btn"
-          @click=${this.addRegion}
-          title="Add another terminal region (a grouped tmux session sharing the window list). Shortcut: Ctrl+Alt+Enter"
-        >
-          ⊞ Split view (add region)
-        </button>
-        <button
-          class="mode-btn"
-          @click=${this.openExpose}
-          title="Show a colored thumbnail of every window across all sessions; click one to switch. Shortcut: Ctrl+Alt+E"
-        >
-          ▦ Exposé (all windows)
-        </button>
-        ${canClose ? html`
-          <button
-            class="mode-btn"
-            @click=${this.closeRegion}
-            title="Close this region. Shortcut: Ctrl+Alt+X"
-          >
-            ✕ Close this region
-          </button>
-        ` : ''}
-        <button
-          class="mode-btn"
-          @click=${this.openShortcuts}
-          title="Show all keyboard shortcuts. Shortcut: Ctrl+Alt+/"
-        >
-          ⌨ Keyboard shortcuts
-        </button>
-        <div class="shortcut-hint">Toggle panel: <kbd>⌃ Control</kbd>+<kbd>⌥ Option</kbd>+<kbd>W</kbd></div>
         <button
           class="mode-btn"
           @click=${this.toggleOverlay}
@@ -436,30 +332,28 @@ class WebtmuxSidebar extends LitElement {
         </button>
         <button
           class="mode-btn"
-          @click=${this.toggleScrollMode}
-          title=${(SCROLL_META[normalizeScroll(this.scrollMode)] || SCROLL_META.buffer).hint}
-        >
-          ${(SCROLL_META[normalizeScroll(this.scrollMode)] || SCROLL_META.buffer).label}
-        </button>
-        <button
-          class="mode-btn"
           @click=${this.togglePin}
           title="Pinned = the panel stays open when you click into the terminal; otherwise it auto-hides on terminal click"
         >
           ${this.pinned ? '📌 Pinned (stays open)' : '📌 Auto-hide on click'}
         </button>
+        ${canClose ? html`
+          <button
+            class="mode-btn"
+            @click=${this.closeRegion}
+            title="Close this region. Shortcut: ${chord('X')}"
+          >
+            ✕ Close this region
+          </button>
+        ` : ''}
+        <div class="shortcut-hint">Toggle panel: <kbd>${MOD_KEYS[0]}</kbd>+<kbd>${MOD_KEYS[1]}</kbd>+<kbd>W</kbd></div>
       </div>
     `;
   }
 
   render() {
-    const toggleIcon = this.collapsed
-      ? html`<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>`
-      : html`<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>`;
-
     if (!this.layout) {
       return html`
-        <button class="toggle-btn" @click=${this.toggleCollapsed}>${toggleIcon}</button>
         <div class="sidebar-content" tabindex="0" @keydown=${this.onKeyDown}>
           ${this.modeRow()}
           <h3>tmux</h3>
@@ -472,29 +366,26 @@ class WebtmuxSidebar extends LitElement {
     // and marks Active by GROUP (so a split viewing "services" through web-abc
     // marks the services tab active); the client filter is belt-and-braces.
     const sessions = this._sessionList();
-    const showSessions = sessions.length > 1;
 
     return html`
-      <button class="toggle-btn" @click=${this.toggleCollapsed}>${toggleIcon}</button>
       <div class="sidebar-content" tabindex="0" @keydown=${this.onKeyDown}>
       ${this.modeRow()}
-      ${showSessions ? html`
-        <h3>Sessions</h3>
-        <div class="session-tabs">
-          ${sessions.map(sess => html`
-            <button
-              class="session-tab ${sess.active ? 'active' : ''}"
-              @click=${() => this.switchSession(sess.name)}
-            >
-              ${sess.name}<span class="win-count">(${sess.windows})</span>
-            </button>
-          `)}
-        </div>
-      ` : ''}
+      <h3>Sessions</h3>
+      <div class="session-tabs">
+        ${sessions.map(sess => html`
+          <button
+            class="session-tab ${sess.active ? 'active' : ''}"
+            @click=${() => this.switchSession(sess.name)}
+          >
+            ${sess.name}<span class="win-count">(${sess.windows})</span>
+          </button>
+        `)}
+        <button class="session-tab" title="New session" @click=${() => this.newSession()}>+</button>
+      </div>
 
       <h3>Windows</h3>
       <div class="window-tabs">
-        ${this.layout.windows?.map(win => win.id === this.editingWindow
+        ${this.layout.windows?.map((win, i) => win.id === this.editingWindow
           ? html`
             <input
               class="window-edit"
@@ -505,15 +396,21 @@ class WebtmuxSidebar extends LitElement {
             >`
           : html`
             <button
-              class="window-tab ${win.id === this.activeWindow ? 'active' : ''} ${this._windowDisabled(win.id) ? 'disabled' : ''}"
+              class="window-tab ${win.id === this.activeWindow ? 'active' : ''} ${this._windowDisabled(win.id) ? 'disabled' : ''} ${win.id === this.draggingWindow ? 'dragging' : ''} ${win.id === this.dragOverWindow ? 'drag-over' : ''}"
+              draggable="true"
               @click=${() => this.selectWindow(win.id)}
               @dblclick=${() => this.startRename(win.id)}
-              title=${this._windowDisabled(win.id) ? 'Shown in another split pane' : 'Double-click to rename'}
+              @dragstart=${(e) => this.onDragStart(e, win.id)}
+              @dragover=${(e) => this.onDragOver(e, win.id)}
+              @dragleave=${() => this.onDragLeave(win.id)}
+              @drop=${(e) => this.onDrop(e, i)}
+              @dragend=${() => this.onDragEnd()}
+              title=${this._windowDisabled(win.id) ? 'Shown in another split pane' : 'Double-click to rename · drag to reorder'}
             >
               ${win.index}: ${win.name || 'bash'}
             </button>`
         )}
-        <button class="window-tab" @click=${() => this.newWindow()}>+</button>
+        <button class="window-tab" title="New window" @click=${() => this.newWindow()}>+</button>
       </div>
 
       <div class="session-info">
@@ -522,6 +419,50 @@ class WebtmuxSidebar extends LitElement {
       </div>
       </div>
     `;
+  }
+
+  // --- Drag-and-drop window reordering -------------------------------------
+  // The window tabs are draggable; dropping one on another reorders the shared
+  // window list. The drop target's ordinal position becomes the dragged window's
+  // new position, which the server realizes via adjacent swap-window calls.
+  onDragStart(e, winId) {
+    // Disabled windows (shown in another pane) can't be dragged meaningfully.
+    if (this._windowDisabled(winId)) { e.preventDefault(); return; }
+    this.draggingWindow = winId;
+    try {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', winId);   // Firefox needs a payload to drag
+    } catch (_) {}
+  }
+
+  onDragOver(e, winId) {
+    if (!this.draggingWindow) return;
+    e.preventDefault();                               // allow the drop
+    try { e.dataTransfer.dropEffect = 'move'; } catch (_) {}
+    if (winId !== this.draggingWindow) this.dragOverWindow = winId;
+  }
+
+  onDragLeave(winId) {
+    if (this.dragOverWindow === winId) this.dragOverWindow = '';
+  }
+
+  onDrop(e, targetIdx) {
+    e.preventDefault();
+    const srcId = this.draggingWindow;
+    this.draggingWindow = '';
+    this.dragOverWindow = '';
+    if (!srcId) return;
+    const wins = this.layout?.windows || [];
+    const from = wins.findIndex(w => w.id === srcId);
+    if (from === -1 || from === targetIdx) return;
+    // targetIdx is the drop target's current ordinal — the dragged window takes
+    // that slot; the server bubbles it there (see Controller.MoveWindow).
+    this.unit?.moveWindow(srcId, targetIdx);
+  }
+
+  onDragEnd() {
+    this.draggingWindow = '';
+    this.dragOverWindow = '';
   }
 
   // When the panel (or a control inside it) has keyboard focus, ↑/↓ move to the
@@ -675,6 +616,12 @@ class WebtmuxSidebar extends LitElement {
 
   newWindow() {
     this.unit?.newWindow();
+  }
+
+  // Create a fresh session and switch this pane's view to it (the "+" at the end
+  // of the session list, mirroring the windows "+"). The server names it.
+  newSession() {
+    this.unit?.newSession();
   }
 }
 
