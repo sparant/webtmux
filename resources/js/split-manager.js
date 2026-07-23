@@ -83,11 +83,11 @@ export class SplitManager {
     this.focusedUnit = unit;
     // Compat shim: mobile-controls + any global shortcut target the focused unit.
     window.webtmux = unit;
+    // Each region keeps its OWN sidebar (scoped to its region — see the `split`
+    // class in _syncSplitClass), so a pane always controls the region it sits in.
+    // Focus only moves the highlight + keyboard focus; it never hides a sidebar.
     for (const u of this.units) {
-      const isF = u === unit;
-      u.region.classList.toggle('focused', isF);
-      // One-sidebar illusion: only the focused region's sidebar is shown.
-      if (u.sidebar) u.sidebar.style.display = isF ? '' : 'none';
+      u.region.classList.toggle('focused', u === unit);
     }
     unit.terminal?.focus();
   }
@@ -114,9 +114,19 @@ export class SplitManager {
   }
 
   // #app gets .split-active only with >1 region, so single-view keeps its exact
-  // old look (no focus outline, no divider).
+  // old look (no focus outline, no divider). In split mode each sidebar also gets
+  // the `split` class, which scopes its overlay/collapsed positioning to its own
+  // region (position:absolute within the region) instead of viewport-fixed — so a
+  // region's pane floats over ITS terminal, not over a neighbouring region.
   _syncSplitClass() {
-    this.container.classList.toggle('split-active', this.units.length > 1);
+    const split = this.units.length > 1;
+    this.container.classList.toggle('split-active', split);
+    for (const u of this.units) {
+      if (u.sidebar) {
+        u.sidebar.classList.toggle('split', split);
+        u.sidebar.style.display = '';   // no focus-based hiding anymore
+      }
+    }
   }
 
   _refitSoon() {

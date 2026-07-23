@@ -27,9 +27,7 @@ class WebtmuxSidebar extends LitElement {
     /* Overlay ("hover") mode: float over the right of the terminal instead of
        taking a flex column (which would shrink the terminal). position:fixed
        removes the host from its region's flex flow, so the region's .region-term
-       expands to full width and its ResizeObserver re-fits xterm automatically.
-       (In a split, the focused region's overlay sidebar floats at the viewport's
-       right edge — the single visible sidebar of the one-sidebar illusion.) */
+       expands to full width and its ResizeObserver re-fits xterm automatically. */
     :host(.overlay) {
       position: fixed;
       top: 0;
@@ -37,6 +35,19 @@ class WebtmuxSidebar extends LitElement {
       height: 100%;
       z-index: 50;
       box-shadow: -8px 0 24px rgba(0, 0, 0, 0.5);
+    }
+
+    /* Split mode (2+ regions): each region is position:relative, so anchor the
+       overlay/collapsed sidebar to ITS region (absolute) rather than the viewport
+       (fixed). A viewport-fixed pane floats over a NEIGHBOURING region and, being
+       a DOM child of its own region, re-focuses the wrong region when clicked —
+       which made the pane look like it only ever controlled the primary window.
+       Now each region carries its own pane, floating over its own terminal. */
+    :host(.split.overlay) {
+      position: absolute;
+    }
+    :host(.split.collapsed) {
+      position: absolute;
     }
 
     .mode-row {
