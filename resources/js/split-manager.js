@@ -235,10 +235,13 @@ export class SplitManager {
   }
 
   // Remove a window from the recent strip WITHOUT touching tmux (the window keeps
-  // running) — the per-tab × affordance.
+  // running) — the per-tab × affordance. Also forget its access recency so the
+  // Exposé "Last accessed" sort stops ranking it as recent (refreshes an open
+  // Exposé via the cache 'update' event).
   removeRecent(id) {
     const before = this.recentWindows.length;
     this.recentWindows = this.recentWindows.filter(e => e.id !== id);
+    this.captureCache?.forgetAccessed(id);
     if (this.recentWindows.length !== before) this._refreshToolbar();
   }
 

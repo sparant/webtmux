@@ -32,6 +32,18 @@ export class CaptureCache extends EventTarget {
     saveAccess(this._accessSeq, this.accessed);
   }
 
+  // Forget a window's access recency (the user removed it from the recent strip)
+  // so the Exposé "Last accessed" sort no longer ranks it as recent. Persists and
+  // fires 'update' so an open Exposé re-sorts immediately; a closed one re-reads on
+  // next open.
+  forgetAccessed(windowId) {
+    if (!windowId) return;
+    if (this.accessed.delete(windowId)) {
+      saveAccess(this._accessSeq, this.accessed);
+      this.dispatchEvent(new CustomEvent('update', { detail: { captures: [] } }));
+    }
+  }
+
   // Ask the server to (re)capture. windows: 'all' or an array of window ids.
   // A non-forced request within debounceMs of the last is dropped (server
   // coalescing already keeps buffers fresh); force always sends.
