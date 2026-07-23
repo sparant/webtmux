@@ -505,12 +505,16 @@ export class SplitManager {
     e.preventDefault();
 
     // Pin all regions to width-proportional grow values so only this pair moves.
-    for (const r of this.container.querySelectorAll('.region')) {
-      r.style.flexGrow = String(Math.max(1, Math.round(r.getBoundingClientRect().width)));
-    }
+    // Measure EVERY width in one pass BEFORE writing any flex-grow: interleaving
+    // read/write forces a reflow between iterations, so region N would be measured
+    // AFTER region N-1 already grabbed the space (grow 700 vs 1) — collapsing it to
+    // its min and snapping the divider hard to one side on the first mousedown.
+    const regions = [...this.container.querySelectorAll('.region')];
+    const widths = regions.map(r => Math.max(1, Math.round(r.getBoundingClientRect().width)));
+    regions.forEach((r, i) => { r.style.flexGrow = String(widths[i]); });
     const startX = e.clientX;
-    const w1 = prevRegion.getBoundingClientRect().width;
-    const w2 = nextRegion.getBoundingClientRect().width;
+    const w1 = widths[regions.indexOf(prevRegion)];
+    const w2 = widths[regions.indexOf(nextRegion)];
     const total = w1 + w2;
     const MIN = 80;                              // keep a usable sliver on both sides
 
