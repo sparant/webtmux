@@ -309,45 +309,29 @@ export class SplitManager {
   }
 
   // Navigate to a window from ANY switcher (toolbar recent-strip, Exposé tile).
-  //   1) If some region already shows it, jump focus to that region (a window is
-  //      only ever in one region, so this handles "already open").
-  //   2) Otherwise switch the LAST-FOCUSED SPLIT region to it (not whatever is
-  //      currently focused — clicking a tab whose window the primary shows would
-  //      otherwise leave focus on the primary and switch IT on the next click).
-  //      Move that region to the window's session first if needed, then focus it so
-  //      you can type immediately and the strip keeps targeting it.
-  // Single entry point so every switcher behaves identically.
+  //   1) If some region already shows it, jump focus to that region.
+  //   2) Otherwise select it in the LAST-FOCUSED SPLIT region — but ONLY if the
+  //      window is reachable in that region's own window list.
+  // We NEVER switch-client a region to another session here: a grouped split shares
+  // its base's window list and can't cleanly leave/rejoin — switching it lands it
+  // on the raw console session and permanently syncs it with the primary. So a
+  // recent from a session no region currently shows is simply not reachable and the
+  // click is a no-op. (Effective window = a region's in-flight target if a switch
+  // hasn't landed yet, else its current window — so fast clicks don't mis-target.)
   goToWindow(id, session = '') {
     if (!id) return;
-    // "Already shown" includes a region whose switch to this window is in flight
-    // (its layout hasn't caught up yet) — so a fast second click focuses it instead
-    // of switching another region onto the same window (which would sync them).
-    const holder = this.units.find(u => u.layout?.activeWindowId === id || u._targetWindowId === id);
+    const eff = (u) => u._targetWindowId || u.layout?.activeWindowId;
+    const holder = this.units.find(u => eff(u) === id);
     if (holder) { this.focus(holder); return; }
     const u = this._switchTargetRegion();
     if (!u) return;
-    const finish = () => { u._targetWindowId = id; u.selectWindow(id); this.focus(u); };
-    // Only hop sessions when the window truly isn't in this region's list. Grouped
-    // split sessions SHARE the base (services) window list, so a services window is
-    // already selectable here even though the region's session name differs — never
-    // switch-client onto the shared console session for it (that drags the console).
-    const inList = (u.layout?.windows || []).some(w => w.id === id);
-    // Only switch-client to another session when we're SURE the window isn't
-    // reachable here: the window truly isn't in this region's (loaded) list AND the
-    // target session is a real OTHER session — never the console/base session. A
-    // grouped split shares the base window list, so switching it onto the base
-    // session would permanently sync it with the console-following primary.
-    const baseSession = this.units.find(x => x.primary)?.layout?.sessionName;
-    const crossSession = !inList
-      && session && u.layout && session !== u.layout.sessionName
-      && u.layout.windows && u.layout.windows.length       // layout is loaded
-      && session !== baseSession;                          // not the console session
-    if (crossSession) {
-      u.switchSession(session);
-      setTimeout(finish, 300);
-    } else {
-      finish();
-    }
+    // Only select windows reachable in this region's own list (grouped splits share
+    // the base's list). A cross-session window that no region shows can't be reached
+    // from here without breaking the split — no-op rather than sync it.
+    if (!(u.layout?.windows || []).some(w => w.id === id)) return;
+    u._targetWindowId = id;
+    u.selectWindow(id);
+    this.focus(u);
   }
 
   // Toolbar recent-tab click -> shared navigation.
