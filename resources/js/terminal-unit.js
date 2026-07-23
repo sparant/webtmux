@@ -58,7 +58,10 @@ export const SCROLL_MODES = ['app', 'buffer', 'adaptive-mode', 'adaptive-probe']
 // 'passthrough' for what is now 'app'.
 export function normalizeScrollMode(m) {
   if (m === 'passthrough') return 'app';
-  return SCROLL_MODES.includes(m) ? m : 'buffer';
+  // Default (unset / unknown) is 'auto+' (adaptive-probe): the smartest mode —
+  // full-screen / mouse-tracking apps get the wheel, a plain shell scrolls history,
+  // and the ambiguous no-mouse case is probed. Kept in sync with the sidebar mirror.
+  return SCROLL_MODES.includes(m) ? m : 'adaptive-probe';
 }
 
 export class TerminalUnit {
@@ -107,9 +110,12 @@ export class TerminalUnit {
     this.restorePending = false;
     // Toolbar MRU bookkeeping (read by SplitManager): last window it recorded as a
     // toolbar "access", and window ids whose next arrival should NOT count (they
-    // came from sidebar arrow-key browsing).
+    // came from sidebar arrow-key WINDOW browsing). _suppressAccessNext is the
+    // by-id-unknown variant for ←/→ SESSION browsing: the landing window id isn't
+    // known until the new session's layout arrives, so we suppress the NEXT access.
     this._accessSeenId = null;
     this._suppressAccessIds = new Set();
+    this._suppressAccessNext = false;
     this.oscBuffer = ''; // Buffer for OSC sequence detection
     this.resizeObserver = null;
 
@@ -167,7 +173,7 @@ export class TerminalUnit {
       // Only handle keydown events
       if (ev.type !== 'keydown') return true;
 
-      // (Ctrl+Alt+B sidebar toggle is a global shortcut owned by the bootstrap /
+      // (Ctrl+Alt+W sidebar toggle is a global shortcut owned by the bootstrap /
       // split manager so it works regardless of which unit/pane has focus.)
 
       // Allow Cmd+C / Ctrl+C to copy selected text

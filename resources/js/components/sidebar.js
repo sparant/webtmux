@@ -12,7 +12,10 @@ const SCROLL_META = {
 };
 function normalizeScroll(m) {
   if (m === 'passthrough') return 'app';
-  return SCROLL_ORDER.includes(m) ? m : 'buffer';
+  // Default (unset / unknown) is 'auto+' (adaptive-probe): the smartest mode —
+  // full-screen / mouse-tracking apps get the wheel, a plain shell scrolls history,
+  // and the ambiguous case is probed. Kept in sync with terminal-unit's default.
+  return SCROLL_ORDER.includes(m) ? m : 'adaptive-probe';
 }
 
 class WebtmuxSidebar extends LitElement {
@@ -54,7 +57,7 @@ class WebtmuxSidebar extends LitElement {
       box-shadow: -8px 0 24px rgba(0, 0, 0, 0.5);
     }
 
-    /* The popup sidebar is toggled from the toolbar button (and Ctrl+Alt+B); when
+    /* The popup sidebar is toggled from the toolbar button (and Ctrl+Alt+W); when
        collapsed it fully hides — the toolbar toggle brings it back. */
     :host(.collapsed) {
       display: none;
@@ -122,7 +125,7 @@ class WebtmuxSidebar extends LitElement {
     }
 
     /* Collapsed: the whole pane disappears; only a bigger toggle button floats
-       over the top-right of the terminal (Ctrl+Alt+B also toggles it). */
+       over the top-right of the terminal (Ctrl+Alt+W also toggles it). */
     :host(.collapsed) {
       position: fixed;
       top: 10px;
@@ -384,6 +387,10 @@ class WebtmuxSidebar extends LitElement {
     this.dispatchEvent(new CustomEvent('webtmux-expose-open', { bubbles: true, composed: true }));
   }
 
+  openShortcuts() {
+    this.dispatchEvent(new CustomEvent('webtmux-shortcuts-open', { bubbles: true, composed: true }));
+  }
+
   modeRow() {
     // "Close this region" only makes sense for an added (non-primary) region.
     const canClose = this.unit && !this.unit.primary;
@@ -407,12 +414,19 @@ class WebtmuxSidebar extends LitElement {
           <button
             class="mode-btn"
             @click=${this.closeRegion}
-            title="Close this region. Shortcut: Ctrl+Alt+Backspace"
+            title="Close this region. Shortcut: Ctrl+Alt+X"
           >
             ✕ Close this region
           </button>
         ` : ''}
-        <div class="shortcut-hint">Toggle panel: <kbd>⌃ Control</kbd>+<kbd>⌥ Option</kbd>+<kbd>B</kbd></div>
+        <button
+          class="mode-btn"
+          @click=${this.openShortcuts}
+          title="Show all keyboard shortcuts. Shortcut: Ctrl+Alt+/"
+        >
+          ⌨ Keyboard shortcuts
+        </button>
+        <div class="shortcut-hint">Toggle panel: <kbd>⌃ Control</kbd>+<kbd>⌥ Option</kbd>+<kbd>W</kbd></div>
         <button
           class="mode-btn"
           @click=${this.toggleOverlay}
@@ -603,6 +617,11 @@ class WebtmuxSidebar extends LitElement {
     const next = (idx + delta + sessions.length) % sessions.length;
     const target = sessions[next];
     if (target && !target.active) {
+      // Arrow-key session browsing only PREVIEWS in the pane — like ↑/↓ window nav,
+      // it must not populate the recents strip. The landing window id isn't known
+      // until the new session's layout arrives, so flag the NEXT access to be
+      // skipped; it commits to recents only when the pane itself takes focus.
+      if (this.unit) this.unit._suppressAccessNext = true;
       this.switchSession(target.name);
       this.focusPanel();
     }

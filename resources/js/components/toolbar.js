@@ -177,6 +177,34 @@ class WebtmuxToolbar extends LitElement {
       white-space: nowrap;
       cursor: default;
     }
+
+    /* Custom quick tooltip for the recent tabs. The native title attribute has a
+       ~1s browser delay; this appears after ~180ms (see _TIP_DELAY). position:fixed
+       escapes the .tabs overflow clip (the strip hides overflow-y). Driven
+       imperatively (show/hide/move) so hovering a tab never re-renders the bar. */
+    .wt-tip {
+      position: fixed;
+      z-index: 100;
+      max-width: 360px;
+      padding: 5px 9px;
+      border-radius: 5px;
+      background: #0b1020;
+      border: 1px solid #4a9eff;
+      color: #e8eefc;
+      font-size: 12px;
+      font-family: Menlo, Monaco, "Courier New", monospace;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      pointer-events: none;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+      opacity: 0;
+      visibility: hidden;
+    }
+    .wt-tip.show {
+      opacity: 1;
+      visibility: visible;
+    }
   `;
 
   constructor() {
@@ -190,6 +218,48 @@ class WebtmuxToolbar extends LitElement {
     // read it out loud to identify exactly which build is deployed.
     this.build = (typeof window !== 'undefined' && window.webtmux_build) || '?';
     this.built = (typeof window !== 'undefined' && window.webtmux_built) || '';
+    this._tipTimer = null; // pending show timer for the quick tab tooltip
+  }
+
+  // Quick-tooltip delay (ms). Much snappier than the browser's native ~1s title
+  // delay, but long enough that sweeping the pointer across tabs doesn't flash.
+  static _TIP_DELAY = 180;
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    if (this._tipTimer) { clearTimeout(this._tipTimer); this._tipTimer = null; }
+  }
+
+  _tipEl() {
+    return this.renderRoot?.querySelector('.wt-tip');
+  }
+
+  // Schedule the tooltip to appear under the hovered tab after a short delay.
+  _tipEnter(ev, text) {
+    if (!text) return;
+    const target = ev.currentTarget;
+    if (this._tipTimer) clearTimeout(this._tipTimer);
+    this._tipTimer = setTimeout(() => {
+      const tip = this._tipEl();
+      if (!tip || !target.isConnected) return;
+      tip.textContent = text;
+      // Show first (still transparent) so it has real dimensions to clamp against.
+      tip.classList.add('show');
+      const r = target.getBoundingClientRect();
+      const tw = tip.offsetWidth;
+      const margin = 6;
+      let left = r.left;
+      if (left + tw > window.innerWidth - margin) left = window.innerWidth - tw - margin;
+      if (left < margin) left = margin;
+      tip.style.left = `${Math.round(left)}px`;
+      tip.style.top = `${Math.round(r.bottom + margin)}px`;
+    }, WebtmuxToolbar._TIP_DELAY);
+  }
+
+  _tipLeave() {
+    if (this._tipTimer) { clearTimeout(this._tipTimer); this._tipTimer = null; }
+    const tip = this._tipEl();
+    if (tip) tip.classList.remove('show');
   }
 
   render() {
@@ -197,18 +267,23 @@ class WebtmuxToolbar extends LitElement {
       <span class="build" title="webtmux build ${this.build}${this.built ? ' — built ' + this.built : ''}">⬢ ${this.build}</span>
       <div class="tabs">
         ${this.recent.length ? html`<span class="label">Recent</span>` : ''}
-        ${this.recent.map(w => html`
+        ${this.recent.map(w => {
+          const tip = w.disabled ? 'Shown in another pane' : `${w.session} — window ${w.index}: ${w.name}`;
+          return html`
           <button
             class="tab ${w.active ? 'active' : ''} ${w.disabled ? 'disabled' : ''}"
-            title=${w.disabled ? 'Shown in another pane' : `${w.session} — window ${w.index}: ${w.name}`}
-            @click=${() => { if (!w.disabled) this.manager?.pickRecentWindow(w); }}
+            aria-label=${tip}
+            @mouseenter=${(e) => this._tipEnter(e, tip)}
+            @mouseleave=${() => this._tipLeave()}
+            @click=${() => { this._tipLeave(); if (!w.disabled) this.manager?.pickRecentWindow(w); }}
           ><span class="sess">${w.session}:${w.index}</span><span class="wname">${w.name}</span><span
               class="close"
-              title="Remove from recents (does not close the window)"
-              @click=${(e) => { e.stopPropagation(); this.manager?.removeRecent(w.id); }}
+              aria-label="Remove from recents (does not close the window)"
+              @click=${(e) => { e.stopPropagation(); this._tipLeave(); this.manager?.removeRecent(w.id); }}
             >×</span></button>
-        `)}
+        `;})}
       </div>
+      <div class="wt-tip"></div>
       ${this.panes.length > 1 ? html`
         <div class="dots" title="Panes — green is the focused pane">
           ${this.panes.map((focused, i) => html`<span
@@ -223,7 +298,7 @@ class WebtmuxToolbar extends LitElement {
       ><span class="mdot"></span>${this.copyMode ? 'COPY' : 'NORMAL'}</button>
       <button
         class="sidebar-toggle"
-        title="Toggle sidebar (Ctrl+Alt+B)"
+        title="Toggle sidebar (Ctrl+Alt+W)"
         @click=${() => this.manager?.sidebar?.toggleCollapsed()}
       >${this.collapsed ? '☰' : '✕'}</button>
     `;

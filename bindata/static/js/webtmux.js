@@ -9,6 +9,7 @@ import './components/sidebar.js';
 import './components/mobile-controls.js';
 import './components/expose-overlay.js';
 import './components/toolbar.js';
+import './components/shortcuts-overlay.js';
 
 document.addEventListener('DOMContentLoaded', () => {
   const app = document.getElementById('app');

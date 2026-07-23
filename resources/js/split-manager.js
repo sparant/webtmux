@@ -54,6 +54,11 @@ export class SplitManager {
     this.expose.manager = this;
     this.container.appendChild(this.expose);
 
+    // The keyboard-shortcuts overlay (hidden until opened via Ctrl+Alt+/ or the
+    // sidebar's "Keyboard shortcuts" button — makes the hotkeys discoverable).
+    this.shortcuts = document.createElement('webtmux-shortcuts');
+    this.container.appendChild(this.shortcuts);
+
     // Top toolbar (above #app): most-recently-accessed windows + sidebar toggle.
     // Recent-windows strip: entries keep a STABLE display position — re-accessing
     // a shown window never reorders it. Recency itself is NOT tracked here: the
@@ -167,7 +172,10 @@ export class SplitManager {
     // Re-point the single shared sidebar at the focused region and paint its state.
     this.sidebar.unit = unit;
     this._pushLayout(unit);
-    // Focusing a region "accesses" the window it's showing (MRU toolbar).
+    // Focusing a region "accesses" the window it's showing (MRU toolbar) — this is
+    // the commit point for a previewed session/window, so clear any pending
+    // preview-suppression so it can't swallow this or a later real access.
+    unit._suppressAccessNext = false;
     const win = unit.layout?.activeWindowId;
     if (win) { unit._accessSeenId = win; this.noteAccess(win, this._metaFor(unit, win)); }
     else this._refreshToolbar();
@@ -215,12 +223,17 @@ export class SplitManager {
     if (unit._targetWindowId && unit._targetWindowId === newId) unit._targetWindowId = null;
 
     // MRU access: a region now shows a window it wasn't = an access — UNLESS the
-    // switch came from sidebar arrow-key browsing (marked in _suppressAccessIds).
+    // switch came from sidebar browsing (marked in _suppressAccessIds for arrow-key
+    // WINDOW nav, or _suppressAccessNext for ←/→ SESSION nav where the landing
+    // window id isn't known ahead of time). Browsing only PREVIEWS in the pane; the
+    // window is committed to recents when the pane actually takes focus (see focus()).
     // Expose browsing doesn't switch a region, so it never lands here.
     if (newId && newId !== unit._accessSeenId) {
       unit._accessSeenId = newId;
       unit._targetWindowId = null;   // an in-flight goToWindow switch has landed
-      if (!unit._suppressAccessIds.delete(newId)) this.noteAccess(newId, this._metaFor(unit, newId));
+      const suppressed = unit._suppressAccessIds.delete(newId) || unit._suppressAccessNext;
+      unit._suppressAccessNext = false;
+      if (!suppressed) this.noteAccess(newId, this._metaFor(unit, newId));
     }
     this._refreshToolbar();
   }
@@ -318,6 +331,11 @@ export class SplitManager {
   // de-facto "kill the split that was showing this window". (The primary region is
   // console-synced and never closed; the tmux window itself keeps running.)
   removeRecent(id) {
+    // If the focused pane is currently VIEWING this window, closing its tab would
+    // strand the pane on a window that's no longer in the strip. So first move the
+    // view to the next available recent — exactly what Ctrl+Option+N does. (No-op
+    // if there's nothing else to step to.)
+    if (this.focusedUnit?.layout?.activeWindowId === id) this.navigateRecents(+1);
     if (this.units.length > 1) {
       const holder = this.units.find(u => !u.primary && u.layout?.activeWindowId === id);
       if (holder) this.removeUnit(holder);
@@ -540,28 +558,41 @@ export class SplitManager {
   }
 
   _installControls() {
-    // Global shortcuts (capture phase, Alt-based so they never hit tmux's Ctrl-b
-    // and browsers don't reserve them). stopPropagation keeps xterm from seeing them.
+    // Global shortcuts (capture phase, Ctrl+Alt / Ctrl+Option based so they never
+    // hit tmux's own Ctrl-b prefix and browsers don't reserve them). Where tmux has
+    // a natural key AFTER its prefix we reuse that same letter, so muscle memory
+    // carries over (Ctrl+Alt+<key> here == Ctrl-b <key> in tmux):
+    //   w  choose-tree (window/session list) -> toggle the sidebar
+    //   p  previous-window / n  next-window   -> step the recents strip
+    //   x  kill-pane                          -> close the focused region
+    //   ?  list-keys                          -> the shortcuts overlay (physical '/')
+    // Split-add has no unmodified tmux letter (tmux uses % / ", both need Shift), so
+    // it keeps the intuitive Enter. Exposé is webtmux-only, so it keeps 'e'.
+    // stopPropagation keeps xterm from seeing them.
     window.addEventListener('keydown', (ev) => {
       if (!ev.ctrlKey || !ev.altKey || ev.metaKey) return;
       switch (ev.code) {
-        case 'KeyB':                                   // toggle the shared sidebar
+        case 'KeyW':                                   // tmux 'w' (choose-tree): toggle sidebar
           this.sidebar?.toggleCollapsed();
           break;
         case 'Enter':                                  // add a split region
           this.splitAdd();
           break;
-        case 'Backspace':                              // close focused region
+        case 'KeyX':                                   // tmux 'x' (kill-pane): close focused region
+        case 'Backspace':                              // legacy alias, kept for muscle memory
           this.closeFocused();
           break;
         case 'KeyE':                                   // toggle the Exposé overlay
           this.expose?.toggle();
           break;
-        case 'KeyP':                                   // recents: previous (left in the bar)
+        case 'KeyP':                                   // tmux 'p' (previous-window): recents left
           this.navigateRecents(-1);
           break;
-        case 'KeyN':                                   // recents: next (right in the bar)
+        case 'KeyN':                                   // tmux 'n' (next-window): recents right
           this.navigateRecents(+1);
+          break;
+        case 'Slash':                                  // tmux '?' (list-keys): shortcuts overlay
+          this.shortcuts?.toggle();
           break;
         default:
           return;                                      // not ours — let it through
@@ -574,5 +605,6 @@ export class SplitManager {
     window.addEventListener('webtmux-split-add', () => this.splitAdd());
     window.addEventListener('webtmux-split-close', (e) => this.removeUnit(e.detail?.unit || this.focusedUnit));
     window.addEventListener('webtmux-expose-open', () => this.expose?.openOverlay());
+    window.addEventListener('webtmux-shortcuts-open', () => this.shortcuts?.toggle());
   }
 }
