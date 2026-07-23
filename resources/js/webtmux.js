@@ -8,6 +8,7 @@ import { SplitManager } from './split-manager.js';
 import './components/sidebar.js';
 import './components/mobile-controls.js';
 import './components/expose-overlay.js';
+import './components/toolbar.js';
 
 document.addEventListener('DOMContentLoaded', () => {
   const app = document.getElementById('app');

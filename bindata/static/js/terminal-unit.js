@@ -76,6 +76,11 @@ export class TerminalUnit {
     this.desiredWindowIndex = null;
     this.restorePending = false;
     this._lastMarkedActive = null; // last window we marked "accessed" (transition guard)
+    // Toolbar MRU bookkeeping (read by SplitManager): last window it recorded as a
+    // toolbar "access", and window ids whose next arrival should NOT count (they
+    // came from sidebar arrow-key browsing).
+    this._accessSeenId = null;
+    this._suppressAccessIds = new Set();
     this.oscBuffer = ''; // Buffer for OSC sequence detection
     this.resizeObserver = null;
 

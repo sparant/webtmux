@@ -37,6 +37,16 @@ export class SplitManager {
     this.expose.manager = this;
     this.container.appendChild(this.expose);
 
+    // Top toolbar (above #app): most-recently-accessed windows + sidebar toggle.
+    this.recentWindows = [];   // window ids, most-recent-accessed first (max 5)
+    this.toolbar = document.createElement('webtmux-toolbar');
+    this.toolbar.manager = this;
+    this.container.parentNode.insertBefore(this.toolbar, this.container);
+    // Keep the toolbar's toggle icon in sync with the sidebar's collapsed state.
+    window.addEventListener('webtmux-sidebar-collapsed', (e) => {
+      this.toolbar.collapsed = !!e.detail?.collapsed;
+    });
+
     this._installControls();
 
     // The primary/shared region (session '' => base 'services').
@@ -123,6 +133,10 @@ export class SplitManager {
     // Re-point the single shared sidebar at the focused region and paint its state.
     this.sidebar.unit = unit;
     this._pushLayout(unit);
+    // Focusing a region "accesses" the window it's showing (MRU toolbar).
+    const win = unit.layout?.activeWindowId;
+    if (win) { unit._accessSeenId = win; this.noteAccess(win); }
+    else this._refreshToolbar();
     unit.terminal?.focus();
   }
 
@@ -141,6 +155,48 @@ export class SplitManager {
       if (target && target.id !== unit.layout.activeWindowId) unit.selectWindow(target.id);
       unit._autoPickPending = false;
     }
+
+    // MRU access: a region now shows a window it wasn't = an access — UNLESS the
+    // switch came from sidebar arrow-key browsing (marked in _suppressAccessIds).
+    // Expose browsing doesn't switch a region, so it never lands here.
+    const newId = unit.layout?.activeWindowId;
+    if (newId && newId !== unit._accessSeenId) {
+      unit._accessSeenId = newId;
+      if (!unit._suppressAccessIds.delete(newId)) this.noteAccess(newId);
+    }
+    this._refreshToolbar();
+  }
+
+  // Move a window to the front of the most-recently-accessed list (max 5).
+  noteAccess(id) {
+    if (!id) return;
+    this.recentWindows = [id, ...this.recentWindows.filter(x => x !== id)].slice(0, 5);
+    this._refreshToolbar();
+  }
+
+  // Rebuild the toolbar's recent-window strip: resolve each id to index/name from
+  // the shared window list, mark the focused region's current one active, and drop
+  // windows that no longer exist.
+  _refreshToolbar() {
+    if (!this.toolbar) return;
+    const focused = this.focusedUnit;
+    const activeId = focused?.layout?.activeWindowId;
+    const wins = focused?.layout?.windows || this.units.find(u => u.layout)?.layout?.windows || [];
+    const byId = new Map(wins.map(w => [w.id, w]));
+    if (wins.length) this.recentWindows = this.recentWindows.filter(id => byId.has(id));
+    this.toolbar.recent = this.recentWindows.map(id => {
+      const w = byId.get(id) || {};
+      return { id, index: w.index ?? '?', name: w.name || 'bash', active: id === activeId };
+    });
+    this.toolbar.collapsed = !!this.sidebar?.collapsed;
+  }
+
+  // Click on a recent-window tab: if some region already shows that window, jump
+  // focus to it; otherwise bring it into the focused region.
+  pickRecentWindow(id) {
+    const holder = this.units.find(u => u.layout?.activeWindowId === id);
+    if (holder) { this.focus(holder); return; }
+    this.focusedUnit?.selectWindow(id);
   }
 
   _pushLayout(unit) {

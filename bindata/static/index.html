@@ -14,6 +14,7 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css" />
 
   <style>
+    :root { --wt-toolbar-h: 44px; }
     html, body {
       margin: 0;
       padding: 0;
@@ -21,9 +22,15 @@
       overflow: hidden;
       background: #1a1a2e;
     }
-    #app {
+    /* Column layout: the toolbar sits at the top, #app (the regions) fills the rest. */
+    body {
       display: flex;
-      height: 100%;
+      flex-direction: column;
+    }
+    #app {
+      flex: 1;
+      min-height: 0;
+      display: flex;
       width: 100%;
     }
     /* Each split region is a flex row: [terminal | its sidebar]. Regions tile

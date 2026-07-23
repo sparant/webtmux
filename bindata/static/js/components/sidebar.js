@@ -33,11 +33,17 @@ class WebtmuxSidebar extends LitElement {
        expands to full width and its ResizeObserver re-fits xterm automatically. */
     :host(.overlay) {
       position: fixed;
-      top: 0;
+      top: var(--wt-toolbar-h, 0);
       right: 0;
-      height: 100%;
+      height: calc(100% - var(--wt-toolbar-h, 0));
       z-index: 50;
       box-shadow: -8px 0 24px rgba(0, 0, 0, 0.5);
+    }
+
+    /* The popup sidebar is toggled from the toolbar button (and Ctrl+Alt+B); when
+       collapsed it fully hides — the toolbar toggle brings it back. */
+    :host(.collapsed) {
+      display: none;
     }
 
     .mode-row {
@@ -287,6 +293,10 @@ class WebtmuxSidebar extends LitElement {
         // …and starts warming capture buffers so window switches paint instantly.
         this._startCapturePoll();
       }
+      // Keep the toolbar's toggle icon in sync with our collapsed state.
+      this.dispatchEvent(new CustomEvent('webtmux-sidebar-collapsed', {
+        bubbles: true, composed: true, detail: { collapsed: this.collapsed },
+      }));
     }
     if (changedProperties.has('overlay')) {
       // Toggling in/out of flow changes #terminal's width; its ResizeObserver
@@ -544,6 +554,9 @@ class WebtmuxSidebar extends LitElement {
       idx = (idx + delta + windows.length) % windows.length;
       const cand = windows[idx];
       if (cand && !this._windowDisabled(cand.id)) {
+        // Arrow-key browsing must NOT count as a toolbar "access" — mark the
+        // target so the SplitManager skips it when the layout comes back.
+        this.unit?._suppressAccessIds?.add(cand.id);
         this.selectWindow(cand.id);
         this.focusPanel();
         return;
