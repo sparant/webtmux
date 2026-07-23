@@ -15,6 +15,10 @@ export class SplitManager {
     this.container = container;   // #app — holds .region elements, .divider bars, and the shared sidebar
     this.units = [];
     this.focusedUnit = null;
+    // The last NON-PRIMARY (split) region to hold focus. The toolbar/Exposé window
+    // switch targets THIS (not focusedUnit, which drifts to the console-synced
+    // primary when you click a tab whose window the primary is showing).
+    this._lastFocusedSplit = null;
 
     // ONE client-side capture cache for the whole app. Requests go out over any
     // connected unit's ws (capture is server-global, so the connection is
@@ -122,6 +126,9 @@ export class SplitManager {
     region.remove();
 
     this.units.splice(idx, 1);
+    if (!this.units.includes(this._lastFocusedSplit)) {
+      this._lastFocusedSplit = this.units.find(u => !u.primary) || null;
+    }
     this._syncSplitClass();
     this.focus(this.units[Math.min(idx, this.units.length - 1)] || this.units[0]);
     this._refitSoon();
@@ -130,6 +137,7 @@ export class SplitManager {
   focus(unit) {
     if (!unit) return;
     this.focusedUnit = unit;
+    if (!unit.primary) this._lastFocusedSplit = unit;   // remember the last split focused
     // Compat shim: mobile-controls + any global shortcut target the focused unit.
     window.webtmux = unit;
     for (const u of this.units) {
@@ -281,24 +289,41 @@ export class SplitManager {
     this.toolbar.collapsed = !!this.sidebar?.collapsed;
   }
 
+  // The region a toolbar/Exposé window-switch acts on: the last-focused SPLIT
+  // region, falling back to the focused region (the primary) in single-view.
+  _switchTargetRegion() {
+    if (this._lastFocusedSplit && this.units.includes(this._lastFocusedSplit)) {
+      return this._lastFocusedSplit;
+    }
+    return this.focusedUnit || this.units[0] || null;
+  }
+
   // Navigate to a window from ANY switcher (toolbar recent-strip, Exposé tile).
-  //   1) If some region already shows it, jump focus to that region.
-  //   2) Otherwise switch the LAST-FOCUSED region to it (moving that region to the
-  //      window's session first if needed), and give its terminal keyboard focus so
-  //      you can type right after a toolbar/Exposé switch.
+  //   1) If some region already shows it, jump focus to that region (a window is
+  //      only ever in one region, so this handles "already open").
+  //   2) Otherwise switch the LAST-FOCUSED SPLIT region to it (not whatever is
+  //      currently focused — clicking a tab whose window the primary shows would
+  //      otherwise leave focus on the primary and switch IT on the next click).
+  //      Move that region to the window's session first if needed, then focus it so
+  //      you can type immediately and the strip keeps targeting it.
   // Single entry point so every switcher behaves identically.
   goToWindow(id, session = '') {
     if (!id) return;
     const holder = this.units.find(u => u.layout?.activeWindowId === id);
     if (holder) { this.focus(holder); return; }
-    const u = this.focusedUnit;
+    const u = this._switchTargetRegion();
     if (!u) return;
-    if (session && u.layout && session !== u.layout.sessionName) {
+    const finish = () => { u.selectWindow(id); this.focus(u); };
+    // Only hop sessions when the window truly isn't in this region's list. Grouped
+    // split sessions SHARE the base (services) window list, so a services window is
+    // already selectable here even though the region's session name differs — never
+    // switch-client onto the shared console session for it (that drags the console).
+    const inList = (u.layout?.windows || []).some(w => w.id === id);
+    if (!inList && session && u.layout && session !== u.layout.sessionName) {
       u.switchSession(session);
-      setTimeout(() => { u.selectWindow(id); u.terminal?.focus(); }, 300);
+      setTimeout(finish, 300);
     } else {
-      u.selectWindow(id);
-      u.terminal?.focus();
+      finish();
     }
   }
 
