@@ -282,9 +282,11 @@ export class SplitManager {
   }
 
   // Navigate to a window from ANY switcher (toolbar recent-strip, Exposé tile).
-  // If some region already shows it, jump focus to that region; if it lives in
-  // another session, move the focused region there first; otherwise select it in
-  // the focused region. Single entry point so every switcher behaves identically.
+  //   1) If some region already shows it, jump focus to that region.
+  //   2) Otherwise switch the LAST-FOCUSED region to it (moving that region to the
+  //      window's session first if needed), and give its terminal keyboard focus so
+  //      you can type right after a toolbar/Exposé switch.
+  // Single entry point so every switcher behaves identically.
   goToWindow(id, session = '') {
     if (!id) return;
     const holder = this.units.find(u => u.layout?.activeWindowId === id);
@@ -293,9 +295,10 @@ export class SplitManager {
     if (!u) return;
     if (session && u.layout && session !== u.layout.sessionName) {
       u.switchSession(session);
-      setTimeout(() => u.selectWindow(id), 300);
+      setTimeout(() => { u.selectWindow(id); u.terminal?.focus(); }, 300);
     } else {
       u.selectWindow(id);
+      u.terminal?.focus();
     }
   }
 
