@@ -16,15 +16,20 @@ export class CaptureCache extends EventTarget {
     this._lastReqAt = 0;
     this.debounceMs = 200;
     // Access order for the Exposé "Last accessed" sort: windowId -> seq (higher
-    // = more recent). Bumped whenever a window is selected/viewed.
-    this._accessSeq = 0;
-    this.accessed = new Map();
+    // = more recent). Bumped whenever a window is selected/viewed. PERSISTED
+    // across reloads (keyed by tmux window_id, stable while the host tmux lives).
+    const persisted = loadAccess();
+    this._accessSeq = persisted.seq;
+    this.accessed = persisted.map;
   }
 
-  // Record that a window was just accessed (selected/viewed) — drives the
-  // "Last accessed" Exposé sort.
+  // Record that a window was just accessed (selected, or became active in any
+  // region incl. the console-followed primary) — drives the "Last accessed"
+  // Exposé sort, and persist so the order survives a page reload.
   markAccessed(windowId) {
-    if (windowId) this.accessed.set(windowId, ++this._accessSeq);
+    if (!windowId) return;
+    this.accessed.set(windowId, ++this._accessSeq);
+    saveAccess(this._accessSeq, this.accessed);
   }
 
   // Ask the server to (re)capture. windows: 'all' or an array of window ids.
@@ -89,5 +94,32 @@ export class CaptureCache extends EventTarget {
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     return bytes;
+  }
+}
+
+// --- persisted access order --------------------------------------------------
+// Stored as { seq, entries: [[windowId, seq], …] } so "Last accessed" survives a
+// reload. Stale ids (a tmux server restart reusing @N) are harmless: all() only
+// ranks windows currently present in the capture set.
+const ACCESS_KEY = 'webtmux-expose-accessed';
+
+function loadAccess() {
+  try {
+    const raw = localStorage.getItem(ACCESS_KEY);
+    if (raw) {
+      const obj = JSON.parse(raw);
+      return { seq: Number(obj.seq) || 0, map: new Map(obj.entries || []) };
+    }
+  } catch (e) {
+    /* corrupt/unavailable storage — start fresh */
+  }
+  return { seq: 0, map: new Map() };
+}
+
+function saveAccess(seq, map) {
+  try {
+    localStorage.setItem(ACCESS_KEY, JSON.stringify({ seq, entries: [...map] }));
+  } catch (e) {
+    /* storage full/unavailable — ordering is best-effort */
   }
 }

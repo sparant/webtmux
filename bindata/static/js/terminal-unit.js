@@ -75,6 +75,7 @@ export class TerminalUnit {
     this.desiredWindowId = null;
     this.desiredWindowIndex = null;
     this.restorePending = false;
+    this._lastMarkedActive = null; // last window we marked "accessed" (transition guard)
     this.oscBuffer = ''; // Buffer for OSC sequence detection
     this.resizeObserver = null;
 
@@ -526,6 +527,14 @@ export class TerminalUnit {
     }
     this.desiredWindowId = active;
     if (activeWin) this.desiredWindowIndex = activeWin.index;
+
+    // A window becoming active in ANY region — including the primary following
+    // the ssh console — counts as "accessed" for the Exposé sort. Mark only on
+    // transition so the 500ms layout poll doesn't churn the order.
+    if (active && active !== this._lastMarkedActive) {
+      this._lastMarkedActive = active;
+      this.captureCache?.markAccessed(active);
+    }
   }
 
   _findWindow(id, index) {
