@@ -72,7 +72,9 @@ export class SplitManager {
     unit.region = region;
     unit.onFocus = (u) => this.focus(u);
     unit.onLayout = (u) => this._onUnitLayout(u);
-    // Route this unit's capture replies into the shared cache.
+    // Route this unit's capture replies into the shared cache, and give the unit
+    // read access for optimistic paint on window switch.
+    unit.captureCache = this.captureCache;
     unit.onCaptureData = (payload) => this.captureCache.ingest(payload);
     // Clicking the terminal collapses the shared sidebar out of the way (unless pinned).
     unit.onTerminalMousedown = () => {

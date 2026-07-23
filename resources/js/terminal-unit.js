@@ -9,6 +9,7 @@
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
+import { CaptureCache } from './capture-cache.js';
 
 // Protocol message types (must match Go constants)
 export const MSG = {
@@ -560,7 +561,25 @@ export class TerminalUnit {
   }
 
   selectWindow(windowId) {
+    // Optimistic paint FIRST so the switch looks instant on every path that ends
+    // here (sidebar click, ↑/↓ arrow-nav, Exposé click); the server's
+    // select-window repaint overwrites it a beat later (authoritative).
+    this.paintOptimistic(windowId);
     this.sendMessage(MSG.TmuxSelectWindow, windowId);
+  }
+
+  // Blit the target window's cached capture into this unit's xterm immediately,
+  // if a fresh-enough buffer exists. Guarded no-op otherwise (unchanged behavior).
+  // captureCache is set by the SplitManager.
+  paintOptimistic(windowId) {
+    const cache = this.captureCache;
+    if (!cache || !this.terminal) return false;
+    const entry = cache.fresh(windowId);
+    if (!entry) return false;
+    // Home + clear, then write the color-preserving snapshot.
+    this.terminal.write('\x1b[H\x1b[2J');
+    this.terminal.write(CaptureCache.decodeAnsi(entry));
+    return true;
   }
 
   renameWindow(windowId, name) {

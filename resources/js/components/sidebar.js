@@ -272,10 +272,13 @@ class WebtmuxSidebar extends LitElement {
     if (changedProperties.has('collapsed')) {
       if (this.collapsed) {
         this.classList.add('collapsed');
+        this._stopCapturePoll();
       } else {
         this.classList.remove('collapsed');
         // Opening the panel grabs keyboard focus so ↑/↓ navigate windows.
         this.focusPanel();
+        // …and starts warming capture buffers so window switches paint instantly.
+        this._startCapturePoll();
       }
     }
     if (changedProperties.has('overlay')) {
@@ -288,6 +291,29 @@ class WebtmuxSidebar extends LitElement {
 
   toggleCollapsed() {
     this.collapsed = !this.collapsed;
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    this._stopCapturePoll();
+  }
+
+  // While the panel is open, keep this focused region's capture buffers warm so
+  // optimistic paint always has something fresh to blit: one refresh after 2s,
+  // then every 5s. The shared client debounce + server freshness TTL keep this
+  // from stampeding tmux even when the Exposé overlay is polling concurrently
+  // (both drive the SAME CaptureCache).
+  _startCapturePoll() {
+    this._stopCapturePoll();
+    this._captureWarmTimer = setTimeout(() => {
+      this.unit?.captureCache?.request('all');
+      this._captureInterval = setInterval(() => this.unit?.captureCache?.request('all'), 5000);
+    }, 2000);
+  }
+
+  _stopCapturePoll() {
+    if (this._captureWarmTimer) { clearTimeout(this._captureWarmTimer); this._captureWarmTimer = null; }
+    if (this._captureInterval) { clearInterval(this._captureInterval); this._captureInterval = null; }
   }
 
   toggleOverlay() {

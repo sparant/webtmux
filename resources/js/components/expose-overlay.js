@@ -311,13 +311,9 @@ class WebtmuxExpose extends LitElement {
   // ---- interaction ------------------------------------------------------------
 
   _selectWindow(windowId) {
-    const unit = this.manager?.focusedUnit;
-    if (unit) {
-      // Optimistic paint (if the buffer is fresh) makes the switch feel instant;
-      // the server's select-window repaint then overwrites it authoritatively.
-      unit.paintOptimistic?.(windowId);
-      unit.selectWindow(windowId);
-    }
+    // selectWindow already paints optimistically from the shared cache, so the
+    // switch feels instant; the server's select-window repaint then overwrites.
+    this.manager?.focusedUnit?.selectWindow(windowId);
     this.closeOverlay();
   }
 
