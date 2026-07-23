@@ -70,10 +70,12 @@ export class TerminalUnit {
     // toggled from the sidebar. Read here so the handlers below see it on load.
     this.scrollMode = localStorage.getItem('webtmux-scroll-mode') || 'buffer';
     this.layout = null;
-    // Window we're viewing, remembered so we can restore it after a reconnect
-    // (tty loss) — the fresh attach otherwise resets us to the base's current window.
+    // View we're on (logical session + window), remembered so we can restore it
+    // after a reconnect (tty loss) — the fresh attach otherwise resets us to the
+    // base session's current window.
     this.desiredWindowId = null;
     this.desiredWindowIndex = null;
+    this.desiredSession = null;
     this.restorePending = false;
     // Toolbar MRU bookkeeping (read by SplitManager): last window it recorded as a
     // toolbar "access", and window ids whose next arrival should NOT count (they
@@ -509,19 +511,29 @@ export class TerminalUnit {
     if (this.onLayout) this.onLayout(this);
   }
 
-  // On every layout: normally remember the window we're viewing so a later
-  // reconnect can restore it. When a reconnect just happened (restorePending), the
-  // fresh attach lands us on the base's current window — instead re-select the
-  // window we remembered (by id, falling back to index) if it still exists.
+  // On every layout: normally remember the view (logical session + window) so a
+  // later reconnect can restore it. When a reconnect just happened
+  // (restorePending), the fresh attach lands us on the base session's current
+  // window — instead re-select what we remembered: hop back to the session we
+  // were on first (the fresh grouped attach is always on the base), then the
+  // window (by id, falling back to index — index only valid same-session).
   _rememberOrRestore() {
     const active = this.layout.activeWindowId;
     const activeWin = (this.layout.windows || []).find(w => w.id === active);
+    const base = this.layout.sessionBase || this.layout.sessionName;
     if (this.restorePending) {
       this.restorePending = false;
       // Only restore INDEPENDENT (grouped) split regions. The primary region is
       // shared with the ssh console; forcing its window would move the console too,
       // so let it simply re-sync to whatever the console is viewing.
       if (!this.primary) {
+        if (this.desiredSession && base && this.desiredSession !== base) {
+          // We were viewing another session — hop there, then re-select the
+          // window. Both sends ride the same serialized ws (see goToWindow).
+          this.switchSession(this.desiredSession);
+          if (this.desiredWindowId) this.selectWindow(this.desiredWindowId);
+          return;   // the resulting layout re-remembers the restored view
+        }
         const want = this._findWindow(this.desiredWindowId, this.desiredWindowIndex);
         if (want && want.id !== active) {
           this.selectWindow(want.id);   // restore; the resulting layout re-remembers it
@@ -530,6 +542,7 @@ export class TerminalUnit {
       }
     }
     this.desiredWindowId = active;
+    this.desiredSession = base;
     if (activeWin) this.desiredWindowIndex = activeWin.index;
     // Access recency is recorded centrally by SplitManager (focus + layout
     // transition, with arrow-browse suppression) — the single write path shared
@@ -610,10 +623,10 @@ export class TerminalUnit {
   }
 
   switchSession(sessionName) {
-    // Any region may switch sessions. A split is a grouped session, so hopping it
-    // to a shared session (esp. the base/console) would couple it — but the backend
-    // now FOLLOWS the pane's real client and SELF-HEALS a split that lands on a
-    // shared session (re-groups it, decoupling), so this is safe again.
+    // Any region may switch sessions. The backend switches only THIS pane's own
+    // tmux client (-c <its tty>) and RE-GROUPS a split onto the target session
+    // (fresh grouped web-* session), so no pane ever couples with the console or
+    // another pane — cross-session navigation is safe for every pane.
     this.sendMessage(MSG.TmuxSwitchSession, sessionName);
   }
 

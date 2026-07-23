@@ -103,6 +103,14 @@ func (lcmd *LocalCommand) Close() error {
 	}
 }
 
+// TtyName returns the slave-side device path of this command's pty (the tty
+// the tmux client attached through), or "" when it can't be determined. The
+// server hands it to the per-connection tmux controller so every client-scoped
+// tmux command targets exactly this pane's client.
+func (lcmd *LocalCommand) TtyName() string {
+	return ptsName(lcmd.pty)
+}
+
 func (lcmd *LocalCommand) WindowTitleVariables() map[string]interface{} {
 	return map[string]interface{}{
 		"command": lcmd.command,

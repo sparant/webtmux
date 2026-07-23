@@ -11,8 +11,13 @@ type Session struct {
 
 // Layout represents the complete tmux state
 type Layout struct {
-	SessionID    string    `json:"sessionId"`
-	SessionName  string    `json:"sessionName"`
+	SessionID   string `json:"sessionId"`
+	SessionName string `json:"sessionName"`
+	// SessionBase is the LOGICAL session this pane is viewing: for a split pane
+	// (whose own session is an ephemeral web-* grouped shadow) it is the group's
+	// base session; otherwise it equals SessionName. The UI displays/compares
+	// sessions by this, never by the shadow name.
+	SessionBase  string    `json:"sessionBase"`
 	Sessions     []Session `json:"sessions"`
 	Windows      []Window  `json:"windows"`
 	ActiveWinID  string    `json:"activeWindowId"`

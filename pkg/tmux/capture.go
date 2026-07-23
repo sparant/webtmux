@@ -123,10 +123,11 @@ const enumSep = "|"
 const enumFields = 7
 
 // EnumerateWindows lists every window across every session on the server
-// (`list-windows -a`) and dedups by window_id — first occurrence wins for the
-// label/index/session, so a window shared by services + web-a + web-b yields a
-// single WindowInfo. This is the "all windows across all sessions, one entry
-// each" source of truth for both Exposé and "all"-window capture requests.
+// (`list-windows -a`) and dedups by window_id, so a window shared by
+// services + web-a + web-b yields a single WindowInfo. The label's session
+// prefers a REAL session name over an ephemeral web-* grouped shadow. This is
+// the "all windows across all sessions, one entry each" source of truth for
+// both Exposé and "all"-window capture requests.
 func (s *CaptureStore) EnumerateWindows() ([]WindowInfo, error) {
 	// Field order: id | session | index | pane_id | cols | rows | name(LAST).
 	format := strings.Join([]string{
@@ -140,7 +141,7 @@ func (s *CaptureStore) EnumerateWindows() ([]WindowInfo, error) {
 	}
 
 	var wins []WindowInfo
-	seen := make(map[string]bool)
+	seen := make(map[string]int) // window_id -> index into wins
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		if line == "" {
 			continue
@@ -150,10 +151,16 @@ func (s *CaptureStore) EnumerateWindows() ([]WindowInfo, error) {
 			continue
 		}
 		windowID := f[0]
-		if seen[windowID] {
-			continue // dedup: first grouped session wins
+		if i, ok := seen[windowID]; ok {
+			// Dedup — but prefer a REAL session name for the label over an
+			// ephemeral web-* grouped shadow (list order is alphabetical, so a
+			// shadow can otherwise win and leak web-xyz into recents/Exposé).
+			if strings.HasPrefix(wins[i].SessionName, "web-") && !strings.HasPrefix(f[1], "web-") {
+				wins[i].SessionName = f[1]
+			}
+			continue
 		}
-		seen[windowID] = true
+		seen[windowID] = len(wins)
 
 		idx, _ := strconv.Atoi(f[2])
 		cols, _ := strconv.Atoi(f[4])
