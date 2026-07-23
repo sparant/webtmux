@@ -23,6 +23,7 @@ const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min
 class WebtmuxExpose extends LitElement {
   static properties = {
     open: { type: Boolean, reflect: true },
+    _sort: { state: true }, // 'session' | 'recent'
   };
 
   static styles = css`
@@ -66,11 +67,45 @@ class WebtmuxExpose extends LitElement {
       font-family: monospace;
       font-size: 12px;
     }
+    .head .spacer {
+      flex: 1 1 auto;
+    }
+    .sort {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .sort .lbl {
+      color: #7f8bb5;
+    }
+    .sort .seg {
+      display: inline-flex;
+      border: 1px solid #0f3460;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .sort button {
+      background: #1a1a2e;
+      color: #9fb0d8;
+      border: none;
+      padding: 4px 12px;
+      font: 12px Menlo, Monaco, monospace;
+      cursor: pointer;
+    }
+    .sort button:not(:last-child) {
+      border-right: 1px solid #0f3460;
+    }
+    .sort button.active {
+      background: #0f3460;
+      color: #eaf0ff;
+    }
+    /* 3 columns => ~9 tiles visible (3×3); the grid scrolls vertically for more.
+       Tile frames scale with the viewport so three rows fill the height. */
     .grid {
       flex: 1 1 auto;
       overflow-y: auto;
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      grid-template-columns: repeat(3, 1fr);
       gap: 16px;
       align-content: start;
     }
@@ -94,7 +129,9 @@ class WebtmuxExpose extends LitElement {
     .tile-frame {
       position: relative;
       width: 100%;
-      height: 200px;
+      /* Size so three rows of tiles fill the viewport (~9 visible); the grid
+         scrolls for the rest. Clamped so it stays sane on very short/tall windows. */
+      height: clamp(150px, calc((100vh - 150px) / 3 - 46px), 460px);
       overflow: hidden;
       background: #1a1a2e;
       border-bottom: 1px solid #0f3460;
@@ -144,8 +181,13 @@ class WebtmuxExpose extends LitElement {
     this.manager = null; // SplitManager — set by SplitManager
     this._tiles = []; // { term? } live xterm instances, for disposal
     this._cursor = -1; // keyboard-highlighted tile index
+    this._cursorId = null; // window_id under the cursor — survives refresh/rebuild
+    this._renderedIds = []; // window_ids in current tile order
+    this._sort = readSort(); // 'session' | 'recent' (persisted)
     this._pollTimer = null;
-    this._onCacheUpdate = () => this._rebuild();
+    // On a capture refresh, update tiles IN PLACE (keep cursor + no xterm churn)
+    // when the window set is unchanged; only a membership/sort change rebuilds.
+    this._onCacheUpdate = () => this._refresh();
     this._onKey = (e) => this._handleKey(e);
   }
 
@@ -156,10 +198,22 @@ class WebtmuxExpose extends LitElement {
     return html`
       <link rel="stylesheet" href=${XTERM_CSS} />
       <div class="backdrop" @click=${this._onBackdrop}>
-        <div class="head">
+        <div class="head" @click=${(e) => e.stopPropagation()}>
           <span class="title">Windows</span>
           <span>${n} window${n === 1 ? '' : 's'}</span>
           <span><kbd>←→↑↓</kbd> move · <kbd>Enter</kbd> switch · <kbd>Esc</kbd> close</span>
+          <span class="spacer"></span>
+          <span class="sort">
+            <span class="lbl">Sort</span>
+            <span class="seg">
+              <button class=${this._sort === 'session' ? 'active' : ''} @click=${() => this._setSort('session')}>
+                Session / window
+              </button>
+              <button class=${this._sort === 'recent' ? 'active' : ''} @click=${() => this._setSort('recent')}>
+                Last accessed
+              </button>
+            </span>
+          </span>
         </div>
         <div class="grid" @click=${(e) => e.stopPropagation()}></div>
       </div>
@@ -171,6 +225,11 @@ class WebtmuxExpose extends LitElement {
   openOverlay() {
     if (this.open) return;
     this.open = true;
+    // Seed access order with the focused region's current window so "Last
+    // accessed" is meaningful before the user has switched anything.
+    const cur = this.manager?.focusedUnit?.layout?.activeWindowId;
+    if (cur) this.cache?.markAccessed(cur);
+    this._cursorId = cur || null;
     this.cache?.addEventListener('update', this._onCacheUpdate);
     window.addEventListener('keydown', this._onKey, true);
     // Force a fresh capture of every window, then paint whatever's cached now.
@@ -217,31 +276,66 @@ class WebtmuxExpose extends LitElement {
     if (grid) grid.textContent = '';
   }
 
+  // Full teardown + build. Used on open, sort change, or a membership change.
+  // Restores the cursor to the SAME window it was on (by id), so it never jumps.
   _rebuild() {
     if (!this.open) return;
     const grid = this.renderRoot?.querySelector('.grid');
     if (!grid) return;
     this._disposeTiles();
 
-    const entries = this.cache ? this.cache.all() : [];
+    const entries = this.cache ? this.cache.all(this._sort) : [];
     if (!entries.length) {
       const div = document.createElement('div');
       div.className = 'empty';
       div.textContent = 'Capturing windows…';
       grid.appendChild(div);
+      this._renderedIds = [];
       return;
     }
 
     const currentId = this.manager?.focusedUnit?.layout?.activeWindowId || '';
     entries.forEach((entry, i) => {
-      const tile = this._buildTile(entry, i < N_MAX_TILES);
-      if (entry.windowId === currentId) tile.classList.add('current');
-      grid.appendChild(tile);
+      const rec = this._buildTile(entry, i < N_MAX_TILES);
+      if (entry.windowId === currentId) rec.tileEl.classList.add('current');
+      grid.appendChild(rec.tileEl);
+      this._tiles.push(rec);
     });
+    this._renderedIds = entries.map((e) => e.windowId);
 
-    // Highlight the current window by default for immediate keyboard nav.
-    this._cursor = Math.max(0, entries.findIndex((e) => e.windowId === currentId));
+    // Keep the highlight on the same window across a rebuild; fall back to the
+    // current window, then the first tile.
+    let idx = this._cursorId ? this._renderedIds.indexOf(this._cursorId) : -1;
+    if (idx < 0) idx = this._renderedIds.indexOf(currentId);
+    if (idx < 0) idx = 0;
+    this._cursor = idx;
     this._paintCursor();
+  }
+
+  // Called on every capture refresh. If the window set + order is unchanged,
+  // repaint each tile's content IN PLACE — preserving the cursor, scroll
+  // position, and xterm instances (no flicker, no lost navigation). Only a
+  // membership/order change (window opened/closed) falls back to a full rebuild.
+  _refresh() {
+    if (!this.open) return;
+    const entries = this.cache ? this.cache.all(this._sort) : [];
+    const ids = entries.map((e) => e.windowId);
+    const unchanged =
+      ids.length === this._renderedIds.length && ids.every((id, i) => id === this._renderedIds[i]);
+    if (!unchanged) {
+      this._rebuild();
+      return;
+    }
+
+    const currentId = this.manager?.focusedUnit?.layout?.activeWindowId || '';
+    const byId = new Map(this._tiles.map((r) => [r.windowId, r]));
+    for (const entry of entries) {
+      const rec = byId.get(entry.windowId);
+      if (!rec) continue;
+      this._updateTileContent(rec, entry);
+      rec.tileEl.classList.toggle('current', entry.windowId === currentId);
+    }
+    // Cursor deliberately untouched — navigation state survives the refresh.
   }
 
   _buildTile(entry, live) {
@@ -253,23 +347,41 @@ class WebtmuxExpose extends LitElement {
     frame.className = 'tile-frame';
     tile.appendChild(frame);
 
+    const rec = {
+      windowId: entry.windowId,
+      tileEl: tile,
+      frame,
+      screen: null,
+      term: null,
+      pre: null,
+      cols: entry.cols,
+      rows: entry.rows,
+      labelLeft: null,
+    };
+
     if (live) {
       const screen = document.createElement('div');
       screen.className = 'tile-screen';
       frame.appendChild(screen);
-      this._renderXtermTile(screen, frame, entry);
+      rec.screen = screen;
+      rec.term = this._makeTerm(entry);
+      rec.term.open(screen);
+      rec.term.write(CaptureCache.decodeAnsi(entry));
+      this._rescale(rec);
     } else {
       // Overflow: cheap plain-text preview (SGR stripped) — no renderer cost.
       const pre = document.createElement('pre');
       pre.className = 'tile-pre';
       pre.textContent = stripSgr(decodeUtf8(entry.data));
       frame.appendChild(pre);
+      rec.pre = pre;
     }
 
     const label = document.createElement('div');
     label.className = 'tile-label';
     const left = document.createElement('span');
-    left.innerHTML = `<span class="idx">${entry.index}:</span> ${escapeHtml(entry.name)}`;
+    left.innerHTML = labelHtml(entry);
+    rec.labelLeft = left;
     const right = document.createElement('span');
     right.className = 'sess';
     right.textContent = entry.sessionName;
@@ -277,13 +389,32 @@ class WebtmuxExpose extends LitElement {
     tile.appendChild(label);
 
     tile.addEventListener('click', () => this._selectWindow(entry.windowId));
-    return tile;
+    return rec;
   }
 
-  // A read-only xterm sized to the capture's cols×rows, then CSS-scaled to fit the
-  // tile frame (letterboxed). No WebGL addon: many tiles would exhaust GL contexts.
-  _renderXtermTile(screen, frame, entry) {
-    const term = new Terminal({
+  // Repaint an existing tile with a fresh capture — no teardown.
+  _updateTileContent(rec, entry) {
+    if (rec.term) {
+      if (entry.cols && entry.rows && (entry.cols !== rec.cols || entry.rows !== rec.rows)) {
+        try {
+          rec.term.resize(entry.cols, entry.rows);
+        } catch (e) {}
+        rec.cols = entry.cols;
+        rec.rows = entry.rows;
+      }
+      rec.term.write('\x1b[H\x1b[2J');
+      rec.term.write(CaptureCache.decodeAnsi(entry));
+      this._rescale(rec);
+    } else if (rec.pre) {
+      rec.pre.textContent = stripSgr(decodeUtf8(entry.data));
+    }
+    if (rec.labelLeft) rec.labelLeft.innerHTML = labelHtml(entry); // name/index may change
+  }
+
+  // A read-only xterm sized to the capture's cols×rows. No WebGL addon: many
+  // tiles would exhaust GL contexts.
+  _makeTerm(entry) {
+    return new Terminal({
       cols: entry.cols || 80,
       rows: entry.rows || 24,
       fontSize: 14,
@@ -295,17 +426,26 @@ class WebtmuxExpose extends LitElement {
       cursorInactiveStyle: 'none',
       allowProposedApi: true,
     });
-    this._tiles.push({ term });
-    term.open(screen);
-    term.write(CaptureCache.decodeAnsi(entry));
+  }
 
-    // Scale to fit once the terminal has laid out its natural size.
+  // CSS-scale a tile's terminal to fit its frame (letterboxed) once laid out.
+  _rescale(rec) {
+    if (!rec.screen || !rec.frame) return;
     requestAnimationFrame(() => {
-      const nw = screen.offsetWidth || 1;
-      const nh = screen.offsetHeight || 1;
-      const scale = Math.min(frame.clientWidth / nw, frame.clientHeight / nh);
-      screen.style.transform = `scale(${scale})`;
+      const nw = rec.screen.offsetWidth || 1;
+      const nh = rec.screen.offsetHeight || 1;
+      const scale = Math.min(rec.frame.clientWidth / nw, rec.frame.clientHeight / nh);
+      rec.screen.style.transform = `scale(${scale})`;
     });
+  }
+
+  _setSort(mode) {
+    if (this._sort === mode) return;
+    this._sort = mode; // reactive -> header re-renders with the new active button
+    try {
+      localStorage.setItem('webtmux-expose-sort', mode);
+    } catch (e) {}
+    this._rebuild(); // reorder tiles; cursor stays on the same window
   }
 
   // ---- interaction ------------------------------------------------------------
@@ -324,9 +464,10 @@ class WebtmuxExpose extends LitElement {
   _paintCursor() {
     const tiles = this._tileEls();
     tiles.forEach((t, i) => t.classList.toggle('cursor', i === this._cursor));
-    if (this._cursor >= 0 && tiles[this._cursor]) {
-      tiles[this._cursor].scrollIntoView({ block: 'nearest' });
-    }
+    const cur = tiles[this._cursor];
+    // Remember WHICH window is highlighted so the cursor survives a rebuild.
+    this._cursorId = cur ? cur.dataset.window : null;
+    if (cur) cur.scrollIntoView({ block: 'nearest' });
   }
 
   _handleKey(e) {
@@ -383,6 +524,18 @@ function decodeUtf8(b64) {
     return new TextDecoder().decode(bytes);
   } catch (e) {
     return '';
+  }
+}
+
+function labelHtml(entry) {
+  return `<span class="idx">${entry.index}:</span> ${escapeHtml(entry.name)}`;
+}
+
+function readSort() {
+  try {
+    return localStorage.getItem('webtmux-expose-sort') === 'recent' ? 'recent' : 'session';
+  } catch (e) {
+    return 'session';
   }
 }
 

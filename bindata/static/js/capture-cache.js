@@ -15,6 +15,16 @@ export class CaptureCache extends EventTarget {
     this.byWindow = new Map(); // windowId -> {windowId, sessionName, index, name, cols, rows, capturedAt, data}
     this._lastReqAt = 0;
     this.debounceMs = 200;
+    // Access order for the Exposé "Last accessed" sort: windowId -> seq (higher
+    // = more recent). Bumped whenever a window is selected/viewed.
+    this._accessSeq = 0;
+    this.accessed = new Map();
+  }
+
+  // Record that a window was just accessed (selected/viewed) — drives the
+  // "Last accessed" Exposé sort.
+  markAccessed(windowId) {
+    if (windowId) this.accessed.set(windowId, ++this._accessSeq);
   }
 
   // Ask the server to (re)capture. windows: 'all' or an array of window ids.
@@ -44,11 +54,22 @@ export class CaptureCache extends EventTarget {
     return this.byWindow.get(windowId);
   }
 
-  // All cached entries, sorted for a stable Exposé grid (by session then index).
-  all() {
-    return [...this.byWindow.values()].sort(
-      (a, b) => a.sessionName.localeCompare(b.sessionName) || a.index - b.index
-    );
+  // All cached entries, sorted for the Exposé grid. sort='session' (default):
+  // by session name then window index. sort='recent': most-recently-accessed
+  // first, with never-accessed windows falling back to session/index order.
+  all(sort = 'session') {
+    const bySession = (a, b) => a.sessionName.localeCompare(b.sessionName) || a.index - b.index;
+    const arr = [...this.byWindow.values()];
+    if (sort === 'recent') {
+      arr.sort((a, b) => {
+        const ax = this.accessed.get(a.windowId) || 0;
+        const bx = this.accessed.get(b.windowId) || 0;
+        return bx - ax || bySession(a, b);
+      });
+    } else {
+      arr.sort(bySession);
+    }
+    return arr;
   }
 
   // The cached entry for windowId iff captured within maxAgeMs — the guard for

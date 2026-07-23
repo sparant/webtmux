@@ -565,6 +565,7 @@ export class TerminalUnit {
     // here (sidebar click, ↑/↓ arrow-nav, Exposé click); the server's
     // select-window repaint overwrites it a beat later (authoritative).
     this.paintOptimistic(windowId);
+    this.captureCache?.markAccessed(windowId); // feed the Exposé "Last accessed" sort
     this.sendMessage(MSG.TmuxSelectWindow, windowId);
   }
 
