@@ -24,6 +24,7 @@ type Controller struct {
 	follow      bool
 	baseSession string
 	clientTTY   string
+	groupBase   string // the real base session splits are grouped on (for self-heal)
 
 	layoutCache *Layout
 	layoutMu    sync.RWMutex
@@ -37,17 +38,65 @@ type Controller struct {
 // is passed as `tmux -S <socket>` to EVERY command, so the layout sidebar reads
 // the real host server rather than the container's empty default socket. follow=
 // true (grouped split panes) tracks the pane's tmux client wherever it roams.
-func NewController(sessionName string, socket string, follow bool) (*Controller, error) {
+func NewController(sessionName string, socket string, follow bool, groupBase string) (*Controller, error) {
 	c := &Controller{
 		sessionName: sessionName,
 		baseSession: sessionName,
 		follow:      follow,
+		groupBase:   groupBase,
 		socket:      socket,
 		eventChan:   make(chan Event, 100),
 		closeChan:   make(chan struct{}),
 	}
 
 	return c, nil
+}
+
+// selfHeal keeps a split from staying SYNCED. If the pane's client has landed on a
+// session shared with another client (e.g. it was driven — via native Ctrl+B — onto
+// the base/console session, coupling it with the console-following primary), we
+// transparently move it into a FRESH grouped session on the base: it keeps showing
+// the same window but regains its own independent current-window, so it decouples.
+// A pane that is the sole client of its (grouped) session is healthy — left alone.
+func (c *Controller) selfHeal(curSession string) {
+	if !c.follow || c.clientTTY == "" || c.groupBase == "" {
+		return
+	}
+	if curSession == c.baseSession {
+		return // still the sole client of its own group — healthy
+	}
+	if c.clientCount(curSession) <= 1 {
+		return // alone on this session (no coupling) — leave it (user's deliberate move)
+	}
+	// Coupled with another client. Re-group onto a fresh grouped session on the base.
+	// Order matters: create the group detached, MOVE the pane's client into it, and
+	// only THEN arm destroy-unattached — setting it before the client attaches would
+	// destroy the brand-new (unattached) session immediately.
+	newName := fmt.Sprintf("web-h%d", time.Now().UnixNano()%1000000000)
+	if _, err := c.runTmux("new-session", "-d", "-t", c.groupBase, "-s", newName); err != nil {
+		return
+	}
+	if _, err := c.runTmux("switch-client", "-c", c.clientTTY, "-t", newName); err != nil {
+		c.runTmux("kill-session", "-t", newName) // couldn't move the client — clean up
+		return
+	}
+	c.runTmux("set-option", "-t", newName, "destroy-unattached", "on")
+	c.baseSession = newName // discovery target + fallback now points at the fresh group
+}
+
+// clientCount returns how many tmux clients are attached to the given session.
+func (c *Controller) clientCount(session string) int {
+	out, err := c.runTmux("list-clients", "-t", session, "-F", "#{client_tty}")
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.TrimSpace(line) != "" {
+			n++
+		}
+	}
+	return n
 }
 
 // session returns the session the pane is CURRENTLY on. Without follow, that's the
@@ -145,6 +194,9 @@ func (c *Controller) GetLayout() *Layout {
 // RefreshLayout fetches the current tmux layout
 func (c *Controller) RefreshLayout() error {
 	sess := c.session() // where the pane actually is (follows a roaming client)
+	// If a split has drifted onto a shared session (synced), decouple it first.
+	c.selfHeal(sess)
+	sess = c.session()
 	// Get session info
 	sessionOut, err := c.runTmux("display-message", "-t", sess, "-p", "#{session_id},#{session_name}")
 	if err != nil {

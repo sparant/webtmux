@@ -219,7 +219,7 @@ func (server *Server) processWSConn(ctx context.Context, conn *websocket.Conn, h
 		// (native Ctrl+B), keeping the layout correlated with reality. The primary
 		// (base session, many clients) doesn't follow.
 		follow := sessionName != server.tmuxSession
-		ctrl, err := tmux.NewController(sessionName, server.tmuxSocket, follow)
+		ctrl, err := tmux.NewController(sessionName, server.tmuxSocket, follow, server.tmuxSession)
 		if err != nil {
 			log.Printf("Warning: failed to create tmux controller for %q: %v", sessionName, err)
 		} else if err := ctrl.Start(); err != nil {
