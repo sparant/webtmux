@@ -325,13 +325,23 @@ export class SplitManager {
     if (holder) { this.focus(holder); return; }
     const u = this._switchTargetRegion();
     if (!u) return;
-    // Only select windows reachable in this region's own list (grouped splits share
-    // the base's list). A cross-session window that no region shows can't be reached
-    // from here without breaking the split — no-op rather than sync it.
-    if (!(u.layout?.windows || []).some(w => w.id === id)) return;
-    u._targetWindowId = id;
-    u.selectWindow(id);
-    this.focus(u);
+    const inList = (u.layout?.windows || []).some(w => w.id === id);
+    if (inList) {
+      u._targetWindowId = id;
+      u.selectWindow(id);
+      this.focus(u);
+      return;
+    }
+    // Not in this region's list => a different session. The PRIMARY is a plain
+    // client and can roam sessions safely (it re-couples with the console on
+    // return), so let it switch — this restores cross-session recents in
+    // single-view / on the primary. A grouped SPLIT can't leave its group without
+    // syncing, so for a split this is a no-op.
+    if (u.primary && session && u.layout && session !== u.layout.sessionName) {
+      u.switchSession(session);
+      u._targetWindowId = id;
+      setTimeout(() => { u.selectWindow(id); this.focus(u); }, 300);
+    }
   }
 
   // Toolbar recent-tab click -> shared navigation.
