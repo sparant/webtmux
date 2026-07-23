@@ -332,12 +332,11 @@ export class SplitManager {
       this.focus(u);
       return;
     }
-    // Not in this region's list => a different session. The PRIMARY is a plain
-    // client and can roam sessions safely (it re-couples with the console on
-    // return), so let it switch — this restores cross-session recents in
-    // single-view / on the primary. A grouped SPLIT can't leave its group without
-    // syncing, so for a split this is a no-op.
-    if (u.primary && session && u.layout && session !== u.layout.sessionName) {
+    // Not in this region's list => a different session. Any region may hop there
+    // now: the backend follows the pane's real client and self-heals a split that
+    // ends up coupled on a shared session, so cross-session recents work for splits
+    // too (a brief couple is decoupled on the next poll).
+    if (session && u.layout && session !== u.layout.sessionName) {
       u.switchSession(session);
       u._targetWindowId = id;
       setTimeout(() => { u.selectWindow(id); this.focus(u); }, 300);

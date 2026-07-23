@@ -610,11 +610,10 @@ export class TerminalUnit {
   }
 
   switchSession(sessionName) {
-    // Only the PRIMARY region switches sessions. A split is a GROUPED session that
-    // shares the base's window list; switch-client-ing it to another session (and
-    // especially back to the base) lands it on the raw console session and
-    // permanently syncs it with the primary. Splits stay in their group.
-    if (!this.primary) return;
+    // Any region may switch sessions. A split is a grouped session, so hopping it
+    // to a shared session (esp. the base/console) would couple it — but the backend
+    // now FOLLOWS the pane's real client and SELF-HEALS a split that lands on a
+    // shared session (re-groups it, decoupling), so this is safe again.
     this.sendMessage(MSG.TmuxSwitchSession, sessionName);
   }
 
