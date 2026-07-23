@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"fmt"
+	"log"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -16,10 +17,14 @@ type Controller struct {
 
 	// Follow the pane's real tmux client. A pane is a live tmux client (the pty)
 	// the user can drive natively (Ctrl+B w/s) to any session — so a fixed session
-	// name goes stale/miscorrelated. The server passes the pane's exact client tty
-	// (read off the pty via TIOCGPTN) through SetClientTTY, so EVERY pane — the
-	// primary included — can be followed and switched deterministically
-	// (`switch-client -c <tty>`). When the tty is unknown we fall back to
+	// name goes stale/miscorrelated. The server passes the pane's exact client
+	// identity — tty (via TIOCGPTN) + pid (the exec'd tmux client) — through
+	// SetClient, so EVERY pane, the primary included, is followed and switched
+	// deterministically. The PID is the unambiguous row key (tty strings collide
+	// across pid namespaces: our container's /dev/pts/N vs a host console's);
+	// switch-client can only target by tty string, so switches additionally
+	// refuse when the string is ambiguous (see switchOurClient) — ReservePtys
+	// keeps it unique in practice. When neither is known we fall back to
 	// discovering the sole client of the pane's grouped session.
 	// baseSession = the pane's own (grouped) session (discovery + fallback);
 	// groupBase = the logical session that group currently views ("" = primary,
@@ -27,6 +32,7 @@ type Controller struct {
 	follow      bool
 	baseSession string
 	clientTTY   string
+	clientPID   int
 	groupBase   string
 
 	layoutCache *Layout
@@ -55,16 +61,59 @@ func NewController(sessionName string, socket string, follow bool, groupBase str
 	return c, nil
 }
 
-// SetClientTTY hands the controller the pane's exact tmux client tty (the pty's
-// slave device, read via TIOCGPTN when the pty was created). With it, the pane
-// can be followed and switched deterministically — no discovery heuristics —
-// so following is enabled for every pane, the primary included.
-func (c *Controller) SetClientTTY(tty string) {
-	if tty == "" {
+// SetClient hands the controller the pane's exact tmux client identity: the
+// pty's slave tty (read via TIOCGPTN) and the spawned child's pid
+// (attach-web.sh execs into the tmux client, so it IS #{client_pid}). With
+// either known, the pane is followed deterministically — no discovery
+// heuristics — so following is enabled for every pane, the primary included.
+func (c *Controller) SetClient(tty string, pid int) {
+	if tty == "" && pid <= 0 {
 		return
 	}
 	c.clientTTY = tty
+	c.clientPID = pid
 	c.follow = true
+}
+
+// listClients fetches every client on the server with pid/tty/session.
+func (c *Controller) listClients() ([]clientRow, error) {
+	out, err := c.runTmux("list-clients", "-F", clientsFormat)
+	if err != nil {
+		return nil, err
+	}
+	return parseClientRows(out), nil
+}
+
+// switchOurClient moves OUR pane's client to the target session — and refuses
+// when the tty string is ambiguous: tmux resolves `-c` by STRING, so if a
+// host-side client shares our "/dev/pts/N" it could move the WRONG client
+// (historically: the ssh console, or leaving this pane visibly unswitched
+// while the layout claimed otherwise). ReservePtys makes collisions
+// ~impossible; this guard turns any residual one into a safe, loud no-op
+// instead of a wrong-client move. Verifies the landing by pid and logs a miss.
+func (c *Controller) switchOurClient(target string) error {
+	if c.clientTTY == "" {
+		return fmt.Errorf("client tty unknown; cannot switch-client safely")
+	}
+	rows, err := c.listClients()
+	if err != nil {
+		return err
+	}
+	if n := countTTY(rows, c.clientTTY); n > 1 {
+		return fmt.Errorf("client tty %s is ambiguous (%d clients share it) — refusing switch-client; raise WEBTMUX_PTS_FLOOR", c.clientTTY, n)
+	}
+	if _, err := c.runTmux("switch-client", "-c", c.clientTTY, "-t", target); err != nil {
+		return err
+	}
+	if c.clientPID > 0 {
+		if rows, err := c.listClients(); err == nil {
+			if r, ok := findClient(rows, c.clientPID, c.clientTTY); ok && r.session != target {
+				log.Printf("switch-client verification failed: client pid=%d tty=%s is on %q, wanted %q",
+					c.clientPID, c.clientTTY, r.session, target)
+			}
+		}
+	}
+	return nil
 }
 
 // selfHeal keeps a split from staying SYNCED. If the pane's client has landed on a
@@ -101,7 +150,7 @@ func (c *Controller) regroupOnto(base string) error {
 	if _, err := c.runTmux("new-session", "-d", "-t", base, "-s", newName); err != nil {
 		return err
 	}
-	if _, err := c.runTmux("switch-client", "-c", c.clientTTY, "-t", newName); err != nil {
+	if err := c.switchOurClient(newName); err != nil {
 		c.runTmux("kill-session", "-t", newName) // couldn't move the client — clean up
 		return err
 	}
@@ -129,26 +178,19 @@ func (c *Controller) clientCount(session string) int {
 // session returns the session the pane is CURRENTLY on. Without follow, that's the
 // controller's own name (mutated by SwitchSession). With follow, it's the pane's
 // tmux client's current session (so native Ctrl+B session hops are reflected),
-// falling back to the base session if the client can't be read yet.
+// falling back to the base session if the client can't be read yet. The row is
+// matched by PID first (unambiguous even when a host-side client shares our tty
+// string — see findClient), tty only as a fallback.
 func (c *Controller) session() string {
 	if !c.follow {
 		return c.sessionName
 	}
-	if c.clientTTY == "" {
+	if c.clientTTY == "" && c.clientPID <= 0 {
 		c.discoverClient()
 	}
-	if c.clientTTY != "" {
-		// Find OUR client in the global client list by its tty and read the session
-		// it's currently on (survives the client roaming to another session).
-		if out, err := c.runTmux("list-clients", "-F", "#{client_tty},#{client_session}"); err == nil {
-			for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-				parts := strings.SplitN(strings.TrimSpace(line), ",", 2)
-				if len(parts) == 2 && parts[0] == c.clientTTY {
-					if s := strings.TrimSpace(parts[1]); s != "" {
-						return s
-					}
-				}
-			}
+	if rows, err := c.listClients(); err == nil {
+		if r, ok := findClient(rows, c.clientPID, c.clientTTY); ok && r.session != "" {
+			return r.session
 		}
 	}
 	return c.baseSession
@@ -430,12 +472,16 @@ func (c *Controller) SwitchSession(sessionName string) error {
 		c.RefreshLayout()
 		return nil
 	}
-	args := []string{"switch-client", "-t", sessionName}
 	if c.clientTTY != "" {
-		args = []string{"switch-client", "-c", c.clientTTY, "-t", sessionName}
-	}
-	if _, err := c.runTmux(args...); err != nil {
-		return err
+		if err := c.switchOurClient(sessionName); err != nil {
+			return err
+		}
+	} else {
+		// Legacy fallback (no tty known — non-Linux): bare switch-client resolves
+		// to an arbitrary client; no safe alternative exists without the tty.
+		if _, err := c.runTmux("switch-client", "-t", sessionName); err != nil {
+			return err
+		}
 	}
 	c.sessionName = sessionName
 	c.RefreshLayout()

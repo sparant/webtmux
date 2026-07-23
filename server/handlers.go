@@ -227,14 +227,21 @@ func (server *Server) processWSConn(ctx context.Context, conn *websocket.Conn, h
 		if err != nil {
 			log.Printf("Warning: failed to create tmux controller for %q: %v", sessionName, err)
 		} else if err := func() error {
-			// Give the controller the pane's EXACT client tty (the pty's slave
-			// device) so every client-scoped tmux command — switch-client above
-			// all — targets this pane's client and nothing else. Without it a
-			// bare switch-client resolves to an arbitrary client (historically
-			// dragging the ssh console to another session).
+			// Give the controller the pane's EXACT client identity — the pty's
+			// slave tty AND the exec'd tmux client's pid — so client-scoped tmux
+			// commands and client-row lookups target this pane's client and
+			// nothing else. The pid disambiguates when a host-side client shares
+			// our tty STRING across pid namespaces (a bare/collided switch-client
+			// historically dragged the ssh console, or switched nothing while
+			// the layout claimed otherwise).
+			ttyName, pid := "", 0
 			if t, ok := slave.(interface{ TtyName() string }); ok {
-				ctrl.SetClientTTY(t.TtyName())
+				ttyName = t.TtyName()
 			}
+			if p, ok := slave.(interface{ Pid() int }); ok {
+				pid = p.Pid()
+			}
+			ctrl.SetClient(ttyName, pid)
 			return ctrl.Start()
 		}(); err != nil {
 			log.Printf("Warning: failed to start tmux controller for %q: %v", sessionName, err)

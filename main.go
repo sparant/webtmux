@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -102,6 +103,21 @@ func main() {
 		err = appOptions.Validate()
 		if err != nil {
 			exit(err, 6)
+		}
+
+		// Reserve low pts numbers BEFORE any pane pty exists, so our panes'
+		// "/dev/pts/N" names can never collide with host-side tmux clients (tmux
+		// targets clients by tty STRING; a cross-namespace collision lets
+		// switch-client act on the wrong client). WEBTMUX_PTS_FLOOR overrides
+		// the default of 256; 0 disables.
+		floor := 256
+		if v := os.Getenv("WEBTMUX_PTS_FLOOR"); v != "" {
+			if n, perr := strconv.Atoi(v); perr == nil {
+				floor = n
+			}
+		}
+		if n := localcommand.ReservePtys(floor); n > 0 {
+			log.Printf("Reserved %d low pts numbers (floor %d) to keep pane ttys collision-free", n, floor)
 		}
 
 		args := c.Args()

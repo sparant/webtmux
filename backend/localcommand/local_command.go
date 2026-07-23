@@ -111,6 +111,17 @@ func (lcmd *LocalCommand) TtyName() string {
 	return ptsName(lcmd.pty)
 }
 
+// Pid returns the spawned process's pid. attach-web.sh `exec`s into the tmux
+// client, so this IS the pid the client reports to the tmux server
+// (#{client_pid}) — the unambiguous key for identifying our client row even
+// when tty strings collide across pid namespaces.
+func (lcmd *LocalCommand) Pid() int {
+	if lcmd.cmd != nil && lcmd.cmd.Process != nil {
+		return lcmd.cmd.Process.Pid
+	}
+	return 0
+}
+
 func (lcmd *LocalCommand) WindowTitleVariables() map[string]interface{} {
 	return map[string]interface{}{
 		"command": lcmd.command,
