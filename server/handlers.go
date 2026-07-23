@@ -287,6 +287,8 @@ func (server *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Never serve a stale page after a rebuild (see noStore rationale).
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Write(indexBuf.Bytes())
 }
 

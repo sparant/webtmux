@@ -288,7 +288,12 @@ func (server *Server) setupHandlers(ctx context.Context, cancel context.CancelFu
 	if err != nil {
 		log.Fatalf("failed to open static/ subdirectory of embedded filesystem: %v", err)
 	}
-	staticFileHandler := http.FileServer(http.FS(fs))
+	// The embedded assets change on every rebuild but embed.FS has zero modtimes,
+	// so http.FileServer sends no Last-Modified/ETag/Cache-Control — browsers then
+	// cache the JS heuristically and serve a STALE bundle after a rebuild (the
+	// "I rebuilt but still see the old UI" trap). Force revalidation so a fresh
+	// container's assets always load.
+	staticFileHandler := noStore(http.FileServer(http.FS(fs)))
 
 	var siteMux = http.NewServeMux()
 	siteMux.HandleFunc(pathPrefix, server.handleIndex)

@@ -196,6 +196,16 @@ func (server *Server) wrapHeaders(handler http.Handler) http.Handler {
 	})
 }
 
+// noStore forces the browser to revalidate a response every load. The embedded
+// static assets change on every rebuild but embed.FS gives them no modtime/ETag,
+// so without this browsers heuristically cache and serve a stale bundle.
+func noStore(handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		handler.ServeHTTP(w, r)
+	})
+}
+
 func (server *Server) wrapBasicAuth(handler http.Handler, credential string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Extract IP (handle proxies)
