@@ -135,7 +135,7 @@ export class SplitManager {
     this._pushLayout(unit);
     // Focusing a region "accesses" the window it's showing (MRU toolbar).
     const win = unit.layout?.activeWindowId;
-    if (win) { unit._accessSeenId = win; this.noteAccess(win); }
+    if (win) { unit._accessSeenId = win; this.noteAccess(win, this._metaFor(unit, win)); }
     else this._refreshToolbar();
     unit.terminal?.focus();
   }
@@ -162,41 +162,66 @@ export class SplitManager {
     const newId = unit.layout?.activeWindowId;
     if (newId && newId !== unit._accessSeenId) {
       unit._accessSeenId = newId;
-      if (!unit._suppressAccessIds.delete(newId)) this.noteAccess(newId);
+      if (!unit._suppressAccessIds.delete(newId)) this.noteAccess(newId, this._metaFor(unit, newId));
     }
     this._refreshToolbar();
   }
 
-  // Move a window to the front of the most-recently-accessed list (max 5).
-  noteAccess(id) {
+  // Snapshot a window's display metadata (index/name/session) from the accessing
+  // region's layout — captured at access time so recents survive across sessions
+  // even when that window isn't in the focused region's window list anymore.
+  _metaFor(unit, id) {
+    const w = (unit.layout?.windows || []).find(x => x.id === id);
+    return { index: w?.index, name: w?.name || 'bash', session: unit.layout?.sessionName || '' };
+  }
+
+  // Move a window to the front of the most-recently-accessed list (max 5). Stores
+  // a {id, index, name, session} snapshot so it can be shown across all sessions.
+  noteAccess(id, meta = {}) {
     if (!id) return;
-    this.recentWindows = [id, ...this.recentWindows.filter(x => x !== id)].slice(0, 5);
+    const entry = { id, index: meta.index, name: meta.name || 'bash', session: meta.session || '' };
+    this.recentWindows = [entry, ...this.recentWindows.filter(e => e.id !== id)].slice(0, 5);
     this._refreshToolbar();
   }
 
-  // Rebuild the toolbar's recent-window strip: resolve each id to index/name from
-  // the shared window list, mark the focused region's current one active, and drop
-  // windows that no longer exist.
+  // Rebuild the toolbar's recent strip. Resolve each id to fresh index/name/session
+  // from the server-wide capture cache (so windows in OTHER sessions still show),
+  // falling back to the snapshot taken at access time. Mark the focused region's
+  // current window active. Never dropped for being outside the focused session.
   _refreshToolbar() {
     if (!this.toolbar) return;
-    const focused = this.focusedUnit;
-    const activeId = focused?.layout?.activeWindowId;
-    const wins = focused?.layout?.windows || this.units.find(u => u.layout)?.layout?.windows || [];
-    const byId = new Map(wins.map(w => [w.id, w]));
-    if (wins.length) this.recentWindows = this.recentWindows.filter(id => byId.has(id));
-    this.toolbar.recent = this.recentWindows.map(id => {
-      const w = byId.get(id) || {};
-      return { id, index: w.index ?? '?', name: w.name || 'bash', active: id === activeId };
+    const activeId = this.focusedUnit?.layout?.activeWindowId;
+    const cache = this.captureCache?.byWindow;
+    this.toolbar.recent = this.recentWindows.map(e => {
+      const c = cache?.get(e.id);
+      return {
+        id: e.id,
+        index: c?.index ?? e.index ?? '?',
+        name: c?.name || e.name || 'bash',
+        session: c?.sessionName || e.session || '',
+        active: e.id === activeId,
+      };
     });
     this.toolbar.collapsed = !!this.sidebar?.collapsed;
   }
 
   // Click on a recent-window tab: if some region already shows that window, jump
-  // focus to it; otherwise bring it into the focused region.
-  pickRecentWindow(id) {
+  // focus to it; if it lives in another session, move the focused region there
+  // first; otherwise select it in the focused region.
+  pickRecentWindow(entry) {
+    const id = typeof entry === 'string' ? entry : entry?.id;
+    if (!id) return;
     const holder = this.units.find(u => u.layout?.activeWindowId === id);
     if (holder) { this.focus(holder); return; }
-    this.focusedUnit?.selectWindow(id);
+    const u = this.focusedUnit;
+    if (!u) return;
+    const session = (typeof entry === 'object' && entry.session) || '';
+    if (session && u.layout && session !== u.layout.sessionName) {
+      u.switchSession(session);
+      setTimeout(() => u.selectWindow(id), 300);
+    } else {
+      u.selectWindow(id);
+    }
   }
 
   _pushLayout(unit) {

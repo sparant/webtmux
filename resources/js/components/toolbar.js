@@ -26,28 +26,37 @@ class WebtmuxToolbar extends LitElement {
     .tabs {
       display: flex;
       align-items: center;
-      gap: 4px;
-      overflow: hidden;
+      gap: 6px;
+      overflow-x: auto;
+      overflow-y: hidden;
       flex: 1 1 auto;
+      scrollbar-width: thin;
     }
-    .label { color: #666; font-size: 12px; margin-right: 2px; white-space: nowrap; }
+    .tabs::-webkit-scrollbar { height: 6px; }
+    .tabs::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 3px; }
+    .label { color: #666; font-size: 12px; margin-right: 2px; white-space: nowrap; flex: 0 0 auto; }
     .tab {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 6px;
+      flex: 0 0 auto;
       background: #1a1a2e;
-      color: #aaa;
+      color: #ddd;
       border: 1px solid #0f3460;
       border-radius: 4px;
-      padding: 4px 10px;
-      font-size: 13px;
+      padding: 6px 14px;
+      font-size: 14px;
       cursor: pointer;
       white-space: nowrap;
-      max-width: 200px;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      max-width: 340px;
       font-family: Menlo, Monaco, "Courier New", monospace;
       transition: all 0.15s;
     }
     .tab:hover { border-color: #4a9eff; color: #fff; }
     .tab.active { background: #e94560; border-color: #e94560; color: #fff; }
+    .tab .sess { color: #4a9eff; font-size: 11px; opacity: 0.85; flex: 0 0 auto; }
+    .tab.active .sess { color: #ffd7de; }
+    .tab .wname { overflow: hidden; text-overflow: ellipsis; }
     .sidebar-toggle {
       flex: 0 0 auto;
       background: #1a1a2e;
@@ -79,9 +88,9 @@ class WebtmuxToolbar extends LitElement {
         ${this.recent.map(w => html`
           <button
             class="tab ${w.active ? 'active' : ''}"
-            title="Go to window ${w.index}: ${w.name}"
-            @click=${() => this.manager?.pickRecentWindow(w.id)}
-          >${w.index}: ${w.name}</button>
+            title="${w.session} — window ${w.index}: ${w.name}"
+            @click=${() => this.manager?.pickRecentWindow(w)}
+          ><span class="sess">${w.session}:${w.index}</span><span class="wname">${w.name}</span></button>
         `)}
       </div>
       <button
