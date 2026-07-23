@@ -43,15 +43,15 @@ export class TerminalUnit {
   // opts:
   //   sessionName: '' for the primary/shared region, or a grouped session name.
   //   terminalEl:  the div xterm opens into (this unit's terminal area).
-  //   sidebar:     the <webtmux-sidebar> element bound to this unit (may be null).
   //   primary:     true for the first/primary unit — it also broadcasts the
   //                global 'tmux-layout-update' event that mobile-controls listens
   //                to (mobile is single-terminal and never splits).
   //   onTitle:     optional callback(title) when the server sets the window title.
-  constructor({ sessionName = '', terminalEl, sidebar = null, primary = false, onTitle = null } = {}) {
+  // The sidebar is NOT per-unit: SplitManager owns one shared sidebar and binds it
+  // to the focused unit. This unit signals via onFocus/onLayout/onTerminalMousedown.
+  constructor({ sessionName = '', terminalEl, primary = false, onTitle = null } = {}) {
     this.sessionName = sessionName;
     this.terminalEl = terminalEl;
-    this.sidebar = sidebar;
     this.primary = primary;
     this.onTitle = onTitle;
 
@@ -75,15 +75,6 @@ export class TerminalUnit {
   }
 
   init() {
-    // Bind our sidebar back to us so its actions resolve to THIS unit (not a
-    // global). Each unit owns its own sidebar in the split. Nudge a re-render so
-    // the sidebar's unit-dependent controls (e.g. per-region close) resolve even
-    // before the first layout arrives.
-    if (this.sidebar) {
-      this.sidebar.unit = this;
-      this.sidebar.requestUpdate?.();
-    }
-
     // Create terminal
     this.terminal = new Terminal({
       cursorBlink: true,
@@ -322,10 +313,9 @@ export class TerminalUnit {
     container.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
       this.focus();                     // click brings keyboard focus (+ focuses this unit)
-      // Clicking into the terminal collapses THIS unit's sidebar out of the way —
-      // unless it's pinned (the panel's "stays open" toggle).
-      const sb = this.sidebar;
-      if (sb && !sb.collapsed && !sb.pinned) sb.collapsed = true;
+      // Clicking into the terminal collapses the (single, shared) sidebar out of
+      // the way — the owner (SplitManager) decides, honoring the pin toggle.
+      if (this.onTerminalMousedown) this.onTerminalMousedown();
       startX = e.clientX; startY = e.clientY; dragging = false;
     });
 
@@ -495,18 +485,14 @@ export class TerminalUnit {
   // The primary unit additionally broadcasts the global event that the mobile
   // controls listen to (mobile is single-terminal and never splits).
   dispatchLayoutUpdate() {
-    if (this.sidebar) {
-      this.sidebar.layout = this.layout;
-      this.sidebar.activePane = this.layout.activePaneId;
-      this.sidebar.activeWindow = this.layout.activeWindowId;
-    }
     if (this.primary) {
       window.dispatchEvent(new CustomEvent('tmux-layout-update', {
         detail: this.layout
       }));
     }
-    // Let an owner (SplitManager) react to this unit's layout, e.g. to auto-pick
-    // a not-yet-shown window for a freshly-added region.
+    // Let the owner (SplitManager) react to this unit's layout: forward it to the
+    // single shared sidebar IF this unit is focused, and handle add-region
+    // auto-pick. The sidebar is no longer per-unit.
     if (this.onLayout) this.onLayout(this);
   }
 

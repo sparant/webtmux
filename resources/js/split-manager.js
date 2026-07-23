@@ -1,16 +1,25 @@
 // SplitManager — owns an ordered list of TerminalUnits tiled side by side, a
-// focused unit, and the split/close controls. The first unit is the PRIMARY
-// region on the shared base session (stays in sync with the ssh console); each
-// added region gets a freshly generated grouped-session name so it has its own
-// current window while sharing the window list. Only the focused region's
-// sidebar is shown — the "one sidebar" illusion.
+// focused unit, and ONE shared sidebar. The first unit is the PRIMARY region on
+// the shared base session (stays in sync with the ssh console); each added region
+// gets a freshly generated grouped-session name so it has its own current window
+// while sharing the window list.
+//
+// One-sidebar illusion: there is a SINGLE <webtmux-sidebar> element, always in the
+// same spot, bound to whichever region is FOCUSED. Clicking a region's terminal
+// focuses it and the shared sidebar re-points to reflect/control that region.
 import { TerminalUnit } from './terminal-unit.js';
 
 export class SplitManager {
   constructor(container) {
-    this.container = container;   // #app — holds .region elements + .divider bars
+    this.container = container;   // #app — holds .region elements, .divider bars, and the shared sidebar
     this.units = [];
     this.focusedUnit = null;
+
+    // The single shared sidebar (last child of #app; its own CSS floats it at the
+    // right — viewport-fixed in overlay/collapsed mode, or a 330px column in
+    // side-by-side mode). Regions are inserted BEFORE it.
+    this.sidebar = document.createElement('webtmux-sidebar');
+    this.container.appendChild(this.sidebar);
 
     this._installControls();
 
@@ -27,26 +36,31 @@ export class SplitManager {
   addUnit({ sessionName = null, primary = false } = {}) {
     if (sessionName === null) sessionName = this.genSessionName();
 
-    // Region DOM: a flex row of [terminal | its sidebar]. A divider precedes
-    // every region after the first.
+    // Region DOM = just the terminal area (the sidebar is shared, not per-region).
+    // A divider precedes every region after the first. Insert BEFORE the shared
+    // sidebar so it stays rightmost.
     if (this.units.length > 0) {
       const divider = document.createElement('div');
       divider.className = 'divider';
-      this.container.appendChild(divider);
+      this.container.insertBefore(divider, this.sidebar);
     }
     const region = document.createElement('div');
     region.className = 'region';
     region.dataset.session = sessionName || 'primary';
     const term = document.createElement('div');
     term.className = 'region-term';
-    const sidebar = document.createElement('webtmux-sidebar');
     region.appendChild(term);
-    region.appendChild(sidebar);
-    this.container.appendChild(region);
+    this.container.insertBefore(region, this.sidebar);
 
-    const unit = new TerminalUnit({ sessionName, terminalEl: term, sidebar, primary });
+    const unit = new TerminalUnit({ sessionName, terminalEl: term, primary });
     unit.region = region;
     unit.onFocus = (u) => this.focus(u);
+    unit.onLayout = (u) => this._onUnitLayout(u);
+    // Clicking the terminal collapses the shared sidebar out of the way (unless pinned).
+    unit.onTerminalMousedown = () => {
+      const sb = this.sidebar;
+      if (sb && !sb.collapsed && !sb.pinned) sb.collapsed = true;
+    };
     // Clicking anywhere in the region (even outside the terminal) focuses it.
     region.addEventListener('mousedown', () => this.focus(unit), true);
 
@@ -83,13 +97,36 @@ export class SplitManager {
     this.focusedUnit = unit;
     // Compat shim: mobile-controls + any global shortcut target the focused unit.
     window.webtmux = unit;
-    // Each region keeps its OWN sidebar (scoped to its region — see the `split`
-    // class in _syncSplitClass), so a pane always controls the region it sits in.
-    // Focus only moves the highlight + keyboard focus; it never hides a sidebar.
     for (const u of this.units) {
       u.region.classList.toggle('focused', u === unit);
     }
+    // Re-point the single shared sidebar at the focused region and paint its state.
+    this.sidebar.unit = unit;
+    this._pushLayout(unit);
     unit.terminal?.focus();
+  }
+
+  // Forward a unit's layout to the shared sidebar ONLY when it is the focused
+  // region (so the one sidebar always reflects the focused window), and drive the
+  // "next unused window" auto-pick for a freshly added region.
+  _onUnitLayout(unit) {
+    if (unit === this.focusedUnit) this._pushLayout(unit);
+
+    if (unit._autoPickPending && unit.layout) {
+      const used = new Set(
+        this.units.filter(x => x !== unit).map(x => x.layout?.activeWindowId).filter(Boolean)
+      );
+      const target = (unit.layout.windows || []).find(w => !used.has(w.id));
+      if (target && target.id !== unit.layout.activeWindowId) unit.selectWindow(target.id);
+      unit._autoPickPending = false;
+    }
+  }
+
+  _pushLayout(unit) {
+    const sb = this.sidebar;
+    sb.layout = unit.layout || null;
+    sb.activePane = unit.layout?.activePaneId || '';
+    sb.activeWindow = unit.layout?.activeWindowId || '';
   }
 
   // Add a region and, once its layout arrives, auto-select a window not already
@@ -97,15 +134,6 @@ export class SplitManager {
   splitAdd() {
     const unit = this.addUnit({});
     unit._autoPickPending = true;
-    unit.onLayout = (u) => {
-      if (!u._autoPickPending || !u.layout) return;
-      const used = new Set(
-        this.units.filter(x => x !== u).map(x => x.layout?.activeWindowId).filter(Boolean)
-      );
-      const target = (u.layout.windows || []).find(w => !used.has(w.id));
-      if (target && target.id !== u.layout.activeWindowId) u.selectWindow(target.id);
-      u._autoPickPending = false;
-    };
     return unit;
   }
 
@@ -114,19 +142,9 @@ export class SplitManager {
   }
 
   // #app gets .split-active only with >1 region, so single-view keeps its exact
-  // old look (no focus outline, no divider). In split mode each sidebar also gets
-  // the `split` class, which scopes its overlay/collapsed positioning to its own
-  // region (position:absolute within the region) instead of viewport-fixed — so a
-  // region's pane floats over ITS terminal, not over a neighbouring region.
+  // old look (no focus outline, no divider).
   _syncSplitClass() {
-    const split = this.units.length > 1;
-    this.container.classList.toggle('split-active', split);
-    for (const u of this.units) {
-      if (u.sidebar) {
-        u.sidebar.classList.toggle('split', split);
-        u.sidebar.style.display = '';   // no focus-based hiding anymore
-      }
-    }
+    this.container.classList.toggle('split-active', this.units.length > 1);
   }
 
   _refitSoon() {
@@ -139,8 +157,8 @@ export class SplitManager {
     window.addEventListener('keydown', (ev) => {
       if (!ev.ctrlKey || !ev.altKey || ev.metaKey) return;
       switch (ev.code) {
-        case 'KeyB':                                   // toggle focused region's sidebar
-          this.focusedUnit?.sidebar?.toggleCollapsed();
+        case 'KeyB':                                   // toggle the shared sidebar
+          this.sidebar?.toggleCollapsed();
           break;
         case 'Enter':                                  // add a split region
           this.splitAdd();
@@ -157,6 +175,6 @@ export class SplitManager {
 
     // Buttons in the sidebar dispatch these (composed, cross shadow DOM).
     window.addEventListener('webtmux-split-add', () => this.splitAdd());
-    window.addEventListener('webtmux-split-close', (e) => this.removeUnit(e.detail?.unit));
+    window.addEventListener('webtmux-split-close', (e) => this.removeUnit(e.detail?.unit || this.focusedUnit));
   }
 }
