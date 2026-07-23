@@ -272,8 +272,17 @@ export class SplitManager {
     if (this.recentWindows.length !== before) this._refreshToolbar();
   }
 
+  // Pane-focus dots: one per region (only when >1), green on the focused pane.
+  _refreshPanes() {
+    if (!this.toolbar) return;
+    this.toolbar.panes = this.units.length > 1
+      ? this.units.map(u => u === this.focusedUnit)
+      : [];
+  }
+
   _refreshToolbar() {
     if (!this.toolbar) return;
+    this._refreshPanes();
     this._pruneDeletedRecents();
     const activeId = this.focusedUnit?.layout?.activeWindowId;
     const cache = this.captureCache?.byWindow;

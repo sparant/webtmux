@@ -8,6 +8,7 @@ class WebtmuxToolbar extends LitElement {
   static properties = {
     recent: { type: Array },
     collapsed: { type: Boolean },
+    panes: { type: Array },
   };
 
   static styles = css`
@@ -88,12 +89,34 @@ class WebtmuxToolbar extends LitElement {
       font-size: 16px;
     }
     .sidebar-toggle:hover { border-color: #e94560; color: #fff; }
+
+    /* One dot per visible pane (only when >1). Green = the focused pane, red = the
+       rest. Sits just left of the sidebar toggle. */
+    .dots {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      margin-right: 4px;
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #e94560;              /* red — not the focused pane */
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.3) inset;
+    }
+    .dot.focused {
+      background: #37d17a;              /* green — the focused pane */
+      box-shadow: 0 0 6px rgba(55, 209, 122, 0.8);
+    }
   `;
 
   constructor() {
     super();
     this.recent = [];
     this.collapsed = false;
+    this.panes = [];       // [bool] per pane in order; true = focused. [] hides the dots.
     this.manager = null;   // SplitManager, set directly
   }
 
@@ -113,6 +136,13 @@ class WebtmuxToolbar extends LitElement {
             >×</span></button>
         `)}
       </div>
+      ${this.panes.length > 1 ? html`
+        <div class="dots" title="Panes — green is the focused pane">
+          ${this.panes.map((focused, i) => html`<span
+            class="dot ${focused ? 'focused' : ''}"
+            title="Pane ${i + 1}${focused ? ' (focused)' : ''}"></span>`)}
+        </div>
+      ` : ''}
       <button
         class="sidebar-toggle"
         title="Toggle sidebar (Ctrl+Alt+B)"
