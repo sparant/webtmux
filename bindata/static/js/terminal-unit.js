@@ -9,6 +9,7 @@
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
+import { CaptureCache } from './capture-cache.js';
 
 // Protocol message types (must match Go constants)
 export const MSG = {
@@ -27,6 +28,7 @@ export const MSG = {
   TmuxNewWindow: 'D',
   TmuxSwitchSession: 'E',
   TmuxRenameWindow: 'F',
+  TmuxCaptureRequest: 'G',
 
   // Output (server -> client)
   Output: '1',
@@ -37,6 +39,7 @@ export const MSG = {
   SetBufferSize: '6',
   TmuxLayoutUpdate: '7',
   TmuxModeUpdate: '9',
+  TmuxCaptureData: 'A',
 };
 
 export class TerminalUnit {
@@ -458,6 +461,16 @@ export class TerminalUnit {
         this.inCopyMode = modeState.inCopyMode;
         break;
 
+      case MSG.TmuxCaptureData:
+        // Server-global capture buffers came back on this unit's ws; route them
+        // to the shared CaptureCache (SplitManager sets onCaptureData).
+        try {
+          this.onCaptureData?.(JSON.parse(payload));
+        } catch (e) {
+          console.warn('Bad capture data:', e);
+        }
+        break;
+
       default:
         console.warn('Unknown message type:', type);
     }
@@ -548,7 +561,25 @@ export class TerminalUnit {
   }
 
   selectWindow(windowId) {
+    // Optimistic paint FIRST so the switch looks instant on every path that ends
+    // here (sidebar click, ↑/↓ arrow-nav, Exposé click); the server's
+    // select-window repaint overwrites it a beat later (authoritative).
+    this.paintOptimistic(windowId);
     this.sendMessage(MSG.TmuxSelectWindow, windowId);
+  }
+
+  // Blit the target window's cached capture into this unit's xterm immediately,
+  // if a fresh-enough buffer exists. Guarded no-op otherwise (unchanged behavior).
+  // captureCache is set by the SplitManager.
+  paintOptimistic(windowId) {
+    const cache = this.captureCache;
+    if (!cache || !this.terminal) return false;
+    const entry = cache.fresh(windowId);
+    if (!entry) return false;
+    // Home + clear, then write the color-preserving snapshot.
+    this.terminal.write('\x1b[H\x1b[2J');
+    this.terminal.write(CaptureCache.decodeAnsi(entry));
+    return true;
   }
 
   renameWindow(windowId, name) {
@@ -570,6 +601,20 @@ export class TerminalUnit {
 
   switchSession(sessionName) {
     this.sendMessage(MSG.TmuxSwitchSession, sessionName);
+  }
+
+  // Is this unit's ws currently usable for sending a request?
+  isConnected() {
+    return !!this.ws && this.ws.readyState === WebSocket.OPEN;
+  }
+
+  // Request server-global capture buffers over THIS unit's ws. The reply (a
+  // TmuxCaptureData frame) returns on the same ws and is routed to the shared
+  // CaptureCache via onCaptureData. windows: 'all' or an array of window ids.
+  sendCaptureRequest(windows = 'all', force = false) {
+    if (!this.isConnected()) return false;
+    this.sendMessage(MSG.TmuxCaptureRequest, JSON.stringify({ windows, force }));
+    return true;
   }
 
   enterCopyMode() {

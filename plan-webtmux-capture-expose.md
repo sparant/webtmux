@@ -147,106 +147,106 @@ coalesced by the store:
 
 ## Phase 0 — Gate + Worktree  [P0]
 
-- [ ] **0.1** Confirm the GATE: `plan-webtmux-split.md` is marked complete and merged on
+- [x] **0.1** Confirm the GATE: `plan-webtmux-split.md` is marked complete and merged on
       `local-main` (per-connection controller + `TerminalUnit`/`SplitManager` present). If
       not, **STOP** — do not start this plan. *(~10m, P0)*
-- [ ] **0.2** From `/workspace/webtmux`: `git worktree add /workspace/webtmux-capture -b
+- [x] **0.2** From `/workspace/webtmux`: `git worktree add /workspace/webtmux-capture -b
       capture-expose`; `git config --global --add safe.directory /workspace/webtmux-capture`;
       copy this plan into the worktree; commit it on `capture-expose`. *(~20m, P0)*
 
 ## Phase A — Backend: the server-global CaptureStore  [P0]
 
-- [ ] **A.1 SPIKE** In a scratch tmux on the mounted socket, verify: (a) `capture-pane -e
+- [x] **A.1 SPIKE** In a scratch tmux on the mounted socket, verify: (a) `capture-pane -e
       -p -t %<paneid>` emits SGR color; (b) writing that (lines joined `\r\n`) into an xterm
       renders identically; (c) `list-windows -a -F '#{window_id} #{session_name}
       #{window_index} #{window_name} #{window_active} #{pane_active}'` lists a window shared
       by two grouped sessions under **one `window_id`** (dedup key). Record exact commands.
       *(~30m, P0)*
-- [ ] **A.2** Add `CaptureStore` (new file in `pkg/tmux/`): holds the socket + a
+- [x] **A.2** Add `CaptureStore` (new file in `pkg/tmux/`): holds the socket + a
       mutex-guarded `map[windowID]CaptureEntry{ansi []byte, cols, rows int, capturedAt
       time.Time, sessionName, index int, name string}`. Method `Capture(windowIDs []string,
       force bool)` runs `capture-pane -e -p` per **active pane** (resolve `@id`→active
       `%paneid` via `list-panes`/layout), stores the entry. Read-only; never touches the
       active pane. *(~45m, P0)*
-- [ ] **A.3** Add `EnumerateWindows()` to `CaptureStore`: run `list-windows -a -F …`, build
+- [x] **A.3** Add `EnumerateWindows()` to `CaptureStore`: run `list-windows -a -F …`, build
       the deduped set keyed by `window_id` (first occurrence wins for label/index; keep a
       note of which sessions saw it). This is the "all windows across all sessions, one
       entry each" source of truth. *(~35m, P0)*
-- [ ] **A.4** Add freshness **coalescing**: `Capture(..., force=false)` skips (returns
+- [x] **A.4** Add freshness **coalescing**: `Capture(..., force=false)` skips (returns
       cached) any window whose `capturedAt` is < `CaptureFreshnessTTL` (default 500ms) old;
       `force=true` bypasses. `Snapshot(windowIDs|all)` returns entries for the response.
       Unit-test dedup + coalescing with a fake tmux runner. *(~40m, P0)*
 
 ## Phase B — Backend: message plumbing + WebTTY wiring  [P0]
 
-- [ ] **B.1** Add protocol constants `TmuxCaptureRequest='G'` (input) and
+- [x] **B.1** Add protocol constants `TmuxCaptureRequest='G'` (input) and
       `TmuxCaptureData='A'` (output) to `webtty/message_types.go`; mirror in `webtmux.js`
       `MSG`. Register `TmuxCaptureRequest` in `isTmuxMessage` (`tmux.go:163`). *(~20m, P0)*
-- [ ] **B.2** Give `WebTTY` a `captureProvider` field + `SetCaptureProvider(...)` (parallel
+- [x] **B.2** Give `WebTTY` a `captureProvider` field + `SetCaptureProvider(...)` (parallel
       to `SetTmuxController`). In `server.Run`, construct the **one** `CaptureStore` with the
       socket and hand it to **every** connection's `WebTTY` (shared pointer). *(~35m, P0)*
-- [ ] **B.3** Handle `TmuxCaptureRequest` in `handleTmuxMessage`: parse `{windows, force}`,
+- [x] **B.3** Handle `TmuxCaptureRequest` in `handleTmuxMessage`: parse `{windows, force}`,
       resolve `"all"` via `EnumerateWindows()`, call `Capture(...)`, marshal a
       `TmuxCaptureData` payload, and send it via `masterWrite`. Run the capture in a
       goroutine so it never blocks the output stream; the atomic writer serializes the send.
       *(~40m, P0)*
-- [ ] **B.4** Backend acceptance (no UI): drive a raw ws connection, send `G {"windows":
+- [x] **B.4** Backend acceptance (no UI): drive a raw ws connection, send `G {"windows":
       "all"}`, confirm one `A` frame back with **one capture per window_id** (shared windows
       deduped), each carrying non-empty base64 ansi + sane cols/rows. *(~30m, P0)*
 
 ## Phase C — Frontend: the Exposé overlay  [P0]
 
-- [ ] **C.1** Client `CaptureCache` (in a new `resources/js/components/capture-cache.js` or
+- [x] **C.1** Client `CaptureCache` (in a new `resources/js/components/capture-cache.js` or
       on the app): map `windowId → {data, cols, rows, capturedAt}`, updated on every
       `TmuxCaptureData` frame; expose `request(windows='all', force)` that sends `G`, and a
       `subscribe` for UI refresh. *(~35m, P0)*
-- [ ] **C.2** Tile renderer: given a capture entry, render its ansi into a small read-only
+- [x] **C.2** Tile renderer: given a capture entry, render its ansi into a small read-only
       xterm sized to `cols×rows`, scaled to the tile via CSS `transform`. Pool/dispose xterm
       instances on overlay open/close; cap live tiles at `N_MAX` (overflow → ANSI→HTML
       `<pre>` fallback). *(~45m, P0)*
-- [ ] **C.3** `<webtmux-expose>` overlay component (Lit): full-screen dim backdrop + grid of
+- [x] **C.3** `<webtmux-expose>` overlay component (Lit): full-screen dim backdrop + grid of
       tiles, one per **deduped window** (label `index: name`, mark the focused unit's current
       window). On open: `captureCache.request('all', force=true)`; optional **1–2 s poll
       while visible**; clear timer + dispose tiles on close. Open via `Ctrl+Alt+E` (Alt so it
       dodges the tmux prefix, mirror the `Ctrl+Alt+B` handler) and a sidebar button; close on
       Esc / backdrop click. *(~45m, P0)*
-- [ ] **C.4** Tile click → `SplitManager.focusedUnit.selectWindow(windowId)` (+ switch
+- [x] **C.4** Tile click → `SplitManager.focusedUnit.selectWindow(windowId)` (+ switch
       session if the window isn't in the focused unit's session), then dismiss the overlay.
       Keyboard: arrow-move highlight between tiles, Enter to select, Esc to cancel. CSS
       polish (hover-enlarge as a lightweight "preview"). *(~40m, P1)*
 
 ## Phase D — Frontend: optimistic paint + refresh triggers  [P0]
 
-- [ ] **D.1** `paintOptimistic(windowId)` on `TerminalUnit`: if the cache has a fresh-enough
+- [x] **D.1** `paintOptimistic(windowId)` on `TerminalUnit`: if the cache has a fresh-enough
       buffer, write `\x1b[H\x1b[2J` + the ansi into the unit's xterm immediately. Call it at
       the top of the unit's `selectWindow` path so sidebar-click, ↑/↓ arrow-nav, and Exposé
       all get instant paint; the server's `select-window` repaint then overwrites. Guard: no
       buffer → no-op (unchanged behavior). *(~45m, P0)*
-- [ ] **D.2** Sidebar-open refresh policy: when the sidebar expands, start a timer that
+- [x] **D.2** Sidebar-open refresh policy: when the sidebar expands, start a timer that
       `captureCache.request('all')` **once after 2 s**, then **every 5 s while open**; clear
       on collapse. (Hook the `collapsed` transition already in `sidebar.js:updated`.) This
       keeps buffers warm for optimistic paint without any background polling. *(~35m, P0)*
-- [ ] **D.3** Wire the Exposé poll (C.3) and the sidebar poll (D.2) to the **same**
+- [x] **D.3** Wire the Exposé poll (C.3) and the sidebar poll (D.2) to the **same**
       `captureCache`, relying on server-side coalescing so overlapping triggers don't
       stampede tmux. Confirm no duplicate in-flight `G` storms (debounce on the client too).
       *(~30m, P1)*
 
 ## Phase E — Verify, polish, docs, merge  [P1]
 
-- [ ] **E.1** End-to-end: multiple grouped sessions (from split) open; Exposé shows **one
+- [x] **E.1** End-to-end: multiple grouped sessions (from split) open; Exposé shows **one
       tile per window** (no per-session duplicates), colors faithful; click switches the
       focused region; optimistic paint makes sidebar/arrow switches feel instant; primary
       region still in sync with the ssh console. *(~40m, P0)*
-- [ ] **E.2** Load/lifecycle: many windows; open/close Exposé repeatedly (no leaked xterm
+- [x] **E.2** Load/lifecycle: many windows; open/close Exposé repeatedly (no leaked xterm
       tiles / timers); sidebar open/close starts/stops the 2 s→5 s poll; capture requests
       coalesce under the freshness TTL (log/inspect tmux fork rate). *(~35m, P1)*
-- [ ] **E.3** Docs: update `scripts/CLAUDE.md` webtmux section (capture buffers +
+- [x] **E.3** Docs: update `scripts/CLAUDE.md` webtmux section (capture buffers +
       Exposé + optimistic paint; one-capture-per-window-id model), add code comments on
       `CaptureStore` (server-global, dedup rationale) and the fork-delta memory note so it
       survives upstream re-sync. *(~30m, P1)*
-- [ ] **E.4** Build the image, run `scripts/webtmux-docker/verify.sh`-style checks, mark all
+- [x] **E.4** Build the image, run `scripts/webtmux-docker/verify.sh`-style checks, mark all
       phases complete in the worktree copy of this plan, commit. *(~25m, P1)*
-- [ ] **E.5** Merge back: `scripts/git-merge-worktree.sh /workspace/webtmux-capture --target
+- [x] **E.5** Merge back: `scripts/git-merge-worktree.sh /workspace/webtmux-capture --target
       local-main --remove`; on conflict/non-ff, rebase and retry — never force. Confirm the
       plan is marked complete on `local-main`; the host rebuild then picks it up. *(~25m,
       P0)*
