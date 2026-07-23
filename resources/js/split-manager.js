@@ -59,6 +59,15 @@ export class SplitManager {
     this.shortcuts = document.createElement('webtmux-shortcuts');
     this.container.appendChild(this.shortcuts);
 
+    // The Picture-in-Picture preview (hidden until toggled via Ctrl+Alt+I or the
+    // toolbar/sidebar button). Reads from the same shared CaptureCache; closing it
+    // (its × button, or a re-toggle) syncs the toolbar's PiP indicator via onClose.
+    this.pip = document.createElement('webtmux-pip');
+    this.pip.cache = this.captureCache;
+    this.pip.manager = this;
+    this.pip.onClose = () => { if (this.toolbar) this.toolbar.pipActive = false; };
+    this.container.appendChild(this.pip);
+
     // Top toolbar (above #app): most-recently-accessed windows + sidebar toggle.
     // Recent-windows strip: entries keep a STABLE display position — re-accessing
     // a shown window never reorders it. Recency itself is NOT tracked here: the
@@ -408,6 +417,7 @@ export class SplitManager {
       };
     });
     this.toolbar.collapsed = !!this.sidebar?.collapsed;
+    this.toolbar.pipActive = !!this.pip?.open;
   }
 
   // Navigate to a window from ANY switcher (toolbar recent-strip, Exposé tile):
@@ -498,6 +508,23 @@ export class SplitManager {
     if (this.focusedUnit && !this.focusedUnit.primary) this.removeUnit(this.focusedUnit);
   }
 
+  // Toggle Picture-in-Picture. On: pin the FOCUSED region's current window in a
+  // corner (a live capture-fed preview). Off: close it. The toolbar's PiP button
+  // reflects the state (also kept in sync by _refreshToolbar + the pip's onClose).
+  togglePip() {
+    if (!this.pip) return;
+    if (this.pip.open) {
+      this.pip.close();
+      if (this.toolbar) this.toolbar.pipActive = false;
+      return;
+    }
+    const u = this.focusedUnit;
+    const id = u?.layout?.activeWindowId;
+    if (!id) return;   // nothing to pin yet (no layout) — no-op
+    this.pip.openFor(id, this._metaFor(u, id));
+    if (this.toolbar) this.toolbar.pipActive = true;
+  }
+
   // #app gets .split-active only with >1 region, so single-view keeps its exact
   // old look (no focus outline, no divider).
   _syncSplitClass() {
@@ -567,7 +594,8 @@ export class SplitManager {
     //   x  kill-pane                          -> close the focused region
     //   ?  list-keys                          -> the shortcuts overlay (physical '/')
     // Split-add has no unmodified tmux letter (tmux uses % / ", both need Shift), so
-    // it keeps the intuitive Enter. Exposé is webtmux-only, so it keeps 'e'.
+    // it keeps the intuitive Enter. Exposé ('e') and Picture-in-Picture ('i' = pIp)
+    // are webtmux-only, so they keep their own mnemonic letters.
     // stopPropagation keeps xterm from seeing them.
     window.addEventListener('keydown', (ev) => {
       if (!ev.ctrlKey || !ev.altKey || ev.metaKey) return;
@@ -584,6 +612,9 @@ export class SplitManager {
           break;
         case 'KeyE':                                   // toggle the Exposé overlay
           this.expose?.toggle();
+          break;
+        case 'KeyI':                                   // toggle Picture-in-Picture (i = pIp)
+          this.togglePip();
           break;
         case 'KeyP':                                   // tmux 'p' (previous-window): recents left
           this.navigateRecents(-1);
@@ -606,5 +637,6 @@ export class SplitManager {
     window.addEventListener('webtmux-split-close', (e) => this.removeUnit(e.detail?.unit || this.focusedUnit));
     window.addEventListener('webtmux-expose-open', () => this.expose?.openOverlay());
     window.addEventListener('webtmux-shortcuts-open', () => this.shortcuts?.toggle());
+    window.addEventListener('webtmux-pip-toggle', () => this.togglePip());
   }
 }

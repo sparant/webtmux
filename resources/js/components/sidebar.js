@@ -387,6 +387,10 @@ class WebtmuxSidebar extends LitElement {
     this.dispatchEvent(new CustomEvent('webtmux-expose-open', { bubbles: true, composed: true }));
   }
 
+  togglePip() {
+    this.dispatchEvent(new CustomEvent('webtmux-pip-toggle', { bubbles: true, composed: true }));
+  }
+
   openShortcuts() {
     this.dispatchEvent(new CustomEvent('webtmux-shortcuts-open', { bubbles: true, composed: true }));
   }
@@ -409,6 +413,13 @@ class WebtmuxSidebar extends LitElement {
           title="Show a colored thumbnail of every window across all sessions; click one to switch. Shortcut: Ctrl+Alt+E"
         >
           ▦ Exposé (all windows)
+        </button>
+        <button
+          class="mode-btn"
+          @click=${this.togglePip}
+          title="Picture-in-Picture: pin a live preview of the focused window in a corner. Shortcut: Ctrl+Alt+I"
+        >
+          ◳ Picture-in-Picture
         </button>
         ${canClose ? html`
           <button
