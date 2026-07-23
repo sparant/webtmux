@@ -1,6 +1,20 @@
 // Sidebar component with minimap
 import { LitElement, html, css } from 'lit';
 
+// Scroll-wheel modes, in the order the sidebar button cycles them. Kept in sync
+// with SCROLL_MODES in terminal-unit.js. Each has a short button label + tooltip.
+const SCROLL_ORDER = ['app', 'buffer', 'adaptive-mode', 'adaptive-probe'];
+const SCROLL_META = {
+  'app':            { label: '🖱 Scroll → app',      hint: 'Wheel always goes to the program (Claude/vim/less scroll themselves)' },
+  'buffer':         { label: '🖱 Scroll → buffer',   hint: 'Wheel always scrolls tmux history (copy-mode)' },
+  'adaptive-mode':  { label: '🖱 Scroll → auto',     hint: 'Auto: mouse-tracking / full-screen apps get the wheel; a plain shell scrolls history' },
+  'adaptive-probe': { label: '🖱 Scroll → auto+',    hint: 'Auto+: like auto, but probes the ambiguous case — tries the app, then scrolls history if it did not react' },
+};
+function normalizeScroll(m) {
+  if (m === 'passthrough') return 'app';
+  return SCROLL_ORDER.includes(m) ? m : 'buffer';
+}
+
 class WebtmuxSidebar extends LitElement {
   static properties = {
     layout: { type: Object },
@@ -266,8 +280,9 @@ class WebtmuxSidebar extends LitElement {
     // Hover-overlay vs side-by-side. Default hover (float over the terminal);
     // persisted across reloads.
     this.overlay = localStorage.getItem('webtmux-overlay') !== 'false';
-    // Scroll-wheel behavior mirror of the app's setting ('buffer' | 'passthrough').
-    this.scrollMode = localStorage.getItem('webtmux-scroll-mode') || 'buffer';
+    // Scroll-wheel behavior mirror of the app's setting — one of SCROLL_ORDER
+    // below. Legacy 'passthrough' maps to 'app'.
+    this.scrollMode = normalizeScroll(localStorage.getItem('webtmux-scroll-mode'));
     // Pinned = stay open when clicking into the terminal (default: auto-hide).
     this.pinned = localStorage.getItem('webtmux-pinned') === 'true';
     // Window id currently being renamed inline ('' = none).
@@ -344,7 +359,9 @@ class WebtmuxSidebar extends LitElement {
   }
 
   toggleScrollMode() {
-    this.scrollMode = this.scrollMode === 'passthrough' ? 'buffer' : 'passthrough';
+    // Cycle app -> buffer -> adaptive-mode -> adaptive-probe -> app.
+    const i = SCROLL_ORDER.indexOf(normalizeScroll(this.scrollMode));
+    this.scrollMode = SCROLL_ORDER[(i + 1) % SCROLL_ORDER.length];
     // Apply live to this unit's terminal app (also persists); fall back to LS.
     if (this.unit?.setScrollMode) {
       this.unit.setScrollMode(this.scrollMode);
@@ -406,9 +423,9 @@ class WebtmuxSidebar extends LitElement {
         <button
           class="mode-btn"
           @click=${this.toggleScrollMode}
-          title="Buffer = wheel scrolls tmux history (copy-mode); Pass to app = wheel goes to the program (Claude/vim/less scroll themselves)"
+          title=${(SCROLL_META[normalizeScroll(this.scrollMode)] || SCROLL_META.buffer).hint}
         >
-          ${this.scrollMode === 'passthrough' ? '🖱 Scroll → app' : '🖱 Scroll → buffer'}
+          ${(SCROLL_META[normalizeScroll(this.scrollMode)] || SCROLL_META.buffer).label}
         </button>
         <button
           class="mode-btn"

@@ -42,6 +42,25 @@ export const MSG = {
   TmuxCaptureData: 'A',
 };
 
+// Scroll-wheel behavior. Cycled by the sidebar button through all four:
+//   app            — always pass the wheel to the program (Claude/vim/less)
+//   buffer         — always scroll tmux history (copy-mode)
+//   adaptive-mode  — decide per-event from xterm's terminal mode state
+//                    (mouse-tracking / alt-screen): apps that grab the mouse or
+//                    own the screen get the wheel; a plain shell scrolls history
+//   adaptive-probe — like adaptive, but for the ambiguous no-mouse case it PROBES:
+//                    let the wheel hit the app, then compare the viewport a moment
+//                    later; if it barely changed the app ignored it, so switch to
+//                    history scroll. Decision is cached per (window, command).
+export const SCROLL_MODES = ['app', 'buffer', 'adaptive-mode', 'adaptive-probe'];
+
+// Map any stored/legacy value onto a valid mode. The old two-state setting used
+// 'passthrough' for what is now 'app'.
+export function normalizeScrollMode(m) {
+  if (m === 'passthrough') return 'app';
+  return SCROLL_MODES.includes(m) ? m : 'buffer';
+}
+
 export class TerminalUnit {
   // opts:
   //   sessionName: '' for the primary/shared region, or a grouped session name.
@@ -68,7 +87,16 @@ export class TerminalUnit {
     // history scrolling; 'passthrough' = let xterm forward the wheel to the app
     // (so a TUI like Claude, vim, less handles its own scrolling). Persisted +
     // toggled from the sidebar. Read here so the handlers below see it on load.
-    this.scrollMode = localStorage.getItem('webtmux-scroll-mode') || 'buffer';
+    this.scrollMode = normalizeScrollMode(localStorage.getItem('webtmux-scroll-mode'));
+    // adaptive-probe state: per-window cached decision + in-flight probe.
+    this._scrollDecisions = new Map();   // windowId -> {cmd, decision:'app'|'buffer', ts}
+    this._probing = false;
+    this._probeBefore = null;
+    this._probeLines = 0;
+    this.PROBE_DELAY_MS = 130;           // wait this long for the app to react
+    this.PROBE_COOLDOWN_MS = 15000;      // reuse a decision this long (refreshed while scrolling)
+    this.PROBE_CELL_FRAC = 0.15;         // >=15% of cells changed => the app reacted
+    this.PROBE_LINE_FRAC = 0.30;         // >=30% of lines changed => the app reacted
     this.layout = null;
     // View we're on (logical session + window), remembered so we can restore it
     // after a reconnect (tty loss) — the fresh attach otherwise resets us to the
@@ -240,8 +268,8 @@ export class TerminalUnit {
     }, { passive: true });
 
     container.addEventListener('touchmove', (e) => {
-      // Passthrough mode: leave touch scrolling to the app (mirror the wheel).
-      if (this.scrollMode === 'passthrough') return;
+      // App-effective mode: leave touch scrolling to the app (mirror the wheel).
+      if (this._resolveScroll() === 'app') return;
       const deltaY = touchStartY - e.touches[0].clientY;
       const threshold = 30;
 
@@ -265,35 +293,177 @@ export class TerminalUnit {
       }
     }, { passive: true });
 
-    // Mouse wheel for desktop scroll -> copy mode
+    // Mouse wheel for desktop scroll -> copy mode. The effective behavior ('app'
+    // = let xterm forward the wheel to the program; 'buffer' = scroll tmux
+    // history) depends on this.scrollMode — see _resolveWheel / _resolveScroll.
     this.terminal.attachCustomWheelEventHandler((event) => {
-      // Passthrough mode: don't hijack the wheel — let xterm forward it to the
-      // app (mouse-wheel sequences), so Claude/vim/less scroll themselves.
-      if (this.scrollMode === 'passthrough') {
-        return true;
+      const lines = Math.max(1, Math.floor(Math.abs(event.deltaY) / 50));
+      if (this._resolveWheel(event, lines) === 'app') {
+        return true;   // don't hijack — xterm forwards to the app (or does nothing)
       }
-      // Only intercept scroll up (entering history) - deltaY < 0 = wheel up
-      if (event.deltaY < 0) {
-        if (!this.inCopyMode) {
-          this.sendMessage(MSG.TmuxCopyMode, '1');
-          this.inCopyMode = true;
-        }
+      // Buffer behavior: wheel-up enters copy mode (entering history); then the
+      // tmux scroll follows the wheel direction.
+      if (event.deltaY < 0 && !this.inCopyMode) {
+        this.sendMessage(MSG.TmuxCopyMode, '1');
+        this.inCopyMode = true;
       }
-
       if (this.inCopyMode) {
-        const lines = Math.max(1, Math.floor(Math.abs(event.deltaY) / 50));
-        // Wheel up (deltaY < 0) = scroll UP in tmux (show older history)
-        // Wheel down (deltaY > 0) = scroll DOWN in tmux (show newer)
-        if (event.deltaY < 0) {
-          this.sendMessage(MSG.TmuxScrollUp, String(lines));
-        } else {
-          this.sendMessage(MSG.TmuxScrollDown, String(lines));
-        }
+        // Wheel up (deltaY < 0) = older history; down = newer.
+        this.sendMessage(event.deltaY < 0 ? MSG.TmuxScrollUp : MSG.TmuxScrollDown, String(lines));
         return false; // Prevent default scroll
       }
-
-      return true; // Allow normal handling when not in copy mode
+      return true; // not in copy mode + wheel-down => nothing to do, pass through
     });
+  }
+
+  // ----- Scroll-mode resolution -------------------------------------------------
+
+  // The effective behavior ('app' | 'buffer') for NON-wheel gestures (touch,
+  // drag-select). The wheel uses _resolveWheel, which can additionally kick off
+  // the adaptive-probe. Already in copy mode => always keep scrolling history.
+  _resolveScroll() {
+    if (this.inCopyMode) return 'buffer';
+    switch (this.scrollMode) {
+      case 'app': return 'app';
+      case 'buffer': return 'buffer';
+      case 'adaptive-mode': return this._modeDecision();
+      case 'adaptive-probe': {
+        if (this._mouseTracking()) return 'app';
+        const cached = this._probeDecision(this.layout?.activeWindowId || '', this._activeCommand());
+        return cached || this._modeDecision();   // no probe result yet -> best guess
+      }
+      default: return 'buffer';
+    }
+  }
+
+  // The effective behavior for a wheel event. For adaptive-probe this may start a
+  // probe (returning 'app' to let the event reach the program during the probe
+  // window; if the program ignores it, _finishProbe replays the scroll to tmux).
+  _resolveWheel(event, lines) {
+    if (this.inCopyMode) return 'buffer';
+    switch (this.scrollMode) {
+      case 'app': return 'app';
+      case 'buffer': return 'buffer';
+      case 'adaptive-mode': return this._modeDecision();
+      case 'adaptive-probe': {
+        if (this._mouseTracking()) return 'app';     // app definitively owns the wheel
+        const winId = this.layout?.activeWindowId || '';
+        const cmd = this._activeCommand();
+        const cached = this._probeDecision(winId, cmd);
+        if (cached) return cached;
+        // No fresh decision. Only wheel-UP (entering history) is worth probing;
+        // let wheel-down pass through until we have a verdict.
+        if (event.deltaY < 0) {
+          if (this._probing) this._probeLines += lines;
+          else this._beginProbe(winId, cmd, lines);
+        }
+        return 'app';   // pass through while probing
+      }
+      default: return 'buffer';
+    }
+  }
+
+  // Deterministic decision from xterm's terminal mode state. An app that grabbed
+  // the mouse, or that owns the whole screen (alt-screen), gets the wheel; a plain
+  // shell on the normal screen scrolls tmux history.
+  _modeDecision() {
+    if (this._mouseTracking()) return 'app';
+    if (this.terminal?.buffer?.active?.type === 'alternate') return 'app';
+    return 'buffer';
+  }
+
+  _mouseTracking() {
+    const m = this.terminal?.modes?.mouseTrackingMode;
+    return !!m && m !== 'none';
+  }
+
+  // The foreground command of the focused pane, used to key probe decisions so a
+  // decision auto-invalidates when the running program changes (bash -> vim -> bash).
+  _activeCommand() {
+    const l = this.layout;
+    if (!l) return '';
+    const w = (l.windows || []).find(x => x.id === l.activeWindowId);
+    if (!w) return '';
+    const p = (w.panes || []).find(x => x.id === l.activePaneId)
+      || (w.panes || []).find(x => x.active);
+    return p ? (p.command || '') : '';
+  }
+
+  // Cached probe verdict for (winId, cmd), or null if absent/stale/for another
+  // command. A hit refreshes the timestamp so continuous scrolling never re-probes.
+  _probeDecision(winId, cmd) {
+    const e = this._scrollDecisions.get(winId);
+    if (!e || e.cmd !== cmd) return null;
+    if (Date.now() - e.ts > this.PROBE_COOLDOWN_MS) return null;
+    e.ts = Date.now();
+    return e.decision;
+  }
+
+  _beginProbe(winId, cmd, lines) {
+    this._probing = true;
+    this._probeWin = winId;
+    this._probeCmd = cmd;
+    this._probeLines = lines;
+    this._probeBefore = this._snapshotViewport();
+    setTimeout(() => this._finishProbe(), this.PROBE_DELAY_MS);
+  }
+
+  _finishProbe() {
+    // Bail if we were torn down or the user left adaptive-probe mid-probe.
+    if (this.destroyed || this.scrollMode !== 'adaptive-probe') {
+      this._probing = false;
+      this._probeBefore = null;
+      return;
+    }
+    const reacted = this._viewportReacted(this._probeBefore, this._snapshotViewport());
+    const decision = reacted ? 'app' : 'buffer';
+    this._scrollDecisions.set(this._probeWin, { cmd: this._probeCmd, decision, ts: Date.now() });
+    // The app ignored the wheel -> replay the ticks we swallowed into tmux history.
+    if (decision === 'buffer' && this._probeLines > 0) {
+      if (!this.inCopyMode) {
+        this.sendMessage(MSG.TmuxCopyMode, '1');
+        this.inCopyMode = true;
+      }
+      this.sendMessage(MSG.TmuxScrollUp, String(this._probeLines));
+    }
+    this._probing = false;
+    this._probeBefore = null;
+  }
+
+  // The visible rows as trimmed strings (xterm's own buffer — no server round-trip).
+  _snapshotViewport() {
+    const buf = this.terminal?.buffer?.active;
+    if (!buf) return [];
+    const rows = this.terminal.rows || 24;
+    const top = buf.viewportY;
+    const out = [];
+    for (let i = 0; i < rows; i++) {
+      const ln = buf.getLine(top + i);
+      out.push(ln ? ln.translateToString(true) : '');
+    }
+    return out;
+  }
+
+  // "Did the screen change substantially?" — count differing lines and, position
+  // by position, differing cells; a real scroll shifts most of both, while a
+  // spinner/clock/cursor touches only a sliver. Either fraction crossing its
+  // threshold counts as a reaction.
+  _viewportReacted(before, after) {
+    if (!before || !after) return false;
+    const rows = Math.min(before.length, after.length);
+    if (!rows) return false;
+    let changedLines = 0, changedCells = 0;
+    for (let i = 0; i < rows; i++) {
+      const a = before[i], b = after[i];
+      if (a === b) continue;
+      changedLines++;
+      const n = Math.max(a.length, b.length);
+      for (let j = 0; j < n; j++) { if (a[j] !== b[j]) changedCells++; }
+    }
+    const cols = this.terminal.cols || 80;
+    const cellFrac = changedCells / (rows * cols);
+    const lineFrac = changedLines / rows;
+    return cellFrac >= this.PROBE_CELL_FRAC || lineFrac >= this.PROBE_LINE_FRAC;
   }
 
   // Click focuses the terminal; dragging to the top/bottom edge auto-scrolls the
@@ -332,7 +502,7 @@ export class TerminalUnit {
 
     container.addEventListener('mousemove', (e) => {
       if ((e.buttons & 1) === 0) { endDrag(); return; }   // only while left-dragging
-      if (this.scrollMode === 'passthrough') return;      // leave the mouse to the app
+      if (this._resolveScroll() === 'app') return;        // leave the mouse to the app
       if (!dragging) {
         if (Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY) < 5) return;
         dragging = true;
@@ -672,13 +842,13 @@ export class TerminalUnit {
     this.inCopyMode = false;
   }
 
-  // Switch scroll-wheel behavior ('buffer' | 'passthrough'); called from the
-  // sidebar toggle. Leaving copy mode on switch to passthrough avoids getting
-  // stuck scrolled up in history.
+  // Switch scroll-wheel behavior (one of SCROLL_MODES); called from the sidebar
+  // cycle button. Switching to plain 'app' leaves copy mode so you aren't stuck
+  // scrolled up in history; the adaptive modes may re-enter it on their own.
   setScrollMode(mode) {
-    this.scrollMode = mode === 'passthrough' ? 'passthrough' : 'buffer';
+    this.scrollMode = normalizeScrollMode(mode);
     localStorage.setItem('webtmux-scroll-mode', this.scrollMode);
-    if (this.scrollMode === 'passthrough' && this.inCopyMode) {
+    if (this.scrollMode === 'app' && this.inCopyMode) {
       this.exitCopyMode();
     }
   }
