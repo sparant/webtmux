@@ -25,9 +25,13 @@ export CGO_ENABLED=0
 # Default target
 all: build
 
-# Sync resources to bindata (for embedding)
+# Sync resources to bindata (for embedding). index.html MUST be synced too — it
+# is embedded + served from bindata/static/, and the split-view markup lives in
+# it; forgetting it ships a stale page (old static sidebar/#terminal) that fights
+# the SplitManager-created region.
 sync-assets:
 	@cp -r resources/js/* bindata/static/js/
+	@cp resources/index.html bindata/static/index.html
 
 # Build for current platform
 build: sync-assets

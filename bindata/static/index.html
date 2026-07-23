@@ -26,13 +26,29 @@
       height: 100%;
       width: 100%;
     }
-    #terminal-container {
+    /* Each split region is a flex row: [terminal | its sidebar]. Regions tile
+       across #app; a .divider sits between them. The SplitManager fills #app. */
+    .region {
       flex: 1;
       min-width: 0;
+      display: flex;
+      position: relative;
     }
-    #terminal {
+    .region-term {
+      flex: 1;
+      min-width: 0;
       height: 100%;
-      width: 100%;
+    }
+    .divider {
+      flex: 0 0 4px;
+      background: #0f3460;
+      cursor: col-resize;
+    }
+    /* Focus outline + divider only matter once there are 2+ regions, so a lone
+       single-view region looks exactly as before. */
+    #app.split-active .region.focused {
+      outline: 2px solid #4a9eff;
+      outline-offset: -2px;
     }
     .xterm {
       height: 100%;
@@ -55,12 +71,9 @@
 </head>
 
 <body class="bg-gray-900">
-  <div id="app">
-    <div id="terminal-container">
-      <div id="terminal"></div>
-    </div>
-    <webtmux-sidebar id="sidebar" class="hidden lg:block"></webtmux-sidebar>
-  </div>
+  <!-- The SplitManager fills #app with region(s); each region has its own
+       terminal + sidebar. Single-view = one region (looks/behaves as before). -->
+  <div id="app"></div>
 
   <!-- Mobile controls (shown on small screens) -->
   <webtmux-mobile-controls class="lg:hidden"></webtmux-mobile-controls>
