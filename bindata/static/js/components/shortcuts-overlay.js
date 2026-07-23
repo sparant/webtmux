@@ -22,6 +22,7 @@ const GROUPS = [
     rows: [
       { keys: [...M, 'W'], desc: 'Toggle the sidebar (windows & sessions) — tmux ⌃b w' },
       { keys: [...M, 'E'], desc: 'Exposé — every window across all sessions' },
+      { keys: [...M, 'I'], desc: 'Picture-in-Picture — pin the focused window in a corner' },
       { keys: [...M, '⏎'], desc: 'Split view — add another terminal region' },
       { keys: [...M, 'X'], desc: 'Close the focused region — tmux ⌃b x' },
       { keys: [...M, 'P'], desc: 'Recents — previous window (left) — tmux ⌃b p' },

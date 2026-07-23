@@ -317,7 +317,8 @@ class WebtmuxSidebar extends LitElement {
 
   // The sidebar keeps only the controls that shape the PANEL itself (hover vs
   // side-by-side, pinned) plus the contextual close-region. Action buttons —
-  // split-add, Exposé, scroll mode, keyboard shortcuts — now live on the toolbar.
+  // split-add, Exposé, Picture-in-Picture, scroll mode, keyboard shortcuts — now
+  // live on the toolbar.
   modeRow() {
     // "Close this region" only makes sense for an added (non-primary) region.
     const canClose = this.unit && !this.unit.primary;

@@ -31,6 +31,8 @@ class WebtmuxToolbar extends LitElement {
     // True when the focused split region's active pane is in tmux copy/view mode.
     // Reflected to the `copymode` attribute so :host() can recolor the whole bar.
     copyMode: { type: Boolean, reflect: true, attribute: 'copymode' },
+    // True when Picture-in-Picture is active — highlights the toolbar's PiP button.
+    pipActive: { type: Boolean },
   };
 
   static styles = css`
@@ -161,6 +163,29 @@ class WebtmuxToolbar extends LitElement {
       margin: 0 2px;
     }
 
+    /* Picture-in-Picture toggle (left of the sidebar toggle). Highlights when on.
+       The ◳ glyph reads as an inset in the upper-right — the PiP's default corner. */
+    .pip-toggle {
+      flex: 0 0 auto;
+      background: #1a1a2e;
+      color: #ccc;
+      border: 1px solid #0f3460;
+      border-radius: 6px;
+      width: 32px;
+      height: 32px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+    }
+    .pip-toggle:hover { border-color: #4a9eff; color: #fff; }
+    .pip-toggle.on {
+      background: #0f3460;
+      border-color: #4a9eff;
+      color: #fff;
+    }
+
     /* Copy-mode status pill (second from the right). Shows the focused pane's mode
        and toggles it on click. Green-ish = NORMAL, amber = COPY. */
     .mode {
@@ -274,6 +299,7 @@ class WebtmuxToolbar extends LitElement {
     this.scrollMode = normalizeScroll(
       (typeof localStorage !== 'undefined' && localStorage.getItem('webtmux-scroll-mode')) || '');
     this.copyMode = false; // focused pane in tmux copy/view mode (SplitManager sets)
+    this.pipActive = false; // Picture-in-Picture on (SplitManager sets)
     this.panes = [];       // [bool] per pane in order; true = focused. [] hides the dots.
     this.manager = null;   // SplitManager, set directly
     // Build id (git short-hash) served fresh by config.js from the RUNNING binary —
@@ -400,6 +426,11 @@ class WebtmuxToolbar extends LitElement {
         title="Focused pane is in ${this.copyMode ? 'COPY' : 'NORMAL'} mode — click to ${this.copyMode ? 'exit' : 'enter'} copy mode"
         @click=${() => this.manager?.toggleCopyMode()}
       ><span class="mdot"></span>${this.copyMode ? 'COPY' : 'NORMAL'}</button>
+      <button
+        class="pip-toggle ${this.pipActive ? 'on' : ''}"
+        title="Picture-in-Picture the focused window (Ctrl+Alt+I)"
+        @click=${() => this.manager?.togglePip()}
+      >◳</button>
       <button
         class="sidebar-toggle"
         aria-label="Toggle sidebar"
