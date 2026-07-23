@@ -149,14 +149,20 @@ class WebtmuxSidebar extends LitElement {
       margin: 0 0 12px 0;
     }
 
+    /* A straight vertical list (one window per row) so it's obvious ↑/↓ walk it. */
     .window-tabs {
       display: flex;
-      flex-wrap: wrap;
+      flex-direction: column;
+      align-items: stretch;
       gap: 4px;
       margin-bottom: 16px;
     }
 
     .window-tab {
+      display: block;
+      width: 100%;
+      box-sizing: border-box;
+      text-align: left;
       background: #1a1a2e;
       color: #888;
       border: 1px solid #0f3460;
@@ -195,7 +201,8 @@ class WebtmuxSidebar extends LitElement {
       border-radius: 4px;
       padding: 6px 10px;
       font-size: 15px;
-      width: 130px;
+      width: 100%;
+      box-sizing: border-box;
       font-family: inherit;
       outline: none;
     }
