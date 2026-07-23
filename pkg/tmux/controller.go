@@ -267,7 +267,7 @@ func (c *Controller) RefreshLayout() error {
 
 		// Get panes for this window
 		panesOut, err := c.runTmux("list-panes", "-t", win.ID, "-F",
-			"#{pane_id},#{pane_index},#{pane_active},#{pane_width},#{pane_height},#{pane_top},#{pane_left},#{pane_current_command},#{pane_title}")
+			"#{pane_id},#{pane_index},#{pane_active},#{pane_in_mode},#{pane_width},#{pane_height},#{pane_top},#{pane_left},#{pane_current_command},#{pane_title}")
 		if err != nil {
 			continue
 		}
@@ -277,31 +277,34 @@ func (c *Controller) RefreshLayout() error {
 				continue
 			}
 			paneParts := strings.Split(paneLine, ",")
-			if len(paneParts) < 9 {
+			if len(paneParts) < 10 {
 				continue
 			}
 
 			paneIdx, _ := strconv.Atoi(paneParts[1])
 			paneActive := paneParts[2] == "1"
-			width, _ := strconv.Atoi(paneParts[3])
-			height, _ := strconv.Atoi(paneParts[4])
-			top, _ := strconv.Atoi(paneParts[5])
-			left, _ := strconv.Atoi(paneParts[6])
+			paneInMode := paneParts[3] == "1"
+			width, _ := strconv.Atoi(paneParts[4])
+			height, _ := strconv.Atoi(paneParts[5])
+			top, _ := strconv.Atoi(paneParts[6])
+			left, _ := strconv.Atoi(paneParts[7])
 
 			pane := Pane{
 				ID:      paneParts[0],
 				Index:   paneIdx,
 				Active:  paneActive,
+				InMode:  paneInMode,
 				Width:   width,
 				Height:  height,
 				Top:     top,
 				Left:    left,
-				Command: paneParts[7],
-				Title:   paneParts[8],
+				Command: paneParts[8],
+				Title:   paneParts[9],
 			}
 
 			if paneActive && active {
 				layout.ActivePaneID = pane.ID
+				layout.ActivePaneInMode = pane.InMode
 			}
 
 			win.Panes = append(win.Panes, pane)

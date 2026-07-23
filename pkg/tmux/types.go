@@ -17,6 +17,10 @@ type Layout struct {
 	Windows      []Window  `json:"windows"`
 	ActiveWinID  string    `json:"activeWindowId"`
 	ActivePaneID string    `json:"activePaneId"`
+	// ActivePaneInMode is true when the active pane of the active window is in a
+	// tmux mode (copy-mode / view-mode) rather than normal input — the ground
+	// truth the toolbar uses to show/toggle copy mode. Read from #{pane_in_mode}.
+	ActivePaneInMode bool `json:"activePaneInMode"`
 }
 
 // Window represents a tmux window
@@ -33,6 +37,7 @@ type Pane struct {
 	ID      string `json:"id"`
 	Index   int    `json:"index"`
 	Active  bool   `json:"active"`
+	InMode  bool   `json:"inMode"` // pane is in a tmux mode (copy-mode/view-mode)
 	Width   int    `json:"width"`
 	Height  int    `json:"height"`
 	Top     int    `json:"top"`

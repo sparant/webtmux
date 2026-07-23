@@ -273,11 +273,26 @@ export class SplitManager {
   }
 
   // Pane-focus dots: one per region (only when >1), green on the focused pane.
+  // Also surface the focused region's copy-mode state (ground truth from the
+  // layout poll's #{pane_in_mode}) so the toolbar can recolor + show the status.
   _refreshPanes() {
     if (!this.toolbar) return;
     this.toolbar.panes = this.units.length > 1
       ? this.units.map(u => u === this.focusedUnit)
       : [];
+    this.toolbar.copyMode = !!this.focusedUnit?.layout?.activePaneInMode;
+  }
+
+  // Toolbar copy-mode pill: toggle copy mode on the FOCUSED region's active pane.
+  // Uses the layout's ground-truth mode to decide direction, and updates the
+  // pill optimistically for snappy feedback (the 500ms poll then confirms it).
+  toggleCopyMode() {
+    const u = this.focusedUnit;
+    if (!u) return;
+    const inMode = !!u.layout?.activePaneInMode;
+    if (inMode) u.exitCopyMode();
+    else u.enterCopyMode();
+    if (this.toolbar) this.toolbar.copyMode = !inMode;
   }
 
   _refreshToolbar() {

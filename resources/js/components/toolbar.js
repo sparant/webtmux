@@ -9,6 +9,9 @@ class WebtmuxToolbar extends LitElement {
     recent: { type: Array },
     collapsed: { type: Boolean },
     panes: { type: Array },
+    // True when the focused split region's active pane is in tmux copy/view mode.
+    // Reflected to the `copymode` attribute so :host() can recolor the whole bar.
+    copyMode: { type: Boolean, reflect: true, attribute: 'copymode' },
   };
 
   static styles = css`
@@ -23,6 +26,13 @@ class WebtmuxToolbar extends LitElement {
       gap: 8px;
       flex: 0 0 auto;
       z-index: 70;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    /* COPY MODE: recolor the entire toolbar so it's unmistakable which mode the
+       focused pane is in. Amber = copy/view mode; default navy = normal input. */
+    :host([copymode]) {
+      background: #7a4a12;
+      border-bottom-color: #f0a742;
     }
     .tabs {
       display: flex;
@@ -93,6 +103,46 @@ class WebtmuxToolbar extends LitElement {
     }
     .sidebar-toggle:hover { border-color: #e94560; color: #fff; }
 
+    /* Copy-mode status pill (second from the right). Shows the focused pane's mode
+       and toggles it on click. Green-ish = NORMAL, amber = COPY. */
+    .mode {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 32px;
+      box-sizing: border-box;
+      padding: 0 12px;
+      border-radius: 6px;
+      border: 1px solid #0f3460;
+      background: #1a1a2e;
+      color: #9fe3bd;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      font-family: Menlo, Monaco, "Courier New", monospace;
+      white-space: nowrap;
+      transition: all 0.15s;
+    }
+    .mode:hover { border-color: #4a9eff; color: #fff; }
+    .mode .mdot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #37d17a;
+      box-shadow: 0 0 5px rgba(55, 209, 122, 0.7);
+    }
+    .mode.copy {
+      background: #f0a742;
+      border-color: #f0a742;
+      color: #2a1902;
+    }
+    .mode.copy .mdot {
+      background: #2a1902;
+      box-shadow: none;
+    }
+
     /* One dot per visible pane (only when >1). Green = the focused pane, red = the
        rest. Sits just left of the sidebar toggle. */
     .dots {
@@ -133,6 +183,7 @@ class WebtmuxToolbar extends LitElement {
     super();
     this.recent = [];
     this.collapsed = false;
+    this.copyMode = false; // focused pane in tmux copy/view mode (SplitManager sets)
     this.panes = [];       // [bool] per pane in order; true = focused. [] hides the dots.
     this.manager = null;   // SplitManager, set directly
     // Build id (git short-hash) served fresh by config.js from the RUNNING binary —
@@ -165,6 +216,11 @@ class WebtmuxToolbar extends LitElement {
             title="Pane ${i + 1}${focused ? ' (focused)' : ''}"></span>`)}
         </div>
       ` : ''}
+      <button
+        class="mode ${this.copyMode ? 'copy' : ''}"
+        title="Focused pane is in ${this.copyMode ? 'COPY' : 'NORMAL'} mode — click to ${this.copyMode ? 'exit' : 'enter'} copy mode"
+        @click=${() => this.manager?.toggleCopyMode()}
+      ><span class="mdot"></span>${this.copyMode ? 'COPY' : 'NORMAL'}</button>
       <button
         class="sidebar-toggle"
         title="Toggle sidebar (Ctrl+Alt+B)"
