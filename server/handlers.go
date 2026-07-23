@@ -222,6 +222,10 @@ func (server *Server) processWSConn(ctx context.Context, conn *websocket.Conn, h
 		} else {
 			defer ctrl.Stop()
 			tty.SetTmuxController(ctrl)
+			// Hand this connection the ONE server-global capture store (shared by
+			// pointer across all connections) so Exposé / optimistic paint read a
+			// single deduped capture per window.
+			tty.SetCaptureProvider(server.captureStore)
 			// Poll for layout changes and broadcast updates for THIS session.
 			go server.handleTmuxEvents(ctx, tty, ctrl)
 		}

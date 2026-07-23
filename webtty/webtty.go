@@ -32,6 +32,11 @@ type WebTTY struct {
 
 	// Tmux controller for tmux-specific operations
 	tmuxCtrl TmuxController
+
+	// captureProvider is the SERVER-GLOBAL window-capture store, shared by pointer
+	// across every connection (set alongside tmuxCtrl). Kept off the per-connection
+	// TmuxController so "one capture per window across all connections" is intrinsic.
+	captureProvider CaptureProvider
 }
 
 // New creates a new instance of WebTTY.

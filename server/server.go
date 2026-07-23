@@ -22,6 +22,7 @@ import (
 	"webtmux/bindata"
 	"webtmux/pkg/homedir"
 	"webtmux/pkg/randomstring"
+	"webtmux/pkg/tmux"
 	"webtmux/webtty"
 )
 
@@ -41,6 +42,12 @@ type Server struct {
 	// hold the detected base session + socket used as the default/primary target.
 	tmuxSession string
 	tmuxSocket  string
+
+	// captureStore is the ONE server-global window-capture cache, constructed with
+	// the tmux socket and shared (by pointer) with every connection's WebTTY. Its
+	// window_id dedup is what makes "one capture per window across all grouped
+	// sessions / connections" hold. nil when tmux mode is off.
+	captureStore *tmux.CaptureStore
 }
 
 // New creates a new instance of Server.
@@ -112,6 +119,10 @@ func New(factory Factory, options *Options) (*Server, error) {
 	server.tmuxSocket = server.detectTmuxSocket()
 	if server.tmuxSession != "" {
 		log.Printf("Detected tmux session: %s (socket: %q)", server.tmuxSession, server.tmuxSocket)
+		// One capture store per server (not per connection): shared by every
+		// WebTTY so a window is captured once regardless of how many sessions
+		// or split regions read it.
+		server.captureStore = tmux.NewCaptureStore(server.tmuxSocket)
 	}
 
 	return server, nil

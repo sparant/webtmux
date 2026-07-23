@@ -2,6 +2,7 @@ package webtty
 
 import (
 	"encoding/json"
+	"log"
 	"strconv"
 	"strings"
 
@@ -30,6 +31,19 @@ type TmuxController interface {
 // SetTmuxController sets the tmux controller for the WebTTY instance
 func (wt *WebTTY) SetTmuxController(tc TmuxController) {
 	wt.tmuxCtrl = tc
+}
+
+// CaptureProvider supplies color-preserving window snapshots. Implemented by the
+// server-global *tmux.CaptureStore; a single instance is shared by every
+// connection (see SetCaptureProvider).
+type CaptureProvider interface {
+	CaptureWindows(windowIDs []string, force bool) ([]tmux.CaptureEntry, error)
+}
+
+// SetCaptureProvider hands this connection the shared capture store. Parallel to
+// SetTmuxController but deliberately server-global, not per-connection.
+func (wt *WebTTY) SetCaptureProvider(cp CaptureProvider) {
+	wt.captureProvider = cp
 }
 
 // SendTmuxLayout sends the current tmux layout to the client
@@ -67,6 +81,12 @@ func (wt *WebTTY) SendTmuxModeUpdate(inCopyMode bool) error {
 
 // handleTmuxMessage handles tmux-specific messages from the client
 func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
+	// Capture requests use the server-global captureProvider, not the
+	// per-connection tmuxCtrl, so handle them before the tmuxCtrl guard.
+	if msgType == TmuxCaptureRequest {
+		return wt.handleCaptureRequest(payload)
+	}
+
 	if wt.tmuxCtrl == nil {
 		return nil // Silently ignore if no tmux controller
 	}
@@ -159,12 +179,63 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 	}
 }
 
+// handleCaptureRequest parses {windows, force}, refreshes the requested capture
+// buffers via the shared store, and streams back a TmuxCaptureData frame. The
+// capture runs in a goroutine so a slow tmux fork never blocks this connection's
+// read loop; masterWrite serializes the eventual send with all other output.
+func (wt *WebTTY) handleCaptureRequest(payload []byte) error {
+	if wt.captureProvider == nil {
+		return nil // no capture store (non-tmux mode) — ignore
+	}
+
+	var req struct {
+		Windows json.RawMessage `json:"windows"`
+		Force   bool            `json:"force"`
+	}
+	if len(payload) > 0 {
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return errors.Wrap(err, "invalid tmux capture request")
+		}
+	}
+
+	// windows may be a JSON array (["@3","@5"]) or the string "all". Anything that
+	// isn't an array (incl. "all", missing, null) resolves to nil == all windows.
+	var ids []string
+	if len(req.Windows) > 0 {
+		_ = json.Unmarshal(req.Windows, &ids)
+	}
+	force := req.Force
+
+	go func() {
+		entries, err := wt.captureProvider.CaptureWindows(ids, force)
+		if err != nil {
+			log.Printf("capture failed: %v", err)
+			return
+		}
+		wires := make([]tmux.CaptureWire, 0, len(entries))
+		for _, e := range entries {
+			wires = append(wires, e.Wire())
+		}
+		data, err := json.Marshal(struct {
+			Captures []tmux.CaptureWire `json:"captures"`
+		}{Captures: wires})
+		if err != nil {
+			log.Printf("failed to marshal capture data: %v", err)
+			return
+		}
+		if err := wt.masterWrite(append([]byte{TmuxCaptureData}, data...)); err != nil {
+			log.Printf("failed to send capture data: %v", err)
+		}
+	}()
+	return nil
+}
+
 // isTmuxMessage returns true if the message type is a tmux-specific message
 func isTmuxMessage(msgType byte) bool {
 	switch msgType {
 	case TmuxSelectPane, TmuxSelectWindow, TmuxSplitPane, TmuxClosePane,
 		TmuxCopyMode, TmuxSendCommand, TmuxScrollUp, TmuxScrollDown, TmuxNewWindow,
-		TmuxSwitchSession, TmuxRenameWindow:
+		TmuxSwitchSession, TmuxRenameWindow, TmuxCaptureRequest:
 		return true
 	default:
 		return false

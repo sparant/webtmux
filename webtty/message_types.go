@@ -39,8 +39,9 @@ const (
 	TmuxPaneOutput = '8'
 	// Tmux mode update (copy mode state)
 	TmuxModeUpdate = '9'
-	// Tmux session info
-	TmuxSessionInfo = 'A'
+	// Tmux window capture data (JSON payload; see TmuxCaptureRequest). Reuses the
+	// 'A' output slot formerly reserved for the never-emitted TmuxSessionInfo.
+	TmuxCaptureData = 'A'
 	// Tmux error
 	TmuxError = 'B'
 )
@@ -60,7 +61,7 @@ const (
 	// Raw tmux command
 	TmuxSendCommand = 'A'
 	// Scroll in copy mode (payload: lines as string)
-	TmuxScrollUp = 'B'
+	TmuxScrollUp   = 'B'
 	TmuxScrollDown = 'C'
 	// Create new window
 	TmuxNewWindow = 'D'
@@ -68,4 +69,6 @@ const (
 	TmuxSwitchSession = 'E'
 	// Rename a window (payload: "<windowID> <new name>")
 	TmuxRenameWindow = 'F'
+	// Request capture buffers (payload JSON: {"windows":["@3",...]|"all","force":bool})
+	TmuxCaptureRequest = 'G'
 )

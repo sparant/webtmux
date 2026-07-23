@@ -27,7 +27,7 @@ func (f *fakeTmux) run(args ...string) (string, error) {
 }
 
 // buildList renders list-windows rows in the enumSep-delimited format the store
-// parses. Each row: windowID, session, index, name, paneID, cols, rows.
+// parses. Each row: windowID, session, index, paneID, cols, rows, name.
 func buildList(rows ...[]string) string {
 	var lines []string
 	for _, r := range rows {
@@ -39,12 +39,12 @@ func buildList(rows ...[]string) string {
 func TestEnumerateWindowsDedupsByWindowID(t *testing.T) {
 	// @0 and @1 each appear under three grouped sessions (services/web-a/web-b).
 	f := &fakeTmux{listOut: buildList(
-		[]string{"@0", "services", "0", "zsh", "%0", "80", "24"},
-		[]string{"@1", "services", "1", "editor", "%3", "80", "24"},
-		[]string{"@0", "web-a", "0", "zsh", "%0", "80", "24"},
-		[]string{"@1", "web-a", "1", "editor", "%3", "80", "24"},
-		[]string{"@0", "web-b", "0", "zsh", "%0", "80", "24"},
-		[]string{"@1", "web-b", "1", "editor", "%3", "80", "24"},
+		[]string{"@0", "services", "0", "%0", "80", "24", "zsh"},
+		[]string{"@1", "services", "1", "%3", "80", "24", "editor"},
+		[]string{"@0", "web-a", "0", "%0", "80", "24", "zsh"},
+		[]string{"@1", "web-a", "1", "%3", "80", "24", "editor"},
+		[]string{"@0", "web-b", "0", "%0", "80", "24", "zsh"},
+		[]string{"@1", "web-b", "1", "%3", "80", "24", "editor"},
 	)}
 	s := newCaptureStoreWithRunner(f.run, time.Now)
 
@@ -67,9 +67,9 @@ func TestEnumerateWindowsDedupsByWindowID(t *testing.T) {
 func TestCaptureWindowsOnePerWindowID(t *testing.T) {
 	f := &fakeTmux{
 		listOut: buildList(
-			[]string{"@0", "services", "0", "zsh", "%0", "80", "24"},
-			[]string{"@0", "web-a", "0", "zsh", "%0", "80", "24"},
-			[]string{"@1", "web-a", "1", "editor", "%3", "80", "24"},
+			[]string{"@0", "services", "0", "%0", "80", "24", "zsh"},
+			[]string{"@0", "web-a", "0", "%0", "80", "24", "zsh"},
+			[]string{"@1", "web-a", "1", "%3", "80", "24", "editor"},
 		),
 		captureOut: "line1\nline2\n",
 	}
@@ -98,7 +98,7 @@ func TestCaptureWindowsOnePerWindowID(t *testing.T) {
 
 func TestCaptureCoalescesWithinTTL(t *testing.T) {
 	f := &fakeTmux{
-		listOut:    buildList([]string{"@0", "services", "0", "zsh", "%0", "80", "24"}),
+		listOut:    buildList([]string{"@0", "services", "0", "%0", "80", "24", "zsh"}),
 		captureOut: "hello\n",
 	}
 	base := time.Unix(1_700_000_000, 0)

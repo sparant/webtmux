@@ -113,8 +113,14 @@ func newCaptureStoreWithRunner(run tmuxRunner, now func() time.Time) *CaptureSto
 	}
 }
 
-// enumSep separates fields in the list-windows format. Newline separates rows.
-const enumSep = "\x1f" // ASCII unit separator: never appears in tmux names
+// enumSep separates fields in the list-windows format. tmux SANITIZES all
+// control bytes (tab, \x1f, \x01, …) to '_' in -F output, so a non-printable
+// separator is impossible — we use '|' and put the only user-arbitrary field
+// (window_name) LAST, parsed with SplitN, so a '|' typed into a window name
+// can't break the split. session_name is program-generated here and never
+// contains '|'; the remaining fields are @/%-ids and integers.
+const enumSep = "|"
+const enumFields = 7
 
 // EnumerateWindows lists every window across every session on the server
 // (`list-windows -a`) and dedups by window_id — first occurrence wins for the
@@ -122,9 +128,10 @@ const enumSep = "\x1f" // ASCII unit separator: never appears in tmux names
 // single WindowInfo. This is the "all windows across all sessions, one entry
 // each" source of truth for both Exposé and "all"-window capture requests.
 func (s *CaptureStore) EnumerateWindows() ([]WindowInfo, error) {
+	// Field order: id | session | index | pane_id | cols | rows | name(LAST).
 	format := strings.Join([]string{
 		"#{window_id}", "#{session_name}", "#{window_index}",
-		"#{window_name}", "#{pane_id}", "#{pane_width}", "#{pane_height}",
+		"#{pane_id}", "#{pane_width}", "#{pane_height}", "#{window_name}",
 	}, enumSep)
 
 	out, err := s.run("list-windows", "-a", "-F", format)
@@ -138,8 +145,8 @@ func (s *CaptureStore) EnumerateWindows() ([]WindowInfo, error) {
 		if line == "" {
 			continue
 		}
-		f := strings.Split(line, enumSep)
-		if len(f) < 7 {
+		f := strings.SplitN(line, enumSep, enumFields)
+		if len(f) < enumFields {
 			continue
 		}
 		windowID := f[0]
@@ -149,14 +156,14 @@ func (s *CaptureStore) EnumerateWindows() ([]WindowInfo, error) {
 		seen[windowID] = true
 
 		idx, _ := strconv.Atoi(f[2])
-		cols, _ := strconv.Atoi(f[5])
-		rows, _ := strconv.Atoi(f[6])
+		cols, _ := strconv.Atoi(f[4])
+		rows, _ := strconv.Atoi(f[5])
 		wins = append(wins, WindowInfo{
 			WindowID:    windowID,
 			SessionName: f[1],
 			Index:       idx,
-			Name:        f[3],
-			PaneID:      f[4],
+			Name:        f[6],
+			PaneID:      f[3],
 			Cols:        cols,
 			Rows:        rows,
 		})

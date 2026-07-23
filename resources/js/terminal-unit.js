@@ -27,6 +27,7 @@ export const MSG = {
   TmuxNewWindow: 'D',
   TmuxSwitchSession: 'E',
   TmuxRenameWindow: 'F',
+  TmuxCaptureRequest: 'G',
 
   // Output (server -> client)
   Output: '1',
@@ -37,6 +38,7 @@ export const MSG = {
   SetBufferSize: '6',
   TmuxLayoutUpdate: '7',
   TmuxModeUpdate: '9',
+  TmuxCaptureData: 'A',
 };
 
 export class TerminalUnit {
