@@ -100,12 +100,19 @@ class WebtmuxExpose extends LitElement {
       color: #eaf0ff;
     }
     /* 3 columns => ~9 tiles visible (3×3); the grid scrolls vertically for more.
-       Tile frames scale with the viewport so three rows fill the height. */
+       grid-auto-rows is an EXPLICIT viewport-based height so ~3 rows fill the
+       screen. This is deliberate: the grid is a flex item with overflow-y:auto,
+       so its flex min-height collapses to 0 and, with *auto* rows, the browser
+       distributes the shrunken height across ALL rows (squashing 37 tiles into
+       one screen). A fixed row track can't be distributed away, so the extra
+       rows overflow and scroll as intended. min-height:0 keeps it the scroller. */
     .grid {
       flex: 1 1 auto;
+      min-height: 0;
       overflow-y: auto;
       display: grid;
       grid-template-columns: repeat(3, 1fr);
+      grid-auto-rows: max(200px, calc((100vh - 120px) / 3));
       gap: 16px;
       align-content: start;
     }
@@ -115,6 +122,10 @@ class WebtmuxExpose extends LitElement {
       border-radius: 8px;
       background: #12131f;
       overflow: hidden;
+      /* Fill the fixed row: frame grows, label stays its natural height. */
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
       transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s;
     }
     .tile:hover,
@@ -129,10 +140,9 @@ class WebtmuxExpose extends LitElement {
     .tile-frame {
       position: relative;
       width: 100%;
-      /* Size so ~3 rows fill the viewport (≈9 tiles visible); the grid scrolls
-         for the rest. Tall enough that the 4th row stays below the fold on a
-         normal window; floored so it stays usable on a short one. */
-      height: max(180px, calc((100vh - 180px) / 3));
+      /* Fill the tile's row (grid-auto-rows) minus the label. */
+      flex: 1 1 auto;
+      min-height: 0;
       overflow: hidden;
       background: #1a1a2e;
       border-bottom: 1px solid #0f3460;
@@ -155,6 +165,7 @@ class WebtmuxExpose extends LitElement {
       box-sizing: border-box;
     }
     .tile-label {
+      flex: 0 0 auto;
       padding: 6px 10px;
       color: #d6ddf5;
       font: 12px/1.3 Menlo, Monaco, monospace;
