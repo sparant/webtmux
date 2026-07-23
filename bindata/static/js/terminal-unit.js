@@ -93,7 +93,7 @@ export class TerminalUnit {
       fontSize: 14,
       fontFamily: 'Menlo, Monaco, "Courier New", monospace',
       theme: {
-        background: '#1a1a2e',
+        background: '#000000',
         foreground: '#eaeaea',
         cursor: '#f0f0f0',
         selection: 'rgba(255, 255, 255, 0.3)',
