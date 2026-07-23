@@ -214,15 +214,29 @@ func (server *Server) processWSConn(ctx context.Context, conn *websocket.Conn, h
 	// so its sidebar reflects/controls only its own current window — the crux of
 	// the split-view feature. tmux mode is on iff a base session was detected.
 	if server.tmuxSession != "" {
-		// A grouped split pane (session != the shared base) is a single-client
-		// session, so its controller FOLLOWS that client wherever the user drives it
-		// (native Ctrl+B), keeping the layout correlated with reality. The primary
-		// (base session, many clients) doesn't follow.
-		follow := sessionName != server.tmuxSession
-		ctrl, err := tmux.NewController(sessionName, server.tmuxSocket, follow, server.tmuxSession)
+		// A split pane (session != the shared base) always views sessions through
+		// its own grouped web-* session; groupBase records the logical session it
+		// is viewing (drives self-heal + regroup-on-switch). The primary sits
+		// directly on the shared base (groupBase = "" => never re-grouped).
+		split := sessionName != server.tmuxSession
+		groupBase := ""
+		if split {
+			groupBase = server.tmuxSession
+		}
+		ctrl, err := tmux.NewController(sessionName, server.tmuxSocket, split, groupBase)
 		if err != nil {
 			log.Printf("Warning: failed to create tmux controller for %q: %v", sessionName, err)
-		} else if err := ctrl.Start(); err != nil {
+		} else if err := func() error {
+			// Give the controller the pane's EXACT client tty (the pty's slave
+			// device) so every client-scoped tmux command — switch-client above
+			// all — targets this pane's client and nothing else. Without it a
+			// bare switch-client resolves to an arbitrary client (historically
+			// dragging the ssh console to another session).
+			if t, ok := slave.(interface{ TtyName() string }); ok {
+				ctrl.SetClientTTY(t.TtyName())
+			}
+			return ctrl.Start()
+		}(); err != nil {
 			log.Printf("Warning: failed to start tmux controller for %q: %v", sessionName, err)
 		} else {
 			defer ctrl.Stop()

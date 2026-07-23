@@ -4,6 +4,23 @@
 // gets a freshly generated grouped-session name so it has its own current window
 // while sharing the window list.
 //
+// THE NAVIGATION MODEL (the invariants every switcher relies on):
+//   1. focusedUnit is the ONE navigation target. Every switcher — sidebar window
+//      tabs, sidebar session tabs, sidebar arrow keys, toolbar recents, Exposé —
+//      changes what the FOCUSED pane shows, even when that means the pane hops
+//      to another session. Nothing ever navigates a non-focused pane.
+//   2. A window is VISIBLE in at most one pane. Windows shown (or in-flight
+//      via _targetWindowId) by other panes are disabled in every switcher; the
+//      single source of that set is occupiedWindowIds().
+//   3. A pane's LOGICAL session is layout.sessionBase (the server resolves a
+//      split's ephemeral web-* grouped session to the group's base). All display
+//      and comparison uses it; the web-* shadow names never surface.
+//   4. Recency has ONE write path (noteAccess -> captureCache.accessed,
+//      persisted) shared by the toolbar strip and the Exposé sort.
+//   5. Cross-session navigation is safe for any pane: the backend switches only
+//      the pane's own tmux client (-c <its tty>) and re-groups split panes onto
+//      the target session, so panes never couple with the console or each other.
+//
 // One-sidebar illusion: there is a SINGLE <webtmux-sidebar> element, always in the
 // same spot, bound to whichever region is FOCUSED. Clicking a region's terminal
 // focuses it and the shared sidebar re-points to reflect/control that region.
@@ -15,10 +32,6 @@ export class SplitManager {
     this.container = container;   // #app — holds .region elements, .divider bars, and the shared sidebar
     this.units = [];
     this.focusedUnit = null;
-    // The last NON-PRIMARY (split) region to hold focus. The toolbar/Exposé window
-    // switch targets THIS (not focusedUnit, which drifts to the console-synced
-    // primary when you click a tab whose window the primary is showing).
-    this._lastFocusedSplit = null;
 
     // ONE client-side capture cache for the whole app. Requests go out over any
     // connected unit's ws (capture is server-global, so the connection is
@@ -126,9 +139,6 @@ export class SplitManager {
     region.remove();
 
     this.units.splice(idx, 1);
-    if (!this.units.includes(this._lastFocusedSplit)) {
-      this._lastFocusedSplit = this.units.find(u => !u.primary) || null;
-    }
     this._syncSplitClass();
     this.focus(this.units[Math.min(idx, this.units.length - 1)] || this.units[0]);
     this._refitSoon();
@@ -137,7 +147,6 @@ export class SplitManager {
   focus(unit) {
     if (!unit) return;
     this.focusedUnit = unit;
-    if (!unit.primary) this._lastFocusedSplit = unit;   // remember the last split focused
     // Compat shim: mobile-controls + any global shortcut target the focused unit.
     window.webtmux = unit;
     for (const u of this.units) {
@@ -179,10 +188,15 @@ export class SplitManager {
       unit._autoPickPending = false;
     }
 
+    // An in-flight goToWindow target that the layout now confirms is no longer
+    // "pending" — clear it even when it wasn't a change (e.g. re-selecting the
+    // window the pane was already on), so it can't linger as a phantom claim.
+    const newId = unit.layout?.activeWindowId;
+    if (unit._targetWindowId && unit._targetWindowId === newId) unit._targetWindowId = null;
+
     // MRU access: a region now shows a window it wasn't = an access — UNLESS the
     // switch came from sidebar arrow-key browsing (marked in _suppressAccessIds).
     // Expose browsing doesn't switch a region, so it never lands here.
-    const newId = unit.layout?.activeWindowId;
     if (newId && newId !== unit._accessSeenId) {
       unit._accessSeenId = newId;
       unit._targetWindowId = null;   // an in-flight goToWindow switch has landed
@@ -191,12 +205,32 @@ export class SplitManager {
     this._refreshToolbar();
   }
 
+  // A pane's LOGICAL session: the group's base for a split's ephemeral web-*
+  // grouped session (server-resolved), else the session itself. All display and
+  // session comparison goes through this — shadow names never surface.
+  logicalSession(unit) {
+    return unit?.layout?.sessionBase || unit?.layout?.sessionName || '';
+  }
+
+  // Window ids already claimed by panes OTHER than `exclude` — the single source
+  // for "disabled" in every switcher (toolbar recents + sidebar tabs/arrows).
+  // A pane claims its current window AND an in-flight _targetWindowId (a switch
+  // that hasn't landed), so fast clicks can't put two panes on one window.
+  occupiedWindowIds(exclude) {
+    return new Set(
+      this.units
+        .filter(u => u !== exclude)
+        .map(u => u._targetWindowId || u.layout?.activeWindowId)
+        .filter(Boolean)
+    );
+  }
+
   // Snapshot a window's display metadata (index/name/session) from the accessing
   // region's layout — captured at access time so recents survive across sessions
   // even when that window isn't in the focused region's window list anymore.
   _metaFor(unit, id) {
     const w = (unit.layout?.windows || []).find(x => x.id === id);
-    return { index: w?.index, name: w?.name || 'bash', session: unit.layout?.sessionName || '' };
+    return { index: w?.index, name: w?.name || 'bash', session: this.logicalSession(unit) };
   }
 
   // Record an access. Order is STABLE: if the window is already shown it keeps its
@@ -245,7 +279,9 @@ export class SplitManager {
     const covered = new Set();
     for (const u of this.units) {
       if (!u.layout) continue;
-      covered.add(u.layout.sessionName);
+      // Recents store LOGICAL session names, so coverage must too (a split's
+      // own sessionName is a web-* shadow that never matches a recent's session).
+      covered.add(this.logicalSession(u));
       for (const w of (u.layout.windows || [])) live.add(w.id);
     }
     if (!live.size) return;
@@ -303,9 +339,8 @@ export class SplitManager {
     const activeId = focused?.layout?.activeWindowId;
     const cache = this.captureCache?.byWindow;
     // Windows shown by OTHER panes are not selectable here (they'd put two panes on
-    // one window) — greyed out, like the sidebar.
-    const eff = (x) => x._targetWindowId || x.layout?.activeWindowId;
-    const occupied = new Set(this.units.filter(x => x !== focused).map(eff).filter(Boolean));
+    // one window) — greyed out, like the sidebar. One shared source: occupiedWindowIds.
+    const occupied = this.occupiedWindowIds(focused);
     this.toolbar.recent = this.recentWindows.map(e => {
       const c = cache?.get(e.id);
       return {
@@ -320,51 +355,30 @@ export class SplitManager {
     this.toolbar.collapsed = !!this.sidebar?.collapsed;
   }
 
-  // The region a toolbar/Exposé window-switch acts on: the last-focused SPLIT
-  // region, falling back to the focused region (the primary) in single-view.
-  _switchTargetRegion() {
-    if (this._lastFocusedSplit && this.units.includes(this._lastFocusedSplit)) {
-      return this._lastFocusedSplit;
-    }
-    return this.focusedUnit || this.units[0] || null;
-  }
-
-  // Navigate to a window from ANY switcher (toolbar recent-strip, Exposé tile).
-  //   1) If some region already shows it, jump focus to that region.
-  //   2) Otherwise select it in the LAST-FOCUSED SPLIT region — but ONLY if the
-  //      window is reachable in that region's own window list.
-  // We NEVER switch-client a region to another session here: a grouped split shares
-  // its base's window list and can't cleanly leave/rejoin — switching it lands it
-  // on the raw console session and permanently syncs it with the primary. So a
-  // recent from a session no region currently shows is simply not reachable and the
-  // click is a no-op. (Effective window = a region's in-flight target if a switch
-  // hasn't landed yet, else its current window — so fast clicks don't mis-target.)
+  // Navigate to a window from ANY switcher (toolbar recent-strip, Exposé tile):
+  // change what the FOCUSED pane shows — the model's single navigation rule.
+  //   1) Occupied by another pane -> no-op (its tab is disabled anyway).
+  //   2) In the focused pane's own window list -> select it.
+  //   3) In another session -> hop the pane there, then select. Safe for every
+  //      pane: the backend switches only this pane's own tmux client and
+  //      re-groups a split onto the target session (it never couples with the
+  //      console or another pane). The two sends ride the same serialized ws,
+  //      and the server's session switch refreshes its layout cache before the
+  //      select resolves the window id — no timing gap, no setTimeout.
   goToWindow(id, session = '') {
     if (!id) return;
-    // Navigate the FOCUSED pane — same as the sidebar. (Previously this targeted the
-    // "last-focused split" and jumped focus to whichever pane already showed the
-    // window, so in split mode it controlled the wrong pane.)
     const u = this.focusedUnit;
     if (!u) return;
-    // Don't grab a window ANOTHER pane already shows (keep panes on distinct windows,
-    // matching the sidebar's disabled tabs). eff = a pane's in-flight target if a
-    // switch hasn't landed yet, else its current window.
-    const eff = (x) => x._targetWindowId || x.layout?.activeWindowId;
-    if (this.units.some(x => x !== u && eff(x) === id)) return;
+    if (this.occupiedWindowIds(u).has(id)) return;
+    if (u.layout?.activeWindowId === id) { u.terminal?.focus(); return; }  // already showing it
     const inList = (u.layout?.windows || []).some(w => w.id === id);
-    if (inList) {
-      u._targetWindowId = id;
-      u.selectWindow(id);
-      u.terminal?.focus();
-      return;
-    }
-    // A different session — hop there. The backend follows the pane's real client
-    // and self-heals a split that ends up coupled, so this is safe for splits too.
-    if (session && u.layout && session !== u.layout.sessionName) {
+    if (!inList) {
+      if (!session || !u.layout || session === this.logicalSession(u)) return; // unreachable
       u.switchSession(session);
-      u._targetWindowId = id;
-      setTimeout(() => { u.selectWindow(id); u.terminal?.focus(); }, 300);
     }
+    u._targetWindowId = id;
+    u.selectWindow(id);
+    u.terminal?.focus();
   }
 
   // Toolbar recent-tab click -> shared navigation.
@@ -385,13 +399,11 @@ export class SplitManager {
   // Tell the shared sidebar which windows are already shown by OTHER regions, so it
   // can grey them out / skip them — two panes on the same window share it (tmux
   // grouped sessions) and would stay in sync, which is exactly what we prevent.
+  // Same source as the toolbar (occupiedWindowIds), so in-flight switches count.
   _pushDisabled() {
     const focused = this.focusedUnit;
     if (!focused) return;
-    this.sidebar.disabledWindows = this.units
-      .filter(u => u !== focused)
-      .map(u => u.layout?.activeWindowId)
-      .filter(Boolean);
+    this.sidebar.disabledWindows = [...this.occupiedWindowIds(focused)];
   }
 
   // Add a region and, once its layout arrives, auto-select a window not already

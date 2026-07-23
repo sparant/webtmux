@@ -437,10 +437,10 @@ class WebtmuxSidebar extends LitElement {
       `;
     }
 
-    // Hide the ephemeral per-region grouped sessions the split view spawns
-    // (`web-<rand>`, and legacy `web-<pid>` from WEBTMUX_GROUPED) — they're an
-    // implementation detail of the split, not user-selectable stack sessions.
-    const sessions = (this.layout.sessions || []).filter(s => !/^web-/.test(s.name));
+    // The server already hides the ephemeral per-region web-* grouped sessions
+    // and marks Active by GROUP (so a split viewing "services" through web-abc
+    // marks the services tab active); the client filter is belt-and-braces.
+    const sessions = this._sessionList();
     const showSessions = sessions.length > 1;
 
     return html`
@@ -486,7 +486,7 @@ class WebtmuxSidebar extends LitElement {
       </div>
 
       <div class="session-info">
-        Session: ${this.layout.sessionName}<br>
+        Session: ${this.layout.sessionBase || this.layout.sessionName}<br>
         ${this.layout.windows?.length || 0} windows
       </div>
       </div>
@@ -565,19 +565,27 @@ class WebtmuxSidebar extends LitElement {
     // Every other window is occupied by another pane — nothing to move to.
   }
 
+  // The user-selectable session list: exactly what render() shows (web-* shadow
+  // sessions excluded), so arrow-key session nav can never land on another
+  // pane's ephemeral grouped session.
+  _sessionList() {
+    return (this.layout?.sessions || []).filter(s => !/^web-/.test(s.name));
+  }
+
   // Step delta sessions from the active one (wrapping) and switch to it, so ←/→
   // flip between sessions the same way ↑/↓ flip between windows. No-op with a
   // single session. Refocus the panel afterwards (the re-render would otherwise
   // drop keyboard focus and break a second arrow press).
   navigateSession(delta) {
-    const sessions = this.layout?.sessions || [];
+    const sessions = this._sessionList();
     if (sessions.length < 2) return;
+    const base = this.layout?.sessionBase || this.layout?.sessionName;
     let idx = sessions.findIndex(s => s.active);
-    if (idx === -1) idx = sessions.findIndex(s => s.name === this.layout?.sessionName);
+    if (idx === -1) idx = sessions.findIndex(s => s.name === base);
     if (idx === -1) idx = 0;
     const next = (idx + delta + sessions.length) % sessions.length;
     const target = sessions[next];
-    if (target) {
+    if (target && !target.active) {
       this.switchSession(target.name);
       this.focusPanel();
     }
@@ -623,6 +631,9 @@ class WebtmuxSidebar extends LitElement {
   }
 
   switchSession(sessionName) {
+    // Already viewing this session (possibly through a grouped shadow) — no-op.
+    const cur = this.layout?.sessionBase || this.layout?.sessionName;
+    if (sessionName === cur) return;
     this.unit?.switchSession(sessionName);
   }
 

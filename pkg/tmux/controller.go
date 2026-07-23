@@ -16,15 +16,18 @@ type Controller struct {
 
 	// Follow the pane's real tmux client. A pane is a live tmux client (the pty)
 	// the user can drive natively (Ctrl+B w/s) to any session — so a fixed session
-	// name goes stale/miscorrelated. For grouped split panes we DISCOVER the pane's
-	// client (the sole client of its grouped session) and read #{client_session}
-	// each refresh, so the layout always reflects where the pane actually is.
-	// baseSession = the session it started on (client discovery + fallback). The
-	// primary (shared base) doesn't follow — many clients — it tracks via SwitchSession.
+	// name goes stale/miscorrelated. The server passes the pane's exact client tty
+	// (read off the pty via TIOCGPTN) through SetClientTTY, so EVERY pane — the
+	// primary included — can be followed and switched deterministically
+	// (`switch-client -c <tty>`). When the tty is unknown we fall back to
+	// discovering the sole client of the pane's grouped session.
+	// baseSession = the pane's own (grouped) session (discovery + fallback);
+	// groupBase = the logical session that group currently views ("" = primary,
+	// which sits directly on the shared base and is never re-grouped).
 	follow      bool
 	baseSession string
 	clientTTY   string
-	groupBase   string // the real base session splits are grouped on (for self-heal)
+	groupBase   string
 
 	layoutCache *Layout
 	layoutMu    sync.RWMutex
@@ -52,12 +55,25 @@ func NewController(sessionName string, socket string, follow bool, groupBase str
 	return c, nil
 }
 
+// SetClientTTY hands the controller the pane's exact tmux client tty (the pty's
+// slave device, read via TIOCGPTN when the pty was created). With it, the pane
+// can be followed and switched deterministically — no discovery heuristics —
+// so following is enabled for every pane, the primary included.
+func (c *Controller) SetClientTTY(tty string) {
+	if tty == "" {
+		return
+	}
+	c.clientTTY = tty
+	c.follow = true
+}
+
 // selfHeal keeps a split from staying SYNCED. If the pane's client has landed on a
 // session shared with another client (e.g. it was driven — via native Ctrl+B — onto
 // the base/console session, coupling it with the console-following primary), we
-// transparently move it into a FRESH grouped session on the base: it keeps showing
-// the same window but regains its own independent current-window, so it decouples.
-// A pane that is the sole client of its (grouped) session is healthy — left alone.
+// transparently move it into a FRESH grouped session on the session it is looking
+// at: it keeps showing the same window list but regains its own independent
+// current-window, so it decouples. A pane that is the sole client of its session
+// is healthy — left alone (a deliberate native move to an otherwise-empty session).
 func (c *Controller) selfHeal(curSession string) {
 	if !c.follow || c.clientTTY == "" || c.groupBase == "" {
 		return
@@ -68,20 +84,31 @@ func (c *Controller) selfHeal(curSession string) {
 	if c.clientCount(curSession) <= 1 {
 		return // alone on this session (no coupling) — leave it (user's deliberate move)
 	}
-	// Coupled with another client. Re-group onto a fresh grouped session on the base.
-	// Order matters: create the group detached, MOVE the pane's client into it, and
-	// only THEN arm destroy-unattached — setting it before the client attaches would
-	// destroy the brand-new (unattached) session immediately.
+	// Coupled with another client. Re-group onto the session the pane is actually
+	// viewing (NOT the original base — regrouping there would teleport a pane that
+	// had navigated to a different session back to the base's windows).
+	c.regroupOnto(curSession)
+}
+
+// regroupOnto moves this split pane's client into a fresh grouped session on
+// `base`, giving it an independent current-window over base's window list.
+// Order matters: create the group detached, MOVE the pane's client into it, and
+// only THEN arm destroy-unattached — setting it before the client attaches would
+// destroy the brand-new (unattached) session immediately. The pane's previous
+// grouped session self-reaps via its own destroy-unattached.
+func (c *Controller) regroupOnto(base string) error {
 	newName := fmt.Sprintf("web-h%d", time.Now().UnixNano()%1000000000)
-	if _, err := c.runTmux("new-session", "-d", "-t", c.groupBase, "-s", newName); err != nil {
-		return
+	if _, err := c.runTmux("new-session", "-d", "-t", base, "-s", newName); err != nil {
+		return err
 	}
 	if _, err := c.runTmux("switch-client", "-c", c.clientTTY, "-t", newName); err != nil {
 		c.runTmux("kill-session", "-t", newName) // couldn't move the client — clean up
-		return
+		return err
 	}
 	c.runTmux("set-option", "-t", newName, "destroy-unattached", "on")
 	c.baseSession = newName // discovery target + fallback now points at the fresh group
+	c.groupBase = base      // the logical session this pane now views
+	return nil
 }
 
 // clientCount returns how many tmux clients are attached to the given session.
@@ -212,28 +239,18 @@ func (c *Controller) RefreshLayout() error {
 		SessionName: sessionParts[1],
 	}
 
-	// Get all sessions
-	sessionsOut, err := c.runTmux("list-sessions", "-F", "#{session_id},#{session_name},#{session_windows},#{session_attached}")
+	// All sessions with grouping info. This drives the sidebar session list, its
+	// Active flag, and the pane's LOGICAL session (SessionBase): a split pane's
+	// own session is an ephemeral web-* group, but the UI must present the
+	// group's base session as "where this pane is".
+	sessionsOut, err := c.runTmux("list-sessions", "-F", sessionsFormat)
 	if err == nil {
-		for _, line := range strings.Split(strings.TrimSpace(sessionsOut), "\n") {
-			if line == "" {
-				continue
-			}
-			parts := strings.Split(line, ",")
-			if len(parts) < 4 {
-				continue
-			}
-			winCount, _ := strconv.Atoi(parts[2])
-			attached := parts[3] == "1"
-			session := Session{
-				ID:       parts[0],
-				Name:     parts[1],
-				Windows:  winCount,
-				Attached: attached,
-				Active:   parts[1] == sess,
-			}
-			layout.Sessions = append(layout.Sessions, session)
-		}
+		rows := parseSessionRows(sessionsOut)
+		layout.SessionBase = logicalBase(rows, sess)
+		layout.Sessions = buildSessions(rows, sess)
+	}
+	if layout.SessionBase == "" {
+		layout.SessionBase = sess
 	}
 
 	// Get windows
@@ -385,10 +402,39 @@ func (c *Controller) RenameWindow(windowID, name string) error {
 	return nil
 }
 
-// SwitchSession switches to the specified session
+// SwitchSession moves THIS pane's view to the specified session.
+//
+// A split pane (groupBase != "") never sits directly on a shared session — that
+// would couple its current-window with every other client there. Instead it is
+// re-grouped onto the target: a fresh grouped session on `sessionName` keeps an
+// independent current-window while sharing the target's window list.
+//
+// The primary switches its OWN client (-c <tty>) directly. Without the tty a
+// bare `switch-client -t` resolves to an arbitrary client — historically this
+// dragged the ssh console along — so we only fall back to it when the tty is
+// genuinely unknown.
 func (c *Controller) SwitchSession(sessionName string) error {
-	_, err := c.runTmux("switch-client", "-t", sessionName)
-	if err != nil {
+	// Discovery (sole client of the pane's grouped session) is only valid for
+	// split panes — on the primary's shared base session it could grab the
+	// CONSOLE's tty and drag the console along with the switch.
+	if c.clientTTY == "" && c.groupBase != "" {
+		c.discoverClient()
+	}
+	if c.groupBase != "" && c.clientTTY != "" {
+		if sessionName == c.groupBase {
+			return nil // already viewing this session's group
+		}
+		if err := c.regroupOnto(sessionName); err != nil {
+			return err
+		}
+		c.RefreshLayout()
+		return nil
+	}
+	args := []string{"switch-client", "-t", sessionName}
+	if c.clientTTY != "" {
+		args = []string{"switch-client", "-c", c.clientTTY, "-t", sessionName}
+	}
+	if _, err := c.runTmux(args...); err != nil {
 		return err
 	}
 	c.sessionName = sessionName
