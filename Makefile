@@ -20,16 +20,37 @@ PLATFORMS = \
 
 export CGO_ENABLED=0
 
-.PHONY: all build clean test install cross-compile release help
+.PHONY: all build clean test install cross-compile release help check-js
 
 # Default target
 all: build
 
+# Fail the build on any JS syntax error before it can ship. The whole UI loads as
+# one ES-module graph, so a single bad file (classically a stray backtick or ${}
+# inside a css`` / html`` template literal) aborts bootstrap and blanks the page —
+# invisible until runtime. Parse every source module as ESM (forced via
+# --input-type=module, since bare .js is treated as CommonJS and would false-fail
+# on `import`). No-op with a note if node isn't installed.
+check-js:
+	@command -v node >/dev/null 2>&1 || { echo "note: node not found — skipping JS syntax check"; exit 0; }
+	@echo "Checking JS syntax..."
+	@fail=0; \
+	for f in resources/js/*.js resources/js/components/*.js; do \
+		if ! err=$$(node --check --input-type=module < "$$f" 2>&1); then \
+			echo "  SYNTAX ERROR in $$f:"; \
+			printf '%s\n' "$$err" | head -4 | sed 's/^/    /'; \
+			fail=1; \
+		fi; \
+	done; \
+	if [ "$$fail" != "0" ]; then echo "JS syntax check FAILED — aborting build."; exit 1; fi; \
+	echo "  all JS OK"
+
 # Sync resources to bindata (for embedding). index.html MUST be synced too — it
 # is embedded + served from bindata/static/, and the split-view markup lives in
 # it; forgetting it ships a stale page (old static sidebar/#terminal) that fights
-# the SplitManager-created region.
-sync-assets:
+# the SplitManager-created region. Gated on check-js so a syntax error never
+# reaches the embedded assets.
+sync-assets: check-js
 	@cp -r resources/js/* bindata/static/js/
 	@cp resources/index.html bindata/static/index.html
 
@@ -81,7 +102,7 @@ release: cross-compile
 	@ls -lh $(OUTPUT_DIR)/dist/
 
 # Copy JS assets to bindata (for development)
-assets:
+assets: check-js
 	cp resources/js/webtmux.js bindata/static/js/
 	cp resources/js/components/*.js bindata/static/js/components/
 
@@ -100,5 +121,6 @@ help:
 	@echo "  make cross-compile Build for all platforms"
 	@echo "  make release      Create release archives"
 	@echo "  make assets       Copy JS assets to bindata"
+	@echo "  make check-js     Parse-check all JS (runs automatically before a build)"
 	@echo "  make dev          Build with fresh assets"
 	@echo "  make help         Show this help"
