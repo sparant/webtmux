@@ -129,9 +129,10 @@ class WebtmuxExpose extends LitElement {
     .tile-frame {
       position: relative;
       width: 100%;
-      /* Size so three rows of tiles fill the viewport (~9 visible); the grid
-         scrolls for the rest. Clamped so it stays sane on very short/tall windows. */
-      height: clamp(150px, calc((100vh - 150px) / 3 - 46px), 460px);
+      /* Size so ~3 rows fill the viewport (≈9 tiles visible); the grid scrolls
+         for the rest. Tall enough that the 4th row stays below the fold on a
+         normal window; floored so it stays usable on a short one. */
+      height: max(180px, calc((100vh - 180px) / 3));
       overflow: hidden;
       background: #1a1a2e;
       border-bottom: 1px solid #0f3460;
