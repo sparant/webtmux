@@ -244,11 +244,19 @@ export class SplitManager {
     if (kept.length !== this.recentWindows.length) this.recentWindows = kept;
   }
 
-  // Remove a window from the recent strip WITHOUT touching tmux (the window keeps
-  // running) — the per-tab × affordance. Also forget its access recency so the
-  // Exposé "Last accessed" sort stops ranking it as recent (refreshes an open
-  // Exposé via the cache 'update' event).
+  // Remove a window from the recent strip WITHOUT killing the tmux window — the
+  // per-tab × affordance. Also forget its access recency so the Exposé "Last
+  // accessed" sort stops ranking it as recent (refreshes an open Exposé).
+  //
+  // When there are 2+ regions and a NON-primary split region is currently showing
+  // this window, closing the tab also CLOSES that region — so × on a recent is a
+  // de-facto "kill the split that was showing this window". (The primary region is
+  // console-synced and never closed; the tmux window itself keeps running.)
   removeRecent(id) {
+    if (this.units.length > 1) {
+      const holder = this.units.find(u => !u.primary && u.layout?.activeWindowId === id);
+      if (holder) this.removeUnit(holder);
+    }
     const before = this.recentWindows.length;
     this.recentWindows = this.recentWindows.filter(e => e.id !== id);
     this.captureCache?.forgetAccessed(id);
