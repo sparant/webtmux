@@ -90,6 +90,9 @@ export class SplitManager {
     if (this.units.length > 0) {
       const divider = document.createElement('div');
       divider.className = 'divider';
+      // Drag the divider to transfer width between the two regions it sits between.
+      // (The cursor already advertised col-resize; this makes it actually work.)
+      divider.addEventListener('mousedown', (e) => this._startDividerDrag(divider, e));
       this.container.insertBefore(divider, this.sidebar);
     }
     const region = document.createElement('div');
@@ -118,9 +121,17 @@ export class SplitManager {
 
     this.units.push(unit);
     this._syncSplitClass();
+    this._equalizeRegions();   // a fresh region joins as an equal split, clearing any prior drag
     this.focus(unit);
     this._refitSoon();
     return unit;
+  }
+
+  // Return every region to equal `flex: 1 1 0` by clearing the inline flex-grow a
+  // divider drag stamped on. Called on add/remove so a new/removed region doesn't
+  // inherit stale grow ratios (which would render the un-stamped region as a sliver).
+  _equalizeRegions() {
+    for (const r of this.container.querySelectorAll('.region')) r.style.flexGrow = '';
   }
 
   removeUnit(unit) {
@@ -140,6 +151,7 @@ export class SplitManager {
 
     this.units.splice(idx, 1);
     this._syncSplitClass();
+    this._equalizeRegions();   // remaining regions re-split evenly
     this.focus(this.units[Math.min(idx, this.units.length - 1)] || this.units[0]);
     this._refitSoon();
   }
@@ -338,15 +350,32 @@ export class SplitManager {
     const focused = this.focusedUnit;
     const activeId = focused?.layout?.activeWindowId;
     const cache = this.captureCache?.byWindow;
+    // Ground-truth window metadata from every region's LIVE layout — the same
+    // source the sidebar reads, refreshed by the 500ms layout poll. A tmux rename
+    // lands here immediately, whereas the capture cache only refreshes when a
+    // capture frame arrives (Exposé/capture poll), so we MUST trust live first or
+    // renamed tabs go stale while the sidebar updates.
+    const liveById = new Map();
+    for (const u of this.units) {
+      for (const w of (u.layout?.windows || [])) {
+        if (!liveById.has(w.id)) liveById.set(w.id, w);
+      }
+    }
     // Windows shown by OTHER panes are not selectable here (they'd put two panes on
     // one window) — greyed out, like the sidebar. One shared source: occupiedWindowIds.
     const occupied = this.occupiedWindowIds(focused);
     this.toolbar.recent = this.recentWindows.map(e => {
+      const live = liveById.get(e.id);
+      // Keep the access-time snapshot fresh from the live layout so the name/index
+      // stay correct even after the window later leaves every region's window list
+      // (recents outlive the session they were accessed in).
+      if (live?.name) e.name = live.name;
+      if (live?.index != null) e.index = live.index;
       const c = cache?.get(e.id);
       return {
         id: e.id,
-        index: c?.index ?? e.index ?? '?',
-        name: c?.name || e.name || 'bash',
+        index: live?.index ?? c?.index ?? e.index ?? '?',
+        name: live?.name || c?.name || e.name || 'bash',
         session: c?.sessionName || e.session || '',
         active: e.id === activeId,
         disabled: occupied.has(e.id),
@@ -450,6 +479,51 @@ export class SplitManager {
 
   _refitSoon() {
     setTimeout(() => { for (const u of this.units) { try { u.fit(); } catch (e) {} } }, 60);
+  }
+
+  // Divider drag-to-resize. The divider sits between two .region siblings; dragging
+  // transfers width from one to the other. Regions are `flex: 1 1 0` (equal grow),
+  // so we express widths as flex-grow ratios — freezing EVERY region to a grow
+  // proportional to its current pixel width first, so non-adjacent regions hold
+  // steady and the ratios survive later container/window resizes. Each region's
+  // terminal has a ResizeObserver (fit + sendResize), so xterm reflows and tmux
+  // gets the new size live as we drag; a final refit settles it on release.
+  _startDividerDrag(divider, e) {
+    if (e.button !== 0) return;                  // left-drag only
+    const prevRegion = divider.previousElementSibling;
+    const nextRegion = divider.nextElementSibling;
+    if (!prevRegion?.classList.contains('region') || !nextRegion?.classList.contains('region')) return;
+    e.preventDefault();
+
+    // Pin all regions to width-proportional grow values so only this pair moves.
+    for (const r of this.container.querySelectorAll('.region')) {
+      r.style.flexGrow = String(Math.max(1, Math.round(r.getBoundingClientRect().width)));
+    }
+    const startX = e.clientX;
+    const w1 = prevRegion.getBoundingClientRect().width;
+    const w2 = nextRegion.getBoundingClientRect().width;
+    const total = w1 + w2;
+    const MIN = 80;                              // keep a usable sliver on both sides
+
+    const onMove = (ev) => {
+      let nw1 = w1 + (ev.clientX - startX);
+      nw1 = Math.max(MIN, Math.min(total - MIN, nw1));
+      prevRegion.style.flexGrow = String(Math.round(nw1));
+      nextRegion.style.flexGrow = String(Math.round(total - nw1));
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove, true);
+      window.removeEventListener('mouseup', onUp, true);
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+      this._refitSoon();
+    };
+    // userSelect/cursor overrides keep the drag from selecting page text or
+    // flipping to the default cursor when the pointer briefly leaves the 4px bar.
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+    window.addEventListener('mousemove', onMove, true);
+    window.addEventListener('mouseup', onUp, true);
   }
 
   _installControls() {
