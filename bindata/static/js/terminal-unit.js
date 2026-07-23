@@ -67,7 +67,11 @@ export class TerminalUnit {
     // toggled from the sidebar. Read here so the handlers below see it on load.
     this.scrollMode = localStorage.getItem('webtmux-scroll-mode') || 'buffer';
     this.layout = null;
-    this.pendingSessionSwitch = null;
+    // Window we're viewing, remembered so we can restore it after a reconnect
+    // (tty loss) — the fresh attach otherwise resets us to the base's current window.
+    this.desiredWindowId = null;
+    this.desiredWindowIndex = null;
+    this.restorePending = false;
     this.oscBuffer = ''; // Buffer for OSC sequence detection
     this.resizeObserver = null;
 
@@ -370,15 +374,8 @@ export class TerminalUnit {
         this.sendResize();
         this.terminal.focus();
       }, 100);
-
-      // Switch to pending session if we reconnected after session ended
-      if (this.pendingSessionSwitch) {
-        setTimeout(() => {
-          console.log('Switching to session:', this.pendingSessionSwitch);
-          this.switchSession(this.pendingSessionSwitch);
-          this.pendingSessionSwitch = null;
-        }, 200);
-      }
+      // (Window restore after a reconnect happens when the first layout arrives —
+      // see _rememberOrRestore, gated by this.restorePending.)
     };
 
     this.ws.onmessage = (event) => {
@@ -389,15 +386,12 @@ export class TerminalUnit {
       console.log('WebSocket closed', this.sessionName || '(primary)');
       if (this.destroyed) return;
 
-      // Check if there are other sessions to switch to
-      const otherSessions = this.layout?.sessions?.filter(s => !s.active) || [];
-      if (otherSessions.length > 0) {
-        // Auto-reconnect and switch to another session
-        this.pendingSessionSwitch = otherSessions[0].name;
-        console.log('Auto-reconnecting to session:', this.pendingSessionSwitch);
-        setTimeout(() => this.connect(), 500);
-      } else if (this.reconnectInterval) {
-        // Normal reconnect behavior
+      // Reconnect to the SAME session (a grouped region's session is recreated by
+      // attach-web.sh under the same name) and RESTORE the window we were viewing
+      // — otherwise the fresh attach resets us to the base's current window. We no
+      // longer hop to a different session on reconnect (that reset the view).
+      if (this.reconnectInterval) {
+        this.restorePending = true;
         setTimeout(() => this.connect(), this.reconnectInterval * 1000);
       }
     };
@@ -455,6 +449,7 @@ export class TerminalUnit {
 
       case MSG.TmuxLayoutUpdate:
         this.layout = JSON.parse(payload);
+        this._rememberOrRestore();
         this.dispatchLayoutUpdate();
         break;
 
@@ -494,6 +489,37 @@ export class TerminalUnit {
     // single shared sidebar IF this unit is focused, and handle add-region
     // auto-pick. The sidebar is no longer per-unit.
     if (this.onLayout) this.onLayout(this);
+  }
+
+  // On every layout: normally remember the window we're viewing so a later
+  // reconnect can restore it. When a reconnect just happened (restorePending), the
+  // fresh attach lands us on the base's current window — instead re-select the
+  // window we remembered (by id, falling back to index) if it still exists.
+  _rememberOrRestore() {
+    const active = this.layout.activeWindowId;
+    const activeWin = (this.layout.windows || []).find(w => w.id === active);
+    if (this.restorePending) {
+      this.restorePending = false;
+      // Only restore INDEPENDENT (grouped) split regions. The primary region is
+      // shared with the ssh console; forcing its window would move the console too,
+      // so let it simply re-sync to whatever the console is viewing.
+      if (!this.primary) {
+        const want = this._findWindow(this.desiredWindowId, this.desiredWindowIndex);
+        if (want && want.id !== active) {
+          this.selectWindow(want.id);   // restore; the resulting layout re-remembers it
+          return;
+        }
+      }
+    }
+    this.desiredWindowId = active;
+    if (activeWin) this.desiredWindowIndex = activeWin.index;
+  }
+
+  _findWindow(id, index) {
+    const ws = this.layout.windows || [];
+    return ws.find(w => w.id === id)
+      || (index != null ? ws.find(w => w.index === index) : null)
+      || null;
   }
 
   // Give this unit keyboard focus. In the split, SplitManager overrides/augments
