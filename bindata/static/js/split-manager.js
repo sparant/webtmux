@@ -185,6 +185,7 @@ export class SplitManager {
     const newId = unit.layout?.activeWindowId;
     if (newId && newId !== unit._accessSeenId) {
       unit._accessSeenId = newId;
+      unit._targetWindowId = null;   // an in-flight goToWindow switch has landed
       if (!unit._suppressAccessIds.delete(newId)) this.noteAccess(newId, this._metaFor(unit, newId));
     }
     this._refreshToolbar();
@@ -309,11 +310,14 @@ export class SplitManager {
   // Single entry point so every switcher behaves identically.
   goToWindow(id, session = '') {
     if (!id) return;
-    const holder = this.units.find(u => u.layout?.activeWindowId === id);
+    // "Already shown" includes a region whose switch to this window is in flight
+    // (its layout hasn't caught up yet) — so a fast second click focuses it instead
+    // of switching another region onto the same window (which would sync them).
+    const holder = this.units.find(u => u.layout?.activeWindowId === id || u._targetWindowId === id);
     if (holder) { this.focus(holder); return; }
     const u = this._switchTargetRegion();
     if (!u) return;
-    const finish = () => { u.selectWindow(id); this.focus(u); };
+    const finish = () => { u._targetWindowId = id; u.selectWindow(id); this.focus(u); };
     // Only hop sessions when the window truly isn't in this region's list. Grouped
     // split sessions SHARE the base (services) window list, so a services window is
     // already selectable here even though the region's session name differs — never
