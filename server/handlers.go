@@ -338,11 +338,23 @@ func (server *Server) handleAuthToken(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("var gotty_auth_token = '" + server.options.Credential + "';"))
 }
 
+// Build identity, stamped at build time via -ldflags (Makefile BUILD_OPTIONS, fed
+// the git short-hash + build time; launch.sh passes the host commit as a build-arg).
+// Surfaced to the UI so the toolbar can show which build is actually running.
+var (
+	BuildCommit = "dev"
+	BuildTime   = ""
+)
+
 func (server *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/javascript")
+	// no-store so a rebuild's new build id is never served from cache.
+	w.Header().Set("Cache-Control", "no-store")
 	lines := []string{
 		"var gotty_term = 'xterm';",
 		"var gotty_ws_query_args = '" + server.options.WSQueryArgs + "';",
+		"var webtmux_build = '" + BuildCommit + "';",
+		"var webtmux_built = '" + BuildTime + "';",
 	}
 
 	w.Write([]byte(strings.Join(lines, "\n")))

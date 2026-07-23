@@ -4,7 +4,7 @@
 VERSION ?= $(shell git describe --tags 2>/dev/null || echo "dev")
 GIT_COMMIT = $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME = $(shell date -u '+%Y-%m-%d_%H:%M:%S')
-BUILD_OPTIONS = -ldflags "-s -w -X main.Version=$(VERSION) -X main.GitCommit=$(GIT_COMMIT)"
+BUILD_OPTIONS = -ldflags "-s -w -X main.Version=$(VERSION) -X main.GitCommit=$(GIT_COMMIT) -X webtmux/server.BuildCommit=$(GIT_COMMIT) -X webtmux/server.BuildTime=$(BUILD_TIME)"
 
 OUTPUT_DIR = ./builds
 BINARY_NAME = webtmux

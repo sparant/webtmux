@@ -110,6 +110,20 @@ class WebtmuxToolbar extends LitElement {
       background: #37d17a;              /* green — the focused pane */
       box-shadow: 0 0 6px rgba(55, 209, 122, 0.8);
     }
+    /* Build id on the far left — read it aloud to identify the running build. */
+    .build {
+      flex: 0 0 auto;
+      color: #5a7;
+      font-family: Menlo, Monaco, "Courier New", monospace;
+      font-size: 12px;
+      background: #1a1a2e;
+      border: 1px solid #0f3460;
+      border-radius: 4px;
+      padding: 3px 7px;
+      margin-right: 4px;
+      white-space: nowrap;
+      cursor: default;
+    }
   `;
 
   constructor() {
@@ -118,10 +132,15 @@ class WebtmuxToolbar extends LitElement {
     this.collapsed = false;
     this.panes = [];       // [bool] per pane in order; true = focused. [] hides the dots.
     this.manager = null;   // SplitManager, set directly
+    // Build id (git short-hash) served fresh by config.js from the RUNNING binary —
+    // read it out loud to identify exactly which build is deployed.
+    this.build = (typeof window !== 'undefined' && window.webtmux_build) || '?';
+    this.built = (typeof window !== 'undefined' && window.webtmux_built) || '';
   }
 
   render() {
     return html`
+      <span class="build" title="webtmux build ${this.build}${this.built ? ' — built ' + this.built : ''}">⬢ ${this.build}</span>
       <div class="tabs">
         ${this.recent.length ? html`<span class="label">Recent</span>` : ''}
         ${this.recent.map(w => html`
