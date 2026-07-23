@@ -30,15 +30,17 @@ all: build
 # inside a css`` / html`` template literal) aborts bootstrap and blanks the page —
 # invisible until runtime. Parse every source module as ESM (forced via
 # --input-type=module, since bare .js is treated as CommonJS and would false-fail
-# on `import`). No-op with a note if node isn't installed.
+# on `import`). No-op with a note if node isn't installed. Accepts either `node`
+# or `nodejs` (Debian's package name for the binary) so it runs in the container.
 check-js:
-	@if ! command -v node >/dev/null 2>&1; then \
+	@node_bin=$$(command -v node 2>/dev/null || command -v nodejs 2>/dev/null || true); \
+	if [ -z "$$node_bin" ]; then \
 		echo "note: node not found — skipping JS syntax check"; \
 	else \
 		echo "Checking JS syntax..."; \
 		fail=0; \
 		for f in resources/js/*.js resources/js/components/*.js; do \
-			if ! err=$$(node --check --input-type=module < "$$f" 2>&1); then \
+			if ! err=$$("$$node_bin" --check --input-type=module < "$$f" 2>&1); then \
 				echo "  SYNTAX ERROR in $$f:"; \
 				printf '%s\n' "$$err" | head -4 | sed 's/^/    /'; \
 				fail=1; \
