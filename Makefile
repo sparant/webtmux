@@ -32,18 +32,21 @@ all: build
 # --input-type=module, since bare .js is treated as CommonJS and would false-fail
 # on `import`). No-op with a note if node isn't installed.
 check-js:
-	@command -v node >/dev/null 2>&1 || { echo "note: node not found — skipping JS syntax check"; exit 0; }
-	@echo "Checking JS syntax..."
-	@fail=0; \
-	for f in resources/js/*.js resources/js/components/*.js; do \
-		if ! err=$$(node --check --input-type=module < "$$f" 2>&1); then \
-			echo "  SYNTAX ERROR in $$f:"; \
-			printf '%s\n' "$$err" | head -4 | sed 's/^/    /'; \
-			fail=1; \
-		fi; \
-	done; \
-	if [ "$$fail" != "0" ]; then echo "JS syntax check FAILED — aborting build."; exit 1; fi; \
-	echo "  all JS OK"
+	@if ! command -v node >/dev/null 2>&1; then \
+		echo "note: node not found — skipping JS syntax check"; \
+	else \
+		echo "Checking JS syntax..."; \
+		fail=0; \
+		for f in resources/js/*.js resources/js/components/*.js; do \
+			if ! err=$$(node --check --input-type=module < "$$f" 2>&1); then \
+				echo "  SYNTAX ERROR in $$f:"; \
+				printf '%s\n' "$$err" | head -4 | sed 's/^/    /'; \
+				fail=1; \
+			fi; \
+		done; \
+		if [ "$$fail" != "0" ]; then echo "JS syntax check FAILED — aborting build."; exit 1; fi; \
+		echo "  all JS OK"; \
+	fi
 
 # Sync resources to bindata (for embedding). index.html MUST be synced too — it
 # is embedded + served from bindata/static/, and the split-view markup lives in
