@@ -111,6 +111,7 @@ export class SplitManager {
   // "next unused window" auto-pick for a freshly added region.
   _onUnitLayout(unit) {
     if (unit === this.focusedUnit) this._pushLayout(unit);
+    else this._pushDisabled();   // another region moved -> refresh what's occupied
 
     if (unit._autoPickPending && unit.layout) {
       const used = new Set(
@@ -127,6 +128,19 @@ export class SplitManager {
     sb.layout = unit.layout || null;
     sb.activePane = unit.layout?.activePaneId || '';
     sb.activeWindow = unit.layout?.activeWindowId || '';
+    this._pushDisabled();
+  }
+
+  // Tell the shared sidebar which windows are already shown by OTHER regions, so it
+  // can grey them out / skip them — two panes on the same window share it (tmux
+  // grouped sessions) and would stay in sync, which is exactly what we prevent.
+  _pushDisabled() {
+    const focused = this.focusedUnit;
+    if (!focused) return;
+    this.sidebar.disabledWindows = this.units
+      .filter(u => u !== focused)
+      .map(u => u.layout?.activeWindowId)
+      .filter(Boolean);
   }
 
   // Add a region and, once its layout arrives, auto-select a window not already

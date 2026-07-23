@@ -11,6 +11,9 @@ class WebtmuxSidebar extends LitElement {
     scrollMode: { type: String },
     pinned: { type: Boolean },
     editingWindow: { type: String },
+    // Window ids currently displayed by OTHER split regions — not selectable here
+    // (two panes on one window share it / stay in sync). Set by the SplitManager.
+    disabledWindows: { type: Array },
   };
 
   static styles = css`
@@ -175,6 +178,16 @@ class WebtmuxSidebar extends LitElement {
       color: #fff;
     }
 
+    /* Shown in another split pane -> not selectable from here. */
+    .window-tab.disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+    .window-tab.disabled:hover {
+      border-color: #0f3460;
+      color: #888;
+    }
+
     .window-edit {
       background: #0f3460;
       color: #fff;
@@ -246,6 +259,8 @@ class WebtmuxSidebar extends LitElement {
     this.pinned = localStorage.getItem('webtmux-pinned') === 'true';
     // Window id currently being renamed inline ('' = none).
     this.editingWindow = '';
+    // Windows shown by other split regions (disabled here). SplitManager updates it.
+    this.disabledWindows = [];
 
     // The TerminalUnit that owns this sidebar sets `this.unit = <unit>` when it
     // binds, and pushes layout/activePane/activeWindow onto us directly (scoped —
@@ -405,10 +420,10 @@ class WebtmuxSidebar extends LitElement {
             >`
           : html`
             <button
-              class="window-tab ${win.id === this.activeWindow ? 'active' : ''}"
+              class="window-tab ${win.id === this.activeWindow ? 'active' : ''} ${this._windowDisabled(win.id) ? 'disabled' : ''}"
               @click=${() => this.selectWindow(win.id)}
               @dblclick=${() => this.startRename(win.id)}
-              title="Double-click to rename"
+              title=${this._windowDisabled(win.id) ? 'Shown in another split pane' : 'Double-click to rename'}
             >
               ${win.index}: ${win.name || 'bash'}
             </button>`
@@ -465,21 +480,32 @@ class WebtmuxSidebar extends LitElement {
     try { this.unit?.terminal?.focus(); } catch (e) {}
   }
 
-  // Step delta windows from the active one (wrapping), by the sidebar's own
-  // window order, and select it. Refocus the panel afterwards: selecting a
-  // window re-renders the tabs, which would otherwise drop keyboard focus (and
-  // break a second arrow press) if focus had been on a now-replaced tab button.
+  // True if a window is displayed by ANOTHER split region (so not selectable from
+  // this pane). The pane's own current window is never "disabled".
+  _windowDisabled(id) {
+    return id !== this.activeWindow && (this.disabledWindows || []).includes(id);
+  }
+
+  // Step delta windows from the active one (wrapping), by the sidebar's own window
+  // order, SKIPPING windows shown in another split pane, and select it. Refocus
+  // the panel afterwards: selecting a window re-renders the tabs, which would
+  // otherwise drop keyboard focus (and break a second arrow press) if focus had
+  // been on a now-replaced tab button.
   navigateWindow(delta) {
     const windows = this.layout?.windows || [];
     if (windows.length === 0) return;
     let idx = windows.findIndex(w => w.id === this.activeWindow);
     if (idx === -1) idx = 0;
-    const next = (idx + delta + windows.length) % windows.length;
-    const target = windows[next];
-    if (target) {
-      this.selectWindow(target.id);
-      this.focusPanel();
+    for (let n = 0; n < windows.length; n++) {
+      idx = (idx + delta + windows.length) % windows.length;
+      const cand = windows[idx];
+      if (cand && !this._windowDisabled(cand.id)) {
+        this.selectWindow(cand.id);
+        this.focusPanel();
+        return;
+      }
     }
+    // Every other window is occupied by another pane — nothing to move to.
   }
 
   // Step delta sessions from the active one (wrapping) and switch to it, so ←/→
@@ -510,6 +536,7 @@ class WebtmuxSidebar extends LitElement {
   }
 
   selectWindow(windowId) {
+    if (this._windowDisabled(windowId)) return;   // shown in another split pane
     this.unit?.selectWindow(windowId);
   }
 
