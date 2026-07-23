@@ -38,7 +38,12 @@ export class SplitManager {
     this.container.appendChild(this.expose);
 
     // Top toolbar (above #app): most-recently-accessed windows + sidebar toggle.
-    this.recentWindows = [];   // window ids, most-recent-accessed first (max 5)
+    // Recent-windows strip: entries keep a STABLE display position — re-accessing
+    // a shown window never reorders it. `_accessAt` tracks recency only for
+    // eviction (which slot a brand-new window replaces when the set is full).
+    this.recentWindows = [];         // {id,index,name,session}, stable order (max 5)
+    this._accessAt = new Map();      // id -> access sequence (recency, for eviction)
+    this._accessSeq = 0;
     this.toolbar = document.createElement('webtmux-toolbar');
     this.toolbar.manager = this;
     this.container.parentNode.insertBefore(this.toolbar, this.container);
@@ -175,12 +180,31 @@ export class SplitManager {
     return { index: w?.index, name: w?.name || 'bash', session: unit.layout?.sessionName || '' };
   }
 
-  // Move a window to the front of the most-recently-accessed list (max 5). Stores
-  // a {id, index, name, session} snapshot so it can be shown across all sessions.
+  // Record an access. Order is STABLE: if the window is already shown it keeps its
+  // slot (only its recency + metadata update); a NEW window appends while there's
+  // room, else it replaces the least-recently-accessed slot in place. So the tab
+  // order only changes when the SET of shown windows changes.
   noteAccess(id, meta = {}) {
     if (!id) return;
-    const entry = { id, index: meta.index, name: meta.name || 'bash', session: meta.session || '' };
-    this.recentWindows = [entry, ...this.recentWindows.filter(e => e.id !== id)].slice(0, 5);
+    this._accessAt.set(id, ++this._accessSeq);
+    const existing = this.recentWindows.find(e => e.id === id);
+    if (existing) {
+      if (meta.name) existing.name = meta.name;
+      if (meta.index != null) existing.index = meta.index;
+      if (meta.session) existing.session = meta.session;
+    } else {
+      const entry = { id, index: meta.index, name: meta.name || 'bash', session: meta.session || '' };
+      const list = [...this.recentWindows];
+      if (list.length < 5) {
+        list.push(entry);
+      } else {
+        let lru = 0, lruSeq = Infinity;
+        list.forEach((e, i) => { const s = this._accessAt.get(e.id) ?? 0; if (s < lruSeq) { lruSeq = s; lru = i; } });
+        this._accessAt.delete(list[lru].id);
+        list[lru] = entry;
+      }
+      this.recentWindows = list;
+    }
     this._refreshToolbar();
   }
 
