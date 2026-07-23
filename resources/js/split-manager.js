@@ -156,8 +156,18 @@ export class SplitManager {
       const used = new Set(
         this.units.filter(x => x !== unit).map(x => x.layout?.activeWindowId).filter(Boolean)
       );
-      const target = (unit.layout.windows || []).find(w => !used.has(w.id));
-      if (target && target.id !== unit.layout.activeWindowId) unit.selectWindow(target.id);
+      const winIds = new Set((unit.layout.windows || []).map(w => w.id));
+      const free = (id) => winIds.has(id) && !used.has(id) && id !== unit.layout.activeWindowId;
+      // Prefer the MOST-RECENTLY-ACCESSED window that isn't already visible in
+      // another region (and is available in this region's window list) — so a new
+      // split lands on what you were most recently looking at, not just the first
+      // free window. Fall back to the first unused window.
+      const recent = this.recentWindows
+        .map((e) => e.id)
+        .filter(free)
+        .sort((a, b) => (this.captureCache.accessed.get(b) ?? 0) - (this.captureCache.accessed.get(a) ?? 0));
+      const target = recent[0] || (unit.layout.windows || []).find((w) => !used.has(w.id))?.id;
+      if (target && target !== unit.layout.activeWindowId) unit.selectWindow(target);
       unit._autoPickPending = false;
     }
 
