@@ -111,7 +111,7 @@ class WebtmuxExpose extends LitElement {
        the shrunken height across ALL rows (squashing 37 tiles into one screen).
        A fixed row track can't be distributed away, so the extra rows overflow
        and scroll as intended. min-height:0 keeps it the scroller. The column
-       count and row height key off the reflected `density` attribute below. */
+       count and row height key off the reflected density="N" attribute below. */
     .grid {
       flex: 1 1 auto;
       min-height: 0;
