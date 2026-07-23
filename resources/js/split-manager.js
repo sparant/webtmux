@@ -381,6 +381,30 @@ export class SplitManager {
     u.terminal?.focus();
   }
 
+  // Keyboard nav across the recents strip: move to the VISUALLY adjacent entry
+  // in the bar's stable left→right order (this.recentWindows) — NOT the recency
+  // ranking that decides which windows the bar holds. Anchors on the focused
+  // pane's current window, skips entries another pane already shows (same rule as
+  // the greyed toolbar tabs / goToWindow's guard), and wraps at both ends since
+  // the strip is short (≤5). If the focused window isn't in the bar, prev picks
+  // the last entry and next the first. dir = -1 (previous/left) or +1 (next/right).
+  // Selection reuses goToWindow so it inherits all the pane-targeting logic.
+  // Mirrors tmux's Ctrl-b p / Ctrl-b n over the toolbar's bounded window set.
+  navigateRecents(dir) {
+    const list = this.recentWindows;
+    if (!list || !list.length) return;
+    const focused = this.focusedUnit;
+    const activeId = focused?.layout?.activeWindowId;
+    const occupied = this.occupiedWindowIds(focused);
+    const selectable = list.filter(e => !occupied.has(e.id));
+    if (!selectable.length) return;
+    const idx = selectable.findIndex(e => e.id === activeId);
+    const next = idx === -1
+      ? selectable[dir > 0 ? 0 : selectable.length - 1]
+      : selectable[(idx + dir + selectable.length) % selectable.length];
+    if (next && next.id !== activeId) this.goToWindow(next.id, next.session);
+  }
+
   // Toolbar recent-tab click -> shared navigation.
   pickRecentWindow(entry) {
     const id = typeof entry === 'string' ? entry : entry?.id;
@@ -445,6 +469,12 @@ export class SplitManager {
           break;
         case 'KeyE':                                   // toggle the Exposé overlay
           this.expose?.toggle();
+          break;
+        case 'KeyP':                                   // recents: previous (left in the bar)
+          this.navigateRecents(-1);
+          break;
+        case 'KeyN':                                   // recents: next (right in the bar)
+          this.navigateRecents(+1);
           break;
         default:
           return;                                      // not ours — let it through
