@@ -39,11 +39,11 @@ export class SplitManager {
 
     // Top toolbar (above #app): most-recently-accessed windows + sidebar toggle.
     // Recent-windows strip: entries keep a STABLE display position — re-accessing
-    // a shown window never reorders it. `_accessAt` tracks recency only for
-    // eviction (which slot a brand-new window replaces when the set is full).
+    // a shown window never reorders it. Recency itself is NOT tracked here: the
+    // single source of truth is this.captureCache.accessed (persisted), fed by
+    // noteAccess() and also read by the Exposé "Last accessed" sort — one code
+    // path for both. This list holds only the toolbar's bounded/stable view.
     this.recentWindows = [];         // {id,index,name,session}, stable order (max 5)
-    this._accessAt = new Map();      // id -> access sequence (recency, for eviction)
-    this._accessSeq = 0;
     this.toolbar = document.createElement('webtmux-toolbar');
     this.toolbar.manager = this;
     this.container.parentNode.insertBefore(this.toolbar, this.container);
@@ -186,7 +186,9 @@ export class SplitManager {
   // order only changes when the SET of shown windows changes.
   noteAccess(id, meta = {}) {
     if (!id) return;
-    this._accessAt.set(id, ++this._accessSeq);
+    // Bump recency in the ONE shared store (also drives the Exposé sort + persists).
+    this.captureCache.markAccessed(id);
+    const recencyOf = (wid) => this.captureCache.accessed.get(wid) ?? 0;
     const existing = this.recentWindows.find(e => e.id === id);
     if (existing) {
       if (meta.name) existing.name = meta.name;
@@ -198,9 +200,9 @@ export class SplitManager {
       if (list.length < 5) {
         list.push(entry);
       } else {
+        // Evict the least-recently-accessed slot (recency from the shared store).
         let lru = 0, lruSeq = Infinity;
-        list.forEach((e, i) => { const s = this._accessAt.get(e.id) ?? 0; if (s < lruSeq) { lruSeq = s; lru = i; } });
-        this._accessAt.delete(list[lru].id);
+        list.forEach((e, i) => { const s = recencyOf(e.id); if (s < lruSeq) { lruSeq = s; lru = i; } });
         list[lru] = entry;
       }
       this.recentWindows = list;
@@ -229,23 +231,29 @@ export class SplitManager {
     this.toolbar.collapsed = !!this.sidebar?.collapsed;
   }
 
-  // Click on a recent-window tab: if some region already shows that window, jump
-  // focus to it; if it lives in another session, move the focused region there
-  // first; otherwise select it in the focused region.
-  pickRecentWindow(entry) {
-    const id = typeof entry === 'string' ? entry : entry?.id;
+  // Navigate to a window from ANY switcher (toolbar recent-strip, Exposé tile).
+  // If some region already shows it, jump focus to that region; if it lives in
+  // another session, move the focused region there first; otherwise select it in
+  // the focused region. Single entry point so every switcher behaves identically.
+  goToWindow(id, session = '') {
     if (!id) return;
     const holder = this.units.find(u => u.layout?.activeWindowId === id);
     if (holder) { this.focus(holder); return; }
     const u = this.focusedUnit;
     if (!u) return;
-    const session = (typeof entry === 'object' && entry.session) || '';
     if (session && u.layout && session !== u.layout.sessionName) {
       u.switchSession(session);
       setTimeout(() => u.selectWindow(id), 300);
     } else {
       u.selectWindow(id);
     }
+  }
+
+  // Toolbar recent-tab click -> shared navigation.
+  pickRecentWindow(entry) {
+    const id = typeof entry === 'string' ? entry : entry?.id;
+    const session = (typeof entry === 'object' && entry.session) || '';
+    this.goToWindow(id, session);
   }
 
   _pushLayout(unit) {

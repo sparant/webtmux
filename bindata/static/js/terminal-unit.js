@@ -75,7 +75,6 @@ export class TerminalUnit {
     this.desiredWindowId = null;
     this.desiredWindowIndex = null;
     this.restorePending = false;
-    this._lastMarkedActive = null; // last window we marked "accessed" (transition guard)
     // Toolbar MRU bookkeeping (read by SplitManager): last window it recorded as a
     // toolbar "access", and window ids whose next arrival should NOT count (they
     // came from sidebar arrow-key browsing).
@@ -532,14 +531,9 @@ export class TerminalUnit {
     }
     this.desiredWindowId = active;
     if (activeWin) this.desiredWindowIndex = activeWin.index;
-
-    // A window becoming active in ANY region — including the primary following
-    // the ssh console — counts as "accessed" for the Exposé sort. Mark only on
-    // transition so the 500ms layout poll doesn't churn the order.
-    if (active && active !== this._lastMarkedActive) {
-      this._lastMarkedActive = active;
-      this.captureCache?.markAccessed(active);
-    }
+    // Access recency is recorded centrally by SplitManager (focus + layout
+    // transition, with arrow-browse suppression) — the single write path shared
+    // by the toolbar strip and the Exposé sort. Nothing to mark here.
   }
 
   _findWindow(id, index) {
@@ -579,7 +573,8 @@ export class TerminalUnit {
     // here (sidebar click, ↑/↓ arrow-nav, Exposé click); the server's
     // select-window repaint overwrites it a beat later (authoritative).
     this.paintOptimistic(windowId);
-    this.captureCache?.markAccessed(windowId); // feed the Exposé "Last accessed" sort
+    // (Access recency is recorded by SplitManager on the resulting layout change,
+    // so arrow-browse suppression applies uniformly — see noteAccess.)
     this.sendMessage(MSG.TmuxSelectWindow, windowId);
   }
 

@@ -237,11 +237,10 @@ class WebtmuxExpose extends LitElement {
   openOverlay() {
     if (this.open) return;
     this.open = true;
-    // Seed access order with the focused region's current window so "Last
-    // accessed" is meaningful before the user has switched anything.
-    const cur = this.manager?.focusedUnit?.layout?.activeWindowId;
-    if (cur) this.cache?.markAccessed(cur);
-    this._cursorId = cur || null;
+    // Start the cursor on the focused region's current window. (Access recency is
+    // owned by SplitManager — the focused window was already recorded when focused
+    // — so opening Exposé doesn't itself write recency: one write path.)
+    this._cursorId = this.manager?.focusedUnit?.layout?.activeWindowId || null;
     this.cache?.addEventListener('update', this._onCacheUpdate);
     window.addEventListener('keydown', this._onKey, true);
     // Force a fresh capture of every window, then paint whatever's cached now.
@@ -463,9 +462,11 @@ class WebtmuxExpose extends LitElement {
   // ---- interaction ------------------------------------------------------------
 
   _selectWindow(windowId) {
-    // selectWindow already paints optimistically from the shared cache, so the
-    // switch feels instant; the server's select-window repaint then overwrites.
-    this.manager?.focusedUnit?.selectWindow(windowId);
+    // Same navigation path as the toolbar recent-strip: jump to the region that
+    // already shows it, or switch the focused region's session if the window
+    // lives elsewhere, else select it here (optimistic paint happens in selectWindow).
+    const entry = this.cache?.get(windowId);
+    this.manager?.goToWindow(windowId, entry?.sessionName || '');
     this.closeOverlay();
   }
 
