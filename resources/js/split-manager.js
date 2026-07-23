@@ -8,6 +8,7 @@
 // same spot, bound to whichever region is FOCUSED. Clicking a region's terminal
 // focuses it and the shared sidebar re-points to reflect/control that region.
 import { TerminalUnit } from './terminal-unit.js';
+import { CaptureCache } from './capture-cache.js';
 
 export class SplitManager {
   constructor(container) {
@@ -15,11 +16,26 @@ export class SplitManager {
     this.units = [];
     this.focusedUnit = null;
 
+    // ONE client-side capture cache for the whole app. Requests go out over any
+    // connected unit's ws (capture is server-global, so the connection is
+    // irrelevant); every unit routes the TmuxCaptureData reply back here.
+    this.captureCache = new CaptureCache((windows, force) => {
+      const unit = (this.focusedUnit && this.focusedUnit.isConnected() && this.focusedUnit)
+        || this.units.find((u) => u.isConnected());
+      if (unit) unit.sendCaptureRequest(windows, force);
+    });
+
     // The single shared sidebar (last child of #app; its own CSS floats it at the
     // right — viewport-fixed in overlay/collapsed mode, or a 330px column in
     // side-by-side mode). Regions are inserted BEFORE it.
     this.sidebar = document.createElement('webtmux-sidebar');
     this.container.appendChild(this.sidebar);
+
+    // The Exposé overlay (hidden until opened via Ctrl+Alt+E or the sidebar).
+    this.expose = document.createElement('webtmux-expose');
+    this.expose.cache = this.captureCache;
+    this.expose.manager = this;
+    this.container.appendChild(this.expose);
 
     this._installControls();
 
@@ -56,6 +72,8 @@ export class SplitManager {
     unit.region = region;
     unit.onFocus = (u) => this.focus(u);
     unit.onLayout = (u) => this._onUnitLayout(u);
+    // Route this unit's capture replies into the shared cache.
+    unit.onCaptureData = (payload) => this.captureCache.ingest(payload);
     // Clicking the terminal collapses the shared sidebar out of the way (unless pinned).
     unit.onTerminalMousedown = () => {
       const sb = this.sidebar;
@@ -180,6 +198,9 @@ export class SplitManager {
         case 'Backspace':                              // close focused region
           this.closeFocused();
           break;
+        case 'KeyE':                                   // toggle the Exposé overlay
+          this.expose?.toggle();
+          break;
         default:
           return;                                      // not ours — let it through
       }
@@ -190,5 +211,6 @@ export class SplitManager {
     // Buttons in the sidebar dispatch these (composed, cross shadow DOM).
     window.addEventListener('webtmux-split-add', () => this.splitAdd());
     window.addEventListener('webtmux-split-close', (e) => this.removeUnit(e.detail?.unit || this.focusedUnit));
+    window.addEventListener('webtmux-expose-open', () => this.expose?.openOverlay());
   }
 }

@@ -320,6 +320,10 @@ class WebtmuxSidebar extends LitElement {
     }));
   }
 
+  openExpose() {
+    this.dispatchEvent(new CustomEvent('webtmux-expose-open', { bubbles: true, composed: true }));
+  }
+
   modeRow() {
     // "Close this region" only makes sense for an added (non-primary) region.
     const canClose = this.unit && !this.unit.primary;
@@ -331,6 +335,13 @@ class WebtmuxSidebar extends LitElement {
           title="Add another terminal region (a grouped tmux session sharing the window list). Shortcut: Ctrl+Alt+Enter"
         >
           ⊞ Split view (add region)
+        </button>
+        <button
+          class="mode-btn"
+          @click=${this.openExpose}
+          title="Show a colored thumbnail of every window across all sessions; click one to switch. Shortcut: Ctrl+Alt+E"
+        >
+          ▦ Exposé (all windows)
         </button>
         ${canClose ? html`
           <button

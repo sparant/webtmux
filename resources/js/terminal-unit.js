@@ -460,6 +460,16 @@ export class TerminalUnit {
         this.inCopyMode = modeState.inCopyMode;
         break;
 
+      case MSG.TmuxCaptureData:
+        // Server-global capture buffers came back on this unit's ws; route them
+        // to the shared CaptureCache (SplitManager sets onCaptureData).
+        try {
+          this.onCaptureData?.(JSON.parse(payload));
+        } catch (e) {
+          console.warn('Bad capture data:', e);
+        }
+        break;
+
       default:
         console.warn('Unknown message type:', type);
     }
@@ -572,6 +582,20 @@ export class TerminalUnit {
 
   switchSession(sessionName) {
     this.sendMessage(MSG.TmuxSwitchSession, sessionName);
+  }
+
+  // Is this unit's ws currently usable for sending a request?
+  isConnected() {
+    return !!this.ws && this.ws.readyState === WebSocket.OPEN;
+  }
+
+  // Request server-global capture buffers over THIS unit's ws. The reply (a
+  // TmuxCaptureData frame) returns on the same ws and is routed to the shared
+  // CaptureCache via onCaptureData. windows: 'all' or an array of window ids.
+  sendCaptureRequest(windows = 'all', force = false) {
+    if (!this.isConnected()) return false;
+    this.sendMessage(MSG.TmuxCaptureRequest, JSON.stringify({ windows, force }));
+    return true;
   }
 
   enterCopyMode() {
