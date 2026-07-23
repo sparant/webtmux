@@ -332,7 +332,17 @@ export class SplitManager {
     // already selectable here even though the region's session name differs — never
     // switch-client onto the shared console session for it (that drags the console).
     const inList = (u.layout?.windows || []).some(w => w.id === id);
-    if (!inList && session && u.layout && session !== u.layout.sessionName) {
+    // Only switch-client to another session when we're SURE the window isn't
+    // reachable here: the window truly isn't in this region's (loaded) list AND the
+    // target session is a real OTHER session — never the console/base session. A
+    // grouped split shares the base window list, so switching it onto the base
+    // session would permanently sync it with the console-following primary.
+    const baseSession = this.units.find(x => x.primary)?.layout?.sessionName;
+    const crossSession = !inList
+      && session && u.layout && session !== u.layout.sessionName
+      && u.layout.windows && u.layout.windows.length       // layout is loaded
+      && session !== baseSession;                          // not the console session
+    if (crossSession) {
       u.switchSession(session);
       setTimeout(finish, 300);
     } else {
