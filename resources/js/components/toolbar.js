@@ -55,6 +55,9 @@ class WebtmuxToolbar extends LitElement {
     }
     .tab:hover { border-color: #4a9eff; color: #fff; }
     .tab.active { background: #e94560; border-color: #e94560; color: #fff; }
+    /* Shown in another pane -> not selectable from here. */
+    .tab.disabled { opacity: 0.4; cursor: not-allowed; }
+    .tab.disabled:hover { border-color: #0f3460; color: #ddd; }
     .tab .sess { color: #4a9eff; font-size: 11px; opacity: 0.85; flex: 0 0 auto; }
     .tab.active .sess { color: #ffd7de; }
     .tab .wname { overflow: hidden; text-overflow: ellipsis; }
@@ -145,9 +148,9 @@ class WebtmuxToolbar extends LitElement {
         ${this.recent.length ? html`<span class="label">Recent</span>` : ''}
         ${this.recent.map(w => html`
           <button
-            class="tab ${w.active ? 'active' : ''}"
-            title="${w.session} — window ${w.index}: ${w.name}"
-            @click=${() => this.manager?.pickRecentWindow(w)}
+            class="tab ${w.active ? 'active' : ''} ${w.disabled ? 'disabled' : ''}"
+            title=${w.disabled ? 'Shown in another pane' : `${w.session} — window ${w.index}: ${w.name}`}
+            @click=${() => { if (!w.disabled) this.manager?.pickRecentWindow(w); }}
           ><span class="sess">${w.session}:${w.index}</span><span class="wname">${w.name}</span><span
               class="close"
               title="Remove from recents (does not close the window)"

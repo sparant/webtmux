@@ -284,8 +284,13 @@ export class SplitManager {
     if (!this.toolbar) return;
     this._refreshPanes();
     this._pruneDeletedRecents();
-    const activeId = this.focusedUnit?.layout?.activeWindowId;
+    const focused = this.focusedUnit;
+    const activeId = focused?.layout?.activeWindowId;
     const cache = this.captureCache?.byWindow;
+    // Windows shown by OTHER panes are not selectable here (they'd put two panes on
+    // one window) — greyed out, like the sidebar.
+    const eff = (x) => x._targetWindowId || x.layout?.activeWindowId;
+    const occupied = new Set(this.units.filter(x => x !== focused).map(eff).filter(Boolean));
     this.toolbar.recent = this.recentWindows.map(e => {
       const c = cache?.get(e.id);
       return {
@@ -294,6 +299,7 @@ export class SplitManager {
         name: c?.name || e.name || 'bash',
         session: c?.sessionName || e.session || '',
         active: e.id === activeId,
+        disabled: occupied.has(e.id),
       };
     });
     this.toolbar.collapsed = !!this.sidebar?.collapsed;
@@ -320,26 +326,29 @@ export class SplitManager {
   // hasn't landed yet, else its current window — so fast clicks don't mis-target.)
   goToWindow(id, session = '') {
     if (!id) return;
-    const eff = (u) => u._targetWindowId || u.layout?.activeWindowId;
-    const holder = this.units.find(u => eff(u) === id);
-    if (holder) { this.focus(holder); return; }
-    const u = this._switchTargetRegion();
+    // Navigate the FOCUSED pane — same as the sidebar. (Previously this targeted the
+    // "last-focused split" and jumped focus to whichever pane already showed the
+    // window, so in split mode it controlled the wrong pane.)
+    const u = this.focusedUnit;
     if (!u) return;
+    // Don't grab a window ANOTHER pane already shows (keep panes on distinct windows,
+    // matching the sidebar's disabled tabs). eff = a pane's in-flight target if a
+    // switch hasn't landed yet, else its current window.
+    const eff = (x) => x._targetWindowId || x.layout?.activeWindowId;
+    if (this.units.some(x => x !== u && eff(x) === id)) return;
     const inList = (u.layout?.windows || []).some(w => w.id === id);
     if (inList) {
       u._targetWindowId = id;
       u.selectWindow(id);
-      this.focus(u);
+      u.terminal?.focus();
       return;
     }
-    // Not in this region's list => a different session. Any region may hop there
-    // now: the backend follows the pane's real client and self-heals a split that
-    // ends up coupled on a shared session, so cross-session recents work for splits
-    // too (a brief couple is decoupled on the next poll).
+    // A different session — hop there. The backend follows the pane's real client
+    // and self-heals a split that ends up coupled, so this is safe for splits too.
     if (session && u.layout && session !== u.layout.sessionName) {
       u.switchSession(session);
       u._targetWindowId = id;
-      setTimeout(() => { u.selectWindow(id); this.focus(u); }, 300);
+      setTimeout(() => { u.selectWindow(id); u.terminal?.focus(); }, 300);
     }
   }
 
