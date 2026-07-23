@@ -368,7 +368,10 @@ class WebtmuxSidebar extends LitElement {
       `;
     }
 
-    const sessions = this.layout.sessions || [];
+    // Hide the ephemeral per-region grouped sessions the split view spawns
+    // (`web-<rand>`, and legacy `web-<pid>` from WEBTMUX_GROUPED) — they're an
+    // implementation detail of the split, not user-selectable stack sessions.
+    const sessions = (this.layout.sessions || []).filter(s => !/^web-/.test(s.name));
     const showSessions = sessions.length > 1;
 
     return html`
@@ -422,8 +425,9 @@ class WebtmuxSidebar extends LitElement {
   }
 
   // When the panel (or a control inside it) has keyboard focus, ↑/↓ move to the
-  // previous/next window so you can flip through windows with the arrow keys
-  // while the pane is open. Any other key falls through to normal handling.
+  // previous/next window and ←/→ move to the previous/next session, so you can
+  // flip through both with the arrow keys while the pane is open. Any other key
+  // falls through to normal handling.
   onKeyDown(e) {
     // Don't hijack arrows while renaming a window inline (caret movement).
     if (this.editingWindow) return;
@@ -436,6 +440,12 @@ class WebtmuxSidebar extends LitElement {
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
       this.navigateWindow(1);
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      this.navigateSession(-1);
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      this.navigateSession(1);
     } else if (e.key === 'Escape') {
       // Escape always dismisses the panel, wherever focus sits inside it.
       e.preventDefault();
@@ -468,6 +478,24 @@ class WebtmuxSidebar extends LitElement {
     const target = windows[next];
     if (target) {
       this.selectWindow(target.id);
+      this.focusPanel();
+    }
+  }
+
+  // Step delta sessions from the active one (wrapping) and switch to it, so ←/→
+  // flip between sessions the same way ↑/↓ flip between windows. No-op with a
+  // single session. Refocus the panel afterwards (the re-render would otherwise
+  // drop keyboard focus and break a second arrow press).
+  navigateSession(delta) {
+    const sessions = this.layout?.sessions || [];
+    if (sessions.length < 2) return;
+    let idx = sessions.findIndex(s => s.active);
+    if (idx === -1) idx = sessions.findIndex(s => s.name === this.layout?.sessionName);
+    if (idx === -1) idx = 0;
+    const next = (idx + delta + sessions.length) % sessions.length;
+    const target = sessions[next];
+    if (target) {
+      this.switchSession(target.name);
       this.focusPanel();
     }
   }
