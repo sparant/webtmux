@@ -176,27 +176,35 @@ export class SplitManager {
 
   // Forward a unit's layout to the shared sidebar ONLY when it is the focused
   // region (so the one sidebar always reflects the focused window), and drive the
-  // "next unused window" auto-pick for a freshly added region.
+  // most-recently-used-window auto-pick for a freshly added region.
   _onUnitLayout(unit) {
     if (unit === this.focusedUnit) this._pushLayout(unit);
     else this._pushDisabled();   // another region moved -> refresh what's occupied
 
     if (unit._autoPickPending && unit.layout) {
-      const used = new Set(
-        this.units.filter(x => x !== unit).map(x => x.layout?.activeWindowId).filter(Boolean)
-      );
-      const winIds = new Set((unit.layout.windows || []).map(w => w.id));
-      const free = (id) => winIds.has(id) && !used.has(id) && id !== unit.layout.activeWindowId;
-      // Prefer the MOST-RECENTLY-ACCESSED window that isn't already visible in
-      // another region (and is available in this region's window list) — so a new
-      // split lands on what you were most recently looking at, not just the first
-      // free window. Fall back to the first unused window.
-      const recent = this.recentWindows
-        .map((e) => e.id)
-        .filter(free)
-        .sort((a, b) => (this.captureCache.accessed.get(b) ?? 0) - (this.captureCache.accessed.get(a) ?? 0));
-      const target = recent[0] || (unit.layout.windows || []).find((w) => !used.has(w.id))?.id;
-      if (target && target !== unit.layout.activeWindowId) unit.selectWindow(target);
+      const activeId = unit.layout.activeWindowId;
+      // Windows another pane already shows (incl. in-flight switches) are off-limits.
+      const used = this.occupiedWindowIds(unit);
+      const recencyOf = (id) => this.captureCache.accessed.get(id) ?? 0;
+      // Land the split on the MOST-RECENTLY-USED window that isn't already shown in
+      // another pane — the recency store (captureCache.accessed) IS the "last used"
+      // list. Windows you've never visited have recency 0 and sort last, so the
+      // first/default window (the spawn's window 0) is chosen ONLY when nothing you
+      // actually used is free; it no longer wins just by being first in the list.
+      const target = (unit.layout.windows || [])
+        .map((w) => w.id)
+        .filter((id) => !used.has(id))
+        .sort((a, b) => recencyOf(b) - recencyOf(a))[0];
+      if (target && target !== activeId) {
+        // Claim the target now (so a rapid second split can't grab the same window),
+        // and mark the spawn window as already-seen so the access-note below skips
+        // it: the split only PASSED THROUGH window 0 while relocating, it was never
+        // really viewed, so it must not pollute the recents strip. The landing
+        // window is recorded for real when its own layout arrives.
+        unit._targetWindowId = target;
+        unit._accessSeenId = activeId;
+        unit.selectWindow(target);
+      }
       unit._autoPickPending = false;
     }
 
@@ -459,8 +467,9 @@ export class SplitManager {
     this.sidebar.disabledWindows = [...this.occupiedWindowIds(focused)];
   }
 
-  // Add a region and, once its layout arrives, auto-select a window not already
-  // shown by another region ("next unused window") so the split is immediately useful.
+  // Add a region and, once its layout arrives, auto-select the most-recently-used
+  // window not already shown by another region, so the split opens on something
+  // useful (what you last looked at) rather than the default first window.
   splitAdd() {
     const unit = this.addUnit({});
     unit._autoPickPending = true;
