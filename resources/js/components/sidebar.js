@@ -993,6 +993,12 @@ class WebtmuxSidebar extends LitElement {
     if (e.key === 'Enter') {
       e.preventDefault();
       this.commitRename(e, windowId);
+      // Committing via the keyboard should leave the keyboard where it was: hand
+      // focus back to the panel so ↑/↓ (and the rest of the panel keymap) keep
+      // working. Without this, focus falls to <body> when the input is removed and
+      // the sidebar goes keyboard-dead until you click it. Blur-commits (clicking
+      // away) intentionally DON'T refocus — the click already moved focus elsewhere.
+      this.focusPanel();
     } else if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();       // don't also bubble to the panel's Escape (collapse)
@@ -1032,6 +1038,7 @@ class WebtmuxSidebar extends LitElement {
     if (e.key === 'Enter') {
       e.preventDefault();
       this.commitSessionRename(e, oldName);
+      this.focusPanel();          // keep keyboard focus on the panel (parity with window rename)
     } else if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();        // don't also bubble to the panel's Escape (collapse)
