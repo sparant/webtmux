@@ -126,6 +126,8 @@ export class SplitManager {
     // read access for optimistic paint on window switch.
     unit.captureCache = this.captureCache;
     unit.onCaptureData = (payload) => this.captureCache.ingest(payload);
+    // Server-side "save pane buffer to file" outcome -> toolbar dropdown feedback.
+    unit.onSaveResult = (res) => this.onSaveResult(res);
     // Clicking the terminal collapses the shared sidebar out of the way (unless pinned).
     unit.onTerminalMousedown = () => {
       const sb = this.sidebar;
@@ -457,6 +459,51 @@ export class SplitManager {
     setTimeout(finish, 1200);
   }
 
+  // A sensible default filename for the FOCUSED pane's buffer: "session-index-name.txt".
+  // Used to prefill the save dropdown's path input.
+  suggestedSaveName() {
+    const u = this.focusedUnit;
+    const id = u?.layout?.activeWindowId;
+    if (!id) return 'pane.txt';
+    const win = (u.layout?.windows || []).find((w) => w.id === id);
+    const sess = this.logicalSession(u) || 'session';
+    const idx = win?.index ?? 0;
+    const name = win?.name || 'bash';
+    return sanitizeFilename(`${sess}-${idx}-${name}`) + '.txt';
+  }
+
+  // Save the FOCUSED pane's buffer to a file ON THE MACHINE TMUX RUNS ON at the
+  // user-typed `path`. Unlike savePaneBuffer (a browser download), the server does
+  // the capture + write itself and resolves a relative path against the pane's own
+  // working directory. The outcome arrives via onSaveResult (toolbar feedback).
+  savePaneBufferToPath(path) {
+    const u = this.focusedUnit;
+    const id = u?.layout?.activeWindowId;
+    if (!id || !u) return;
+    const p = String(path || '').trim();
+    if (!p) return;
+    if (this.toolbar) this.toolbar.saveStatus = { state: 'saving', text: 'Saving…' };
+    u.sendSavePaneFile(id, p);
+  }
+
+  // Surface a server-side save outcome in the toolbar's save dropdown. Success
+  // shows the absolute path it landed at and auto-dismisses; an error stays up so
+  // the user can read it and correct the path.
+  onSaveResult(res) {
+    if (!this.toolbar) return;
+    if (res && res.ok) {
+      this.toolbar.saveStatus = { state: 'ok', text: 'Saved: ' + (res.path || '') };
+      setTimeout(() => {
+        if (this.toolbar && this.toolbar.saveStatus?.state === 'ok') {
+          this.toolbar.saveOpen = false;
+          this.toolbar.saveStatus = null;
+        }
+      }, 1800);
+    } else {
+      this.toolbar.saveStatus = { state: 'err', text: (res && res.error) || 'Save failed' };
+    }
+  }
+
   _refreshToolbar() {
     if (!this.toolbar) return;
     this._refreshPanes();
@@ -585,6 +632,44 @@ export class SplitManager {
       : selectable[(idx + dir + selectable.length) % selectable.length];
     if (next && !isActive(next)) this.goToWindow(next.id, next.session);
   }
+
+  // Ctrl+Alt+L recent-window cycle — the "hold the chord and tap L" MRU walker,
+  // like alt-tab. Distinct from navigateRecents (the ≤5 stable strip on P/N): this
+  // walks the FULL access history newest→oldest. The order is SNAPSHOTTED when a
+  // cycle starts and reused until the chord is released (_endMruCycle): each hop
+  // really switches tmux — which re-ranks recency — so re-reading the order mid-walk
+  // would make it squirm under you. dir = +1 forward (older), -1 backward (Shift+L).
+  navigateMru(dir) {
+    const focused = this.focusedUnit;
+    if (!focused) return;
+    if (!this._mruCycle) {
+      const occupied = this.occupiedWindowIds(focused);
+      const curId = focused.layout?.activeWindowId;
+      const curSession = this.logicalSession(focused);
+      // Every captured placement, most-recently-accessed first (the shared Exposé
+      // "recent" sort). Drop placements another pane already shows — unreachable
+      // here — but always keep the focused pane's own current window (our anchor).
+      const isCur = (e) => e.id === curId && e.session === curSession;
+      const order = this.captureCache.all('recent')
+        .map((c) => ({ id: c.windowId, session: c.sessionName || '' }))
+        .filter((e) => isCur(e) || !occupied.has(e.id));
+      // Pin the current window to position 0 so the first forward tap lands on the
+      // PREVIOUS window (classic alt-tab feel), regardless of capture-sort ties.
+      let pos = order.findIndex(isCur);
+      if (pos === -1) order.unshift({ id: curId, session: curSession });
+      else if (pos > 0) order.unshift(order.splice(pos, 1)[0]);
+      if (order.length < 2) return; // nothing else to cycle to
+      this._mruCycle = { order, pos: 0 };
+    }
+    const c = this._mruCycle;
+    c.pos = (c.pos + dir + c.order.length) % c.order.length;
+    const t = c.order[c.pos];
+    if (t) this.goToWindow(t.id, t.session);
+  }
+
+  // End the held-chord MRU walk: the next Ctrl+Alt+L starts a fresh walk from the
+  // now-updated recency order. Fired on Ctrl/Alt keyup and on window blur.
+  _endMruCycle() { this._mruCycle = null; }
 
   // Toolbar recent-tab click -> shared navigation.
   pickRecentWindow(entry) {
@@ -757,6 +842,9 @@ export class SplitManager {
         case 'KeyN':                                   // tmux 'n' (next-window): recents right
           this.navigateRecents(+1);
           break;
+        case 'KeyL':                                   // hold ⌃⌥ + tap L: cycle MRU windows (⇧ reverses)
+          if (!ev.repeat) this.navigateMru(ev.shiftKey ? -1 : +1);  // deliberate taps, not key-repeat runaway
+          break;
         case 'Slash':                                  // tmux '?' (list-keys): shortcuts overlay
           this.shortcuts?.toggle();
           break;
@@ -775,6 +863,14 @@ export class SplitManager {
       ev.preventDefault();
       ev.stopPropagation();
     }, true);
+
+    // Releasing either half of the Ctrl+Alt chord ends an in-progress MRU walk, so
+    // the next hold restarts from the freshly-updated recency order. A window blur
+    // (tab switch, devtools) can swallow the keyup, so end there too.
+    window.addEventListener('keyup', (ev) => {
+      if (this._mruCycle && (ev.key === 'Control' || ev.key === 'Alt')) this._endMruCycle();
+    }, true);
+    window.addEventListener('blur', () => this._endMruCycle());
 
     // Buttons in the sidebar dispatch these (composed, cross shadow DOM).
     window.addEventListener('webtmux-split-add', () => this.splitAdd());

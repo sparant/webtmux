@@ -37,6 +37,7 @@ export const MSG = {
   TmuxKillSession: 'L',
   TmuxLinkWindow: 'M',
   TmuxUnlinkWindow: 'N',
+  TmuxSavePaneFile: 'O',
 
   // Output (server -> client)
   Output: '1',
@@ -48,6 +49,7 @@ export const MSG = {
   TmuxLayoutUpdate: '7',
   TmuxModeUpdate: '9',
   TmuxCaptureData: 'A',
+  TmuxSaveResult: 'C',
 };
 
 // Scroll-wheel behavior. Cycled by the sidebar button through all four:
@@ -245,6 +247,11 @@ export class TerminalUnit {
       // Allow Cmd+V / Ctrl+V to paste
       if ((ev.metaKey || ev.ctrlKey) && ev.key === 'v') {
         ev.preventDefault(); // Prevent browser's native paste
+        // If the pane is in tmux copy/view mode, pasted bytes would be swallowed as
+        // copy-mode key commands instead of inserted at the prompt. Drop back to
+        // normal mode FIRST — this send rides the same serialized ws ahead of the
+        // (async, clipboard-gated) paste, so copy mode is already gone when it lands.
+        if (this.inCopyMode) this.exitCopyMode();
         navigator.clipboard.readText().then(text => {
           if (text) {
             const bytes = this.encoder.encode(text);
@@ -699,6 +706,16 @@ export class TerminalUnit {
         }
         break;
 
+      case MSG.TmuxSaveResult:
+        // Result of a "save pane buffer to a server file" request; SplitManager
+        // routes it to the toolbar's save dropdown for success/error feedback.
+        try {
+          this.onSaveResult?.(JSON.parse(payload));
+        } catch (e) {
+          console.warn('Bad save result:', e);
+        }
+        break;
+
       default:
         console.warn('Unknown message type:', type);
     }
@@ -928,6 +945,16 @@ export class TerminalUnit {
   sendCaptureRequest(windows = 'all', force = false) {
     if (!this.isConnected()) return false;
     this.sendMessage(MSG.TmuxCaptureRequest, JSON.stringify({ windows, force }));
+    return true;
+  }
+
+  // Ask the server to save a window's pane buffer to a file on the machine tmux
+  // runs on. The server re-captures the pane itself (so the file matches the
+  // browser download) and resolves a relative path against the pane's own working
+  // directory. The outcome comes back as a TmuxSaveResult -> onSaveResult.
+  sendSavePaneFile(windowId, path) {
+    if (!this.isConnected()) return false;
+    this.sendMessage(MSG.TmuxSavePaneFile, JSON.stringify({ windowId, path }));
     return true;
   }
 

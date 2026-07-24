@@ -51,6 +51,11 @@ class WebtmuxToolbar extends LitElement {
     // Whether the build-id chip on the far left is shown. Hidden by default;
     // toggled by Ctrl+Alt+B (see the shortcuts overlay). Persisted per browser.
     showBuild: { type: Boolean },
+    // Save dropdown: whether it's open, and the transient result banner it shows
+    // (null | {state:'saving'|'ok'|'err', text}). Both set by this component and,
+    // for saveStatus, by the SplitManager when a server-side save resolves.
+    saveOpen: { type: Boolean },
+    saveStatus: { type: Object },
   };
 
   static styles = css`
@@ -180,6 +185,85 @@ class WebtmuxToolbar extends LitElement {
       background: #0f3460;
       margin: 0 2px;
     }
+
+    /* Action button in its pressed/open state (e.g. the save button while its
+       dropdown is showing). */
+    .tbtn.on { border-color: #4a9eff; color: #fff; background: #0f3460; }
+
+    /* Save-buffer control: a normal .tbtn that toggles a dropdown anchored beneath
+       it. The wrapper is the positioning context; a transparent full-screen
+       backdrop closes the menu on an outside click. */
+    .save-wrap { position: relative; flex: 0 0 auto; display: inline-flex; }
+    .save-backdrop { position: fixed; inset: 0; z-index: 90; background: transparent; }
+    .save-menu {
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      z-index: 95;
+      min-width: 290px;
+      box-sizing: border-box;
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      background: #0b1020;
+      border: 1px solid #4a9eff;
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+      font-family: Menlo, Monaco, "Courier New", monospace;
+    }
+    .save-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: #1a1a2e;
+      color: #e8eefc;
+      border: 1px solid #0f3460;
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 13px;
+      cursor: pointer;
+      text-align: left;
+    }
+    .save-item:hover { border-color: #4a9eff; color: #fff; }
+    .save-sep { height: 1px; background: #0f3460; }
+    .save-label { color: #9fc4ff; font-size: 11px; letter-spacing: 0.02em; }
+    .save-row { display: flex; gap: 6px; }
+    .save-path {
+      flex: 1 1 auto;
+      min-width: 0;
+      box-sizing: border-box;
+      background: #05070f;
+      color: #e8eefc;
+      border: 1px solid #0f3460;
+      border-radius: 6px;
+      padding: 7px 9px;
+      font-size: 12px;
+      font-family: Menlo, Monaco, "Courier New", monospace;
+    }
+    .save-path:focus { outline: none; border-color: #4a9eff; }
+    .save-go {
+      flex: 0 0 auto;
+      background: #e94560;
+      color: #fff;
+      border: 1px solid #e94560;
+      border-radius: 6px;
+      padding: 7px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .save-go:hover { background: #ff5c78; }
+    .save-hint { color: #6b7690; font-size: 10.5px; line-height: 1.4; }
+    .save-status {
+      font-size: 11.5px;
+      padding: 6px 8px;
+      border-radius: 5px;
+      overflow-wrap: anywhere;
+    }
+    .save-status.saving { background: #14233f; color: #9fc4ff; }
+    .save-status.ok { background: #103524; color: #6ee7a8; border: 1px solid #1f6b45; }
+    .save-status.err { background: #3a1420; color: #ff9db0; border: 1px solid #7a2438; }
 
     /* Picture-in-Picture toggle (left of the sidebar toggle). Highlights when on.
        The ◳ glyph reads as an inset in the upper-right — the PiP's default corner. */
@@ -334,6 +418,8 @@ class WebtmuxToolbar extends LitElement {
     this.showBuild = (typeof localStorage !== 'undefined' &&
       localStorage.getItem('webtmux-show-build') === 'true');
     this._tipTimer = null; // pending show timer for the quick tab tooltip
+    this.saveOpen = false;   // save dropdown open?
+    this.saveStatus = null;  // transient save result banner (see properties)
   }
 
   // Show/hide the build-id chip (Ctrl+Alt+B, wired by the SplitManager). Persisted
@@ -358,6 +444,38 @@ class WebtmuxToolbar extends LitElement {
     const u = this.manager?.focusedUnit;
     if (u?.setScrollMode) u.setScrollMode(next);
     else if (typeof localStorage !== 'undefined') localStorage.setItem('webtmux-scroll-mode', next);
+  }
+
+  // Toggle the save-buffer dropdown. On open, clear any stale result banner and
+  // prefill the path input with a sensible default filename (focused + selected so
+  // the user can type over it or edit it). Setting .value imperatively (not via the
+  // template) means later re-renders — e.g. a status update — never clobber typing.
+  _toggleSaveMenu() {
+    this.saveOpen = !this.saveOpen;
+    if (!this.saveOpen) return;
+    this.saveStatus = null;
+    const def = this.manager?.suggestedSaveName?.() || 'pane.txt';
+    this.updateComplete.then(() => {
+      const el = this.renderRoot?.querySelector('.save-path');
+      if (el) { if (!el.value) el.value = def; el.focus(); el.select(); }
+    });
+  }
+
+  // "Download to browser" — the original behavior; hands the browser a .txt.
+  _saveToBrowser() {
+    this._tipLeave();
+    this.manager?.savePaneBuffer();
+    this.saveOpen = false;
+    this.saveStatus = null;
+  }
+
+  // "Save on the machine tmux runs on" — send the typed path to the server. Keep
+  // the menu open so the SplitManager's onSaveResult can show success/error here.
+  _saveToPath() {
+    const el = this.renderRoot?.querySelector('.save-path');
+    const path = (el?.value || '').trim();
+    if (!path) { this.saveStatus = { state: 'err', text: 'Enter a path' }; return; }
+    this.manager?.savePaneBufferToPath(path);
   }
 
   disconnectedCallback() {
@@ -450,13 +568,36 @@ class WebtmuxToolbar extends LitElement {
         @mouseleave=${() => this._tipLeave()}
         @click=${() => { this._tipLeave(); this.manager?.expose?.toggle(); }}
       >▦</button>
-      <button
-        class="tbtn"
-        aria-label="Save pane buffer to file"
-        @mouseenter=${(e) => this._tipEnter(e, `Save the focused pane's entire captured buffer to a text file (download).`)}
-        @mouseleave=${() => this._tipLeave()}
-        @click=${() => { this._tipLeave(); this.manager?.savePaneBuffer(); }}
-      >⤓</button>
+      <div class="save-wrap">
+        <button
+          class="tbtn ${this.saveOpen ? 'on' : ''}"
+          aria-label="Save pane buffer"
+          @mouseenter=${(e) => this._tipEnter(e, `Save the focused pane's buffer — download to your browser, or write it to a file on the machine tmux runs on.`)}
+          @mouseleave=${() => this._tipLeave()}
+          @click=${() => { this._tipLeave(); this._toggleSaveMenu(); }}
+        >⤓</button>
+        ${this.saveOpen ? html`
+          <div class="save-backdrop" @click=${() => { this.saveOpen = false; this.saveStatus = null; }}></div>
+          <div class="save-menu" @click=${(e) => e.stopPropagation()}>
+            <button class="save-item" @click=${() => this._saveToBrowser()}>⤓&nbsp; Download to browser</button>
+            <div class="save-sep"></div>
+            <div class="save-label">Save on the machine tmux runs on</div>
+            <div class="save-row">
+              <input
+                class="save-path"
+                type="text"
+                spellcheck="false"
+                autocomplete="off"
+                placeholder="~/out.txt or ./out.txt"
+                @keydown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); this._saveToPath(); } e.stopPropagation(); }}
+              >
+              <button class="save-go" @click=${() => this._saveToPath()}>Save</button>
+            </div>
+            <div class="save-hint">Relative paths save in the focused pane's current directory; ~ and absolute paths are honored as-is.</div>
+            ${this.saveStatus ? html`<div class="save-status ${this.saveStatus.state}">${this.saveStatus.text}</div>` : ''}
+          </div>
+        ` : ''}
+      </div>
       <button
         class="tbtn text"
         aria-label="Scroll-wheel mode"

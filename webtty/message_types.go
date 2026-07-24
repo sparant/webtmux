@@ -44,6 +44,9 @@ const (
 	TmuxCaptureData = 'A'
 	// Tmux error
 	TmuxError = 'B'
+	// Result of a TmuxSavePaneFile request (JSON payload: {"ok":bool,"path":"…",
+	// "error":"…"}). Lets the browser report where the file landed, or why not.
+	TmuxSaveResult = 'C'
 )
 
 // Tmux input message types (client -> server)
@@ -92,4 +95,9 @@ const (
 	// but leaves it running in the others (contrast TmuxKillWindow, the last-link
 	// case which ends its processes).
 	TmuxUnlinkWindow = 'N'
+	// Save a window's pane buffer to a file on the machine tmux runs on (payload
+	// JSON: {"windowId":"@N","path":"~/out.txt"}). The server captures the pane
+	// fresh, writes clean text, and replies with a TmuxSaveResult. Relative paths
+	// resolve against the pane's own working directory.
+	TmuxSavePaneFile = 'O'
 )

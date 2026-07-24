@@ -313,3 +313,22 @@ func (s *CaptureStore) captureOne(w WindowInfo) (CaptureEntry, error) {
 		ANSI:        []byte(ansi),
 	}, nil
 }
+
+// PaneCurrentPath returns the working directory of the given window's ACTIVE
+// pane (#{pane_current_path}) — "where tmux is running" for that window, the
+// base a relative save path resolves against (see webtty.handleSavePaneFile).
+// Read-only. Returns "" (no error) when the path can't be determined; a genuine
+// tmux failure is surfaced as an error. A pane_current_path may contain spaces,
+// so we put the active flag FIRST and treat the rest of the line as the path.
+func (s *CaptureStore) PaneCurrentPath(windowID string) (string, error) {
+	out, err := s.run("list-panes", "-t", windowID, "-F", "#{pane_active} #{pane_current_path}")
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if strings.HasPrefix(line, "1 ") {
+			return strings.TrimSpace(line[2:]), nil
+		}
+	}
+	return "", nil
+}

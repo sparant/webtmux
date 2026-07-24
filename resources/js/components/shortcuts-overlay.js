@@ -30,6 +30,7 @@ const GROUPS = [
       { keys: [...M, '['], desc: 'Toggle copy / normal (scrollback) mode — tmux ⌃b [' },
       { keys: [...M, 'P'], desc: 'Recents — previous window (left) — tmux ⌃b p' },
       { keys: [...M, 'N'], desc: 'Recents — next window (right) — tmux ⌃b n' },
+      { keys: [...M, 'L'], desc: 'Cycle most-recently-used windows — hold the chord and tap L to walk back through history (⇧L reverses); like alt-tab' },
       { keys: [...M, ','], desc: 'Rename the current window — tmux ⌃b ,' },
       { keys: [...M, 'B'], desc: 'Show / hide the build-id chip (top-left)' },
       { keys: [...M, '/'], desc: 'Show this shortcuts list — tmux ⌃b ?' },
@@ -53,7 +54,7 @@ const GROUPS = [
     title: 'Terminal',
     rows: [
       { keys: ['⌘/⌃', 'C'], desc: 'Copy the selection (or interrupt if nothing is selected)' },
-      { keys: ['⌘/⌃', 'V'], desc: 'Paste' },
+      { keys: ['⌘/⌃', 'V'], desc: 'Paste (auto-exits copy mode first so the text lands at the prompt)' },
     ],
   },
 ];
