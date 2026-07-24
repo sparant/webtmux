@@ -53,6 +53,7 @@ class WebtmuxPip extends LitElement {
     _wins: { state: true },     // [{windowId, session, label}] — the preview set
     _hidden: { state: true },   // true = tucked away (set kept, nothing drawn)
     _stale: { state: true },    // Set<windowId> of windows whose captures stopped
+    _focusedWinId: { state: true }, // window id the FOCUSED terminal is showing (self-preview suppression)
   };
 
   static styles = css`
@@ -71,11 +72,12 @@ class WebtmuxPip extends LitElement {
       overflow: hidden;
       font-family: Menlo, Monaco, "Courier New", monospace;
     }
-    /* Hover + pause DOUBLES the floating corner box (both dimensions), clamped to
+    /* Hover + pause grows the floating corner box to 3× its base size (both
+       dimensions: 360→1080 wide, and the frame 216→648 tall just below), clamped to
        the viewport so it can't spill off-screen. Grow is delayed (deliberate pause),
-       shrink-back is prompt. The frame height is doubled in lockstep just below. */
+       shrink-back is prompt. */
     :host([mode='single']) { transition: width 0.2s ease; }
-    :host([mode='single']:hover) { width: min(720px, calc(100vw - 32px)); transition-delay: 0.35s; }
+    :host([mode='single']:hover) { width: min(1080px, calc(100vw - 32px)); transition-delay: 0.35s; }
     :host([mode='single'][corner='tl']) { top: calc(var(--wt-toolbar-h, 44px) + 12px); left: 16px; }
     :host([mode='single'][corner='tr']) { top: calc(var(--wt-toolbar-h, 44px) + 12px); right: calc(var(--wt-sidebar-w, 0px) + 16px); }
     :host([mode='single'][corner='bl']) { bottom: 16px; left: 16px; }
@@ -162,7 +164,9 @@ class WebtmuxPip extends LitElement {
     }
     /* Single mode keeps the classic fixed-height frame. */
     :host([mode='single']) .pframe { height: 216px; flex: none; transition: height 0.2s ease; }
-    :host([mode='single']:hover) .pframe { height: 432px; transition-delay: 0.35s; }
+    /* 3× the base frame height (216→648), capped to the viewport so a tall grow can't
+       run off a short screen. */
+    :host([mode='single']:hover) .pframe { height: min(648px, calc(100vh - 160px)); transition-delay: 0.35s; }
     .screen-host { position: absolute; inset: 0; }
     .screen { position: absolute; top: 0; left: 0; transform-origin: top left; }
 
@@ -314,6 +318,7 @@ class WebtmuxPip extends LitElement {
     this._wins = [];        // [{windowId, session, label, index, name}]
     this._hidden = false;
     this._stale = new Set();
+    this._focusedWinId = null; // set by SplitManager: the window the focused pane shows
     this._terms = new Map(); // windowId -> {term, screen, cols, rows}
     this._pollTimer = null;
     // Bar-tile hover magnifier state.
@@ -353,6 +358,16 @@ class WebtmuxPip extends LitElement {
   get hidden() { return this._hidden; }
   hasWindow(id) { return this._has(id); }
   _has(id) { return this._wins.some((w) => w.windowId === id); }
+
+  // The window the FOCUSED terminal is currently showing. When the preview holds
+  // exactly this one window, the single-window PiP self-suppresses (see willUpdate)
+  // — no point floating a live copy of what you're already looking at. Reactive
+  // state, so a change re-derives the mode; a no-op when unchanged.
+  setFocusedWindow(id) {
+    const v = id || null;
+    if (this._focusedWinId === v) return;
+    this._focusedWinId = v;
+  }
 
   // Add a window to the preview (no-op if already present). meta = {index,name,session}.
   addWindow(id, meta = {}) {
@@ -414,9 +429,18 @@ class WebtmuxPip extends LitElement {
   willUpdate() {
     // Derive the display mode from the set size + hidden flag BEFORE render, so the
     // reflected `mode` attribute (and thus the host CSS) is correct this frame.
-    this.mode = (this._hidden || this._wins.length === 0)
+    const derived = (this._hidden || this._wins.length === 0)
       ? 'off'
       : (this._wins.length === 1 ? 'single' : 'bar');
+    // Self-preview suppression: a single-window PiP of the very window the FOCUSED
+    // terminal is already showing is redundant — you'd be watching a live copy of
+    // what's right in front of you. Blank it (drive mode 'off') WITHOUT forgetting
+    // the set (unlike hide), so the moment focus moves to a different window the box
+    // pops back on its own. Only 'single' can self-match; the multi-window bar never
+    // suppresses. Driven by SplitManager.setFocusedWindow on every focus/layout change.
+    this.mode = (derived === 'single' && this._wins[0]?.windowId === this._focusedWinId)
+      ? 'off'
+      : derived;
   }
 
   updated() {
