@@ -16,13 +16,14 @@ import (
 // stampede the socket. `force=true` bypasses it.
 const CaptureFreshnessTTL = 500 * time.Millisecond
 
-// CaptureEntry is a color-preserving snapshot of ONE window's active pane, keyed
-// by tmux window_id (@N). Because grouped sessions (new-session -t base -s web-x)
-// share the same window list, a window has exactly one entry regardless of how
-// many sessions "contain" it — see CaptureStore's dedup rationale.
+// CaptureEntry is a color-preserving snapshot of ONE window's active pane AS SEEN
+// FROM one session (a "placement"). A window linked into several real sessions
+// produces one entry per session — same screen, but each carrying that session's
+// name and the window's index WITHIN it. Ephemeral web-* grouped shadows collapse
+// onto their base, so a split's grouped sessions add no extra entries.
 type CaptureEntry struct {
 	WindowID    string
-	SessionName string // first session that saw the window (label only)
+	SessionName string // the placement's session (a real session, not a web-* shadow)
 	Index       int
 	Name        string
 	Cols        int
@@ -57,8 +58,9 @@ func (e CaptureEntry) Wire() CaptureWire {
 	}
 }
 
-// WindowInfo is one deduped window from EnumerateWindows: everything needed to
-// capture it (active pane id + dims) plus label metadata.
+// WindowInfo is one (session, window) placement from EnumerateWindows: everything
+// needed to capture the window (active pane id + dims) plus this session's label
+// metadata (session name + the window's index within that session).
 type WindowInfo struct {
 	WindowID    string
 	SessionName string
@@ -84,8 +86,13 @@ type CaptureStore struct {
 	run tmuxRunner
 	now func() time.Time
 
-	mu       sync.Mutex
-	byWindow map[string]CaptureEntry // window_id -> latest capture
+	mu sync.Mutex
+	// byWindow caches the latest SCREEN per window_id (the coalescing key). A window
+	// has one screen regardless of how many sessions it's placed in, so the cache
+	// stays keyed by window_id; the per-session placements are built on top of it in
+	// CaptureWindows. The SessionName/Index on a cached entry are just whichever
+	// placement captured it and are overridden per placement on the way out.
+	byWindow map[string]CaptureEntry
 }
 
 // NewCaptureStore builds a store that talks to the given `tmux -S <socket>`
@@ -123,11 +130,18 @@ const enumSep = "|"
 const enumFields = 7
 
 // EnumerateWindows lists every window across every session on the server
-// (`list-windows -a`) and dedups by window_id, so a window shared by
-// services + web-a + web-b yields a single WindowInfo. The label's session
-// prefers a REAL session name over an ephemeral web-* grouped shadow. This is
-// the "all windows across all sessions, one entry each" source of truth for
-// both Exposé and "all"-window capture requests.
+// (`list-windows -a`) and returns one WindowInfo per (session, window) PLACEMENT:
+// a window LINKED into services + mywork yields TWO entries (one per real session,
+// each with its own window index), so Exposé can show — and navigate to — each.
+//
+// Ephemeral web-* grouped split shadows mirror their base session's window list, so
+// they never add a placement (they'd just duplicate the base). The one exception is
+// a window that appears ONLY under web-* sessions — vanishingly rare, since grouped
+// sessions mirror a base that is itself always listed — where a single collapsed
+// placement is kept so the window isn't lost.
+//
+// This is the "every window across all sessions, one tile per placement" source of
+// truth for both Exposé and "all"-window capture requests.
 func (s *CaptureStore) EnumerateWindows() ([]WindowInfo, error) {
 	// Field order: id | session | index | pane_id | cols | rows | name(LAST).
 	format := strings.Join([]string{
@@ -140,8 +154,15 @@ func (s *CaptureStore) EnumerateWindows() ([]WindowInfo, error) {
 		return nil, err
 	}
 
-	var wins []WindowInfo
-	seen := make(map[string]int) // window_id -> index into wins
+	// Parse every row first, so we can decide the web-* fallback knowing whether a
+	// window has ANY real-session placement (a real placement may be listed after a
+	// window's web-* line).
+	type row struct {
+		info  WindowInfo
+		isWeb bool
+	}
+	var rows []row
+	hasReal := make(map[string]bool) // window_id -> has a non-web placement somewhere
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		if line == "" {
 			continue
@@ -150,45 +171,65 @@ func (s *CaptureStore) EnumerateWindows() ([]WindowInfo, error) {
 		if len(f) < enumFields {
 			continue
 		}
-		windowID := f[0]
-		if i, ok := seen[windowID]; ok {
-			// Dedup — but prefer a REAL session name for the label over an
-			// ephemeral web-* grouped shadow (list order is alphabetical, so a
-			// shadow can otherwise win and leak web-xyz into recents/Exposé).
-			if strings.HasPrefix(wins[i].SessionName, "web-") && !strings.HasPrefix(f[1], "web-") {
-				wins[i].SessionName = f[1]
-			}
-			continue
-		}
-		seen[windowID] = len(wins)
-
 		idx, _ := strconv.Atoi(f[2])
 		cols, _ := strconv.Atoi(f[4])
-		rows, _ := strconv.Atoi(f[5])
-		wins = append(wins, WindowInfo{
-			WindowID:    windowID,
+		rowsN, _ := strconv.Atoi(f[5])
+		info := WindowInfo{
+			WindowID:    f[0],
 			SessionName: f[1],
 			Index:       idx,
 			Name:        f[6],
 			PaneID:      f[3],
 			Cols:        cols,
-			Rows:        rows,
-		})
+			Rows:        rowsN,
+		}
+		isWeb := strings.HasPrefix(f[1], "web-")
+		if !isWeb {
+			hasReal[f[0]] = true
+		}
+		rows = append(rows, row{info: info, isWeb: isWeb})
+	}
+
+	var wins []WindowInfo
+	seen := make(map[string]bool)    // "session\x00window_id" -> real placement emitted
+	webFallback := make(map[string]bool) // window_id -> web-only fallback emitted
+	for _, r := range rows {
+		if r.isWeb {
+			// A shadow placement only survives if the window has no real session
+			// anywhere (else the real placement(s) cover it); keep just one.
+			if hasReal[r.info.WindowID] || webFallback[r.info.WindowID] {
+				continue
+			}
+			webFallback[r.info.WindowID] = true
+			wins = append(wins, r.info)
+			continue
+		}
+		key := r.info.SessionName + "\x00" + r.info.WindowID
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		wins = append(wins, r.info)
 	}
 	return wins, nil
 }
 
-// CaptureWindows refreshes and returns capture entries for the requested windows.
-// windowIDs==nil (or empty) means "all deduped windows". `force` bypasses the
-// freshness coalescing. Read-only: it only runs list-windows + capture-pane and
-// never touches the active pane, so it is safe against any window at any time.
+// CaptureWindows refreshes and returns capture entries for the requested windows,
+// ONE per (session, window) placement (a linked window yields an entry per session).
+// windowIDs==nil (or empty) means "all placements". `force` bypasses the freshness
+// coalescing. Read-only: it only runs list-windows + capture-pane and never touches
+// the active pane, so it is safe against any window at any time.
+//
+// A window's SCREEN is captured at most once per call even when it has several
+// placements (they share the same panes); each placement then carries that shared
+// screen with its OWN session name + window index.
 func (s *CaptureStore) CaptureWindows(windowIDs []string, force bool) ([]CaptureEntry, error) {
-	wins, err := s.EnumerateWindows()
+	placements, err := s.EnumerateWindows()
 	if err != nil {
 		return nil, err
 	}
 
-	// Which window_ids are we returning? nil request => all enumerated windows.
+	// Which window_ids are we returning? nil request => all placements.
 	wantAll := len(windowIDs) == 0
 	want := make(map[string]bool, len(windowIDs))
 	for _, id := range windowIDs {
@@ -196,33 +237,53 @@ func (s *CaptureStore) CaptureWindows(windowIDs []string, force bool) ([]Capture
 	}
 
 	now := s.now()
+	captured := make(map[string]CaptureEntry) // window_id -> screen captured this call
 	var out []CaptureEntry
-	for _, w := range wins {
-		if !wantAll && !want[w.WindowID] {
+	for _, p := range placements {
+		if !wantAll && !want[p.WindowID] {
 			continue
 		}
 
-		// Coalesce: reuse a still-fresh cached entry unless forced.
-		if !force {
-			s.mu.Lock()
-			cached, ok := s.byWindow[w.WindowID]
-			s.mu.Unlock()
-			if ok && now.Sub(cached.CapturedAt) < CaptureFreshnessTTL {
-				out = append(out, cached)
-				continue
+		// Resolve the window's screen once per call (then reuse it for every
+		// placement of the same window).
+		content, ok := captured[p.WindowID]
+		if !ok {
+			// Coalesce: reuse a still-fresh cached screen unless forced.
+			if !force {
+				s.mu.Lock()
+				cached, hit := s.byWindow[p.WindowID]
+				s.mu.Unlock()
+				if hit && now.Sub(cached.CapturedAt) < CaptureFreshnessTTL {
+					content = cached
+					ok = true
+				}
 			}
+			if !ok {
+				entry, err := s.captureOne(p)
+				if err != nil {
+					// Skip an unreadable window (e.g. it vanished mid-enumeration)
+					// but still serve the rest — a partial mosaic beats a failure.
+					continue
+				}
+				s.mu.Lock()
+				s.byWindow[p.WindowID] = entry
+				s.mu.Unlock()
+				content = entry
+			}
+			captured[p.WindowID] = content
 		}
 
-		entry, err := s.captureOne(w)
-		if err != nil {
-			// Skip an unreadable window (e.g. it vanished mid-enumeration) but
-			// still serve the rest — a partial mosaic beats a failed request.
-			continue
-		}
-		s.mu.Lock()
-		s.byWindow[w.WindowID] = entry
-		s.mu.Unlock()
-		out = append(out, entry)
+		// Emit THIS placement: the shared screen + this session's name/index.
+		out = append(out, CaptureEntry{
+			WindowID:    p.WindowID,
+			SessionName: p.SessionName,
+			Index:       p.Index,
+			Name:        p.Name,
+			Cols:        content.Cols,
+			Rows:        content.Rows,
+			CapturedAt:  content.CapturedAt,
+			ANSI:        content.ANSI,
+		})
 	}
 	return out, nil
 }

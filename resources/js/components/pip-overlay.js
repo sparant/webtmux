@@ -23,7 +23,7 @@
 // re-render (placement move, label update) never orphans a terminal.
 import { LitElement, html, css } from 'lit';
 import { Terminal } from '@xterm/xterm';
-import { CaptureCache } from '../capture-cache.js';
+import { CaptureCache, placementKey } from '../capture-cache.js';
 import { chord } from '../os.js';
 
 const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css';
@@ -484,7 +484,12 @@ class WebtmuxPip extends LitElement {
 
   _paint(id) {
     if (this.mode === 'off') return;
-    const entry = this.cache?.get(id);
+    const win = this._wins.find((w) => w.windowId === id);
+    // Prefer the capture for THIS preview's own session (accurate index/session when
+    // the window is linked into several); fall back to any representative — the
+    // screen is identical across a window's placements.
+    const entry = (win && this.cache?.byPlacement?.get(placementKey(win.session, id)))
+      || this.cache?.get(id);
     if (!entry) return;
     const tile = this._tileEl(id);
     if (!tile) return;
@@ -498,11 +503,12 @@ class WebtmuxPip extends LitElement {
     rec.term.write(CaptureCache.decodeAnsi(entry));
     this._rescale(id);
 
-    // Refresh label + session (rename/index/session can change on any capture).
-    const win = this._wins.find((w) => w.windowId === id);
+    // Refresh label + session (rename/index can change on any capture). Keep the
+    // add-time session unless it was unknown, so a linked window's preview stays
+    // anchored to the session it was added from.
     if (win) {
       win.label = `${entry.index}: ${entry.name}`;
-      if (entry.sessionName) win.session = entry.sessionName;
+      if (!win.session && entry.sessionName) win.session = entry.sessionName;
       const nameEl = tile.querySelector('.plabel .name');
       const sessEl = tile.querySelector('.plabel .sess');
       if (nameEl) nameEl.textContent = win.label;

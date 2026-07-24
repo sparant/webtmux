@@ -15,7 +15,7 @@
 // never exhaust renderer resources.
 import { LitElement, html, css } from 'lit';
 import { Terminal } from '@xterm/xterm';
-import { CaptureCache } from '../capture-cache.js';
+import { CaptureCache, placementKey } from '../capture-cache.js';
 import { matchesWords, appendChar, backspace, phraseText } from '../search.js';
 
 const N_MAX_TILES = 24;
@@ -234,8 +234,11 @@ class WebtmuxExpose extends LitElement {
     this.manager = null; // SplitManager — set by SplitManager
     this._tiles = []; // { term? } live xterm instances, for disposal
     this._cursor = -1; // keyboard-highlighted tile index
-    this._cursorId = null; // window_id under the cursor — survives refresh/rebuild
-    this._renderedIds = []; // window_ids in current tile order
+    // Cursor + render tracking are keyed by PLACEMENT ("session windowId"), not
+    // window id, so a window linked into two sessions has a distinct, individually
+    // navigable tile per session and the cursor never conflates them.
+    this._cursorKey = null; // placement key under the cursor — survives refresh/rebuild
+    this._renderedKeys = []; // placement keys in current tile order
     this._sort = readSort(); // 'session' | 'recent' (persisted)
     // Type-ahead filter (same word-substring algorithm as the sidebar): only
     // windows whose "session index: name" label contains every typed word stay
@@ -256,7 +259,7 @@ class WebtmuxExpose extends LitElement {
   // Keep xterm out of Lit's control: render the static chrome only; the grid is
   // filled imperatively so a reactive re-render never orphans a tile terminal.
   render() {
-    const n = this.cache ? this.cache.byWindow.size : 0;
+    const n = this.cache ? this.cache.placementCount : 0;
     const filtering = this._searchWords.some((w) => w !== '');
     const shown = filtering ? this._visibleEntries().length : n;
     return html`
@@ -296,10 +299,10 @@ class WebtmuxExpose extends LitElement {
     }
     this.density = density;
     this.open = true;
-    // Start the cursor on the focused region's current window. (Access recency is
-    // owned by SplitManager — the focused window was already recorded when focused
-    // — so opening Exposé doesn't itself write recency: one write path.)
-    this._cursorId = this.manager?.focusedUnit?.layout?.activeWindowId || null;
+    // Start the cursor on the focused region's current window's OWN-session tile.
+    // (Access recency is owned by SplitManager — the focused window was already
+    // recorded when focused — so opening Exposé doesn't itself write recency.)
+    this._cursorKey = this._focusedPlacementKey();
     this.cache?.addEventListener('update', this._onCacheUpdate);
     window.addEventListener('keydown', this._onKey, true);
     // Force a fresh capture of every window, then paint whatever's cached now.
@@ -359,6 +362,19 @@ class WebtmuxExpose extends LitElement {
     return all.filter((e) => matchesWords(`${e.sessionName} ${e.index}: ${e.name}`, terms));
   }
 
+  // The placement key of the focused pane's current window IN its own session —
+  // used to mark the "current" tile and seed the cursor. Matches the key the
+  // capture cache / tiles use, so the right one of a linked window's tiles lights up.
+  _focusedPlacementKey() {
+    const u = this.manager?.focusedUnit;
+    const id = u?.layout?.activeWindowId;
+    if (!id) return null;
+    const sess = this.manager?.logicalSession
+      ? this.manager.logicalSession(u)
+      : (u.layout?.sessionBase || u.layout?.sessionName || '');
+    return placementKey(sess, id);
+  }
+
   _disposeTiles() {
     for (const t of this._tiles) {
       if (t.term) {
@@ -386,28 +402,28 @@ class WebtmuxExpose extends LitElement {
       div.className = 'empty';
       // Distinguish "nothing captured yet" from "filter excludes everything".
       const filtering = this._searchWords.some((w) => w !== '');
-      const anyCached = this.cache && this.cache.byWindow.size > 0;
+      const anyCached = this.cache && this.cache.placementCount > 0;
       div.textContent = filtering && anyCached
         ? `No windows match “${this._query}”`
         : 'Capturing windows…';
       grid.appendChild(div);
-      this._renderedIds = [];
+      this._renderedKeys = [];
       return;
     }
 
-    const currentId = this.manager?.focusedUnit?.layout?.activeWindowId || '';
+    const currentKey = this._focusedPlacementKey();
     entries.forEach((entry, i) => {
       const rec = this._buildTile(entry, i < N_MAX_TILES);
-      if (entry.windowId === currentId) rec.tileEl.classList.add('current');
+      if (rec.key === currentKey) rec.tileEl.classList.add('current');
       grid.appendChild(rec.tileEl);
       this._tiles.push(rec);
     });
-    this._renderedIds = entries.map((e) => e.windowId);
+    this._renderedKeys = entries.map((e) => placementKey(e.sessionName, e.windowId));
 
-    // Keep the highlight on the same window across a rebuild; fall back to the
-    // current window, then the first tile.
-    let idx = this._cursorId ? this._renderedIds.indexOf(this._cursorId) : -1;
-    if (idx < 0) idx = this._renderedIds.indexOf(currentId);
+    // Keep the highlight on the same placement across a rebuild; fall back to the
+    // current window's tile, then the first tile.
+    let idx = this._cursorKey ? this._renderedKeys.indexOf(this._cursorKey) : -1;
+    if (idx < 0) idx = this._renderedKeys.indexOf(currentKey);
     if (idx < 0) idx = 0;
     this._cursor = idx;
     this._paintCursor();
@@ -420,29 +436,32 @@ class WebtmuxExpose extends LitElement {
   _refresh() {
     if (!this.open) return;
     const entries = this._visibleEntries();
-    const ids = entries.map((e) => e.windowId);
+    const keys = entries.map((e) => placementKey(e.sessionName, e.windowId));
     const unchanged =
-      ids.length === this._renderedIds.length && ids.every((id, i) => id === this._renderedIds[i]);
+      keys.length === this._renderedKeys.length && keys.every((k, i) => k === this._renderedKeys[i]);
     if (!unchanged) {
       this._rebuild();
       return;
     }
 
-    const currentId = this.manager?.focusedUnit?.layout?.activeWindowId || '';
-    const byId = new Map(this._tiles.map((r) => [r.windowId, r]));
+    const currentKey = this._focusedPlacementKey();
+    const byKey = new Map(this._tiles.map((r) => [r.key, r]));
     for (const entry of entries) {
-      const rec = byId.get(entry.windowId);
+      const rec = byKey.get(placementKey(entry.sessionName, entry.windowId));
       if (!rec) continue;
       this._updateTileContent(rec, entry);
-      rec.tileEl.classList.toggle('current', entry.windowId === currentId);
+      rec.tileEl.classList.toggle('current', rec.key === currentKey);
     }
     // Cursor deliberately untouched — navigation state survives the refresh.
   }
 
   _buildTile(entry, live) {
+    const key = placementKey(entry.sessionName, entry.windowId);
     const tile = document.createElement('div');
     tile.className = 'tile';
     tile.dataset.window = entry.windowId;
+    tile.dataset.session = entry.sessionName;
+    tile.dataset.key = key;
 
     const frame = document.createElement('div');
     frame.className = 'tile-frame';
@@ -450,6 +469,8 @@ class WebtmuxExpose extends LitElement {
 
     const rec = {
       windowId: entry.windowId,
+      session: entry.sessionName,
+      key,
       tileEl: tile,
       frame,
       screen: null,
@@ -489,7 +510,7 @@ class WebtmuxExpose extends LitElement {
     label.append(left, right);
     tile.appendChild(label);
 
-    tile.addEventListener('click', () => this._selectWindow(entry.windowId));
+    tile.addEventListener('click', () => this._selectWindow(entry.windowId, entry.sessionName));
     return rec;
   }
 
@@ -551,12 +572,13 @@ class WebtmuxExpose extends LitElement {
 
   // ---- interaction ------------------------------------------------------------
 
-  _selectWindow(windowId) {
+  _selectWindow(windowId, session = '') {
     // Same navigation path as the toolbar recent-strip: jump to the region that
-    // already shows it, or switch the focused region's session if the window
-    // lives elsewhere, else select it here (optimistic paint happens in selectWindow).
-    const entry = this.cache?.get(windowId);
-    this.manager?.goToWindow(windowId, entry?.sessionName || '');
+    // already shows it, or switch the focused region's session if the window lives
+    // elsewhere, else select it here (optimistic paint happens in selectWindow). The
+    // session comes from the clicked PLACEMENT, so a linked window's two tiles each
+    // navigate to their own session's view.
+    this.manager?.goToWindow(windowId, session);
     this.closeOverlay();
   }
 
@@ -568,8 +590,8 @@ class WebtmuxExpose extends LitElement {
     const tiles = this._tileEls();
     tiles.forEach((t, i) => t.classList.toggle('cursor', i === this._cursor));
     const cur = tiles[this._cursor];
-    // Remember WHICH window is highlighted so the cursor survives a rebuild.
-    this._cursorId = cur ? cur.dataset.window : null;
+    // Remember WHICH placement is highlighted so the cursor survives a rebuild.
+    this._cursorKey = cur ? cur.dataset.key : null;
     if (cur) cur.scrollIntoView({ block: 'nearest' });
   }
 
@@ -583,7 +605,7 @@ class WebtmuxExpose extends LitElement {
       else this.closeOverlay();
     } else if (e.key === 'Enter') {
       const t = tiles[this._cursor];
-      if (t) this._selectWindow(t.dataset.window);
+      if (t) this._selectWindow(t.dataset.window, t.dataset.session);
     } else if (e.key === 'ArrowRight') {
       this._moveCursor(1, tiles);
     } else if (e.key === 'ArrowLeft') {
@@ -605,7 +627,7 @@ class WebtmuxExpose extends LitElement {
 
   // Apply a new filter word list: mirror it into the reactive _query (re-renders the
   // header) and rebuild the (imperative) tile grid so membership matches. The cursor
-  // is restored to the same window by id inside _rebuild, or the first visible tile.
+  // is restored to the same placement inside _rebuild, or the first visible tile.
   _setSearch(words) {
     this._searchWords = words;
     this._query = phraseText(words);

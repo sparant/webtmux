@@ -96,6 +96,87 @@ func TestCaptureWindowsOnePerWindowID(t *testing.T) {
 	}
 }
 
+func TestEnumerateWindowsPlacesLinkedWindowPerSession(t *testing.T) {
+	// @5 is LINKED into two real sessions (services idx 2, mywork idx 0) and also
+	// visible through an ephemeral web-abc split shadow. Expect two placements (one
+	// per real session, each with its own index) and NO web-* placement.
+	f := &fakeTmux{listOut: buildList(
+		[]string{"@5", "services", "2", "%10", "80", "24", "build"},
+		[]string{"@5", "mywork", "0", "%10", "80", "24", "build"},
+		[]string{"@5", "web-abc", "2", "%10", "80", "24", "build"},
+	)}
+	s := newCaptureStoreWithRunner(f.run, time.Now)
+
+	wins, err := s.EnumerateWindows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wins) != 2 {
+		t.Fatalf("expected 2 placements for a window linked into 2 sessions, got %d: %+v", len(wins), wins)
+	}
+	if wins[0].SessionName != "services" || wins[0].Index != 2 {
+		t.Errorf("unexpected first placement: %+v", wins[0])
+	}
+	if wins[1].SessionName != "mywork" || wins[1].Index != 0 {
+		t.Errorf("unexpected second placement: %+v", wins[1])
+	}
+	for _, w := range wins {
+		if strings.HasPrefix(w.SessionName, "web-") {
+			t.Errorf("web-* shadow leaked as a placement: %+v", w)
+		}
+	}
+}
+
+func TestEnumerateWindowsKeepsWebOnlyWindow(t *testing.T) {
+	// @9 exists ONLY under a web-* shadow (no real session). It must not vanish —
+	// keep exactly one collapsed placement.
+	f := &fakeTmux{listOut: buildList(
+		[]string{"@9", "web-x", "0", "%20", "80", "24", "ghost"},
+		[]string{"@9", "web-y", "0", "%20", "80", "24", "ghost"},
+	)}
+	s := newCaptureStoreWithRunner(f.run, time.Now)
+
+	wins, err := s.EnumerateWindows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wins) != 1 || wins[0].WindowID != "@9" {
+		t.Fatalf("expected 1 fallback placement for a web-only window, got %+v", wins)
+	}
+}
+
+func TestCaptureWindowsSharesScreenAcrossPlacements(t *testing.T) {
+	// A window linked into two real sessions => two capture entries (one per
+	// session, own index) but the SCREEN is captured only ONCE (shared panes).
+	f := &fakeTmux{
+		listOut: buildList(
+			[]string{"@5", "services", "2", "%10", "80", "24", "build"},
+			[]string{"@5", "mywork", "0", "%10", "80", "24", "build"},
+		),
+		captureOut: "hi\n",
+	}
+	s := newCaptureStoreWithRunner(f.run, time.Now)
+
+	entries, err := s.CaptureWindows(nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 placement entries, got %d", len(entries))
+	}
+	if len(f.captureArgs) != 1 {
+		t.Fatalf("expected the shared screen to be captured once, got %d forks", len(f.captureArgs))
+	}
+	if entries[0].SessionName != "services" || entries[0].Index != 2 ||
+		entries[1].SessionName != "mywork" || entries[1].Index != 0 {
+		t.Errorf("placements lost their session/index: %+v", entries)
+	}
+	// Both placements carry the SAME screen bytes.
+	if string(entries[0].ANSI) != "hi" || string(entries[1].ANSI) != "hi" {
+		t.Errorf("placements should share the screen: %q / %q", entries[0].ANSI, entries[1].ANSI)
+	}
+}
+
 func TestCaptureCoalescesWithinTTL(t *testing.T) {
 	f := &fakeTmux{
 		listOut:    buildList([]string{"@0", "services", "0", "%0", "80", "24", "zsh"}),
