@@ -109,6 +109,15 @@ class WebtmuxToolbar extends LitElement {
     .tab.disabled:hover { border-color: #0f3460; color: #ddd; }
     .tab .sess { color: #4a9eff; font-size: 11px; opacity: 0.85; flex: 0 0 auto; }
     .tab.active .sess { color: #ffd7de; }
+    /* Working-status dot: green = working, red = stopped, unfilled = unset.
+       Clients drive it with: tmux set -w @wt_working 1|0  (set -u to clear). */
+    .tab .work {
+      flex: 0 0 auto; align-self: center; width: 8px; height: 8px; border-radius: 50%;
+      border: 1px solid #5a6a8a; background: transparent; box-sizing: border-box;
+    }
+    .tab .work.on  { background: #2ecc71; border-color: #2ecc71; box-shadow: 0 0 4px #2ecc71; }
+    .tab .work.off { background: #e74c3c; border-color: #e74c3c; }
+    .tab.active .work { border-color: #ffd7de; }
     .tab .wname { overflow: hidden; text-overflow: ellipsis; }
     /* Per-tab remove-from-recents affordance: hidden until the tab is hovered. */
     .tab .close {
@@ -425,7 +434,7 @@ class WebtmuxToolbar extends LitElement {
             @mouseenter=${(e) => this._tipEnter(e, tip)}
             @mouseleave=${() => this._tipLeave()}
             @click=${() => { this._tipLeave(); if (!w.disabled) this.manager?.pickRecentWindow(w); }}
-          ><span class="sess">${w.session}:${w.index}</span><span class="wname">${w.name}</span><span
+          ><span class="work ${w.working === '1' ? 'on' : w.working === '0' ? 'off' : ''}" aria-hidden="true"></span><span class="sess">${w.session}:${w.index}</span><span class="wname">${w.name}</span><span
               class="close"
               aria-label="Remove from Recent (does not close the window)"
               @mouseenter=${(e) => { e.stopPropagation(); this._tipEnter(e, 'Remove this tab from Recent — the window keeps running (this does not close or kill it)'); }}

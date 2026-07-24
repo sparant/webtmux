@@ -38,7 +38,11 @@ type Window struct {
 	Name   string `json:"name"`
 	Index  int    `json:"index"`
 	Active bool   `json:"active"`
-	Panes  []Pane `json:"panes"`
+	// Working is the window's self-reported work status, read from the @wt_working
+	// tmux user option: "1" = working (green dot), "0" = stopped (red dot),
+	// "" = unset (unfilled dot). Clients set it with `tmux set -w @wt_working 1|0`.
+	Working string `json:"working"`
+	Panes   []Pane `json:"panes"`
 	// SessionCount is how many DISTINCT logical sessions this window is linked into
 	// (ephemeral web-* grouped shadows collapse onto their base, so a window shared
 	// by a split's grouped sessions still counts as one). >1 means the sidebar ×

@@ -302,7 +302,7 @@ func (c *Controller) RefreshLayout() error {
 	linkCounts := c.windowLinkCounts(rows)
 
 	// Get windows
-	windowsOut, err := c.runTmux("list-windows", "-t", sess, "-F", "#{window_id},#{window_name},#{window_index},#{window_active}")
+	windowsOut, err := c.runTmux("list-windows", "-t", sess, "-F", "#{window_id},#{window_name},#{window_index},#{window_active},#{@wt_working}")
 	if err != nil {
 		return err
 	}
@@ -324,6 +324,13 @@ func (c *Controller) RefreshLayout() error {
 			Name:   parts[1],
 			Index:  idx,
 			Active: active,
+		}
+
+		// @wt_working rides as the LAST field (appended to the format), so read it
+		// from the tail — robust even if a window name contains a comma. Unset =>
+		// tmux expands it to "" => empty trailing field => unfilled dot in the UI.
+		if len(parts) >= 5 {
+			win.Working = parts[len(parts)-1]
 		}
 
 		// Distinct logical sessions holding this window; default to 1 (it's at

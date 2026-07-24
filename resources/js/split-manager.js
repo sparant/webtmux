@@ -477,7 +477,7 @@ export class SplitManager {
     for (const u of this.units) {
       const sess = this.logicalSession(u);
       for (const w of (u.layout?.windows || [])) {
-        const k = sess + ' ' + w.id;
+        const k = sess + '\x00' + w.id;
         if (!liveByKey.has(k)) liveByKey.set(k, w);
         if (!liveById.has(w.id)) liveById.set(w.id, w);
       }
@@ -486,7 +486,7 @@ export class SplitManager {
     // one window) — greyed out, like the sidebar. One shared source: occupiedWindowIds.
     const occupied = this.occupiedWindowIds(focused);
     this.toolbar.recent = this.recentWindows.map(e => {
-      const live = liveByKey.get(e.session + ' ' + e.id) || liveById.get(e.id);
+      const live = liveByKey.get(e.session + '\x00' + e.id) || liveById.get(e.id);
       // Keep the access-time snapshot fresh from the live layout so the name/index
       // stay correct even after the window later leaves every region's window list
       // (recents outlive the session they were accessed in).
@@ -503,6 +503,9 @@ export class SplitManager {
         // Active only when the focused pane shows this window IN THIS entry's session.
         active: e.id === activeId && e.session === focusedSession,
         disabled: occupied.has(e.id),
+        // Self-reported work status from the live layout's @wt_working option:
+        // "1" working (green), "0" stopped (red), "" unset (unfilled dot).
+        working: live?.working || '',
       };
     });
     this.toolbar.collapsed = !!this.sidebar?.collapsed;
