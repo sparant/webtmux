@@ -71,6 +71,11 @@ class WebtmuxPip extends LitElement {
       overflow: hidden;
       font-family: Menlo, Monaco, "Courier New", monospace;
     }
+    /* Hover + pause DOUBLES the floating corner box (both dimensions), clamped to
+       the viewport so it can't spill off-screen. Grow is delayed (deliberate pause),
+       shrink-back is prompt. The frame height is doubled in lockstep just below. */
+    :host([mode='single']) { transition: width 0.2s ease; }
+    :host([mode='single']:hover) { width: min(720px, calc(100vw - 32px)); transition-delay: 0.35s; }
     :host([mode='single'][corner='tl']) { top: calc(var(--wt-toolbar-h, 44px) + 12px); left: 16px; }
     :host([mode='single'][corner='tr']) { top: calc(var(--wt-toolbar-h, 44px) + 12px); right: calc(var(--wt-sidebar-w, 0px) + 16px); }
     :host([mode='single'][corner='bl']) { bottom: 16px; left: 16px; }
@@ -129,7 +134,14 @@ class WebtmuxPip extends LitElement {
       border-radius: 6px;
       overflow: hidden;
       box-sizing: border-box;
+      z-index: 1;
+      /* Hover-to-enlarge: grow along the bar's scroll axis. No delay here so the
+         tile SHRINKS back promptly on mouse-out; the delay lives on :hover so the
+         GROW only fires after a deliberate pause (see the per-edge :hover rules). */
+      transition: flex-basis 0.18s ease, height 0.18s ease, width 0.18s ease;
     }
+    /* The enlarged tile floats above its neighbours while grown. */
+    .ptile:hover { z-index: 6; }
     /* Single mode: the one tile fills the whole box (no border/radius of its own). */
     :host([mode='single']) .ptile {
       flex: 1 1 auto;
@@ -141,6 +153,13 @@ class WebtmuxPip extends LitElement {
     :host([mode='bar'][edge='bottom']) .ptile { flex: 0 0 300px; height: 100%; }
     :host([mode='bar'][edge='left']) .ptile,
     :host([mode='bar'][edge='right']) .ptile { flex: 0 0 auto; height: 150px; width: 100%; }
+    /* Hover + pause DOUBLES only the hovered tile along the bar's scroll axis
+       (the cross axis is pinned by the bar's thickness). The 0.35s delay makes it a
+       deliberate "pause to zoom", not a twitch as the pointer sweeps the strip. */
+    :host([mode='bar'][edge='top']) .ptile:hover,
+    :host([mode='bar'][edge='bottom']) .ptile:hover { flex-basis: 600px; transition-delay: 0.35s; }
+    :host([mode='bar'][edge='left']) .ptile:hover,
+    :host([mode='bar'][edge='right']) .ptile:hover { height: 300px; transition-delay: 0.35s; }
     .ptile.current { border-color: #37d17a; }
     :host([mode='single']) .ptile.current { border: none; }
 
@@ -154,7 +173,8 @@ class WebtmuxPip extends LitElement {
       border-bottom: 1px solid #0f3460;
     }
     /* Single mode keeps the classic fixed-height frame. */
-    :host([mode='single']) .pframe { height: 216px; flex: none; }
+    :host([mode='single']) .pframe { height: 216px; flex: none; transition: height 0.2s ease; }
+    :host([mode='single']:hover) .pframe { height: 432px; transition-delay: 0.35s; }
     .screen-host { position: absolute; inset: 0; }
     .screen { position: absolute; top: 0; left: 0; transform-origin: top left; }
 
@@ -270,6 +290,11 @@ class WebtmuxPip extends LitElement {
       const caps = (e && e.detail && e.detail.captures) || [];
       for (const c of caps) if (this._has(c.windowId)) this._paint(c.windowId);
     };
+    // The hover-to-enlarge CSS resizes the frame; re-letterbox the xterm inside it
+    // when that transition settles. Fires on the HOST's own transition (the single
+    // corner box's width); inner tile/pframe transitions are handled per-tile in
+    // _buildTile (their transitionend doesn't cross the shadow boundary to here).
+    this.addEventListener('transitionend', () => this._rescaleAll());
   }
 
   disconnectedCallback() {
@@ -318,6 +343,10 @@ class WebtmuxPip extends LitElement {
     const v = !!h;
     if (this._hidden === v) return;
     this._hidden = v;
+    // Re-showing rebuilds the tiles from scratch (the hide tore their terminals
+    // down), so prime a fresh capture for every previewed window immediately —
+    // otherwise they'd sit blank until the next 1.5s poll tick.
+    if (!v && this._wins.length) this.cache?.request(this._wins.map((w) => w.windowId), true);
     this._changed();
   }
   toggleHidden() { this.setHidden(!this._hidden); }
@@ -421,7 +450,13 @@ class WebtmuxPip extends LitElement {
   _syncTiles() {
     const host = this.renderRoot?.querySelector('.tiles');
     if (!host) return;
-    if (this.mode === 'off') { host.textContent = ''; return; }
+    // Going 'off' (empty set OR hidden) must DISPOSE the xterm instances, not just
+    // drop their tile DOM: each rec.screen lives inside the tile we're about to
+    // clear, so keeping the rec around orphans its terminal. On re-show _ensureTerm
+    // would then hand back that orphaned rec and never re-attach it to the fresh
+    // tile — leaving every preview (and the single-window PiP) blank. Tearing down
+    // here forces a clean rebuild+repaint from the cache when the preview returns.
+    if (this.mode === 'off') { this._teardownAll(); host.textContent = ''; return; }
 
     const want = this._wins.map((w) => w.windowId);
     const have = [...host.children].map((el) => el.dataset.window);
@@ -447,6 +482,11 @@ class WebtmuxPip extends LitElement {
     const tile = document.createElement('div');
     tile.className = 'ptile';
     tile.dataset.window = w.windowId;
+
+    // Re-letterbox this tile's xterm once its hover-enlarge transition settles
+    // (flex-basis for a horizontal bar, height for a vertical one, or the pframe
+    // height in single mode — all bubble to the tile within the shadow tree).
+    tile.addEventListener('transitionend', () => this._rescale(w.windowId));
 
     const frame = document.createElement('div');
     frame.className = 'pframe';
