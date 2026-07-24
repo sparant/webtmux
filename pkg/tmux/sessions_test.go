@@ -51,7 +51,7 @@ func TestLogicalBase(t *testing.T) {
 
 func TestBuildSessionsHidesShadowsAndMarksGroupActive(t *testing.T) {
 	rows := parseSessionRows(sessionsFixture)
-	got := buildSessions(rows, "web-abc123") // a split viewing services
+	got := buildSessions(rows, "web-abc123", nil) // a split viewing services
 
 	names := map[string]Session{}
 	for _, s := range got {
@@ -73,13 +73,38 @@ func TestBuildSessionsHidesShadowsAndMarksGroupActive(t *testing.T) {
 
 func TestBuildSessionsPrimary(t *testing.T) {
 	rows := parseSessionRows(sessionsFixture)
-	got := buildSessions(rows, "services")
+	got := buildSessions(rows, "services", nil)
 	for _, s := range got {
 		if s.Name == "services" && !s.Active {
 			t.Error("primary's own session not active")
 		}
 		if s.Name == "other" && s.Active {
 			t.Error("other session wrongly active")
+		}
+	}
+}
+
+func TestBuildSessionsMarksEmpty(t *testing.T) {
+	rows := parseSessionRows(sessionsFixture)
+	empty := map[string]bool{"other": true} // only "other" is an idle-shell session
+	got := buildSessions(rows, "services", empty)
+	for _, s := range got {
+		want := s.Name == "other"
+		if s.Empty != want {
+			t.Errorf("session %q Empty = %v, want %v", s.Name, s.Empty, want)
+		}
+	}
+}
+
+func TestIsShellCommand(t *testing.T) {
+	for _, cmd := range []string{"bash", "zsh", "-bash", "fish", "sh"} {
+		if !isShellCommand(cmd) {
+			t.Errorf("isShellCommand(%q) = false, want true", cmd)
+		}
+	}
+	for _, cmd := range []string{"vim", "node", "ssh", "claude", ""} {
+		if isShellCommand(cmd) {
+			t.Errorf("isShellCommand(%q) = true, want false", cmd)
 		}
 	}
 }

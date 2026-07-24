@@ -82,7 +82,9 @@ func logicalBase(rows []sessionRow, cur string) string {
 // buildSessions converts rows to the UI session list: web-* shadows hidden,
 // Active set on the session(s) in the same group as the pane's current session
 // — so a split pane viewing services through web-abc marks "services" active.
-func buildSessions(rows []sessionRow, cur string) []Session {
+// empty maps a session name to whether it is an idle, nothing-running session
+// (see sessionEmptiness); nil leaves every Empty flag false.
+func buildSessions(rows []sessionRow, cur string, empty map[string]bool) []Session {
 	curGroup := ""
 	for _, r := range rows {
 		if r.name == cur {
@@ -102,7 +104,20 @@ func buildSessions(rows []sessionRow, cur string) []Session {
 			Windows:  r.windows,
 			Attached: r.attached,
 			Active:   active,
+			Empty:    empty[r.name],
 		})
 	}
 	return out
+}
+
+// shellCommands are the pane_current_command values that mean "an idle shell" —
+// a pane running only one of these has no foreground program. Login shells report
+// with a leading '-' (e.g. "-bash"), stripped before the lookup.
+var shellCommands = map[string]bool{
+	"bash": true, "zsh": true, "sh": true, "fish": true,
+	"dash": true, "ksh": true, "tcsh": true, "csh": true, "ash": true,
+}
+
+func isShellCommand(cmd string) bool {
+	return shellCommands[strings.TrimPrefix(cmd, "-")]
 }

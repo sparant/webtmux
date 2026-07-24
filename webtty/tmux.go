@@ -23,6 +23,8 @@ type TmuxController interface {
 	RenameSession(oldName, newName string) error
 	KillWindow(windowID string) error
 	KillSession(sessionName string) error
+	LinkWindow(windowID, targetSession string) error
+	UnlinkWindow(windowID string) error
 	SplitPane(horizontal bool) error
 	ClosePane(paneID string) error
 	EnterCopyMode() error
@@ -230,6 +232,27 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 		}
 		return wt.SendTmuxLayout()
 
+	case TmuxLinkWindow:
+		// payload = "<windowID> <targetSession>"; windowIDs are "@N" (no spaces),
+		// so split on the first space and keep the rest as the session name.
+		s := string(payload)
+		idx := strings.IndexByte(s, ' ')
+		if idx < 0 {
+			return nil
+		}
+		windowID, targetSession := s[:idx], s[idx+1:]
+		if err := wt.tmuxCtrl.LinkWindow(windowID, targetSession); err != nil {
+			return errors.Wrap(err, "failed to link window")
+		}
+		return wt.SendTmuxLayout()
+
+	case TmuxUnlinkWindow:
+		windowID := string(payload)
+		if err := wt.tmuxCtrl.UnlinkWindow(windowID); err != nil {
+			return errors.Wrap(err, "failed to unlink window")
+		}
+		return wt.SendTmuxLayout()
+
 	default:
 		return errors.Errorf("unknown tmux message type: %c", msgType)
 	}
@@ -292,7 +315,8 @@ func isTmuxMessage(msgType byte) bool {
 	case TmuxSelectPane, TmuxSelectWindow, TmuxSplitPane, TmuxClosePane,
 		TmuxCopyMode, TmuxSendCommand, TmuxScrollUp, TmuxScrollDown, TmuxNewWindow,
 		TmuxSwitchSession, TmuxRenameWindow, TmuxMoveWindow, TmuxNewSession,
-		TmuxRenameSession, TmuxKillWindow, TmuxKillSession, TmuxCaptureRequest:
+		TmuxRenameSession, TmuxKillWindow, TmuxKillSession, TmuxLinkWindow,
+		TmuxUnlinkWindow, TmuxCaptureRequest:
 		return true
 	default:
 		return false

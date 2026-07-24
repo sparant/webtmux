@@ -35,6 +35,8 @@ export const MSG = {
   TmuxRenameSession: 'J',
   TmuxKillWindow: 'K',
   TmuxKillSession: 'L',
+  TmuxLinkWindow: 'M',
+  TmuxUnlinkWindow: 'N',
 
   // Output (server -> client)
   Output: '1',
@@ -872,6 +874,19 @@ export class TerminalUnit {
   // Kill a session by logical name (sidebar hover ×).
   killSession(sessionName) {
     this.sendMessage(MSG.TmuxKillSession, sessionName);
+  }
+
+  // Link a window into another session (drag a window tab onto a session tab).
+  // The window keeps running and appears in both sessions afterwards.
+  linkWindow(windowId, targetSession) {
+    // "<windowID> <targetSession>" — windowID is "@N" so the first space delimits.
+    this.sendMessage(MSG.TmuxLinkWindow, windowId + ' ' + targetSession);
+  }
+
+  // Unlink a window from THIS pane's session, leaving it running in the other
+  // sessions it's linked into (sidebar hover × when the window lives elsewhere too).
+  unlinkWindow(windowId) {
+    this.sendMessage(MSG.TmuxUnlinkWindow, windowId);
   }
 
   switchSession(sessionName) {

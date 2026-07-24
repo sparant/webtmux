@@ -17,6 +17,8 @@ class WebtmuxSidebar extends LitElement {
     draggingWindow: { type: String },
     // Window id currently under the drag pointer (drop target highlight).
     dragOverWindow: { type: String },
+    // Session name currently under a dragged WINDOW (link drop-target highlight).
+    dragOverSession: { type: String },
     // Window ids currently displayed by OTHER split regions — not selectable here
     // (two panes on one window share it / stay in sync). Set by the SplitManager.
     disabledWindows: { type: Array },
@@ -256,6 +258,14 @@ class WebtmuxSidebar extends LitElement {
       color: #fff;
     }
 
+    /* A session tab highlighted as the drop target while dragging a window onto it
+       (drag-to-link): bright ring so it reads as "drop here to link the window". */
+    .session-tab.link-target {
+      border-color: #37d17a;
+      color: #fff;
+      box-shadow: 0 0 0 2px rgba(55, 209, 122, 0.6);
+    }
+
     .session-tab .win-count {
       font-size: 12px;
       opacity: 0.7;
@@ -281,6 +291,7 @@ class WebtmuxSidebar extends LitElement {
     // Drag-and-drop reorder state.
     this.draggingWindow = '';
     this.dragOverWindow = '';
+    this.dragOverSession = '';
     // Windows shown by other split regions (disabled here). SplitManager updates it.
     this.disabledWindows = [];
 
@@ -313,6 +324,25 @@ class WebtmuxSidebar extends LitElement {
       this.classList.toggle('overlay', this.overlay);
       setTimeout(() => { try { this.unit?.fit(); } catch (e) {} }, 80);
     }
+    if (changedProperties.has('collapsed') || changedProperties.has('overlay')) {
+      // Re-publish the occupied width for the PiP boundary — now, and again after
+      // the width transition settles.
+      this._publishSidebarWidth();
+      setTimeout(() => this._publishSidebarWidth(), 240);
+    }
+  }
+
+  firstUpdated() {
+    this._publishSidebarWidth();
+  }
+
+  // Expose the sidebar's occupied right-edge width as a :root CSS var so the
+  // Picture-in-Picture box can treat an OPEN sidebar (side-by-side column or
+  // popped-out overlay) as its right boundary — it offsets its right-corner
+  // positions by this so it never overlaps the sidebar. 0 when collapsed/hidden.
+  _publishSidebarWidth() {
+    const w = this.collapsed ? 0 : Math.round(this.getBoundingClientRect().width);
+    try { document.documentElement.style.setProperty('--wt-sidebar-w', w + 'px'); } catch (e) {}
   }
 
   toggleCollapsed() {
@@ -427,14 +457,18 @@ class WebtmuxSidebar extends LitElement {
             >`
           : html`
           <button
-            class="session-tab ${sess.active ? 'active' : ''}"
+            class="session-tab ${sess.active ? 'active' : ''} ${sess.name === this.dragOverSession ? 'link-target' : ''}"
             @click=${() => this.switchSession(sess.name)}
             @dblclick=${() => this.startSessionRename(sess.name)}
-            title="Double-click to rename"
+            @dragover=${(e) => this.onSessionDragOver(e, sess.name)}
+            @dragleave=${() => this.onSessionDragLeave(sess.name)}
+            @drop=${(e) => this.onSessionDrop(e, sess.name)}
+            title="Double-click to rename · drop a window here to link it into this session"
           >
             ${sess.name}<span class="win-count">(${sess.windows})</span><span
               class="kill"
               aria-label="Kill session ${sess.name}"
+              title="Kill session ${sess.name} and all its windows — ends their processes"
               @click=${(e) => { e.stopPropagation(); this.killSession(sess.name); }}
             >×</span>
           </button>
@@ -464,11 +498,12 @@ class WebtmuxSidebar extends LitElement {
               @dragleave=${() => this.onDragLeave(win.id)}
               @drop=${(e) => this.onDrop(e, i)}
               @dragend=${() => this.onDragEnd()}
-              title=${this._windowDisabled(win.id) ? 'Shown in another split pane' : 'Double-click to rename · drag to reorder'}
+              title=${this._windowDisabled(win.id) ? 'Shown in another split pane' : 'Double-click to rename · drag to reorder, or onto a session to link'}
             >
               ${win.index}: ${win.name || 'bash'}<span
                 class="kill"
-                aria-label="Kill window ${win.index}"
+                aria-label=${this._windowKillLabel(win)}
+                title=${this._windowKillLabel(win)}
                 @click=${(e) => { e.stopPropagation(); this.killWindow(win.id); }}
               >×</span>
             </button>`
@@ -526,6 +561,39 @@ class WebtmuxSidebar extends LitElement {
   onDragEnd() {
     this.draggingWindow = '';
     this.dragOverWindow = '';
+    this.dragOverSession = '';
+  }
+
+  // --- Drag-a-window-onto-a-session to LINK it ------------------------------
+  // A window tab dropped on a session tab links that window into the session (it
+  // keeps running and appears in both). Only meaningful for a window NOT already
+  // in that session — the current pane's own logical session is skipped.
+  onSessionDragOver(e, sessionName) {
+    if (!this.draggingWindow) return;                 // only during a window drag
+    if (this._isCurrentSession(sessionName)) return;  // already here — not a link target
+    e.preventDefault();                               // allow the drop
+    try { e.dataTransfer.dropEffect = 'link'; } catch (_) {}
+    if (this.dragOverSession !== sessionName) this.dragOverSession = sessionName;
+  }
+
+  onSessionDragLeave(sessionName) {
+    if (this.dragOverSession === sessionName) this.dragOverSession = '';
+  }
+
+  onSessionDrop(e, sessionName) {
+    e.preventDefault();
+    const srcId = this.draggingWindow;
+    this.draggingWindow = '';
+    this.dragOverWindow = '';
+    this.dragOverSession = '';
+    if (!srcId || this._isCurrentSession(sessionName)) return;
+    this.unit?.linkWindow(srcId, sessionName);
+  }
+
+  // True if sessionName is the session this pane is logically viewing (so a window
+  // "linked" there would already be present — a no-op).
+  _isCurrentSession(sessionName) {
+    return sessionName === (this.layout?.sessionBase || this.layout?.sessionName);
   }
 
   // When the panel (or a control inside it) has keyboard focus, ↑/↓ move to the
@@ -704,18 +772,46 @@ class WebtmuxSidebar extends LitElement {
   }
 
   // --- Kill affordances (hover × on a window/session tab) ---
-  // Both are destructive (a window/session kill ends its running processes), so
-  // confirm before firing — the × is small and hover-only, but a stray click still
-  // shouldn't tear down live work.
+  // The window × does one of two things depending on where the window lives:
+  //   • linked into other sessions too -> UNLINK it from this session (the window
+  //     keeps running elsewhere). Non-destructive, so it fires without a confirm.
+  //   • last session it's in -> KILL it (ends its processes). Destructive, so it
+  //     confirms first — the × is small and hover-only, but a stray click still
+  //     shouldn't tear down live work.
   killWindow(windowId) {
     const win = (this.layout?.windows || []).find(w => w.id === windowId);
+    if (this._windowLinkedElsewhere(win)) {
+      this.unit?.unlinkWindow(windowId);   // just remove it from this session
+      return;
+    }
     const label = win ? `window ${win.index}: ${win.name || 'bash'}` : 'this window';
     if (!confirm(`Kill ${label}? This ends its processes.`)) return;
     this.unit?.killWindow(windowId);
   }
 
+  // A window is "linked elsewhere" when it belongs to more than one logical
+  // session (sessionCount from the backend; defaults to 1 when unknown).
+  _windowLinkedElsewhere(win) {
+    return (win?.sessionCount || 1) > 1;
+  }
+
+  // Tooltip/aria-label for a window's × — distinguishes the unlink case ("Remove
+  // from session") from the kill case ("Kill window"), matching what the click does.
+  _windowKillLabel(win) {
+    if (this._windowLinkedElsewhere(win)) {
+      const others = (win.sessionCount || 2) - 1;
+      return `Remove window ${win.index} from this session — stays open in ${others} other session${others === 1 ? '' : 's'}`;
+    }
+    return `Kill window ${win.index}: ${win?.name || 'bash'} — ends its processes`;
+  }
+
+  // Killing a session confirms first UNLESS it's empty (a single idle-shell window
+  // with nothing running — the backend flags it), where there's no live work to
+  // protect and the confirm is just friction.
   killSession(sessionName) {
-    if (!confirm(`Kill session "${sessionName}" and all its windows? This ends their processes.`)) return;
+    const sess = (this.layout?.sessions || []).find(s => s.name === sessionName);
+    if (!sess?.empty &&
+        !confirm(`Kill session "${sessionName}" and all its windows? This ends their processes.`)) return;
     this.unit?.killSession(sessionName);
   }
 
