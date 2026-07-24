@@ -126,7 +126,7 @@ class WebtmuxPip extends LitElement {
 
     /* A single preview tile: a scaled screen + a label strip. Bar tiles keep a FIXED
        size (the bar never grows) — hovering a bar tile instead pops a proportionally
-       3x floating magnifier (.zoom) over it; see _showZoom. */
+       4x floating magnifier (.zoom) over it; see _showZoom. */
     .ptile {
       position: relative;
       display: flex;
@@ -203,7 +203,7 @@ class WebtmuxPip extends LitElement {
     .plabel .sess { flex: 0 0 auto; color: #7f8bb5; letter-spacing: 0.06em; font-size: 11px; }
 
     /* ---- bar-tile hover MAGNIFIER (.zoom) -----------------------------------
-       A floating, INTERACTIVE 3x copy of the hovered bar tile. It sits ABOVE the
+       A floating, INTERACTIVE 4x copy of the hovered bar tile. It sits ABOVE the
        bar (and the terminal) at a high z-index so it can spill past the bar's own
        thickness — the bar itself never resizes. Its own × (remove) + click-to-
        activate are drawn ON the magnifier, so the controls are usable while zoomed
@@ -667,12 +667,12 @@ class WebtmuxPip extends LitElement {
   _rescaleAll() { for (const id of this._terms.keys()) this._rescale(id); }
 
   // ---- bar-tile hover magnifier ------------------------------------------------
-  // The magnifier is a floating, interactive 3x copy of the hovered bar tile. It
+  // The magnifier is a floating, interactive 4x copy of the hovered bar tile. It
   // overlays the tile (and spills past the fixed bar), carrying its OWN × + click-
   // to-activate so the controls are usable while zoomed. Kept ALIVE via the same
   // capture poll as the tiles (its window is already in _wins). Only in bar mode.
 
-  ZOOM_SCALE = 3;               // 3x the original tile (50% bigger than the prior 2x)
+  ZOOM_SCALE = 4;               // 4x the original tile
   ZOOM_DELAY_MS = 350;          // deliberate hover pause before it pops
   ZOOM_HIDE_GRACE_MS = 140;     // window to cross from tile onto the magnifier
 
