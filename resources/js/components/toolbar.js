@@ -431,7 +431,11 @@ class WebtmuxToolbar extends LitElement {
     .tabprev.show { display: flex; }
     .tabprev .tp-frame {
       position: relative;
-      height: 192px;
+      /* Match the size the single-window corner PiP grows to on hover (see
+         pip-overlay.js: width min(1080, 100vw-32) × frame min(648, 100vh-160)) so a
+         recent-tab preview is as big and readable as the PiP's zoomed state — no
+         squinting at a tiny thumbnail. Width is set imperatively in _tabPrevShow. */
+      height: min(648px, calc(100vh - 160px));
       background: #1a1a2e;
       overflow: hidden;
       border-bottom: 1px solid #0f3460;
@@ -471,6 +475,7 @@ class WebtmuxToolbar extends LitElement {
     this._tipTimer = null; // pending show timer for the quick tab tooltip
     // Recent-tab hover-preview state (parallels the tooltip's, using the same delay).
     this._prevTimer = null;    // pending "pause then show" timer
+    this._prevHideTimer = null; // grace timer so sweeping tab→tab doesn't re-pause
     this._prevId = null;       // window id currently previewed on hover, or null
     this._prevSess = '';       // that window's logical session (for the placement-keyed capture)
     this._prevRec = null;      // { term, screen, cols, rows } for the preview's xterm
@@ -539,6 +544,7 @@ class WebtmuxToolbar extends LitElement {
     super.disconnectedCallback();
     if (this._tipTimer) { clearTimeout(this._tipTimer); this._tipTimer = null; }
     if (this._prevTimer) { clearTimeout(this._prevTimer); this._prevTimer = null; }
+    if (this._prevHideTimer) { clearTimeout(this._prevHideTimer); this._prevHideTimer = null; }
     const cache = this.manager?.captureCache;
     if (cache && this._prevOnUpdate) cache.removeEventListener('update', this._prevOnUpdate);
     this._prevOnUpdate = null;
@@ -600,19 +606,29 @@ class WebtmuxToolbar extends LitElement {
   // event. Passive (pointer-events:none); it never covers the tooltip (positioned
   // just below it).
 
-  static _PREV_W = 320;   // px — pip-sized box width (frame height fixed in CSS at 192)
+  // Hover-preview box width — matches the single-window corner PiP's grown-on-hover
+  // width (pip-overlay.js: min(1080px, 100vw-32)), so a recent-tab preview is the
+  // same big, readable size as the PiP's zoomed state. Frame height is the matching
+  // clamp in CSS (.tabprev .tp-frame). A CSS expression (not a px number) so it
+  // tracks the viewport; set on box.style.width in _tabPrevShow.
+  static _PREV_W = 'min(1080px, calc(100vw - 32px))';
 
   _tabPrevEl() { return this.renderRoot?.querySelector('.tabprev'); }
 
   _tabPrevEnter(ev, w) {
     const cache = this.manager?.captureCache;
     if (!w?.id || !cache) return;
+    // Cancel a pending grace-hide from the tab we just left, so sweeping onto this
+    // tab keeps the preview up instead of letting it disappear mid-move.
+    if (this._prevHideTimer) { clearTimeout(this._prevHideTimer); this._prevHideTimer = null; }
     // Already shown live in the Preview? Then a hover copy just duplicates it — skip.
     if (this.manager?.pip?.isShowing?.(w.id)) { this._tabPrevLeave(); return; }
     const target = ev.currentTarget;
     if (this._prevTimer) { clearTimeout(this._prevTimer); this._prevTimer = null; }
     const box = this._tabPrevEl();
-    // Already visible (sweeping tab→tab) → switch instantly, no second pause.
+    // Already visible (sweeping tab→tab, including across the brief gap the
+    // grace-hide bridges) → switch instantly, no second pause. Once you've paused to
+    // see ONE preview, moving left/right shows each next tab's preview immediately.
     if (box && box.classList.contains('show')) { this._tabPrevShow(target, w); return; }
     this._prevTimer = setTimeout(() => {
       if (!target.isConnected) return;
@@ -631,7 +647,7 @@ class WebtmuxToolbar extends LitElement {
     this._buildTabPrevChrome(box);
     box.querySelector('.tp-name').textContent = `${w.index}: ${w.name}`;
     box.querySelector('.tp-sess').textContent = w.session || '';
-    box.style.width = WebtmuxToolbar._PREV_W + 'px';
+    box.style.width = WebtmuxToolbar._PREV_W;
     // Show first (so it has real dimensions to clamp against), then position it just
     // below the tooltip (kept visible) — or below the tab if the tip isn't up yet.
     box.classList.add('show');
@@ -736,8 +752,26 @@ class WebtmuxToolbar extends LitElement {
     cache.addEventListener('update', this._prevOnUpdate);
   }
 
+  // Grace-hide window (ms): keep the preview up briefly after leaving a tab so
+  // moving to an ADJACENT tab (a moment where no tab is hovered) doesn't force a
+  // fresh pause — the next tab's _tabPrevEnter cancels the hide and switches
+  // instantly. Same hover-intent trick as the PiP bar magnifier's grace.
+  static _PREV_HIDE_GRACE = 260;
+
+  // Leave a tab: schedule the hide after the grace window rather than hiding at
+  // once. _prevId stays set through the grace so live captures keep the preview
+  // painted while you're mid-sweep.
   _tabPrevLeave() {
     if (this._prevTimer) { clearTimeout(this._prevTimer); this._prevTimer = null; }
+    if (this._prevHideTimer) clearTimeout(this._prevHideTimer);
+    this._prevHideTimer = setTimeout(() => this._tabPrevHideNow(), WebtmuxToolbar._PREV_HIDE_GRACE);
+  }
+
+  // Hide the preview immediately (a click committed the switch, or teardown) —
+  // no grace.
+  _tabPrevHideNow() {
+    if (this._prevTimer) { clearTimeout(this._prevTimer); this._prevTimer = null; }
+    if (this._prevHideTimer) { clearTimeout(this._prevHideTimer); this._prevHideTimer = null; }
     this._prevId = null;
     this._prevSess = '';
     const box = this._tabPrevEl();
@@ -758,8 +792,8 @@ class WebtmuxToolbar extends LitElement {
             aria-label=${tip}
             @mouseenter=${(e) => { this._tipEnter(e, tip); this._tabPrevEnter(e, w); }}
             @mouseleave=${() => { this._tipLeave(); this._tabPrevLeave(); }}
-            @click=${() => { this._tipLeave(); this._tabPrevLeave(); if (!w.disabled) this.manager?.pickRecentWindow(w); }}
-          ><span class="work ${w.working === '1' ? 'on' : w.working === '0' ? 'off' : ''}" aria-hidden="true"></span><span class="sess">${w.session}:${w.index}</span><span class="wname">${w.name}</span><span
+            @click=${() => { this._tipLeave(); this._tabPrevHideNow(); if (!w.disabled) this.manager?.pickRecentWindow(w); }}
+          ><span class="work ${w.working === '1' ? 'on' : w.working === '0' ? 'off' : ''}" aria-hidden="true"></span><span class="sess">${w.index}</span><span class="wname">${w.name}</span><span
               class="close"
               aria-label="Remove from Recent (does not close the window)"
               @mouseenter=${(e) => { e.stopPropagation(); this._tipEnter(e, 'Remove this tab from Recent — the window keeps running (this does not close or kill it)'); }}

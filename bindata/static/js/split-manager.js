@@ -26,6 +26,7 @@
 // focuses it and the shared sidebar re-points to reflect/control that region.
 import { TerminalUnit } from './terminal-unit.js';
 import { CaptureCache } from './capture-cache.js';
+import { IS_MAC } from './os.js';
 
 export class SplitManager {
   constructor(container) {
@@ -649,30 +650,64 @@ export class SplitManager {
       const occupied = this.occupiedWindowIds(focused);
       const curId = focused.layout?.activeWindowId;
       const curSession = this.logicalSession(focused);
-      // Every captured placement, most-recently-accessed first (the shared Exposé
-      // "recent" sort). Drop placements another pane already shows — unreachable
-      // here — but always keep the focused pane's own current window (our anchor).
-      const isCur = (e) => e.id === curId && e.session === curSession;
+      // Every captured window, most-recently-accessed first (the shared Exposé
+      // "recent" sort), DEDUPED by window id: a window linked into two sessions has
+      // two placements, but the walk must visit it once — else a tap could land on
+      // the SAME screen (its other placement) and look like it did nothing. Drop
+      // placements another pane already shows; always keep our own current window.
+      const seen = new Set();
       const order = this.captureCache.all('recent')
         .map((c) => ({ id: c.windowId, session: c.sessionName || '' }))
-        .filter((e) => isCur(e) || !occupied.has(e.id));
-      // Pin the current window to position 0 so the first forward tap lands on the
-      // PREVIOUS window (classic alt-tab feel), regardless of capture-sort ties.
-      let pos = order.findIndex(isCur);
+        .filter((e) => {
+          if (!(e.id === curId || !occupied.has(e.id))) return false;
+          if (seen.has(e.id)) return false;
+          seen.add(e.id);
+          return true;
+        });
+      // Pin the current window to position 0 (match by id, robust to a session-name
+      // mismatch between the capture and the pane's logical session) so the first
+      // forward tap lands on the PREVIOUS window — classic alt-tab feel.
+      let pos = order.findIndex((e) => e.id === curId);
       if (pos === -1) order.unshift({ id: curId, session: curSession });
       else if (pos > 0) order.unshift(order.splice(pos, 1)[0]);
       if (order.length < 2) return; // nothing else to cycle to
-      this._mruCycle = { order, pos: 0 };
+      this._mruCycle = { order, pos: 0, unit: focused, last: null };
     }
     const c = this._mruCycle;
     c.pos = (c.pos + dir + c.order.length) % c.order.length;
     const t = c.order[c.pos];
-    if (t) this.goToWindow(t.id, t.session);
+    if (t) {
+      c.last = t;
+      // DEFER the recency commit until the chord is released: each hop only PREVIEWS
+      // the window (like arrow-browsing the sidebar), so mid-walk hops don't re-rank
+      // recency and make the order squirm under you. Suppress this hop's access-note;
+      // the window we finally land on is committed once in _endMruCycle.
+      focused._suppressAccessIds.add(t.id);
+      this.goToWindow(t.id, t.session);
+    }
   }
 
-  // End the held-chord MRU walk: the next Ctrl+Alt+L starts a fresh walk from the
-  // now-updated recency order. Fired on Ctrl/Alt keyup and on window blur.
-  _endMruCycle() { this._mruCycle = null; }
+  // End the held-chord MRU walk (Ctrl/Alt keyup or window blur). Commit the window
+  // we actually LANDED on as a single access now — the per-hop notes were suppressed
+  // while cycling (see navigateMru), mirroring how sidebar browsing commits on
+  // release, not on every step. The next chord then starts a fresh, correctly-ranked
+  // walk (so tapping again toggles back to where you came from).
+  _endMruCycle() {
+    const c = this._mruCycle;
+    this._mruCycle = null;
+    if (!c || !c.last) return;
+    const unit = c.unit || this.focusedUnit;
+    if (!unit) return;
+    const t = c.last;
+    unit._accessSeenId = t.id;   // it's the shown window now; keep the layout path from re-noting
+    const meta = this._metaFor(unit, t.id);
+    const cap = this.captureCache.get(t.id);
+    this.noteAccess(t.id, {
+      index: meta.index != null ? meta.index : cap?.index,
+      name: meta.name || cap?.name || 'bash',
+      session: t.session || meta.session || '',
+    });
+  }
 
   // Toolbar recent-tab click -> shared navigation.
   pickRecentWindow(entry) {
@@ -710,6 +745,14 @@ export class SplitManager {
 
   closeFocused() {
     if (this.focusedUnit && !this.focusedUnit.primary) this.removeUnit(this.focusedUnit);
+  }
+
+  // Create a new tmux window in the FOCUSED pane's own session (Command+Option+C /
+  // Ctrl+Option+C). The server creates it with `new-window -t <that pane's session>`
+  // and tmux switches to it, so the focused pane lands on the fresh window — and,
+  // for a split region, it joins the shared (base) window list like any other.
+  newWindowInFocused() {
+    this.focusedUnit?.newWindow();
   }
 
   // Ctrl+Alt+, (tmux's `,` = rename-window): open the sidebar if it's collapsed
@@ -815,6 +858,17 @@ export class SplitManager {
     // are webtmux-only, so they keep their own mnemonic letters.
     // stopPropagation keeps xterm from seeing them.
     window.addEventListener('keydown', (ev) => {
+      // New window in the focused pane's session: Command+Option+C (Mac) OR
+      // Ctrl+Option+C. Handled BEFORE the ⌃⌥-only guard below so the Cmd variant
+      // (metaKey, no ctrlKey) is caught too, and swallowed so xterm never sees it
+      // as a bare Ctrl+C (which would interrupt the foreground job — see the copy
+      // handler in terminal-unit.js).
+      if (ev.altKey && (ev.ctrlKey || ev.metaKey) && ev.code === 'KeyC') {
+        this.newWindowInFocused();
+        ev.preventDefault();
+        ev.stopPropagation();
+        return;
+      }
       if (!ev.ctrlKey || !ev.altKey || ev.metaKey) return;
       switch (ev.code) {
         case 'KeyW':                                   // tmux 'w' (choose-tree): toggle sidebar
@@ -874,6 +928,36 @@ export class SplitManager {
       if (this._mruCycle && (ev.key === 'Control' || ev.key === 'Alt')) this._endMruCycle();
     }, true);
     window.addEventListener('blur', () => this._endMruCycle());
+
+    // Mac trackpad 2-finger PINCH → Exposé. Browsers report a trackpad pinch as a
+    // `wheel` event with ctrlKey set (the same signal used for pinch-zoom): deltaY
+    // < 0 = spread (fingers apart / zoom-in), > 0 = pinch (fingers together). We
+    // accumulate that signal and, on a decisive SPREAD, open Exposé; a decisive
+    // pinch closes it. Each such wheel is swallowed so the page never zooms. This
+    // ctrlKey-wheel path is the one signal every engine emits for a trackpad pinch
+    // (Chrome/Edge/Firefox/Safari), so there's enough info on the Mac to do this.
+    // Gated to Mac so a Ctrl+scroll on a Windows/Linux mouse still zooms as usual.
+    if (IS_MAC) {
+      this._pinchAccum = 0;
+      this._pinchAt = 0;
+      window.addEventListener('wheel', (ev) => {
+        if (!ev.ctrlKey) return;              // only the pinch-zoom gesture sets ctrlKey
+        ev.preventDefault();                   // never let the pinch zoom the page
+        ev.stopPropagation();                  // and never let it scroll the terminal
+        const now = Date.now();
+        if (now - this._pinchAt > 250) this._pinchAccum = 0;   // a pause = a fresh gesture
+        this._pinchAt = now;
+        this._pinchAccum += -ev.deltaY;        // spread accumulates positive, pinch negative
+        const THRESH = 40;                     // deliberate-gesture threshold
+        if (this._pinchAccum >= THRESH) {
+          this._pinchAccum = 0;
+          if (!this.expose?.open) this.expose?.openOverlay(2);
+        } else if (this._pinchAccum <= -THRESH) {
+          this._pinchAccum = 0;
+          if (this.expose?.open) this.expose?.closeOverlay();
+        }
+      }, { passive: false, capture: true });
+    }
 
     // Buttons in the sidebar dispatch these (composed, cross shadow DOM).
     window.addEventListener('webtmux-split-add', () => this.splitAdd());
