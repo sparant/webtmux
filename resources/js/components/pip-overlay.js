@@ -140,8 +140,11 @@ class WebtmuxPip extends LitElement {
          GROW only fires after a deliberate pause (see the per-edge :hover rules). */
       transition: flex-basis 0.18s ease, height 0.18s ease, width 0.18s ease;
     }
-    /* The enlarged tile floats above its neighbours while grown. */
-    .ptile:hover { z-index: 6; }
+    /* A grown BAR tile floats above its neighbours. Scoped to bar mode ONLY: in
+       single mode the one tile fills the box and must stay BELOW the hover controls
+       (.controls, z-index 3) — lifting it here buried the placement/close buttons
+       under the enlarged screen (visible on hover, but un-clickable / hidden). */
+    :host([mode='bar']) .ptile:hover { z-index: 6; }
     /* Single mode: the one tile fills the whole box (no border/radius of its own). */
     :host([mode='single']) .ptile {
       flex: 1 1 auto;
