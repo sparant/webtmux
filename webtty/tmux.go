@@ -3,6 +3,9 @@ package webtty
 import (
 	"encoding/json"
 	"log"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -45,6 +48,9 @@ func (wt *WebTTY) SetTmuxController(tc TmuxController) {
 // connection (see SetCaptureProvider).
 type CaptureProvider interface {
 	CaptureWindows(windowIDs []string, force bool) ([]tmux.CaptureEntry, error)
+	// PaneCurrentPath is the active pane's working directory for windowID — the
+	// base a relative "save to file" path resolves against (see handleSavePaneFile).
+	PaneCurrentPath(windowID string) (string, error)
 }
 
 // SetCaptureProvider hands this connection the shared capture store. Parallel to
@@ -92,6 +98,11 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 	// per-connection tmuxCtrl, so handle them before the tmuxCtrl guard.
 	if msgType == TmuxCaptureRequest {
 		return wt.handleCaptureRequest(payload)
+	}
+	// Saving a pane buffer to a server-side file likewise reads only the shared
+	// captureProvider (it re-captures the pane), so handle it before the guard too.
+	if msgType == TmuxSavePaneFile {
+		return wt.handleSavePaneFile(payload)
 	}
 
 	if wt.tmuxCtrl == nil {
@@ -315,6 +326,104 @@ func (wt *WebTTY) handleCaptureRequest(payload []byte) error {
 	return nil
 }
 
+// sgrEscape matches SGR (color/attribute) escape sequences — the only escapes
+// `capture-pane -e` emits — so we can strip them to plain text for a saved file,
+// mirroring the browser download's paneBufferText().
+var sgrEscape = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+// cleanPaneText turns a captured (SGR-annotated, \r\n-joined) screen into the
+// plain UTF-8 text written to a saved file: colors stripped, CRLF normalized to
+// LF so the file reads cleanly on the (unix) machine tmux runs on.
+func cleanPaneText(ansi []byte) string {
+	s := sgrEscape.ReplaceAllString(string(ansi), "")
+	return strings.ReplaceAll(s, "\r\n", "\n")
+}
+
+// resolveSavePath turns a user-typed path into an absolute one on the machine
+// webtmux (and tmux) runs on. `~`/`~/…` expand to the server user's home;
+// absolute paths pass through; a RELATIVE path resolves against `base` — the
+// pane's current working directory ("where tmux is running") when known, else
+// the webtmux process's own working directory.
+func resolveSavePath(base, path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", errors.New("empty path")
+	}
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", errors.New("cannot resolve ~ (no home directory)")
+		}
+		if path == "~" {
+			path = home
+		} else {
+			path = filepath.Join(home, path[2:])
+		}
+	}
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path), nil
+	}
+	if base == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", errors.Wrap(err, "cannot resolve relative path")
+		}
+		base = cwd
+	}
+	return filepath.Clean(filepath.Join(base, path)), nil
+}
+
+// handleSavePaneFile writes a window's pane buffer to a file on the server (the
+// machine tmux runs on). It re-captures the pane fresh through the shared store
+// — so the saved text matches what the browser "download" button produces — then
+// resolves the target path and writes clean text, replying with a TmuxSaveResult
+// so the browser can report the outcome (and the absolute path it landed at).
+func (wt *WebTTY) handleSavePaneFile(payload []byte) error {
+	var req struct {
+		WindowID string `json:"windowId"`
+		Path     string `json:"path"`
+	}
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return wt.sendSaveResult(false, "", "invalid save request")
+	}
+	if strings.TrimSpace(req.Path) == "" {
+		return wt.sendSaveResult(false, "", "no path given")
+	}
+	if wt.captureProvider == nil {
+		return wt.sendSaveResult(false, "", "saving is unavailable (not a tmux session)")
+	}
+	entries, err := wt.captureProvider.CaptureWindows([]string{req.WindowID}, true)
+	if err != nil || len(entries) == 0 {
+		return wt.sendSaveResult(false, "", "could not capture the pane buffer")
+	}
+	text := cleanPaneText(entries[0].ANSI)
+	// Relative paths land in the pane's own working directory; a failed lookup just
+	// falls back to the server's cwd inside resolveSavePath.
+	base, _ := wt.captureProvider.PaneCurrentPath(req.WindowID)
+	resolved, err := resolveSavePath(base, req.Path)
+	if err != nil {
+		return wt.sendSaveResult(false, "", err.Error())
+	}
+	if err := os.WriteFile(resolved, []byte(text), 0o644); err != nil {
+		return wt.sendSaveResult(false, resolved, err.Error())
+	}
+	log.Printf("saved pane %s buffer -> %s (%d bytes)", req.WindowID, resolved, len(text))
+	return wt.sendSaveResult(true, resolved, "")
+}
+
+// sendSaveResult reports a TmuxSavePaneFile outcome to the browser.
+func (wt *WebTTY) sendSaveResult(ok bool, path, errMsg string) error {
+	data, err := json.Marshal(struct {
+		OK    bool   `json:"ok"`
+		Path  string `json:"path"`
+		Error string `json:"error"`
+	}{OK: ok, Path: path, Error: errMsg})
+	if err != nil {
+		return errors.Wrap(err, "failed to marshal save result")
+	}
+	return wt.masterWrite(append([]byte{TmuxSaveResult}, data...))
+}
+
 // isTmuxMessage returns true if the message type is a tmux-specific message
 func isTmuxMessage(msgType byte) bool {
 	switch msgType {
@@ -322,7 +431,7 @@ func isTmuxMessage(msgType byte) bool {
 		TmuxCopyMode, TmuxSendCommand, TmuxScrollUp, TmuxScrollDown, TmuxNewWindow,
 		TmuxSwitchSession, TmuxRenameWindow, TmuxMoveWindow, TmuxNewSession,
 		TmuxRenameSession, TmuxKillWindow, TmuxKillSession, TmuxLinkWindow,
-		TmuxUnlinkWindow, TmuxCaptureRequest:
+		TmuxUnlinkWindow, TmuxCaptureRequest, TmuxSavePaneFile:
 		return true
 	default:
 		return false
