@@ -11,6 +11,8 @@ class WebtmuxSidebar extends LitElement {
     overlay: { type: Boolean },
     pinned: { type: Boolean },
     editingWindow: { type: String },
+    // Session name currently being renamed inline ('' = none). Parity with editingWindow.
+    editingSession: { type: String },
     // Window id currently being dragged for reorder ('' = none).
     draggingWindow: { type: String },
     // Window id currently under the drag pointer (drop target highlight).
@@ -119,6 +121,7 @@ class WebtmuxSidebar extends LitElement {
 
     .window-tab {
       display: block;
+      position: relative;
       width: 100%;
       box-sizing: border-box;
       text-align: left;
@@ -131,6 +134,28 @@ class WebtmuxSidebar extends LitElement {
       cursor: pointer;
       transition: all 0.2s;
     }
+
+    /* Hover-revealed kill affordance on window & session tabs. A <span> (not a
+       nested <button>, which is invalid inside the tab <button>); stopPropagation on
+       click so it kills rather than selecting/switching. Reserve room on hover so
+       the × never sits on top of the label. */
+    .window-tab:hover, .session-tab:hover { padding-right: 26px; }
+    .window-tab .kill, .session-tab .kill {
+      display: none;
+      position: absolute;
+      top: 50%;
+      right: 5px;
+      transform: translateY(-50%);
+      width: 18px;
+      height: 18px;
+      line-height: 17px;
+      text-align: center;
+      border-radius: 3px;
+      color: #f3a7b4;
+      font-size: 15px;
+    }
+    .window-tab:hover .kill, .session-tab:hover .kill { display: block; }
+    .window-tab .kill:hover, .session-tab .kill:hover { background: #e94560; color: #fff; }
 
     .window-tab:hover {
       border-color: #e94560;
@@ -194,6 +219,7 @@ class WebtmuxSidebar extends LitElement {
     }
 
     .session-tab {
+      position: relative;
       background: #1a1a2e;
       color: #888;
       border: 1px solid #0f3460;
@@ -202,6 +228,21 @@ class WebtmuxSidebar extends LitElement {
       font-size: 15px;
       cursor: pointer;
       transition: all 0.2s;
+    }
+
+    /* Inline session rename input (double-click a session tab). Mirrors .window-edit
+       but sized like a session tab so it doesn't jump the row. */
+    .session-edit {
+      background: #0f3460;
+      color: #fff;
+      border: 1px solid #4a9eff;
+      border-radius: 4px;
+      padding: 6px 10px;
+      font-size: 15px;
+      width: 9em;
+      box-sizing: border-box;
+      font-family: inherit;
+      outline: none;
     }
 
     .session-tab:hover {
@@ -235,6 +276,8 @@ class WebtmuxSidebar extends LitElement {
     this.pinned = localStorage.getItem('webtmux-pinned') === 'true';
     // Window id currently being renamed inline ('' = none).
     this.editingWindow = '';
+    // Session name currently being renamed inline ('' = none).
+    this.editingSession = '';
     // Drag-and-drop reorder state.
     this.draggingWindow = '';
     this.dragOverWindow = '';
@@ -373,12 +416,27 @@ class WebtmuxSidebar extends LitElement {
       ${this.modeRow()}
       <h3>Sessions</h3>
       <div class="session-tabs">
-        ${sessions.map(sess => html`
+        ${sessions.map(sess => sess.name === this.editingSession
+          ? html`
+            <input
+              class="session-edit"
+              .value=${sess.name}
+              @keydown=${(e) => this.onSessionRenameKey(e, sess.name)}
+              @blur=${(e) => this.commitSessionRename(e, sess.name)}
+              @click=${(e) => e.stopPropagation()}
+            >`
+          : html`
           <button
             class="session-tab ${sess.active ? 'active' : ''}"
             @click=${() => this.switchSession(sess.name)}
+            @dblclick=${() => this.startSessionRename(sess.name)}
+            title="Double-click to rename"
           >
-            ${sess.name}<span class="win-count">(${sess.windows})</span>
+            ${sess.name}<span class="win-count">(${sess.windows})</span><span
+              class="kill"
+              aria-label="Kill session ${sess.name}"
+              @click=${(e) => { e.stopPropagation(); this.killSession(sess.name); }}
+            >×</span>
           </button>
         `)}
         <button class="session-tab" title="New session" @click=${() => this.newSession()}>+</button>
@@ -408,7 +466,11 @@ class WebtmuxSidebar extends LitElement {
               @dragend=${() => this.onDragEnd()}
               title=${this._windowDisabled(win.id) ? 'Shown in another split pane' : 'Double-click to rename · drag to reorder'}
             >
-              ${win.index}: ${win.name || 'bash'}
+              ${win.index}: ${win.name || 'bash'}<span
+                class="kill"
+                aria-label="Kill window ${win.index}"
+                @click=${(e) => { e.stopPropagation(); this.killWindow(win.id); }}
+              >×</span>
             </button>`
         )}
         <button class="window-tab" title="New window" @click=${() => this.newWindow()}>+</button>
@@ -471,8 +533,8 @@ class WebtmuxSidebar extends LitElement {
   // flip through both with the arrow keys while the pane is open. Any other key
   // falls through to normal handling.
   onKeyDown(e) {
-    // Don't hijack arrows while renaming a window inline (caret movement).
-    if (this.editingWindow) return;
+    // Don't hijack arrows while renaming a window/session inline (caret movement).
+    if (this.editingWindow || this.editingSession) return;
     const tag = e.target?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
 
@@ -613,6 +675,48 @@ class WebtmuxSidebar extends LitElement {
     const cur = this.layout?.sessionBase || this.layout?.sessionName;
     if (sessionName === cur) return;
     this.unit?.switchSession(sessionName);
+  }
+
+  // --- Session rename (double-click a session tab; parity with window rename) ---
+  startSessionRename(sessionName) {
+    this.editingSession = sessionName;
+    this.updateComplete.then(() => {
+      const input = this.renderRoot.querySelector('.session-edit');
+      if (input) { input.focus(); input.select(); }
+    });
+  }
+
+  onSessionRenameKey(e, oldName) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      this.commitSessionRename(e, oldName);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      this.editingSession = '';   // cancel
+    }
+  }
+
+  commitSessionRename(e, oldName) {
+    if (this.editingSession !== oldName) return;   // already handled (guards blur+Enter)
+    this.editingSession = '';
+    const name = e.target.value.trim();
+    if (name && name !== oldName) this.unit?.renameSession(oldName, name);
+  }
+
+  // --- Kill affordances (hover × on a window/session tab) ---
+  // Both are destructive (a window/session kill ends its running processes), so
+  // confirm before firing — the × is small and hover-only, but a stray click still
+  // shouldn't tear down live work.
+  killWindow(windowId) {
+    const win = (this.layout?.windows || []).find(w => w.id === windowId);
+    const label = win ? `window ${win.index}: ${win.name || 'bash'}` : 'this window';
+    if (!confirm(`Kill ${label}? This ends its processes.`)) return;
+    this.unit?.killWindow(windowId);
+  }
+
+  killSession(sessionName) {
+    if (!confirm(`Kill session "${sessionName}" and all its windows? This ends their processes.`)) return;
+    this.unit?.killSession(sessionName);
   }
 
   newWindow() {

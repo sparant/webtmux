@@ -20,6 +20,9 @@ type TmuxController interface {
 	RenameWindow(windowID, name string) error
 	MoveWindow(windowID string, targetPos int) error
 	NewSession() error
+	RenameSession(oldName, newName string) error
+	KillWindow(windowID string) error
+	KillSession(sessionName string) error
 	SplitPane(horizontal bool) error
 	ClosePane(paneID string) error
 	EnterCopyMode() error
@@ -199,6 +202,34 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 		}
 		return wt.SendTmuxLayout()
 
+	case TmuxRenameSession:
+		// payload = "<oldName> <new name>"; session names have no spaces, so split
+		// on the first space and keep the rest as the (possibly-spaced) new name.
+		s := string(payload)
+		idx := strings.IndexByte(s, ' ')
+		if idx < 0 {
+			return nil
+		}
+		oldName, newName := s[:idx], s[idx+1:]
+		if err := wt.tmuxCtrl.RenameSession(oldName, newName); err != nil {
+			return errors.Wrap(err, "failed to rename session")
+		}
+		return wt.SendTmuxLayout()
+
+	case TmuxKillWindow:
+		windowID := string(payload)
+		if err := wt.tmuxCtrl.KillWindow(windowID); err != nil {
+			return errors.Wrap(err, "failed to kill window")
+		}
+		return wt.SendTmuxLayout()
+
+	case TmuxKillSession:
+		sessionName := string(payload)
+		if err := wt.tmuxCtrl.KillSession(sessionName); err != nil {
+			return errors.Wrap(err, "failed to kill session")
+		}
+		return wt.SendTmuxLayout()
+
 	default:
 		return errors.Errorf("unknown tmux message type: %c", msgType)
 	}
@@ -260,7 +291,8 @@ func isTmuxMessage(msgType byte) bool {
 	switch msgType {
 	case TmuxSelectPane, TmuxSelectWindow, TmuxSplitPane, TmuxClosePane,
 		TmuxCopyMode, TmuxSendCommand, TmuxScrollUp, TmuxScrollDown, TmuxNewWindow,
-		TmuxSwitchSession, TmuxRenameWindow, TmuxMoveWindow, TmuxNewSession, TmuxCaptureRequest:
+		TmuxSwitchSession, TmuxRenameWindow, TmuxMoveWindow, TmuxNewSession,
+		TmuxRenameSession, TmuxKillWindow, TmuxKillSession, TmuxCaptureRequest:
 		return true
 	default:
 		return false

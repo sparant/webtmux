@@ -653,6 +653,45 @@ func (c *Controller) NewWindow() error {
 	return nil
 }
 
+// KillWindow closes a window by id. Grouped sessions share the window list, so a
+// single kill-window by @id removes it from every pane at once (parity with
+// SelectWindow's @id targeting). tmux moves any pane viewing it to a neighbour.
+func (c *Controller) KillWindow(windowID string) error {
+	if _, err := c.runTmux("kill-window", "-t", windowID); err != nil {
+		return err
+	}
+	c.RefreshLayout()
+	return nil
+}
+
+// KillSession destroys a session by name (the logical name shown in the sidebar).
+// If it's the session this pane is currently viewing, tmux switches remaining
+// clients to another session; the layout refresh reflects wherever we land.
+func (c *Controller) KillSession(sessionName string) error {
+	if sessionName == "" {
+		return nil
+	}
+	if _, err := c.runTmux("kill-session", "-t", sessionName); err != nil {
+		return err
+	}
+	c.RefreshLayout()
+	return nil
+}
+
+// RenameSession renames a session. tmux keys sessions by name, so this targets the
+// logical name the client sends (the base session; grouped web-* shadows keep
+// their own names and are unaffected).
+func (c *Controller) RenameSession(oldName, newName string) error {
+	if oldName == "" || newName == "" {
+		return nil
+	}
+	if _, err := c.runTmux("rename-session", "-t", oldName, newName); err != nil {
+		return err
+	}
+	c.RefreshLayout()
+	return nil
+}
+
 // runTmux executes a tmux command with the given arguments, prefixing the
 // `-S <socket>` flag when a socket path is configured so every layout query and
 // action targets the mounted host server.

@@ -93,46 +93,81 @@ class WebtmuxPip extends LitElement {
       pointer-events: none;
     }
 
-    /* Hover-revealed controls: four corner-move buttons on the left, close on the
-       right. Hidden (and click-through) until the box is hovered. */
+    /* Hover-revealed controls overlay the preview. Each corner-move button sits in
+       its OWN corner of the preview (top-left button top-left, etc.) so its position
+       previews where the PiP will jump; close is pinned top-center (the corners are
+       taken). The overlay is click-through (pointer-events:none) so it never eats a
+       click meant for the preview; the buttons re-enable pointer events on hover. */
     .controls {
       position: absolute;
-      top: 6px;
-      left: 6px;
-      right: 6px;
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      opacity: 0;
-      transition: opacity 0.12s;
+      inset: 0;
       pointer-events: none;
+      z-index: 3;
     }
-    :host(:hover) .controls {
-      opacity: 1;
-      pointer-events: auto;
-    }
-    .spacer { flex: 1 1 auto; }
     .cbtn, .close {
-      width: 22px;
-      height: 22px;
+      position: absolute;
       display: flex;
       align-items: center;
       justify-content: center;
-      border-radius: 4px;
-      border: 1px solid #0f3460;
-      background: rgba(12, 16, 32, 0.85);
-      color: #cbd5f0;
+      border-radius: 6px;
+      /* Distinctly heavier border than before + a dark scrim so the buttons read
+         clearly against any preview content. */
+      border: 2px solid rgba(160, 190, 245, 0.85);
+      background: rgba(9, 13, 28, 0.9);
+      color: #e2e9fb;
       cursor: pointer;
-      font-size: 13px;
       line-height: 1;
       padding: 0;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.12s, transform 0.1s, border-color 0.12s, background 0.12s;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.55);
     }
-    .cbtn:hover { border-color: #4a9eff; color: #fff; }
+    /* Bigger while the box is hovered (they're only shown on hover anyway). */
+    .cbtn {
+      width: 32px;
+      height: 32px;
+      font-size: 18px;
+    }
+    .cbtn.tl { top: 8px; left: 8px; }
+    .cbtn.tr { top: 8px; right: 8px; }
+    .cbtn.bl { bottom: 8px; left: 8px; }
+    .cbtn.br { bottom: 8px; right: 8px; }
+    .close {
+      top: 8px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 34px;
+      height: 26px;
+      font-size: 14px;
+      border-color: rgba(233, 69, 96, 0.7);
+    }
+    :host(:hover) .cbtn,
+    :host(:hover) .close {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .cbtn:hover {
+      transform: scale(1.15);
+      border-color: #7cc0ff;
+      background: rgba(20, 28, 54, 0.95);
+      color: #fff;
+    }
+    /* The corner the PiP is CURRENTLY pinned to — green outline. */
     .cbtn.active {
       border-color: #37d17a;
       color: #37d17a;
     }
-    .close:hover { border-color: #e94560; background: #e94560; color: #fff; }
+    .cbtn.active:hover {
+      border-color: #5be39a;
+      color: #fff;
+    }
+    .close:hover {
+      transform: translateX(-50%) scale(1.12);
+      border-color: #e94560;
+      background: #e94560;
+      color: #fff;
+    }
 
     .label {
       display: flex;
@@ -258,7 +293,9 @@ class WebtmuxPip extends LitElement {
       cols: entry?.cols || 80,
       rows: entry?.rows || 24,
       fontSize: 14,
-      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+      // Match the main terminal's broad-coverage stack so preview glyphs (●, ⎿, box
+      // rules) render instead of falling back to a symbol-less font (see terminal-unit).
+      fontFamily: '"DejaVu Sans Mono", Menlo, Monaco, "Cascadia Mono", "Noto Sans Mono", "Liberation Mono", "Courier New", "Symbols Nerd Font", monospace',
       theme: { background: '#1a1a2e', foreground: '#eaeaea' },
       scrollback: 0,
       disableStdin: true,
@@ -285,6 +322,9 @@ class WebtmuxPip extends LitElement {
     this._rescale();
     // Keep the label fresh (a rename/index change shows up on the next capture).
     this._label = `${entry.index}: ${entry.name}`;
+    // Keep the session fresh too, so click-to-activate can hop the focused pane to
+    // this window even when it lives in another session (goToWindow needs the name).
+    if (entry.sessionName) this.sessionName = entry.sessionName;
     // A capture just arrived => the window is alive; clear any stale flag.
     if (this._stale) this._stale = false;
   }
@@ -327,23 +367,22 @@ class WebtmuxPip extends LitElement {
         title="Click to switch the focused view to this window">
         <div class="screen-host"></div>
         ${this._stale ? html`<div class="stale-tag">window closed</div>` : ''}
-      </div>
-      <div class="controls" @click=${(e) => e.stopPropagation()}>
-        ${CORNERS.map((c) => html`
+        <div class="controls" @click=${(e) => e.stopPropagation()}>
+          ${CORNERS.map((c) => html`
+            <button
+              class="cbtn ${c} ${this.corner === c ? 'active' : ''}"
+              title="Move to ${CORNER_NAME[c]}"
+              aria-label="Move picture-in-picture to ${CORNER_NAME[c]}"
+              @click=${(e) => { e.stopPropagation(); this.setCorner(c); }}
+            >${CORNER_GLYPH[c]}</button>
+          `)}
           <button
-            class="cbtn ${this.corner === c ? 'active' : ''}"
-            title="Move to ${CORNER_NAME[c]}"
-            aria-label="Move picture-in-picture to ${CORNER_NAME[c]}"
-            @click=${() => this.setCorner(c)}
-          >${CORNER_GLYPH[c]}</button>
-        `)}
-        <span class="spacer"></span>
-        <button
-          class="close"
-          title="Close picture-in-picture (Ctrl+Alt+I)"
-          aria-label="Close picture-in-picture"
-          @click=${() => this.close()}
-        >✕</button>
+            class="close"
+            title="Close picture-in-picture (Ctrl+Alt+I)"
+            aria-label="Close picture-in-picture"
+            @click=${(e) => { e.stopPropagation(); this.close(); }}
+          >✕</button>
+        </div>
       </div>
       <div class="label">
         <span class="name">${this._label || '…'}</span>

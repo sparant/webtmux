@@ -10,14 +10,26 @@ import { chord } from '../os.js';
 // `hint` is the tooltip. (This control moved here from the sidebar.)
 const SCROLL_ORDER = ['app', 'buffer', 'adaptive-mode', 'adaptive-probe'];
 const SCROLL_META = {
-  'app':            { label: '🖱 app',   hint: 'Wheel always goes to the program (Claude/vim/less scroll themselves)' },
-  'buffer':         { label: '🖱 buf',   hint: 'Wheel always scrolls tmux history (copy-mode)' },
-  'adaptive-mode':  { label: '🖱 auto',  hint: 'Auto: mouse-tracking / full-screen apps get the wheel; a plain shell scrolls history' },
-  'adaptive-probe': { label: '🖱 auto+', hint: 'Auto+: like auto, but probes the ambiguous case — tries the app, then scrolls history if it did not react' },
+  'app':            { label: '🖱 app',   name: 'app',   hint: 'wheel always goes to the program (Claude/vim/less scroll themselves)' },
+  'buffer':         { label: '🖱 buf',   name: 'buf',   hint: 'wheel always scrolls tmux history (copy-mode)' },
+  'adaptive-mode':  { label: '🖱 auto',  name: 'auto',  hint: 'mouse-tracking / full-screen apps get the wheel; a plain shell scrolls history' },
+  'adaptive-probe': { label: '🖱 auto+', name: 'auto+', hint: 'like auto, but probes the ambiguous case — tries the app, then scrolls history if it did not react' },
 };
 function normalizeScroll(m) {
   if (m === 'passthrough') return 'app';
   return SCROLL_ORDER.includes(m) ? m : 'adaptive-probe';
+}
+
+// The scroll button cycles four modes and its label only shows the current one, so
+// the tooltip lists ALL four (current marked ▸) — the mode names alone don't say
+// what they do. Rendered with `white-space: pre-line`, so \n break the lines.
+function scrollTooltip(current) {
+  const lines = SCROLL_ORDER.map((m) => {
+    const meta = SCROLL_META[m];
+    const mark = m === current ? '▸' : ' '; // ▸ current, em-space otherwise (aligns)
+    return `${mark} ${meta.name} — ${meta.hint}`;
+  });
+  return `Scroll-wheel mode — click to cycle:\n${lines.join('\n')}`;
 }
 
 class WebtmuxToolbar extends LitElement {
@@ -268,17 +280,20 @@ class WebtmuxToolbar extends LitElement {
     .wt-tip {
       position: fixed;
       z-index: 100;
-      max-width: 360px;
-      padding: 5px 9px;
+      /* Show the WHOLE hint — no ellipsis clipping. Wrap long single-line hints and
+         honor \n in multi-line ones (pre-line), capping the width so it stays a
+         readable column rather than one very long line. */
+      max-width: min(440px, calc(100vw - 16px));
+      padding: 6px 10px;
       border-radius: 5px;
       background: #0b1020;
       border: 1px solid #4a9eff;
       color: #e8eefc;
       font-size: 12px;
+      line-height: 1.45;
       font-family: Menlo, Monaco, "Courier New", monospace;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      white-space: pre-line;
+      overflow-wrap: anywhere;
       pointer-events: none;
       box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
       opacity: 0;
@@ -403,7 +418,7 @@ class WebtmuxToolbar extends LitElement {
       <button
         class="tbtn text"
         aria-label="Scroll-wheel mode"
-        @mouseenter=${(e) => this._tipEnter(e, (SCROLL_META[normalizeScroll(this.scrollMode)] || SCROLL_META['adaptive-probe']).hint)}
+        @mouseenter=${(e) => this._tipEnter(e, scrollTooltip(normalizeScroll(this.scrollMode)))}
         @mouseleave=${() => this._tipLeave()}
         @click=${() => { this._tipLeave(); this.cycleScroll(); }}
       >${(SCROLL_META[normalizeScroll(this.scrollMode)] || SCROLL_META['adaptive-probe']).label}</button>

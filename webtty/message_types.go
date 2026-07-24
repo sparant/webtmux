@@ -76,4 +76,11 @@ const (
 	TmuxMoveWindow = 'H'
 	// Create a fresh session and switch this pane's view to it (no payload).
 	TmuxNewSession = 'I'
+	// Rename a session (payload: "<oldName> <new name>"). Double-click a session
+	// tab in the sidebar.
+	TmuxRenameSession = 'J'
+	// Kill a window by id (payload: "<windowID>"). Sidebar hover × on a window.
+	TmuxKillWindow = 'K'
+	// Kill a session by name (payload: "<sessionName>"). Sidebar hover × on a session.
+	TmuxKillSession = 'L'
 )

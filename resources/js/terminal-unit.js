@@ -9,6 +9,7 @@
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
+import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { CaptureCache } from './capture-cache.js';
 
 // Protocol message types (must match Go constants)
@@ -31,6 +32,9 @@ export const MSG = {
   TmuxCaptureRequest: 'G',
   TmuxMoveWindow: 'H',
   TmuxNewSession: 'I',
+  TmuxRenameSession: 'J',
+  TmuxKillWindow: 'K',
+  TmuxKillSession: 'L',
 
   // Output (server -> client)
   Output: '1',
@@ -129,7 +133,19 @@ export class TerminalUnit {
     this.terminal = new Terminal({
       cursorBlink: true,
       fontSize: 14,
-      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+      // The WebGL renderer rasterizes each glyph through the browser's canvas,
+      // which falls back per-character across THIS list (and then system fonts).
+      // The old stack was Mac-only (Menlo/Monaco/Courier New); on a Linux client
+      // none resolve, so symbol/box-drawing glyphs Claude emits (●, ⎿, ✓, tree
+      // rules) landed on a fallback that lacks them and rendered as broken boxes.
+      // Lead with DejaVu Sans Mono (ubiquitous on Linux, full box-drawing + geometric
+      // shapes) and keep the Mac fonts + a Noto symbol fallback so coverage is broad
+      // on every client.
+      fontFamily: '"DejaVu Sans Mono", Menlo, Monaco, "Cascadia Mono", "Noto Sans Mono", "Liberation Mono", "Courier New", "Symbols Nerd Font", monospace',
+      // Correct wcwidth for modern Unicode (default tables are v6, which mis-measure
+      // some of those same symbols → a width-2 glyph clipped into one cell reads as
+      // garbage). Activated after loadAddon below.
+      allowProposedApi: true,
       theme: {
         background: '#000000',
         foreground: '#eaeaea',
@@ -137,8 +153,16 @@ export class TerminalUnit {
         selection: 'rgba(255, 255, 255, 0.3)',
       },
       scrollback: 0, // tmux handles scrollback via copy mode
-      allowProposedApi: true,
     });
+
+    // Unicode 11 width tables — must load BEFORE the first write so wide glyphs
+    // (geometric shapes, box-drawing, emoji) are measured correctly and don't clip.
+    try {
+      this.terminal.loadAddon(new Unicode11Addon());
+      this.terminal.unicode.activeVersion = '11';
+    } catch (e) {
+      console.warn('Unicode11 addon not supported:', e);
+    }
 
     // Add fit addon
     this.fitAddon = new FitAddon();
@@ -829,6 +853,25 @@ export class TerminalUnit {
   // name). Parity with newWindow(); driven by the sidebar's Sessions "+" button.
   newSession() {
     this.sendMessage(MSG.TmuxNewSession, '');
+  }
+
+  // Rename a session by its (current) logical name. Parity with renameWindow;
+  // driven by double-clicking a session tab in the sidebar.
+  renameSession(oldName, newName) {
+    // "<oldName> <newName>" — session names have no spaces, so the first space
+    // delimits (server keeps the rest as the possibly-spaced new name).
+    this.sendMessage(MSG.TmuxRenameSession, oldName + ' ' + newName);
+  }
+
+  // Kill a window by id (sidebar hover ×). Grouped sessions share the list, so the
+  // server's kill-window by @id removes it from every pane.
+  killWindow(windowId) {
+    this.sendMessage(MSG.TmuxKillWindow, windowId);
+  }
+
+  // Kill a session by logical name (sidebar hover ×).
+  killSession(sessionName) {
+    this.sendMessage(MSG.TmuxKillSession, sessionName);
   }
 
   switchSession(sessionName) {
