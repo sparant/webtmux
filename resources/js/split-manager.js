@@ -480,6 +480,10 @@ export class SplitManager {
     this.toolbar.previewCount = this.pip?.count || 0;
     this.toolbar.previewHidden = !!this.pip?.hidden;
     this.toolbar.previewHasFocused = !!(activeId && this.pip?.hasWindow(activeId));
+    // Tell the preview which window the focused pane shows, so a single-window PiP
+    // of that very window blanks itself (it'd only duplicate what's already on
+    // screen). Reappears the instant the focused pane moves to another window.
+    this.pip?.setFocusedWindow(activeId);
   }
 
   // Navigate to a window from ANY switcher (toolbar recent-strip, Exposé tile):
