@@ -193,6 +193,10 @@ class WebtmuxPip extends LitElement {
     }
     .ptile:hover .premove { opacity: 1; pointer-events: auto; }
     .premove:hover { transform: scale(1.12); background: #e94560; color: #fff; border-color: #e94560; }
+    /* Single mode: the tile IS the whole box, so its top-right × duplicates the
+       classic top-center close (.controls .close). Hide the per-tile × here — it's
+       only meant for the bar's individual tiles. */
+    :host([mode='single']) .premove { display: none; }
 
     .plabel {
       flex: 0 0 auto;
