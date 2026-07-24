@@ -59,13 +59,14 @@ export class SplitManager {
     this.shortcuts = document.createElement('webtmux-shortcuts');
     this.container.appendChild(this.shortcuts);
 
-    // The Picture-in-Picture preview (hidden until toggled via Ctrl+Alt+I or the
-    // toolbar/sidebar button). Reads from the same shared CaptureCache; closing it
-    // (its × button, or a re-toggle) syncs the toolbar's PiP indicator via onClose.
+    // The live Preview (Picture-in-Picture for one window, a docked edge bar for
+    // several). Hidden until a window is added via Ctrl+Alt+I or the toolbar button.
+    // Reads from the same shared CaptureCache; any change to its set/hidden state
+    // syncs the toolbar's preview buttons via onChange.
     this.pip = document.createElement('webtmux-pip');
     this.pip.cache = this.captureCache;
     this.pip.manager = this;
-    this.pip.onClose = () => { if (this.toolbar) this.toolbar.pipActive = false; };
+    this.pip.onChange = () => this._refreshToolbar();
     this.container.appendChild(this.pip);
 
     // Top toolbar (above #app): most-recently-accessed windows + sidebar toggle.
@@ -279,18 +280,24 @@ export class SplitManager {
   // slot (only its recency + metadata update); a NEW window appends while there's
   // room, else it replaces the least-recently-accessed slot in place. So the tab
   // order only changes when the SET of shown windows changes.
+  //
+  // Entries are keyed by (SESSION, window-id), not window-id alone: a window LINKED
+  // into two sessions is reachable in each, so it earns a tab per session you've
+  // visited it through — otherwise the second session's view was unreachable from
+  // the strip (it collapsed onto the first). meta.session is the logical session
+  // the access happened in.
   noteAccess(id, meta = {}) {
     if (!id) return;
     // Bump recency in the ONE shared store (also drives the Exposé sort + persists).
     this.captureCache.markAccessed(id);
     const recencyOf = (wid) => this.captureCache.accessed.get(wid) ?? 0;
-    const existing = this.recentWindows.find(e => e.id === id);
+    const session = meta.session || '';
+    const existing = this.recentWindows.find(e => e.id === id && e.session === session);
     if (existing) {
       if (meta.name) existing.name = meta.name;
       if (meta.index != null) existing.index = meta.index;
-      if (meta.session) existing.session = meta.session;
     } else {
-      const entry = { id, index: meta.index, name: meta.name || 'bash', session: meta.session || '' };
+      const entry = { id, index: meta.index, name: meta.name || 'bash', session };
       const list = [...this.recentWindows];
       if (list.length < 5) {
         list.push(entry);
@@ -339,19 +346,30 @@ export class SplitManager {
   // this window, closing the tab also CLOSES that region — so × on a recent is a
   // de-facto "kill the split that was showing this window". (The primary region is
   // console-synced and never closed; the tmux window itself keeps running.)
-  removeRecent(id) {
-    // If the focused pane is currently VIEWING this window, closing its tab would
-    // strand the pane on a window that's no longer in the strip. So first move the
-    // view to the next available recent — exactly what Ctrl+Option+N does. (No-op
-    // if there's nothing else to step to.)
-    if (this.focusedUnit?.layout?.activeWindowId === id) this.navigateRecents(+1);
+  removeRecent(entry) {
+    // Accept the full entry (id + session) so only THIS session's tab is removed;
+    // tolerate a bare id string for older callers.
+    const id = typeof entry === 'string' ? entry : entry?.id;
+    if (!id) return;
+    const session = (entry && typeof entry === 'object') ? (entry.session ?? null) : null;
+    const matches = (e) => e.id === id && (session == null || e.session === session);
+    // If the focused pane is currently VIEWING this exact (window, session), closing
+    // its tab would strand the pane on a window that's no longer in the strip. So
+    // first move the view to the next available recent — exactly what Ctrl+Option+N
+    // does. (No-op if there's nothing else to step to.)
+    if (this.focusedUnit?.layout?.activeWindowId === id &&
+        (session == null || this.logicalSession(this.focusedUnit) === session)) {
+      this.navigateRecents(+1);
+    }
     if (this.units.length > 1) {
       const holder = this.units.find(u => !u.primary && u.layout?.activeWindowId === id);
       if (holder) this.removeUnit(holder);
     }
     const before = this.recentWindows.length;
-    this.recentWindows = this.recentWindows.filter(e => e.id !== id);
-    this.captureCache?.forgetAccessed(id);
+    this.recentWindows = this.recentWindows.filter(e => !matches(e));
+    // Only forget the shared access recency once NO remaining tab references this
+    // window id (a linked window may still have another session's tab in the strip).
+    if (!this.recentWindows.some(e => e.id === id)) this.captureCache?.forgetAccessed(id);
     if (this.recentWindows.length !== before) this._refreshToolbar();
   }
 
@@ -384,15 +402,22 @@ export class SplitManager {
     this._pruneDeletedRecents();
     const focused = this.focusedUnit;
     const activeId = focused?.layout?.activeWindowId;
+    const focusedSession = focused ? this.logicalSession(focused) : '';
     const cache = this.captureCache?.byWindow;
     // Ground-truth window metadata from every region's LIVE layout — the same
     // source the sidebar reads, refreshed by the 500ms layout poll. A tmux rename
     // lands here immediately, whereas the capture cache only refreshes when a
     // capture frame arrives (Exposé/capture poll), so we MUST trust live first or
-    // renamed tabs go stale while the sidebar updates.
+    // renamed tabs go stale while the sidebar updates. Keyed by (session, id) so a
+    // linked window resolves to ITS OWN index/name in each session (they can differ),
+    // with a by-id fallback for sessions no region currently covers.
+    const liveByKey = new Map();
     const liveById = new Map();
     for (const u of this.units) {
+      const sess = this.logicalSession(u);
       for (const w of (u.layout?.windows || [])) {
+        const k = sess + ' ' + w.id;
+        if (!liveByKey.has(k)) liveByKey.set(k, w);
         if (!liveById.has(w.id)) liveById.set(w.id, w);
       }
     }
@@ -400,7 +425,7 @@ export class SplitManager {
     // one window) — greyed out, like the sidebar. One shared source: occupiedWindowIds.
     const occupied = this.occupiedWindowIds(focused);
     this.toolbar.recent = this.recentWindows.map(e => {
-      const live = liveById.get(e.id);
+      const live = liveByKey.get(e.session + ' ' + e.id) || liveById.get(e.id);
       // Keep the access-time snapshot fresh from the live layout so the name/index
       // stay correct even after the window later leaves every region's window list
       // (recents outlive the session they were accessed in).
@@ -411,15 +436,23 @@ export class SplitManager {
         id: e.id,
         index: live?.index ?? c?.index ?? e.index ?? '?',
         name: live?.name || c?.name || e.name || 'bash',
-        session: c?.sessionName || e.session || '',
-        active: e.id === activeId,
+        // Keep the entry's OWN logical session — never overwrite it with the capture
+        // cache's single label, or the two linked-window tabs would collapse to one.
+        session: e.session || c?.sessionName || '',
+        // Active only when the focused pane shows this window IN THIS entry's session.
+        active: e.id === activeId && e.session === focusedSession,
         disabled: occupied.has(e.id),
       };
     });
     this.toolbar.collapsed = !!this.sidebar?.collapsed;
     // Keep the toolbar's scroll-mode label reflecting the focused pane's setting.
     if (focused?.scrollMode) this.toolbar.scrollMode = focused.scrollMode;
-    this.toolbar.pipActive = !!this.pip?.open;
+    // Preview button state: how many windows are queued, whether it's hidden, and
+    // whether the FOCUSED pane's current window is one of them (so the add/remove
+    // button can show it's already in the preview).
+    this.toolbar.previewCount = this.pip?.count || 0;
+    this.toolbar.previewHidden = !!this.pip?.hidden;
+    this.toolbar.previewHasFocused = !!(activeId && this.pip?.hasWindow(activeId));
   }
 
   // Navigate to a window from ANY switcher (toolbar recent-strip, Exposé tile):
@@ -437,10 +470,18 @@ export class SplitManager {
     const u = this.focusedUnit;
     if (!u) return;
     if (this.occupiedWindowIds(u).has(id)) return;
-    if (u.layout?.activeWindowId === id) { u.terminal?.focus(); return; }  // already showing it
+    const curSession = this.logicalSession(u);
+    // A target session that differs from the pane's current one means HOP there —
+    // even if the pane is already on this window id (a window linked into two
+    // sessions: switching from its session-A view to its session-B view is a real
+    // navigation, not a no-op).
+    const needHop = !!session && session !== curSession;
+    if (u.layout?.activeWindowId === id && !needHop) { u.terminal?.focus(); return; }  // already showing it here
     const inList = (u.layout?.windows || []).some(w => w.id === id);
-    if (!inList) {
-      if (!session || !u.layout || session === this.logicalSession(u)) return; // unreachable
+    if (needHop) {
+      u.switchSession(session);
+    } else if (!inList) {
+      if (!session || !u.layout || session === curSession) return; // unreachable
       u.switchSession(session);
     }
     u._targetWindowId = id;
@@ -462,14 +503,18 @@ export class SplitManager {
     if (!list || !list.length) return;
     const focused = this.focusedUnit;
     const activeId = focused?.layout?.activeWindowId;
+    const activeSession = focused ? this.logicalSession(focused) : '';
     const occupied = this.occupiedWindowIds(focused);
     const selectable = list.filter(e => !occupied.has(e.id));
     if (!selectable.length) return;
-    const idx = selectable.findIndex(e => e.id === activeId);
+    // Anchor on the entry for the exact (window, session) the focused pane shows, so
+    // stepping walks past a linked window's OTHER-session tab rather than sticking.
+    const isActive = (e) => e.id === activeId && e.session === activeSession;
+    const idx = selectable.findIndex(isActive);
     const next = idx === -1
       ? selectable[dir > 0 ? 0 : selectable.length - 1]
       : selectable[(idx + dir + selectable.length) % selectable.length];
-    if (next && next.id !== activeId) this.goToWindow(next.id, next.session);
+    if (next && !isActive(next)) this.goToWindow(next.id, next.session);
   }
 
   // Toolbar recent-tab click -> shared navigation.
@@ -522,21 +567,20 @@ export class SplitManager {
     sb.updateComplete.then(() => sb.startRename(id));
   }
 
-  // Toggle Picture-in-Picture. On: pin the FOCUSED region's current window in a
-  // corner (a live capture-fed preview). Off: close it. The toolbar's PiP button
-  // reflects the state (also kept in sync by _refreshToolbar + the pip's onClose).
-  togglePip() {
+  // Add/remove the FOCUSED region's current window to/from the live preview
+  // (Ctrl+Alt+I and the toolbar preview button). One window shows as a corner PiP
+  // box; a second flips it to a docked edge bar. onChange keeps the toolbar synced.
+  toggleFocusedInPreview() {
     if (!this.pip) return;
-    if (this.pip.open) {
-      this.pip.close();
-      if (this.toolbar) this.toolbar.pipActive = false;
-      return;
-    }
     const u = this.focusedUnit;
     const id = u?.layout?.activeWindowId;
-    if (!id) return;   // nothing to pin yet (no layout) — no-op
-    this.pip.openFor(id, this._metaFor(u, id));
-    if (this.toolbar) this.toolbar.pipActive = true;
+    if (!id) return;   // nothing to preview yet (no layout) — no-op
+    this.pip.toggleWindow(id, this._metaFor(u, id));
+  }
+
+  // Hide/show the whole preview without forgetting which windows are in it.
+  togglePreviewHidden() {
+    this.pip?.toggleHidden();
   }
 
   // #app gets .split-active only with >1 region, so single-view keeps its exact
@@ -628,8 +672,8 @@ export class SplitManager {
         case 'KeyE':                                   // toggle the Exposé overlay
           this.expose?.toggle();
           break;
-        case 'KeyI':                                   // toggle Picture-in-Picture (i = pIp)
-          this.togglePip();
+        case 'KeyI':                                   // add/remove focused window in the preview (i = pIp)
+          this.toggleFocusedInPreview();
           break;
         case 'KeyP':                                   // tmux 'p' (previous-window): recents left
           this.navigateRecents(-1);
@@ -646,6 +690,9 @@ export class SplitManager {
         case 'BracketLeft':                            // tmux '[' (copy-mode): toggle copy/normal
           this.toggleCopyMode();
           break;
+        case 'KeyB':                                   // show/hide the build-id chip
+          this.toolbar?.toggleBuild();
+          break;
         default:
           return;                                      // not ours — let it through
       }
@@ -658,6 +705,6 @@ export class SplitManager {
     window.addEventListener('webtmux-split-close', (e) => this.removeUnit(e.detail?.unit || this.focusedUnit));
     window.addEventListener('webtmux-expose-open', () => this.expose?.openOverlay());
     window.addEventListener('webtmux-shortcuts-open', () => this.shortcuts?.toggle());
-    window.addEventListener('webtmux-pip-toggle', () => this.togglePip());
+    window.addEventListener('webtmux-pip-toggle', () => this.toggleFocusedInPreview());
   }
 }

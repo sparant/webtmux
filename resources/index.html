@@ -14,7 +14,14 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css" />
 
   <style>
-    :root { --wt-toolbar-h: 44px; --wt-sidebar-w: 0px; }
+    :root {
+      --wt-toolbar-h: 44px; --wt-sidebar-w: 0px;
+      /* Space reserved by a docked preview BAR on each edge (0 unless the multi-
+         window preview bar is docked there). #app pads by these so its regions
+         shrink and the bar sits beside the terminal rather than over it. */
+      --wt-preview-top: 0px; --wt-preview-bottom: 0px;
+      --wt-preview-left: 0px; --wt-preview-right: 0px;
+    }
     html, body {
       margin: 0;
       padding: 0;
@@ -32,6 +39,9 @@
       min-height: 0;
       display: flex;
       width: 100%;
+      box-sizing: border-box;
+      /* Shrink the region area by any docked preview bar's reserved edge space. */
+      padding: var(--wt-preview-top) var(--wt-preview-right) var(--wt-preview-bottom) var(--wt-preview-left);
     }
     /* Each split region is a flex row: [terminal | its sidebar]. Regions tile
        across #app; a .divider sits between them. The SplitManager fills #app. */

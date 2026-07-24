@@ -43,8 +43,14 @@ class WebtmuxToolbar extends LitElement {
     // True when the focused split region's active pane is in tmux copy/view mode.
     // Reflected to the `copymode` attribute so :host() can recolor the whole bar.
     copyMode: { type: Boolean, reflect: true, attribute: 'copymode' },
-    // True when Picture-in-Picture is active — highlights the toolbar's PiP button.
-    pipActive: { type: Boolean },
+    // Preview state (SplitManager sets): how many windows are in the preview,
+    // whether it's hidden, and whether the focused pane's window is one of them.
+    previewCount: { type: Number },
+    previewHidden: { type: Boolean },
+    previewHasFocused: { type: Boolean },
+    // Whether the build-id chip on the far left is shown. Hidden by default;
+    // toggled by Ctrl+Alt+B (see the shortcuts overlay). Persisted per browser.
+    showBuild: { type: Boolean },
   };
 
   static styles = css`
@@ -314,14 +320,27 @@ class WebtmuxToolbar extends LitElement {
     this.scrollMode = normalizeScroll(
       (typeof localStorage !== 'undefined' && localStorage.getItem('webtmux-scroll-mode')) || '');
     this.copyMode = false; // focused pane in tmux copy/view mode (SplitManager sets)
-    this.pipActive = false; // Picture-in-Picture on (SplitManager sets)
+    this.previewCount = 0;        // windows currently in the preview (SplitManager sets)
+    this.previewHidden = false;   // preview tucked away (SplitManager sets)
+    this.previewHasFocused = false; // focused window is in the preview (SplitManager sets)
     this.panes = [];       // [bool] per pane in order; true = focused. [] hides the dots.
     this.manager = null;   // SplitManager, set directly
     // Build id (git short-hash) served fresh by config.js from the RUNNING binary —
     // read it out loud to identify exactly which build is deployed.
     this.build = (typeof window !== 'undefined' && window.webtmux_build) || '?';
     this.built = (typeof window !== 'undefined' && window.webtmux_built) || '';
+    // Build-id chip hidden by default (it's clutter for daily use); Ctrl+Alt+B
+    // reveals it when you need to read the running build aloud. Persisted.
+    this.showBuild = (typeof localStorage !== 'undefined' &&
+      localStorage.getItem('webtmux-show-build') === 'true');
     this._tipTimer = null; // pending show timer for the quick tab tooltip
+  }
+
+  // Show/hide the build-id chip (Ctrl+Alt+B, wired by the SplitManager). Persisted
+  // so the choice survives a reload.
+  toggleBuild() {
+    this.showBuild = !this.showBuild;
+    try { localStorage.setItem('webtmux-show-build', String(this.showBuild)); } catch (e) {}
   }
 
   // Quick-tooltip delay (ms). Still snappier than the browser's native ~1s title
@@ -394,7 +413,7 @@ class WebtmuxToolbar extends LitElement {
 
   render() {
     return html`
-      <span class="build" title="webtmux build ${this.build}${this.built ? ' — built ' + this.built : ''}">⬢ ${this.build}</span>
+      ${this.showBuild ? html`<span class="build" title="webtmux build ${this.build}${this.built ? ' — built ' + this.built : ''} — hide with ${chord('B')}">⬢ ${this.build}</span>` : ''}
       <div class="tabs">
         ${this.recent.length ? html`<span class="label">Recent</span>` : ''}
         ${this.recent.map(w => {
@@ -411,7 +430,7 @@ class WebtmuxToolbar extends LitElement {
               aria-label="Remove from Recent (does not close the window)"
               @mouseenter=${(e) => { e.stopPropagation(); this._tipEnter(e, 'Remove this tab from Recent — the window keeps running (this does not close or kill it)'); }}
               @mouseleave=${(e) => { e.stopPropagation(); this._tipEnter({ currentTarget: e.currentTarget.closest('.tab') }, tip); }}
-              @click=${(e) => { e.stopPropagation(); this._tipLeave(); this.manager?.removeRecent(w.id); }}
+              @click=${(e) => { e.stopPropagation(); this._tipLeave(); this.manager?.removeRecent(w); }}
             >×</span></button>
         `;})}
       </div>
@@ -448,7 +467,7 @@ class WebtmuxToolbar extends LitElement {
       ${this.panes.length > 1 ? html`
         <div
           class="dots"
-          @mouseenter=${(e) => this._tipEnter(e, `Split panes — one dot per open terminal region (${this.panes.length} open); green is the focused pane. Drag a divider to resize; ${chord('X')} closes the focused region.`)}
+          @mouseenter=${(e) => this._tipEnter(e, `Split panes — one dot per open terminal region (${this.panes.length} open); green is the focused pane. Drag a divider to resize. ${chord('X')} closes the focused region — but the first (leftmost) pane is the original and can't be closed; only added panes can.`)}
           @mouseleave=${() => this._tipLeave()}
         >
           ${this.panes.map((focused) => html`<span class="dot ${focused ? 'focused' : ''}"></span>`)}
@@ -462,10 +481,21 @@ class WebtmuxToolbar extends LitElement {
         @click=${() => { this._tipLeave(); this.manager?.toggleCopyMode(); }}
       ><span class="mdot"></span>${this.copyMode ? 'COPY' : 'NORMAL'}</button>
       <button
-        class="pip-toggle ${this.pipActive ? 'on' : ''}"
-        title="Picture-in-Picture the focused window (${chord('I')})"
-        @click=${() => this.manager?.togglePip()}
+        class="pip-toggle ${this.previewHasFocused ? 'on' : ''}"
+        aria-label="Add focused window to preview"
+        @mouseenter=${(e) => this._tipEnter(e, `${this.previewHasFocused ? 'Remove the focused window from' : 'Add the focused window to'} the live preview (${chord('I')}). One window shows as a corner box; a second turns it into a docked edge bar.${this.previewCount ? ` ${this.previewCount} window${this.previewCount === 1 ? '' : 's'} in preview.` : ''}`)}
+        @mouseleave=${() => this._tipLeave()}
+        @click=${() => { this._tipLeave(); this.manager?.toggleFocusedInPreview(); }}
       >◳</button>
+      ${this.previewCount ? html`
+        <button
+          class="pip-toggle ${this.previewHidden ? '' : 'on'}"
+          aria-label="Show or hide the preview"
+          @mouseenter=${(e) => this._tipEnter(e, `${this.previewHidden ? 'Show' : 'Hide'} the preview (keeps its ${this.previewCount} window${this.previewCount === 1 ? '' : 's'}).`)}
+          @mouseleave=${() => this._tipLeave()}
+          @click=${() => { this._tipLeave(); this.manager?.togglePreviewHidden(); }}
+        >${this.previewHidden ? '🙈' : '👁'}</button>
+      ` : ''}
       <button
         class="sidebar-toggle"
         aria-label="Toggle sidebar"

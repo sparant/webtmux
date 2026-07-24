@@ -16,6 +16,7 @@
 import { LitElement, html, css } from 'lit';
 import { Terminal } from '@xterm/xterm';
 import { CaptureCache } from '../capture-cache.js';
+import { matchesWords, appendChar, backspace, phraseText } from '../search.js';
 
 const N_MAX_TILES = 24;
 const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css';
@@ -28,6 +29,9 @@ class WebtmuxExpose extends LitElement {
     // still scrolls — this only controls how many fit on screen at once.
     density: { type: Number, reflect: true },
     _sort: { state: true }, // 'session' | 'recent'
+    // The live type-ahead filter phrase (display form, e.g. "cla 2"). Reactive so
+    // the header re-renders as you type. The word list backing it is _searchWords.
+    _query: { state: true },
   };
 
   static styles = css`
@@ -73,6 +77,28 @@ class WebtmuxExpose extends LitElement {
     }
     .head .spacer {
       flex: 1 1 auto;
+    }
+    /* Live type-ahead filter phrase shown at the top as you type. */
+    .head .filter {
+      color: #cfd8ff;
+      background: #1a1a2e;
+      border: 1px solid #4a9eff;
+      border-radius: 4px;
+      padding: 2px 8px;
+    }
+    .head .filter b {
+      color: #eaf0ff;
+      font-weight: 600;
+    }
+    /* Blinking caret after the filter text so it reads as an active input. */
+    .head .filter .cur {
+      color: #4a9eff;
+      animation: wt-blink 1.1s step-end infinite;
+    }
+    @keyframes wt-blink { 50% { opacity: 0; } }
+    .head .typehint {
+      color: #5b6690;
+      font-style: italic;
     }
     .sort {
       display: flex;
@@ -211,6 +237,15 @@ class WebtmuxExpose extends LitElement {
     this._cursorId = null; // window_id under the cursor — survives refresh/rebuild
     this._renderedIds = []; // window_ids in current tile order
     this._sort = readSort(); // 'session' | 'recent' (persisted)
+    // Type-ahead filter (same word-substring algorithm as the sidebar): only
+    // windows whose "session index: name" label contains every typed word stay
+    // visible. _searchWords is the backing word list; _query mirrors it for
+    // display. The filter PERSISTS across close/reopen — it's only cleared by
+    // pressing Escape while it's non-empty (the first Escape clears, the second
+    // closes). Closing any other way (Enter, tile/backdrop click, re-toggle)
+    // keeps it, so reopening lands you back in the same filtered view.
+    this._searchWords = [];
+    this._query = '';
     this._pollTimer = null;
     // On a capture refresh, update tiles IN PLACE (keep cursor + no xterm churn)
     // when the window set is unchanged; only a membership/sort change rebuilds.
@@ -222,13 +257,18 @@ class WebtmuxExpose extends LitElement {
   // filled imperatively so a reactive re-render never orphans a tile terminal.
   render() {
     const n = this.cache ? this.cache.byWindow.size : 0;
+    const filtering = this._searchWords.some((w) => w !== '');
+    const shown = filtering ? this._visibleEntries().length : n;
     return html`
       <link rel="stylesheet" href=${XTERM_CSS} />
       <div class="backdrop" @click=${this._onBackdrop}>
         <div class="head" @click=${(e) => e.stopPropagation()}>
           <span class="title">Windows</span>
-          <span>${n} window${n === 1 ? '' : 's'}</span>
-          <span><kbd>←→↑↓</kbd> move · <kbd>Enter</kbd> switch · <kbd>Esc</kbd> close</span>
+          <span>${filtering ? `${shown} of ${n}` : n} window${(filtering ? shown : n) === 1 ? '' : 's'}</span>
+          ${filtering
+            ? html`<span class="filter">filter: <b>${this._query}</b><span class="cur">▏</span></span>`
+            : html`<span class="typehint">type to filter</span>`}
+          <span><kbd>←→↑↓</kbd> move · <kbd>Enter</kbd> switch · <kbd>Esc</kbd> ${filtering ? 'clear filter' : 'close'}</span>
           <span class="spacer"></span>
           <span class="sort">
             <span class="lbl">Sort</span>
@@ -309,6 +349,16 @@ class WebtmuxExpose extends LitElement {
 
   // ---- tile building ----------------------------------------------------------
 
+  // Cached entries in sort order, narrowed by the active type-ahead filter. The
+  // haystack is "session index: name" so you can filter by any of them (e.g.
+  // "claude" or "services 3"). No filter → every entry.
+  _visibleEntries() {
+    const all = this.cache ? this.cache.all(this._sort) : [];
+    const terms = this._searchWords.filter((w) => w !== '');
+    if (!terms.length) return all;
+    return all.filter((e) => matchesWords(`${e.sessionName} ${e.index}: ${e.name}`, terms));
+  }
+
   _disposeTiles() {
     for (const t of this._tiles) {
       if (t.term) {
@@ -330,11 +380,16 @@ class WebtmuxExpose extends LitElement {
     if (!grid) return;
     this._disposeTiles();
 
-    const entries = this.cache ? this.cache.all(this._sort) : [];
+    const entries = this._visibleEntries();
     if (!entries.length) {
       const div = document.createElement('div');
       div.className = 'empty';
-      div.textContent = 'Capturing windows…';
+      // Distinguish "nothing captured yet" from "filter excludes everything".
+      const filtering = this._searchWords.some((w) => w !== '');
+      const anyCached = this.cache && this.cache.byWindow.size > 0;
+      div.textContent = filtering && anyCached
+        ? `No windows match “${this._query}”`
+        : 'Capturing windows…';
       grid.appendChild(div);
       this._renderedIds = [];
       return;
@@ -364,7 +419,7 @@ class WebtmuxExpose extends LitElement {
   // membership/order change (window opened/closed) falls back to a full rebuild.
   _refresh() {
     if (!this.open) return;
-    const entries = this.cache ? this.cache.all(this._sort) : [];
+    const entries = this._visibleEntries();
     const ids = entries.map((e) => e.windowId);
     const unchanged =
       ids.length === this._renderedIds.length && ids.every((id, i) => id === this._renderedIds[i]);
@@ -522,7 +577,10 @@ class WebtmuxExpose extends LitElement {
     if (!this.open) return;
     const tiles = this._tileEls();
     if (e.key === 'Escape') {
-      this.closeOverlay();
+      // First Escape clears an active filter; a second (empty filter) closes the
+      // overlay. So typing-then-Escape backs out of the filter without closing.
+      if (this._searchWords.some((w) => w !== '')) this._setSearch([]);
+      else this.closeOverlay();
     } else if (e.key === 'Enter') {
       const t = tiles[this._cursor];
       if (t) this._selectWindow(t.dataset.window);
@@ -532,11 +590,26 @@ class WebtmuxExpose extends LitElement {
       this._moveCursor(-1, tiles);
     } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       this._moveCursor(e.key === 'ArrowDown' ? colsPerRow(tiles) : -colsPerRow(tiles), tiles);
+    } else if (e.key === 'Backspace') {
+      this._setSearch(backspace(this._searchWords));
+    } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      // Type-ahead filter: printable char grows the phrase (space = new word),
+      // using the SAME word-substring algorithm as the sidebar.
+      this._setSearch(appendChar(this._searchWords, e.key));
     } else {
       return; // not ours
     }
     e.preventDefault();
     e.stopPropagation();
+  }
+
+  // Apply a new filter word list: mirror it into the reactive _query (re-renders the
+  // header) and rebuild the (imperative) tile grid so membership matches. The cursor
+  // is restored to the same window by id inside _rebuild, or the first visible tile.
+  _setSearch(words) {
+    this._searchWords = words;
+    this._query = phraseText(words);
+    if (this.open) this._rebuild();
   }
 
   _moveCursor(delta, tiles) {

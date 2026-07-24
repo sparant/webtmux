@@ -1,6 +1,7 @@
 // Sidebar component with minimap
 import { LitElement, html, css } from 'lit';
 import { MOD_KEYS, chord } from '../os.js';
+import { matchesWords, appendChar } from '../search.js';
 
 class WebtmuxSidebar extends LitElement {
   static properties = {
@@ -308,6 +309,12 @@ class WebtmuxSidebar extends LitElement {
     // Type-ahead search state (typing in the focused panel selects a window).
     this._searchWords = [];
     this._searchTimer = null;
+    // The view (window + logical session) that was active when the panel last took
+    // keyboard focus — the "baseline" to restore if the browse is DISCARDED (Escape).
+    // Arrow/type-ahead browsing switches the live view as a PREVIEW; Enter (or a
+    // click into the terminal) ACCEPTS it, Escape reverts to this. Null = no browse
+    // in progress. Captured in updated() on the collapsed→open transition.
+    this._baseline = null;
     // Windows shown by other split regions (disabled here). SplitManager updates it.
     this.disabledWindows = [];
 
@@ -324,6 +331,12 @@ class WebtmuxSidebar extends LitElement {
         this._stopCapturePoll();
       } else {
         this.classList.remove('collapsed');
+        // Remember the view we're on BEFORE any browsing, so Escape can restore it.
+        // (Enter / click-away keep whatever is previewed instead.)
+        this._baseline = {
+          windowId: this.activeWindow,
+          session: this.layout?.sessionBase || this.layout?.sessionName || '',
+        };
         // Opening the panel grabs keyboard focus so ↑/↓ navigate windows.
         this.focusPanel();
         // …and starts warming capture buffers so window switches paint instantly.
@@ -682,16 +695,18 @@ class WebtmuxSidebar extends LitElement {
       this._resetSearch();
       this.navigateSession(1);
     } else if (e.key === 'Escape') {
-      // Escape always dismisses the panel, wherever focus sits inside it.
+      // Escape DISCARDS the browse: restore the window/session we were on before
+      // the panel took focus, then dismiss — wherever focus sits inside it.
       e.preventDefault();
       this._resetSearch();
-      this.dismiss();
+      this.dismissDiscard();
     } else if (e.key === 'Enter' && tag !== 'BUTTON') {
-      // Enter dismisses too, but only from the panel itself — on a button
-      // (window tab, +, mode toggle) Enter still activates that control.
+      // Enter ACCEPTS the currently-previewed window (it becomes the new focus) and
+      // dismisses — but only from the panel itself; on a button (window tab, +, mode
+      // toggle) Enter still activates that control.
       e.preventDefault();
       this._resetSearch();
-      this.dismiss();
+      this.dismissAccept();
     } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
       // Type-ahead: printable characters build a search phrase that selects a
       // window (like the ↑/↓ preview). preventDefault so Space/Enter can't also
@@ -712,15 +727,12 @@ class WebtmuxSidebar extends LitElement {
     if (this._searchTimer) clearTimeout(this._searchTimer);
     this._searchTimer = setTimeout(() => this._resetSearch(), 2000);
 
-    const words = this._searchWords.slice();
+    const words = appendChar(this._searchWords, ch);
     if (ch === ' ') {
-      // Separator: begin a new (empty) word, but don't stack empties.
-      if (words.length === 0 || words[words.length - 1] !== '') words.push('');
+      // Separator: an empty trailing word doesn't narrow the match — selection holds.
       this._searchWords = words;
-      return;   // an empty trailing word doesn't narrow the match — selection holds
+      return;
     }
-    if (words.length === 0) words.push('');
-    words[words.length - 1] += ch.toLowerCase();
 
     const match = this._findWindowByWords(words);
     if (!match) return;                         // no match → reject this character
@@ -738,8 +750,7 @@ class WebtmuxSidebar extends LitElement {
     if (terms.length === 0) return null;
     return (this.layout?.windows || []).find(w => {
       if (this._windowDisabled(w.id)) return false;
-      const hay = `${w.index}: ${w.name || 'bash'}`.toLowerCase();
-      return terms.every(t => hay.includes(t));
+      return matchesWords(`${w.index}: ${w.name || 'bash'}`, terms);
     }) || null;
   }
 
@@ -748,11 +759,48 @@ class WebtmuxSidebar extends LitElement {
     this._searchWords = [];
   }
 
-  // Collapse the panel and hand keyboard focus back to THIS unit's terminal, so
-  // typing resumes at the prompt right after dismissing.
-  dismiss() {
+  // ACCEPT the browse: keep whatever window is currently previewed and collapse the
+  // panel. Focusing the unit (via SplitManager.focus) records the previewed window
+  // as a real access (MRU) — the commit point — and hands keyboard focus back to the
+  // terminal. Clicking into the terminal takes the SAME path (region mousedown →
+  // focus), so a click is also an accept.
+  dismissAccept() {
+    this._baseline = null;
     this.collapsed = true;
-    try { this.unit?.terminal?.focus(); } catch (e) {}
+    try { this.unit?.focus(); } catch (e) { try { this.unit?.terminal?.focus(); } catch (_) {} }
+  }
+
+  // DISCARD the browse: restore the window/session that was active when the panel
+  // took focus (the baseline), then collapse and return focus to the terminal. If
+  // nothing was previewed (no baseline or already on it) this is just a plain
+  // dismiss.
+  dismissDiscard() {
+    const b = this._baseline;
+    this._baseline = null;
+    this.collapsed = true;
+    this._revertTo(b);
+  }
+
+  // Restore the pane to baseline b = {windowId, session}. The revert must NOT count
+  // as a new access (we're going back, not navigating), so suppress the resulting
+  // window(s): _suppressAccessIds for the target window, and _suppressAccessNext for
+  // the intermediate window a session switch lands on. Falls through to a plain
+  // terminal focus when there's nothing to undo.
+  _revertTo(b) {
+    const u = this.unit;
+    if (!u) return;
+    const curWin = this.activeWindow;
+    const curSess = this.layout?.sessionBase || this.layout?.sessionName || '';
+    const needSess = b?.session && b.session !== curSess;
+    const needWin = b?.windowId && b.windowId !== curWin;
+    if (!needSess && !needWin) { try { u.terminal?.focus(); } catch (e) {} return; }
+    if (b.windowId) u._suppressAccessIds?.add(b.windowId);
+    if (needSess) {
+      u._suppressAccessNext = true;
+      u.switchSession(b.session);
+    }
+    if (b.windowId) u.selectWindow(b.windowId);
+    try { u.terminal?.focus(); } catch (e) {}
   }
 
   // True if a window is displayed by ANOTHER split region (so not selectable from
