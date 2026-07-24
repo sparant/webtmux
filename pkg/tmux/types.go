@@ -7,6 +7,10 @@ type Session struct {
 	Windows  int    `json:"windows"`
 	Attached bool   `json:"attached"`
 	Active   bool   `json:"active"`
+	// Empty is true when the session has nothing running: a single window with a
+	// single pane sitting at an idle shell prompt. The sidebar skips the kill
+	// confirmation for such sessions (there's no live work to protect).
+	Empty bool `json:"empty"`
 }
 
 // Layout represents the complete tmux state
@@ -35,6 +39,11 @@ type Window struct {
 	Index  int    `json:"index"`
 	Active bool   `json:"active"`
 	Panes  []Pane `json:"panes"`
+	// SessionCount is how many DISTINCT logical sessions this window is linked into
+	// (ephemeral web-* grouped shadows collapse onto their base, so a window shared
+	// by a split's grouped sessions still counts as one). >1 means the sidebar ×
+	// unlinks it from the current session rather than killing it.
+	SessionCount int `json:"sessionCount"`
 }
 
 // Pane represents a tmux pane

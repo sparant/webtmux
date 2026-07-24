@@ -443,7 +443,7 @@ class WebtmuxToolbar extends LitElement {
       ><span class="mdot"></span>${this.copyMode ? 'COPY' : 'NORMAL'}</button>
       <button
         class="pip-toggle ${this.pipActive ? 'on' : ''}"
-        title="Picture-in-Picture the focused window (Ctrl+Alt+I)"
+        title="Picture-in-Picture the focused window (${chord('I')})"
         @click=${() => this.manager?.togglePip()}
       >◳</button>
       <button

@@ -15,6 +15,7 @@
 import { LitElement, html, css } from 'lit';
 import { Terminal } from '@xterm/xterm';
 import { CaptureCache } from '../capture-cache.js';
+import { chord } from '../os.js';
 
 const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css';
 const CORNERS = ['tl', 'tr', 'bl', 'br'];
@@ -38,11 +39,15 @@ class WebtmuxPip extends LitElement {
       display: none;
     }
     /* The host IS the floating box (position:fixed takes it out of #app's flex flow,
-       so it overlays the terminals without disturbing their layout). */
+       so it overlays the terminals without disturbing their layout). It shares the
+       sidebar's stacking depth (z-index 50) so full-screen overlays (Exposé /
+       shortcuts, z 200) still cover it, and never overlaps the sidebar itself —
+       the right corners are offset by --wt-sidebar-w (the sidebar's occupied width,
+       0 when collapsed) so an open sidebar is the box's right boundary. */
     :host([open]) {
       display: block;
       position: fixed;
-      z-index: 150;
+      z-index: 50;
       width: 360px;
       background: #12131f;
       border: 1px solid #0f3460;
@@ -54,9 +59,9 @@ class WebtmuxPip extends LitElement {
     /* Corner pinning. Top corners sit BELOW the toolbar (--wt-toolbar-h pierces the
        shadow boundary as an inherited custom property). */
     :host([open][corner='tl']) { top: calc(var(--wt-toolbar-h, 44px) + 12px); left: 16px; }
-    :host([open][corner='tr']) { top: calc(var(--wt-toolbar-h, 44px) + 12px); right: 16px; }
+    :host([open][corner='tr']) { top: calc(var(--wt-toolbar-h, 44px) + 12px); right: calc(var(--wt-sidebar-w, 0px) + 16px); }
     :host([open][corner='bl']) { bottom: 16px; left: 16px; }
-    :host([open][corner='br']) { bottom: 16px; right: 16px; }
+    :host([open][corner='br']) { bottom: 16px; right: calc(var(--wt-sidebar-w, 0px) + 16px); }
 
     .frame {
       position: relative;
@@ -378,7 +383,7 @@ class WebtmuxPip extends LitElement {
           `)}
           <button
             class="close"
-            title="Close picture-in-picture (Ctrl+Alt+I)"
+            title="Close picture-in-picture (${chord('I')})"
             aria-label="Close picture-in-picture"
             @click=${(e) => { e.stopPropagation(); this.close(); }}
           >✕</button>

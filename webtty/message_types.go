@@ -83,4 +83,13 @@ const (
 	TmuxKillWindow = 'K'
 	// Kill a session by name (payload: "<sessionName>"). Sidebar hover × on a session.
 	TmuxKillSession = 'L'
+	// Link a window into another session (payload: "<windowID> <targetSession>").
+	// Drag a window tab onto a session tab in the sidebar. The window keeps running
+	// and now appears in both sessions.
+	TmuxLinkWindow = 'M'
+	// Unlink a window from THIS pane's session (payload: "<windowID>"). Sidebar
+	// hover × on a window that is linked into other sessions too — removes it here
+	// but leaves it running in the others (contrast TmuxKillWindow, the last-link
+	// case which ends its processes).
+	TmuxUnlinkWindow = 'N'
 )

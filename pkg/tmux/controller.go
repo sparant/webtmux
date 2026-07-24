@@ -286,15 +286,20 @@ func (c *Controller) RefreshLayout() error {
 	// Active flag, and the pane's LOGICAL session (SessionBase): a split pane's
 	// own session is an ephemeral web-* group, but the UI must present the
 	// group's base session as "where this pane is".
+	var rows []sessionRow
 	sessionsOut, err := c.runTmux("list-sessions", "-F", sessionsFormat)
 	if err == nil {
-		rows := parseSessionRows(sessionsOut)
+		rows = parseSessionRows(sessionsOut)
 		layout.SessionBase = logicalBase(rows, sess)
-		layout.Sessions = buildSessions(rows, sess)
+		layout.Sessions = buildSessions(rows, sess, c.sessionEmptiness(rows))
 	}
 	if layout.SessionBase == "" {
 		layout.SessionBase = sess
 	}
+
+	// How many distinct logical sessions each window is linked into (for the
+	// sidebar's unlink-vs-kill × affordance). Computed once per refresh.
+	linkCounts := c.windowLinkCounts(rows)
 
 	// Get windows
 	windowsOut, err := c.runTmux("list-windows", "-t", sess, "-F", "#{window_id},#{window_name},#{window_index},#{window_active}")
@@ -319,6 +324,14 @@ func (c *Controller) RefreshLayout() error {
 			Name:   parts[1],
 			Index:  idx,
 			Active: active,
+		}
+
+		// Distinct logical sessions holding this window; default to 1 (it's at
+		// least in the session we're listing) when the lookup came back empty.
+		if sc := linkCounts[win.ID]; sc > 0 {
+			win.SessionCount = sc
+		} else {
+			win.SessionCount = 1
 		}
 
 		if active {
@@ -676,6 +689,189 @@ func (c *Controller) KillSession(sessionName string) error {
 	}
 	c.RefreshLayout()
 	return nil
+}
+
+// LinkWindow links windowID into targetSession so the window (and its running
+// processes) appears in both sessions. Grouped sessions share a window list, so
+// linking into any logical session makes it visible to that whole group. We link
+// at the next free index of the target to avoid an "index in use" collision.
+func (c *Controller) LinkWindow(windowID, targetSession string) error {
+	if windowID == "" || targetSession == "" {
+		return nil
+	}
+	// Don't re-link a window into a session it's already in (a no-op that tmux
+	// would reject as "index in use").
+	if c.windowInSession(windowID, targetSession) {
+		return nil
+	}
+	idx := c.nextWindowIndex(targetSession)
+	target := targetSession
+	if idx >= 0 {
+		target = fmt.Sprintf("%s:%d", targetSession, idx)
+	}
+	if _, err := c.runTmux("link-window", "-s", windowID, "-t", target); err != nil {
+		return err
+	}
+	c.RefreshLayout()
+	return nil
+}
+
+// UnlinkWindow removes windowID from the session this pane is logically viewing,
+// leaving it running in whatever other sessions it's linked into. Targeted by
+// logical base:index (the pane's own session is an ephemeral grouped shadow whose
+// window list is shared with the base, so unlinking from the base removes it from
+// the whole group). The caller only reaches here when the window is linked
+// elsewhere, so tmux never has to kill it — but we omit -k so a stale count can
+// never silently destroy the last link.
+func (c *Controller) UnlinkWindow(windowID string) error {
+	if windowID == "" {
+		return nil
+	}
+	idx, ok := c.windowIndex(windowID)
+	if !ok {
+		c.RefreshLayout()
+		idx, ok = c.windowIndex(windowID)
+	}
+	base := c.logicalSession()
+	if !ok || base == "" {
+		return fmt.Errorf("unlink-window: window %s not found in layout", windowID)
+	}
+	if _, err := c.runTmux("unlink-window", "-t", fmt.Sprintf("%s:%d", base, idx)); err != nil {
+		return err
+	}
+	c.RefreshLayout()
+	return nil
+}
+
+// logicalSession returns the base session this pane is viewing (the group's base
+// for a split's web-* shadow), read from the cached layout.
+func (c *Controller) logicalSession() string {
+	c.layoutMu.RLock()
+	defer c.layoutMu.RUnlock()
+	if c.layoutCache != nil && c.layoutCache.SessionBase != "" {
+		return c.layoutCache.SessionBase
+	}
+	return c.session()
+}
+
+// windowInSession reports whether windowID is already linked into session.
+func (c *Controller) windowInSession(windowID, session string) bool {
+	out, err := c.runTmux("list-windows", "-t", session, "-F", "#{window_id}")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.TrimSpace(line) == windowID {
+			return true
+		}
+	}
+	return false
+}
+
+// nextWindowIndex returns one past the highest window index in session (a free
+// slot to link into), or -1 if it can't be read.
+func (c *Controller) nextWindowIndex(session string) int {
+	out, err := c.runTmux("list-windows", "-t", session, "-F", "#{window_index}")
+	if err != nil {
+		return -1
+	}
+	max := -1
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if n, err := strconv.Atoi(strings.TrimSpace(line)); err == nil && n > max {
+			max = n
+		}
+	}
+	if max < 0 {
+		return -1
+	}
+	return max + 1
+}
+
+// windowLinkCounts maps each window @id to the number of DISTINCT logical
+// sessions it's linked into. `list-windows -a` lists every window in every
+// session including the ephemeral web-* grouped shadows; those collapse onto
+// their group's base via logicalBase, so a window shared only by a split's
+// grouped sessions counts once. rows is the already-parsed session list (used
+// for the shadow→base resolution); a nil/failed query yields a nil map (callers
+// default such windows to a link count of 1).
+func (c *Controller) windowLinkCounts(rows []sessionRow) map[string]int {
+	// window_id is "@N" (no separator chars); session_name is user-arbitrary so it
+	// goes last and each line is split on the first '|'.
+	out, err := c.runTmux("list-windows", "-a", "-F", "#{window_id}|#{session_name}")
+	if err != nil {
+		return nil
+	}
+	bases := map[string]map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		f := strings.SplitN(line, "|", 2)
+		if len(f) < 2 {
+			continue
+		}
+		winID, sess := f[0], f[1]
+		base := logicalBase(rows, sess)
+		if bases[winID] == nil {
+			bases[winID] = map[string]bool{}
+		}
+		bases[winID][base] = true
+	}
+	counts := make(map[string]int, len(bases))
+	for id, set := range bases {
+		counts[id] = len(set)
+	}
+	return counts
+}
+
+// sessionEmptiness maps a session name to whether it's "empty": a single window
+// with a single pane running only an idle shell. Computed from one `list-panes
+// -a` fork; ephemeral web-* grouped shadows are skipped (they mirror their base's
+// panes, which are counted under the base's own name). A nil/failed query yields
+// a nil map (every session then reports non-empty, so the kill confirm stays).
+func (c *Controller) sessionEmptiness(rows []sessionRow) map[string]bool {
+	out, err := c.runTmux("list-panes", "-a", "-F", "#{session_name}|#{pane_current_command}")
+	if err != nil {
+		return nil
+	}
+	shadow := map[string]bool{}
+	for _, r := range rows {
+		if isWebShadow(r) {
+			shadow[r.name] = true
+		}
+	}
+	type agg struct {
+		panes    int
+		allShell bool
+	}
+	byName := map[string]*agg{}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		f := strings.SplitN(line, "|", 2)
+		if len(f) < 2 {
+			continue
+		}
+		name, cmd := f[0], f[1]
+		if shadow[name] {
+			continue
+		}
+		a := byName[name]
+		if a == nil {
+			a = &agg{allShell: true}
+			byName[name] = a
+		}
+		a.panes++
+		if !isShellCommand(cmd) {
+			a.allShell = false
+		}
+	}
+	empty := make(map[string]bool, len(byName))
+	for name, a := range byName {
+		empty[name] = a.panes == 1 && a.allShell
+	}
+	return empty
 }
 
 // RenameSession renames a session. tmux keys sessions by name, so this targets the
