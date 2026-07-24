@@ -25,6 +25,7 @@ const GROUPS = [
       { keys: [...M, 'I'], desc: 'Preview — add/remove the focused window (1 = corner box, 2+ = docked edge bar)' },
       { keys: [...M, 'H'], desc: 'Preview — hide / show it (keeps its windows)' },
       { keys: [...M, 'D'], desc: 'Recents — remove the current window from the strip & view (same as its tab ×)' },
+      { keys: [...M, 'C'], desc: 'New window in the focused pane’s session (also ⌘⌥C on a Mac)' },
       { keys: [...M, '⏎'], desc: 'Split view — add another terminal region' },
       { keys: [...M, 'X'], desc: 'Close the focused region — tmux ⌃b x' },
       { keys: [...M, '['], desc: 'Toggle copy / normal (scrollback) mode — tmux ⌃b [' },
@@ -53,8 +54,14 @@ const GROUPS = [
   {
     title: 'Terminal',
     rows: [
-      { keys: ['⌘/⌃', 'C'], desc: 'Copy the selection (or interrupt if nothing is selected)' },
+      { keys: ['⌘/⌃', 'C'], desc: 'Copy the selection (or interrupt if nothing is selected); stays in copy mode so you can copy several regions in a row' },
       { keys: ['⌘/⌃', 'V'], desc: 'Paste (auto-exits copy mode first so the text lands at the prompt)' },
+    ],
+  },
+  {
+    title: 'Trackpad (Mac)',
+    rows: [
+      { keys: ['pinch'], desc: 'Spread two fingers apart to open Exposé; pinch them together to close it' },
     ],
   },
 ];

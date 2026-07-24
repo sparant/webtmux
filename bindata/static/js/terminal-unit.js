@@ -226,8 +226,12 @@ export class TerminalUnit {
       // (Ctrl+Alt+W sidebar toggle is a global shortcut owned by the bootstrap /
       // split manager so it works regardless of which unit/pane has focus.)
 
-      // Allow Cmd+C / Ctrl+C to copy selected text
-      if ((ev.metaKey || ev.ctrlKey) && ev.key === 'c') {
+      // Allow Cmd+C / Ctrl+C to copy selected text. Exclude the Option/Alt variant:
+      // Ctrl/Cmd+Option+C is the "new window" global chord (owned by SplitManager),
+      // not a copy — without the !altKey guard a Control+Option+C with no selection
+      // fell through here and was sent to the pane as a bare Ctrl+C, interrupting
+      // the foreground job and stealing the shortcut.
+      if ((ev.metaKey || ev.ctrlKey) && !ev.altKey && ev.key === 'c') {
         const selection = this.terminal.getSelection();
         if (selection) {
           navigator.clipboard.writeText(selection).catch(err => {
@@ -235,9 +239,10 @@ export class TerminalUnit {
           });
           // Clear the highlight once copied.
           this.terminal.clearSelection();
-          // If we were scrolled into tmux copy-mode (buffer mode), drop back to
-          // normal (edit) mode after copying so typing resumes at the prompt.
-          if (this.inCopyMode) this.exitCopyMode();
+          // Deliberately STAY in copy-mode after copying: you often want to copy
+          // several regions in a row (e.g. to paste into different windows) without
+          // re-entering the scrollback each time. Paste is what drops you back to
+          // normal mode (see the V handler) — copy no longer does.
           return false; // Handled
         }
         // No selection - let it pass through as Ctrl+C (interrupt)
