@@ -451,6 +451,13 @@ class WebtmuxToolbar extends LitElement {
         @click=${() => { this._tipLeave(); this.manager?.expose?.toggle(); }}
       >▦</button>
       <button
+        class="tbtn"
+        aria-label="Save pane buffer to file"
+        @mouseenter=${(e) => this._tipEnter(e, `Save the focused pane's entire captured buffer to a text file (download).`)}
+        @mouseleave=${() => this._tipLeave()}
+        @click=${() => { this._tipLeave(); this.manager?.savePaneBuffer(); }}
+      >⤓</button>
+      <button
         class="tbtn text"
         aria-label="Scroll-wheel mode"
         @mouseenter=${(e) => this._tipEnter(e, scrollTooltip(normalizeScroll(this.scrollMode)))}

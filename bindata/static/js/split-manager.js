@@ -423,6 +423,40 @@ export class SplitManager {
     if (this.toolbar) this.toolbar.copyMode = !inMode;
   }
 
+  // Save the FOCUSED pane's entire captured buffer to a downloaded text file.
+  // We do the tmux capture-pane → save-buffer flow ourselves off the shared
+  // CaptureCache (the same snapshot Exposé/Preview read): force a fresh capture of
+  // this one window, then — as soon as its frame lands (or a short grace period
+  // elapses) — decode it, strip SGR colour codes, and hand the browser a .txt
+  // download named for the session + window.
+  savePaneBuffer() {
+    const u = this.focusedUnit;
+    const id = u?.layout?.activeWindowId;
+    if (!id) return;
+    const cache = this.captureCache;
+    const win = (u.layout?.windows || []).find((w) => w.id === id);
+    const sess = this.logicalSession(u) || 'session';
+    const idx = win?.index ?? 0;
+    const name = win?.name || 'bash';
+    const fname = sanitizeFilename(`${sess}-${idx}-${name}`) + '.txt';
+
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      cache.removeEventListener('update', onUpdate);
+      const entry = cache.get(id);
+      if (!entry) return; // nothing captured yet — nothing to write
+      downloadText(fname, paneBufferText(entry));
+    };
+    const onUpdate = () => finish();
+    // Write on the next capture frame (our forced one), with a grace-period fallback
+    // so a slow/missing reply still saves the best snapshot already cached.
+    cache.addEventListener('update', onUpdate);
+    cache.request([id], true);
+    setTimeout(finish, 1200);
+  }
+
   _refreshToolbar() {
     if (!this.toolbar) return;
     this._refreshPanes();
@@ -745,4 +779,33 @@ export class SplitManager {
     window.addEventListener('webtmux-shortcuts-open', () => this.shortcuts?.toggle());
     window.addEventListener('webtmux-pip-toggle', () => this.toggleFocusedInPreview());
   }
+}
+
+// --- pane-buffer save helpers ------------------------------------------------
+
+// Decode a capture entry to plain text: base64 ANSI -> UTF-8, then strip SGR
+// colour codes (the capture is stored WITH colour, same as the Exposé thumbnails)
+// so the saved file is clean readable text.
+function paneBufferText(entry) {
+  if (!entry || !entry.data) return '';
+  const text = new TextDecoder().decode(CaptureCache.decodeAnsi(entry));
+  return text.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+// Turn a "session-index-name" stub into a safe download filename.
+function sanitizeFilename(s) {
+  return String(s).replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'pane';
+}
+
+// Hand the browser a text file download (Blob + object URL + synthetic click).
+function downloadText(filename, text) {
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }

@@ -32,6 +32,10 @@ class WebtmuxExpose extends LitElement {
     // The live type-ahead filter phrase (display form, e.g. "cla 2"). Reactive so
     // the header re-renders as you type. The word list backing it is _searchWords.
     _query: { state: true },
+    // Whether the type-ahead also searches each window's captured pane output
+    // (not just its session + window name). Reactive so the header toggle
+    // re-renders. Default off; persisted across sessions.
+    _searchBuffers: { state: true },
   };
 
   static styles = css`
@@ -168,7 +172,11 @@ class WebtmuxExpose extends LitElement {
       min-height: 0;
       transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s;
     }
-    .tile:hover,
+    /* ONE selector, shared by mouse and keyboard. Hovering a tile MOVES the cursor
+       to it (see the mouseenter handler in _buildTile); arrow keys move the same
+       cursor. There is no separate :hover highlight, so the mouse and keyboard can
+       never each show their own blue box — the last input to act owns the single
+       selector. */
     .tile.cursor {
       border-color: #4a9eff;
       box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5);
@@ -176,6 +184,13 @@ class WebtmuxExpose extends LitElement {
     }
     .tile.current {
       border-color: #37d17a;
+    }
+    /* Read-only xterm tiles carry a hidden helper textarea; suppress any browser
+       focus ring so it can't paint a stray blue outline that mimics the selector. */
+    .tile-screen .xterm,
+    .tile-screen .xterm textarea,
+    .tile-screen textarea {
+      outline: none !important;
     }
     .tile-frame {
       position: relative;
@@ -249,6 +264,9 @@ class WebtmuxExpose extends LitElement {
     // keeps it, so reopening lands you back in the same filtered view.
     this._searchWords = [];
     this._query = '';
+    // When on, the type-ahead ALSO matches the captured pane content (like tmux's
+    // find-mode over a pane's visible buffer); off => only session + window name.
+    this._searchBuffers = readSearchBuffers();
     this._pollTimer = null;
     // On a capture refresh, update tiles IN PLACE (keep cursor + no xterm churn)
     // when the window set is unchanged; only a membership/sort change rebuilds.
@@ -273,6 +291,25 @@ class WebtmuxExpose extends LitElement {
             : html`<span class="typehint">type to filter</span>`}
           <span><kbd>←→↑↓</kbd> move · <kbd>Enter</kbd> switch · <kbd>Esc</kbd> ${filtering ? 'clear filter' : 'close'}</span>
           <span class="spacer"></span>
+          <span class="sort">
+            <span class="lbl">Search</span>
+            <span class="seg">
+              <button
+                class=${!this._searchBuffers ? 'active' : ''}
+                title="Filter by session and window name only"
+                @click=${() => this._setSearchBuffers(false)}
+              >
+                Names
+              </button>
+              <button
+                class=${this._searchBuffers ? 'active' : ''}
+                title="Also match text in each window's captured output (like tmux find)"
+                @click=${() => this._setSearchBuffers(true)}
+              >
+                Names + output
+              </button>
+            </span>
+          </span>
           <span class="sort">
             <span class="lbl">Sort</span>
             <span class="seg">
@@ -359,7 +396,15 @@ class WebtmuxExpose extends LitElement {
     const all = this.cache ? this.cache.all(this._sort) : [];
     const terms = this._searchWords.filter((w) => w !== '');
     if (!terms.length) return all;
-    return all.filter((e) => matchesWords(`${e.sessionName} ${e.index}: ${e.name}`, terms));
+    const withBuffers = this._searchBuffers;
+    return all.filter((e) => {
+      let hay = `${e.sessionName} ${e.index}: ${e.name}`;
+      // Opt-in: also fold in the captured pane content so a syllable can match
+      // anything visible in the window (memoized per capture to keep per-keystroke
+      // re-filtering cheap).
+      if (withBuffers) hay += ' ' + entrySearchText(e);
+      return matchesWords(hay, terms);
+    });
   }
 
   // The placement key of the focused pane's current window IN its own session —
@@ -511,6 +556,11 @@ class WebtmuxExpose extends LitElement {
     tile.appendChild(label);
 
     tile.addEventListener('click', () => this._selectWindow(entry.windowId, entry.sessionName));
+    // Mouse and keyboard drive the SAME selector: entering a tile with the pointer
+    // moves the cursor onto it, exactly as an arrow key would. mouseenter (not
+    // mousemove) fires only when the pointer crosses INTO a tile, so a resting mouse
+    // never fights the keyboard — arrow-navigating away from a hovered tile sticks.
+    tile.addEventListener('mouseenter', () => this._cursorToTile(tile));
     return rec;
   }
 
@@ -568,6 +618,17 @@ class WebtmuxExpose extends LitElement {
       localStorage.setItem('webtmux-expose-sort', mode);
     } catch (e) {}
     this._rebuild(); // reorder tiles; cursor stays on the same window
+  }
+
+  // Toggle whether the type-ahead also searches captured pane output. Persisted so
+  // the choice survives close/reopen; re-filters immediately when a filter is live.
+  _setSearchBuffers(on) {
+    if (this._searchBuffers === on) return;
+    this._searchBuffers = on; // reactive -> header re-renders the active button
+    try {
+      localStorage.setItem('webtmux-expose-search-buffers', on ? '1' : '0');
+    } catch (e) {}
+    if (this.open) this._rebuild(); // re-narrow the grid under the new search scope
   }
 
   // ---- interaction ------------------------------------------------------------
@@ -641,6 +702,16 @@ class WebtmuxExpose extends LitElement {
     this._paintCursor();
   }
 
+  // Move the shared selector onto a tile the mouse just entered. Index is looked up
+  // live from the DOM so it stays correct across rebuilds/refreshes; a no-op if the
+  // cursor is already there (avoids needless repaints on re-entry).
+  _cursorToTile(tile) {
+    const i = this._tileEls().indexOf(tile);
+    if (i < 0 || i === this._cursor) return;
+    this._cursor = i;
+    this._paintCursor();
+  }
+
   _onBackdrop() {
     this.closeOverlay();
   }
@@ -680,6 +751,25 @@ function readSort() {
   } catch (e) {
     return 'session';
   }
+}
+
+function readSearchBuffers() {
+  try {
+    return localStorage.getItem('webtmux-expose-search-buffers') === '1';
+  } catch (e) {
+    return false;
+  }
+}
+
+// Decoded + SGR-stripped pane text for content search, memoized on the entry and
+// keyed by capture time so re-filtering on each keystroke never re-decodes a
+// buffer that hasn't changed.
+function entrySearchText(e) {
+  if (e.__searchText !== undefined && e.__searchTextAt === e.capturedAt) return e.__searchText;
+  const text = stripSgr(decodeUtf8(e.data)).toLowerCase();
+  e.__searchText = text;
+  e.__searchTextAt = e.capturedAt;
+  return text;
 }
 
 function stripSgr(s) {
