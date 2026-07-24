@@ -72,11 +72,12 @@ class WebtmuxPip extends LitElement {
       overflow: hidden;
       font-family: Menlo, Monaco, "Courier New", monospace;
     }
-    /* Hover + pause DOUBLES the floating corner box (both dimensions), clamped to
+    /* Hover + pause grows the floating corner box to 3× its base size (both
+       dimensions: 360→1080 wide, and the frame 216→648 tall just below), clamped to
        the viewport so it can't spill off-screen. Grow is delayed (deliberate pause),
-       shrink-back is prompt. The frame height is doubled in lockstep just below. */
+       shrink-back is prompt. */
     :host([mode='single']) { transition: width 0.2s ease; }
-    :host([mode='single']:hover) { width: min(720px, calc(100vw - 32px)); transition-delay: 0.35s; }
+    :host([mode='single']:hover) { width: min(1080px, calc(100vw - 32px)); transition-delay: 0.35s; }
     :host([mode='single'][corner='tl']) { top: calc(var(--wt-toolbar-h, 44px) + 12px); left: 16px; }
     :host([mode='single'][corner='tr']) { top: calc(var(--wt-toolbar-h, 44px) + 12px); right: calc(var(--wt-sidebar-w, 0px) + 16px); }
     :host([mode='single'][corner='bl']) { bottom: 16px; left: 16px; }
@@ -163,7 +164,9 @@ class WebtmuxPip extends LitElement {
     }
     /* Single mode keeps the classic fixed-height frame. */
     :host([mode='single']) .pframe { height: 216px; flex: none; transition: height 0.2s ease; }
-    :host([mode='single']:hover) .pframe { height: 432px; transition-delay: 0.35s; }
+    /* 3× the base frame height (216→648), capped to the viewport so a tall grow can't
+       run off a short screen. */
+    :host([mode='single']:hover) .pframe { height: min(648px, calc(100vh - 160px)); transition-delay: 0.35s; }
     .screen-host { position: absolute; inset: 0; }
     .screen { position: absolute; top: 0; left: 0; transform-origin: top left; }
 
