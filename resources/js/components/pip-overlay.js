@@ -126,7 +126,7 @@ class WebtmuxPip extends LitElement {
 
     /* A single preview tile: a scaled screen + a label strip. Bar tiles keep a FIXED
        size (the bar never grows) — hovering a bar tile instead pops a proportionally
-       4x floating magnifier (.zoom) over it; see _showZoom. */
+       up-to-4x floating magnifier (.zoom) NEXT TO the bar; see _showZoom. */
     .ptile {
       position: relative;
       display: flex;
@@ -203,12 +203,14 @@ class WebtmuxPip extends LitElement {
     .plabel .sess { flex: 0 0 auto; color: #7f8bb5; letter-spacing: 0.06em; font-size: 11px; }
 
     /* ---- bar-tile hover MAGNIFIER (.zoom) -----------------------------------
-       A floating, INTERACTIVE 4x copy of the hovered bar tile. It sits ABOVE the
-       bar (and the terminal) at a high z-index so it can spill past the bar's own
-       thickness — the bar itself never resizes. Its own × (remove) + click-to-
-       activate are drawn ON the magnifier, so the controls are usable while zoomed
-       (the small tile's × sits underneath, hidden by the cover). position:fixed +
-       inline left/top/width/height set imperatively in _showZoom. */
+       A floating up-to-4x copy of the hovered bar tile, shown NEXT TO the bar (on
+       the terminal side, away from the docked edge) so it never covers the tiles —
+       you can sweep the pointer across the thumbnails and the magnifier follows the
+       hovered one. It's PASSIVE (pointer-events: none): the per-preview controls
+       (remove ×, click-to-activate) stay on the normal-size tiles, which the
+       magnifier never covers. Sized to fit the space beside the bar (capped so it
+       can't overlap the bar or leave the viewport). position:fixed + inline
+       left/top/width/height set imperatively in _showZoom. */
     .zoom {
       position: fixed;
       display: none;
@@ -219,7 +221,7 @@ class WebtmuxPip extends LitElement {
       border-radius: 8px;
       overflow: hidden;
       box-shadow: 0 14px 40px rgba(0, 0, 0, 0.66);
-      cursor: pointer;                 /* click the magnifier to switch to it */
+      pointer-events: none;            /* passive preview — never steals hover/clicks */
     }
     .zoom.show { display: flex; }
     .zoom .zframe {
@@ -231,20 +233,6 @@ class WebtmuxPip extends LitElement {
       border-bottom: 1px solid #0f3460;
     }
     .zoom .screen-host { position: absolute; inset: 0; }
-    .zoom .zremove {
-      position: absolute;
-      top: 8px; right: 8px;
-      width: 26px; height: 26px;
-      display: flex; align-items: center; justify-content: center;
-      border-radius: 6px;
-      border: 2px solid rgba(233, 69, 96, 0.85);
-      background: rgba(9, 13, 28, 0.92);
-      color: #f3a7b4;
-      font-size: 15px; line-height: 1; padding: 0;
-      cursor: pointer; z-index: 2;
-      transition: transform 0.1s, background 0.12s, color 0.12s;
-    }
-    .zoom .zremove:hover { transform: scale(1.12); background: #e94560; color: #fff; border-color: #e94560; }
     .zoom .zlabel {
       flex: 0 0 auto;
       display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
@@ -667,26 +655,28 @@ class WebtmuxPip extends LitElement {
   _rescaleAll() { for (const id of this._terms.keys()) this._rescale(id); }
 
   // ---- bar-tile hover magnifier ------------------------------------------------
-  // The magnifier is a floating, interactive 4x copy of the hovered bar tile. It
-  // overlays the tile (and spills past the fixed bar), carrying its OWN × + click-
-  // to-activate so the controls are usable while zoomed. Kept ALIVE via the same
-  // capture poll as the tiles (its window is already in _wins). Only in bar mode.
+  // A floating, PASSIVE up-to-4x copy of the hovered bar tile, shown NEXT TO the bar
+  // so it never covers the thumbnails: sweep the pointer across the tiles and the
+  // magnifier follows the hovered one, instantly. The tiles keep their own controls
+  // (× / click-to-activate) since the magnifier never covers them. Kept ALIVE via
+  // the same capture poll as the tiles (its window is already in _wins). Bar mode only.
 
-  ZOOM_SCALE = 4;               // 4x the original tile
-  ZOOM_DELAY_MS = 350;          // deliberate hover pause before it pops
-  ZOOM_HIDE_GRACE_MS = 140;     // window to cross from tile onto the magnifier
+  ZOOM_SCALE = 4;               // up to 4x the tile (capped to the room beside the bar)
+  ZOOM_DELAY_MS = 300;          // deliberate hover pause before it first appears
+  ZOOM_HIDE_GRACE_MS = 120;     // bridge the tiny gap when moving between adjacent tiles
 
   _zoomEnter(id) {
     if (this.mode !== 'bar') return;
     if (this._zoomHideTimer) { clearTimeout(this._zoomHideTimer); this._zoomHideTimer = null; }
-    if (this._zoomId === id) return;                 // already magnifying this one
+    if (this._zoomId === id) return;                 // already magnifying this tile
+    if (this._zoomId) { this._showZoom(id); return; } // already visible → switch instantly
     if (this._zoomTimer) clearTimeout(this._zoomTimer);
     this._zoomTimer = setTimeout(() => this._showZoom(id), this.ZOOM_DELAY_MS);
   }
 
-  // Leave with a grace delay so the pointer can travel from the tile onto the
-  // magnifier that now covers it (which fires the tile's mouseleave) without the
-  // magnifier flapping shut. The magnifier's own mouseenter cancels this.
+  // Leave with a short grace so moving between two adjacent tiles (a brief gap where
+  // neither is hovered) doesn't flap the magnifier shut; the next tile's mouseenter
+  // cancels it. Hides only when the pointer truly leaves the strip.
   _zoomLeaveSoon() {
     if (this._zoomTimer) { clearTimeout(this._zoomTimer); this._zoomTimer = null; }
     if (this._zoomHideTimer) clearTimeout(this._zoomHideTimer);
@@ -704,27 +694,51 @@ class WebtmuxPip extends LitElement {
     this._zoomId = id;
     this._buildZoomChrome(zoom, id);
 
-    // Size = ZOOM_SCALE × the tile (proportional in BOTH dimensions), positioned to
-    // cover the tile and spill toward the terminal (away from the docked edge), then
-    // clamped to the viewport.
+    // Position the magnifier in the strip of space NEXT TO the bar (on the terminal
+    // side), never over the bar. Its own rect is the bar (:host([mode='bar'])); the
+    // room beside it caps the size so the magnifier can neither overlap the bar nor
+    // leave the viewport, while staying a proportional (up to ZOOM_SCALE×) copy.
     const tr = tile.getBoundingClientRect();
-    const zw = Math.round(tr.width * this.ZOOM_SCALE);
-    const zh = Math.round(tr.height * this.ZOOM_SCALE);
-    const cx = tr.left + tr.width / 2;
-    const cy = tr.top + tr.height / 2;
-    let left, top;
-    switch (this.edge) {
-      case 'top':    left = cx - zw / 2;    top = tr.top;           break; // spill down
-      case 'bottom': left = cx - zw / 2;    top = tr.bottom - zh;   break; // spill up
-      case 'left':   left = tr.left;        top = cy - zh / 2;      break; // spill right
-      case 'right':  left = tr.right - zw;  top = cy - zh / 2;      break; // spill left
-      default:       left = cx - zw / 2;    top = cy - zh / 2;
-    }
-    const m = 8;
+    const bar = this.getBoundingClientRect();
+    const g = 10;                                 // gap between bar and magnifier
+    const m = 8;                                  // viewport margin
     const toolbarH = parseInt(getComputedStyle(document.documentElement)
       .getPropertyValue('--wt-toolbar-h')) || 44;
+
+    // Available box beside the bar for each docked edge.
+    let availW, availH;
+    switch (this.edge) {
+      case 'top':    availW = window.innerWidth - 2 * m;  availH = window.innerHeight - bar.bottom - g - m; break;
+      case 'bottom': availW = window.innerWidth - 2 * m;  availH = bar.top - g - (toolbarH + m);           break;
+      case 'left':   availW = window.innerWidth - bar.right - g - m; availH = bar.height - 2 * m;          break;
+      case 'right':  availW = bar.left - g - m;           availH = bar.height - 2 * m;                     break;
+      default:       availW = window.innerWidth - 2 * m;  availH = window.innerHeight - 2 * m;
+    }
+    // Proportional scale, capped so the WHOLE magnifier fits the space beside the bar
+    // — this is what keeps an otherwise-4x preview from overflowing when the bar eats
+    // most of the screen: it shrinks to fit instead of spilling off. If even a 1x
+    // copy wouldn't fit beside the bar (extremely cramped viewport), skip it entirely
+    // rather than draw something smaller than the thumbnail or off-screen.
+    const scale = Math.min(this.ZOOM_SCALE, availW / tr.width, availH / tr.height);
+    if (!(scale >= 1)) { this._hideZoom(); return; }
+    const zw = Math.round(tr.width * scale);
+    const zh = Math.round(tr.height * scale);
+    const cx = tr.left + tr.width / 2;
+    const cy = tr.top + tr.height / 2;
+
+    let left, top;
+    switch (this.edge) {
+      case 'top':    left = cx - zw / 2;      top = bar.bottom + g;      break; // below the bar
+      case 'bottom': left = cx - zw / 2;      top = bar.top - g - zh;    break; // above the bar
+      case 'left':   left = bar.right + g;    top = cy - zh / 2;         break; // right of the bar
+      case 'right':  left = bar.left - g - zw; top = cy - zh / 2;        break; // left of the bar
+      default:       left = cx - zw / 2;      top = cy - zh / 2;
+    }
+    // Clamp along the free (cross) axis so the box stays on-screen; the docked-edge
+    // axis is already fixed just beside the bar above.
     left = Math.max(m, Math.min(window.innerWidth - zw - m, left));
     top = Math.max(toolbarH + m, Math.min(window.innerHeight - zh - m, top));
+
     zoom.style.width = zw + 'px';
     zoom.style.height = zh + 'px';
     zoom.style.left = Math.round(left) + 'px';
@@ -741,29 +755,17 @@ class WebtmuxPip extends LitElement {
     if (zoom) zoom.classList.remove('show');
   }
 
-  // Build the magnifier's chrome (frame + × + label) once, then reuse it. The xterm
-  // lives in a static .screen-host div (like the tiles) so re-showing never orphans
-  // it. Its own hover handlers keep it open while the pointer is over it.
+  // Build the magnifier's chrome (frame + label) once, then reuse it. The xterm lives
+  // in a static .screen-host div (like the tiles) so re-showing never orphans it. No
+  // controls or handlers here — the magnifier is passive (pointer-events:none); the
+  // remove × / click-to-activate stay on the normal-size tiles it sits beside.
   _buildZoomChrome(zoom, id) {
     if (!zoom._wired) {
-      zoom.addEventListener('mouseenter', () => {
-        if (this._zoomHideTimer) { clearTimeout(this._zoomHideTimer); this._zoomHideTimer = null; }
-      });
-      zoom.addEventListener('mouseleave', () => this._zoomLeaveSoon());
-      zoom.addEventListener('click', () => { const z = this._zoomId; if (z) this._activate(z); });
-
       const frame = document.createElement('div');
       frame.className = 'zframe';
       const host = document.createElement('div');
       host.className = 'screen-host';
       frame.appendChild(host);
-      const remove = document.createElement('button');
-      remove.className = 'zremove';
-      remove.textContent = '✕';
-      remove.title = 'Remove from preview';
-      remove.setAttribute('aria-label', 'Remove from preview');
-      remove.addEventListener('click', (e) => { e.stopPropagation(); const z = this._zoomId; this._hideZoom(); if (z) this.removeWindow(z); });
-      frame.appendChild(remove);
       const label = document.createElement('div');
       label.className = 'zlabel';
       const name = document.createElement('span'); name.className = 'name';
