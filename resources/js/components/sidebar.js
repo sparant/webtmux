@@ -22,6 +22,14 @@ class WebtmuxSidebar extends LitElement {
     dropIndex: { type: Number },
     // Session name currently under a dragged WINDOW (link drop-target highlight).
     dragOverSession: { type: String },
+    // Session-tab REORDER drag state (distinct from the window-link drag above).
+    // tmux has no native session order (it lists sessions alphabetically and has no
+    // swap-session), so this order is a webtmux-local, per-browser preference.
+    draggingSession: { type: String },
+    // The session tab the reorder drop is hovering, and whether it lands AFTER it
+    // (pointer past the tab's horizontal midpoint) — drives the insertion marker.
+    sessionDropTarget: { type: String },
+    sessionDropAfter: { type: Boolean },
     // Window ids currently displayed by OTHER split regions — not selectable here
     // (two panes on one window share it / stay in sync). Set by the SplitManager.
     disabledWindows: { type: Array },
@@ -285,6 +293,25 @@ class WebtmuxSidebar extends LitElement {
       opacity: 0.7;
       margin-left: 4px;
     }
+
+    /* Session-tab reordering (webtmux-local — tmux has no native session order). */
+    .session-tab[draggable] { cursor: grab; }
+    .session-tab.sdragging { opacity: 0.4; cursor: grabbing; }
+    /* A vertical insertion line on the side the dragged session will land — mirrors
+       the window list's insertion line, adapted to the horizontal (wrapping) row. */
+    .session-tab.sdrop-before::before,
+    .session-tab.sdrop-after::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      border-radius: 2px;
+      background: #4a9eff;
+      box-shadow: 0 0 6px rgba(74, 158, 255, 0.9);
+    }
+    .session-tab.sdrop-before::before { left: -3px; }
+    .session-tab.sdrop-after::after { right: -3px; }
   `;
 
   constructor() {
@@ -306,6 +333,12 @@ class WebtmuxSidebar extends LitElement {
     this.draggingWindow = '';
     this.dropIndex = -1;
     this.dragOverSession = '';
+    // Session-reorder drag state + the persisted webtmux-local session order (a list
+    // of session names; unknown/new sessions fall through to the server's order).
+    this.draggingSession = '';
+    this.sessionDropTarget = '';
+    this.sessionDropAfter = false;
+    this._sessionOrder = readSessionOrder();
     // Type-ahead search state (typing in the focused panel selects a window).
     this._searchWords = [];
     this._searchTimer = null;
@@ -426,6 +459,7 @@ class WebtmuxSidebar extends LitElement {
     const canClose = this.unit && !this.unit.primary;
     return html`
       <div class="mode-row">
+        <div class="shortcut-hint">Toggle panel: <kbd>${MOD_KEYS[0]}</kbd>+<kbd>${MOD_KEYS[1]}</kbd>+<kbd>W</kbd></div>
         <button
           class="mode-btn"
           @click=${this.toggleOverlay}
@@ -449,7 +483,6 @@ class WebtmuxSidebar extends LitElement {
             ✕ Close this region
           </button>
         ` : ''}
-        <div class="shortcut-hint">Toggle panel: <kbd>${MOD_KEYS[0]}</kbd>+<kbd>${MOD_KEYS[1]}</kbd>+<kbd>W</kbd></div>
       </div>
     `;
   }
@@ -486,13 +519,16 @@ class WebtmuxSidebar extends LitElement {
             >`
           : html`
           <button
-            class="session-tab ${sess.active ? 'active' : ''} ${sess.name === this.dragOverSession ? 'link-target' : ''}"
+            class="session-tab ${sess.active ? 'active' : ''} ${sess.name === this.dragOverSession ? 'link-target' : ''} ${sess.name === this.draggingSession ? 'sdragging' : ''} ${sess.name === this.sessionDropTarget ? (this.sessionDropAfter ? 'sdrop-after' : 'sdrop-before') : ''}"
+            draggable="true"
             @click=${() => this.switchSession(sess.name)}
             @dblclick=${() => this.startSessionRename(sess.name)}
+            @dragstart=${(e) => this.onSessionDragStart(e, sess.name)}
+            @dragend=${() => this.onSessionDragEnd()}
             @dragover=${(e) => this.onSessionDragOver(e, sess.name)}
             @dragleave=${() => this.onSessionDragLeave(sess.name)}
             @drop=${(e) => this.onSessionDrop(e, sess.name)}
-            title="Double-click to rename · drop a window here to link it into this session"
+            title="Click to switch · double-click to rename · drag to reorder · drop a window here to link it"
           >
             ${sess.name}<span class="win-count">(${sess.windows})</span><span
               class="kill"
@@ -640,6 +676,19 @@ class WebtmuxSidebar extends LitElement {
   // keeps running and appears in both). Only meaningful for a window NOT already
   // in that session — the current pane's own logical session is skipped.
   onSessionDragOver(e, sessionName) {
+    // REORDER: a session tab dragged over another session tab. Insertion lands
+    // before the tab, or after it when the pointer is past its horizontal midpoint.
+    if (this.draggingSession) {
+      if (this.draggingSession === sessionName) { this.sessionDropTarget = ''; return; }
+      e.preventDefault();
+      try { e.dataTransfer.dropEffect = 'move'; } catch (_) {}
+      const r = e.currentTarget.getBoundingClientRect();
+      const after = e.clientX > r.left + r.width / 2;
+      if (this.sessionDropTarget !== sessionName) this.sessionDropTarget = sessionName;
+      if (this.sessionDropAfter !== after) this.sessionDropAfter = after;
+      return;
+    }
+    // LINK: a window tab dragged onto a session tab (existing behavior).
     if (!this.draggingWindow) return;                 // only during a window drag
     if (this._isCurrentSession(sessionName)) return;  // already here — not a link target
     e.preventDefault();                               // allow the drop
@@ -649,17 +698,41 @@ class WebtmuxSidebar extends LitElement {
 
   onSessionDragLeave(sessionName) {
     if (this.dragOverSession === sessionName) this.dragOverSession = '';
+    if (this.sessionDropTarget === sessionName) this.sessionDropTarget = '';
   }
 
   onSessionDrop(e, sessionName) {
     e.preventDefault();
     e.stopPropagation();                              // don't also bubble to the window-list drop
-    // Prefer live drag state; fall back to the dataTransfer payload so the link
-    // fires even if a re-render cleared draggingWindow before the drop landed.
+    // REORDER drop: move the dragged session before/after this one.
+    if (this.draggingSession) {
+      const drag = this.draggingSession;
+      const after = this.sessionDropAfter;
+      this.onSessionDragEnd();
+      if (drag && drag !== sessionName) this.reorderSession(drag, sessionName, after);
+      return;
+    }
+    // LINK drop: prefer live drag state; fall back to the dataTransfer payload so the
+    // link fires even if a re-render cleared draggingWindow before the drop landed.
     const srcId = this.draggingWindow || this._dtWindowId(e);
     this.onDragEnd();
     if (!srcId || this._isCurrentSession(sessionName)) return;
     this.unit?.linkWindow(srcId, sessionName);
+  }
+
+  // --- Session-tab reorder drag (tmux has no native session order; webtmux-local) ---
+  onSessionDragStart(e, sessionName) {
+    this.draggingSession = sessionName;
+    try {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', 'session:' + sessionName);
+    } catch (_) {}
+  }
+
+  onSessionDragEnd() {
+    this.draggingSession = '';
+    this.sessionDropTarget = '';
+    this.sessionDropAfter = false;
   }
 
   // True if sessionName is the session this pane is logically viewing (so a window
@@ -838,7 +911,36 @@ class WebtmuxSidebar extends LitElement {
   // sessions excluded), so arrow-key session nav can never land on another
   // pane's ephemeral grouped session.
   _sessionList() {
-    return (this.layout?.sessions || []).filter(s => !/^web-/.test(s.name));
+    const list = (this.layout?.sessions || []).filter(s => !/^web-/.test(s.name));
+    return this._applySessionOrder(list);
+  }
+
+  // Reorder the server's session list by the persisted webtmux-local order. Names in
+  // the stored order sort by their stored position; names NOT in it (new sessions)
+  // keep their server order and trail the known ones (Array.prototype.sort is stable).
+  _applySessionOrder(sessions) {
+    const order = this._sessionOrder;
+    if (!order || !order.length) return sessions;
+    const pos = new Map(order.map((n, i) => [n, i]));
+    const rank = (s) => (pos.has(s.name) ? pos.get(s.name) : Number.POSITIVE_INFINITY);
+    return [...sessions].sort((a, b) => rank(a) - rank(b));
+  }
+
+  // Commit a new session order after a reorder drag: move `dragName` to just before
+  // `targetName` (or after it when `after`), or to the end when targetName is null.
+  // Persists the FULL displayed order so it's stable across new/removed sessions.
+  reorderSession(dragName, targetName, after) {
+    const cur = this._sessionList().map(s => s.name);
+    const from = cur.indexOf(dragName);
+    if (from === -1) return;
+    cur.splice(from, 1);
+    let to = targetName == null ? cur.length : cur.indexOf(targetName);
+    if (to === -1) to = cur.length;
+    else if (after) to += 1;
+    cur.splice(to, 0, dragName);
+    this._sessionOrder = cur;
+    try { localStorage.setItem('webtmux-session-order', JSON.stringify(cur)); } catch (e) {}
+    this.requestUpdate();
   }
 
   // Step delta sessions from the active one (wrapping) and switch to it, so ←/→
@@ -893,7 +995,13 @@ class WebtmuxSidebar extends LitElement {
       this.commitRename(e, windowId);
     } else if (e.key === 'Escape') {
       e.preventDefault();
-      this.editingWindow = '';   // cancel
+      e.stopPropagation();       // don't also bubble to the panel's Escape (collapse)
+      this.editingWindow = '';   // cancel the edit only
+      // Hand focus back to the panel (not lost to <body>), so a SECOND Escape is
+      // seen by onKeyDown and collapses the sidebar. Without this the rename input
+      // vanishes and focus falls to the body, deadening further keyboard control —
+      // the reason Escape-after-rename didn't collapse the panel.
+      this.focusPanel();
     }
   }
 
@@ -926,7 +1034,9 @@ class WebtmuxSidebar extends LitElement {
       this.commitSessionRename(e, oldName);
     } else if (e.key === 'Escape') {
       e.preventDefault();
-      this.editingSession = '';   // cancel
+      e.stopPropagation();        // don't also bubble to the panel's Escape (collapse)
+      this.editingSession = '';   // cancel the edit only
+      this.focusPanel();          // refocus so a second Escape collapses the panel
     }
   }
 
@@ -989,6 +1099,18 @@ class WebtmuxSidebar extends LitElement {
   // of the session list, mirroring the windows "+"). The server names it.
   newSession() {
     this.unit?.newSession();
+  }
+}
+
+// The persisted webtmux-local session order (array of session names), or [] if
+// absent/corrupt. tmux itself has no session order, so this is a per-browser
+// preference for how the sidebar lists sessions.
+function readSessionOrder() {
+  try {
+    const v = JSON.parse(localStorage.getItem('webtmux-session-order') || '[]');
+    return Array.isArray(v) ? v.filter((n) => typeof n === 'string') : [];
+  } catch (e) {
+    return [];
   }
 }
 

@@ -241,8 +241,19 @@ export class SplitManager {
     if (newId && newId !== unit._accessSeenId) {
       unit._accessSeenId = newId;
       unit._targetWindowId = null;   // an in-flight goToWindow switch has landed
-      const suppressed = unit._suppressAccessIds.delete(newId) || unit._suppressAccessNext;
+      const landSession = this.logicalSession(unit);
+      let suppressed = unit._suppressAccessIds.delete(newId) || unit._suppressAccessNext;
       unit._suppressAccessNext = false;
+      // Cross-session-hop transient guard: an intermediate layout that still shows
+      // the hopped window in the OLD session must not be recorded — otherwise
+      // cycling recents (Ctrl+Alt+N) onto a linked window resurrects the very tab
+      // you removed. Skip ONLY that exact (id, old-session) pair; the real landing
+      // (same id, NEW session) records normally and clears the guard.
+      if (unit._navSuppress && unit._navSuppress.id === newId &&
+          unit._navSuppress.session === landSession) {
+        suppressed = true;
+      }
+      if (unit._navSuppress && landSession !== unit._navSuppress.session) unit._navSuppress = null;
       if (!suppressed) this.noteAccess(newId, this._metaFor(unit, newId));
     }
     this._refreshToolbar();
@@ -373,6 +384,22 @@ export class SplitManager {
     if (this.recentWindows.length !== before) this._refreshToolbar();
   }
 
+  // Remove the FOCUSED pane's CURRENT window from the recents strip — the keyboard
+  // equivalent of clicking × on the recent tab you're looking at (Ctrl+Alt+D). It
+  // reuses removeRecent, so it inherits the same "step the view to the next recent"
+  // pick and the same close-the-split-holder behavior. No-op if the current window
+  // isn't in the strip (nothing to remove). Prefer the tab for the pane's own
+  // session; fall back to any tab for this window id.
+  removeFocusedFromRecents() {
+    const u = this.focusedUnit;
+    const id = u?.layout?.activeWindowId;
+    if (!id) return;
+    const session = this.logicalSession(u);
+    const entry = this.recentWindows.find(e => e.id === id && e.session === session)
+      || this.recentWindows.find(e => e.id === id);
+    if (entry) this.removeRecent(entry);
+  }
+
   // Pane-focus dots: one per region (only when >1), green on the focused pane.
   // Also surface the focused region's copy-mode state (ground truth from the
   // layout poll's #{pane_in_mode}) so the toolbar can recolor + show the status.
@@ -479,6 +506,10 @@ export class SplitManager {
     if (u.layout?.activeWindowId === id && !needHop) { u.terminal?.focus(); return; }  // already showing it here
     const inList = (u.layout?.windows || []).some(w => w.id === id);
     if (needHop) {
+      // Guard the hop's intermediate layout: it may flash this window in the session
+      // we're LEAVING before the switch completes, which would (re)note an access in
+      // the old session — see _onUnitLayout's _navSuppress handling.
+      u._navSuppress = { id, session: curSession };
       u.switchSession(session);
     } else if (!inList) {
       if (!session || !u.layout || session === curSession) return; // unreachable
@@ -653,7 +684,8 @@ export class SplitManager {
     //   [  copy-mode                          -> toggle copy/normal on the focused pane
     //   ?  list-keys                          -> the shortcuts overlay (physical '/')
     // Split-add has no unmodified tmux letter (tmux uses % / ", both need Shift), so
-    // it keeps the intuitive Enter. Exposé ('e') and Picture-in-Picture ('i' = pIp)
+    // it keeps the intuitive Enter. Exposé ('e'), Picture-in-Picture add ('i' = pIp),
+    // preview hide/show ('h' = Hide) and remove-current-from-recents ('d' = Dismiss)
     // are webtmux-only, so they keep their own mnemonic letters.
     // stopPropagation keeps xterm from seeing them.
     window.addEventListener('keydown', (ev) => {
@@ -674,6 +706,12 @@ export class SplitManager {
           break;
         case 'KeyI':                                   // add/remove focused window in the preview (i = pIp)
           this.toggleFocusedInPreview();
+          break;
+        case 'KeyH':                                   // hide/show the whole preview (h = Hide)
+          this.togglePreviewHidden();
+          break;
+        case 'KeyD':                                   // remove the current window from recents/view (d = Dismiss)
+          this.removeFocusedFromRecents();
           break;
         case 'KeyP':                                   // tmux 'p' (previous-window): recents left
           this.navigateRecents(-1);

@@ -124,6 +124,12 @@ export class TerminalUnit {
     this._accessSeenId = null;
     this._suppressAccessIds = new Set();
     this._suppressAccessNext = false;
+    // A cross-session hop can briefly emit an intermediate layout that still shows
+    // the TARGET window in the OLD session before the switch lands. That transient
+    // must not be recorded as an access (it would resurrect a recents tab you just
+    // removed). SplitManager.goToWindow sets this to {id, session} = the exact
+    // (window, old-session) pair to skip; the access path clears it on landing.
+    this._navSuppress = null;
     this.oscBuffer = ''; // Buffer for OSC sequence detection
     this.resizeObserver = null;
 

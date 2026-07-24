@@ -23,6 +23,8 @@ const GROUPS = [
       { keys: [...M, 'W'], desc: 'Toggle the sidebar (windows & sessions) — tmux ⌃b w' },
       { keys: [...M, 'E'], desc: 'Exposé — every window across all sessions' },
       { keys: [...M, 'I'], desc: 'Preview — add/remove the focused window (1 = corner box, 2+ = docked edge bar)' },
+      { keys: [...M, 'H'], desc: 'Preview — hide / show it (keeps its windows)' },
+      { keys: [...M, 'D'], desc: 'Recents — remove the current window from the strip & view (same as its tab ×)' },
       { keys: [...M, '⏎'], desc: 'Split view — add another terminal region' },
       { keys: [...M, 'X'], desc: 'Close the focused region — tmux ⌃b x' },
       { keys: [...M, '['], desc: 'Toggle copy / normal (scrollback) mode — tmux ⌃b [' },
