@@ -606,6 +606,7 @@ export class SplitManager {
     //   w  choose-tree (window/session list) -> toggle the sidebar
     //   p  previous-window / n  next-window   -> step the recents strip
     //   x  kill-pane                          -> close the focused region
+    //   [  copy-mode                          -> toggle copy/normal on the focused pane
     //   ?  list-keys                          -> the shortcuts overlay (physical '/')
     // Split-add has no unmodified tmux letter (tmux uses % / ", both need Shift), so
     // it keeps the intuitive Enter. Exposé ('e') and Picture-in-Picture ('i' = pIp)
@@ -641,6 +642,9 @@ export class SplitManager {
           break;
         case 'Comma':                                  // tmux ',' (rename-window): rename current
           this.renameActiveWindow();
+          break;
+        case 'BracketLeft':                            // tmux '[' (copy-mode): toggle copy/normal
+          this.toggleCopyMode();
           break;
         default:
           return;                                      // not ours — let it through
