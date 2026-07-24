@@ -284,6 +284,11 @@ func (wt *WebTTY) handleCaptureRequest(payload []byte) error {
 		_ = json.Unmarshal(req.Windows, &ids)
 	}
 	force := req.Force
+	// An all-windows request yields the COMPLETE current placement set, so the reply
+	// is tagged `full`: the client may then prune any cached window/placement absent
+	// from it (a closed window, or a session a window was unlinked from). A targeted
+	// request only speaks about the windows it named, so it is never full.
+	full := len(ids) == 0
 
 	go func() {
 		entries, err := wt.captureProvider.CaptureWindows(ids, force)
@@ -297,7 +302,8 @@ func (wt *WebTTY) handleCaptureRequest(payload []byte) error {
 		}
 		data, err := json.Marshal(struct {
 			Captures []tmux.CaptureWire `json:"captures"`
-		}{Captures: wires})
+			Full     bool               `json:"full"`
+		}{Captures: wires, Full: full})
 		if err != nil {
 			log.Printf("failed to marshal capture data: %v", err)
 			return
