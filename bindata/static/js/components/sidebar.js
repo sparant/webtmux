@@ -15,8 +15,10 @@ class WebtmuxSidebar extends LitElement {
     editingSession: { type: String },
     // Window id currently being dragged for reorder ('' = none).
     draggingWindow: { type: String },
-    // Window id currently under the drag pointer (drop target highlight).
-    dragOverWindow: { type: String },
+    // Insertion GAP index the reorder drop would land at while a window is dragged
+    // over the window list: 0 = before the first row, N = after the last (move to
+    // end). -1 = not currently over the list. Drives the single insertion line.
+    dropIndex: { type: Number },
     // Session name currently under a dragged WINDOW (link drop-target highlight).
     dragOverSession: { type: String },
     // Window ids currently displayed by OTHER split regions — not selectable here
@@ -180,16 +182,27 @@ class WebtmuxSidebar extends LitElement {
       color: #888;
     }
 
-    /* Drag-and-drop reordering: the row being dragged dims, and the row under the
-       pointer shows a bright top accent marking where it will land. */
+    /* Drag-and-drop reordering: the row being dragged dims. */
     .window-tab[draggable] { cursor: grab; }
     .window-tab.dragging {
       opacity: 0.4;
       cursor: grabbing;
     }
-    .window-tab.drag-over {
-      border-top: 2px solid #4a9eff;
-      box-shadow: 0 -2px 6px rgba(74, 158, 255, 0.4);
+    /* A single bright insertion line marking exactly where the dragged window will
+       land — drawn in the gap ABOVE the row at the current drop index (and above the
+       "+" row when dropping at the end). Unmistakable, and it makes "move to end"
+       obvious, unlike highlighting a whole target row. Sits in the 4px flex gap so it
+       never shifts layout. */
+    .window-tab.drop-before::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: -3px;
+      height: 2px;
+      border-radius: 2px;
+      background: #4a9eff;
+      box-shadow: 0 0 6px rgba(74, 158, 255, 0.9);
     }
 
     .window-edit {
@@ -290,8 +303,11 @@ class WebtmuxSidebar extends LitElement {
     this.editingSession = '';
     // Drag-and-drop reorder state.
     this.draggingWindow = '';
-    this.dragOverWindow = '';
+    this.dropIndex = -1;
     this.dragOverSession = '';
+    // Type-ahead search state (typing in the focused panel selects a window).
+    this._searchWords = [];
+    this._searchTimer = null;
     // Windows shown by other split regions (disabled here). SplitManager updates it.
     this.disabledWindows = [];
 
@@ -477,7 +493,12 @@ class WebtmuxSidebar extends LitElement {
       </div>
 
       <h3>Windows</h3>
-      <div class="window-tabs">
+      <div
+        class="window-tabs"
+        @dragover=${(e) => this.onWinListDragOver(e)}
+        @dragleave=${(e) => this.onWinListDragLeave(e)}
+        @drop=${(e) => this.onWinListDrop(e)}
+      >
         ${this.layout.windows?.map((win, i) => win.id === this.editingWindow
           ? html`
             <input
@@ -489,16 +510,14 @@ class WebtmuxSidebar extends LitElement {
             >`
           : html`
             <button
-              class="window-tab ${win.id === this.activeWindow ? 'active' : ''} ${this._windowDisabled(win.id) ? 'disabled' : ''} ${win.id === this.draggingWindow ? 'dragging' : ''} ${win.id === this.dragOverWindow ? 'drag-over' : ''}"
+              data-widx=${i}
+              class="window-tab ${win.id === this.activeWindow ? 'active' : ''} ${this._windowDisabled(win.id) ? 'disabled' : ''} ${win.id === this.draggingWindow ? 'dragging' : ''} ${this.draggingWindow && this.dropIndex === i ? 'drop-before' : ''}"
               draggable="true"
               @click=${() => this.selectWindow(win.id)}
               @dblclick=${() => this.startRename(win.id)}
               @dragstart=${(e) => this.onDragStart(e, win.id)}
-              @dragover=${(e) => this.onDragOver(e, win.id)}
-              @dragleave=${() => this.onDragLeave(win.id)}
-              @drop=${(e) => this.onDrop(e, i)}
               @dragend=${() => this.onDragEnd()}
-              title=${this._windowDisabled(win.id) ? 'Shown in another split pane' : 'Double-click to rename · drag to reorder, or onto a session to link'}
+              title=${this._windowDisabled(win.id) ? 'Shown in another split pane' : 'Double-click to rename · drag between rows to reorder, or onto a session to link'}
             >
               ${win.index}: ${win.name || 'bash'}<span
                 class="kill"
@@ -508,7 +527,11 @@ class WebtmuxSidebar extends LitElement {
               >×</span>
             </button>`
         )}
-        <button class="window-tab" title="New window" @click=${() => this.newWindow()}>+</button>
+        <button
+          class="window-tab ${this.draggingWindow && this.dropIndex === (this.layout.windows?.length || 0) ? 'drop-before' : ''}"
+          title="New window"
+          @click=${() => this.newWindow()}
+        >+</button>
       </div>
 
       <div class="session-info">
@@ -520,47 +543,82 @@ class WebtmuxSidebar extends LitElement {
   }
 
   // --- Drag-and-drop window reordering -------------------------------------
-  // The window tabs are draggable; dropping one on another reorders the shared
-  // window list. The drop target's ordinal position becomes the dragged window's
-  // new position, which the server realizes via adjacent swap-window calls.
+  // Window tabs are draggable. Reordering uses INSERTION-GAP semantics: as you drag
+  // over the window list a single bright line shows the gap the window will land in
+  // (between any two rows, before the first, or after the last = "move to end"),
+  // and dropping moves it there. Dropping on a SESSION tab instead LINKS it (handled
+  // separately, below) — so the list is only ever a reorder target and the sessions
+  // are only ever link targets, cleanly separated.
   onDragStart(e, winId) {
     // Disabled windows (shown in another pane) can't be dragged meaningfully.
     if (this._windowDisabled(winId)) { e.preventDefault(); return; }
     this.draggingWindow = winId;
     try {
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', winId);   // Firefox needs a payload to drag
+      // MUST allow BOTH 'move' (reorder onto the window list) and 'link' (drop onto
+      // a session): a dropEffect the effectAllowed set doesn't permit makes the
+      // browser suppress the drop entirely (no-drop cursor, no `drop` event). The
+      // old 'move' rejected the session's 'link' dropEffect — that's why dropping a
+      // window on a session did nothing. 'all' permits every dropEffect we use.
+      e.dataTransfer.effectAllowed = 'all';
+      e.dataTransfer.setData('text/plain', winId);   // payload (Firefox needs it; also our drop fallback)
     } catch (_) {}
   }
 
-  onDragOver(e, winId) {
-    if (!this.draggingWindow) return;
-    e.preventDefault();                               // allow the drop
-    try { e.dataTransfer.dropEffect = 'move'; } catch (_) {}
-    if (winId !== this.draggingWindow) this.dragOverWindow = winId;
-  }
-
-  onDragLeave(winId) {
-    if (this.dragOverWindow === winId) this.dragOverWindow = '';
-  }
-
-  onDrop(e, targetIdx) {
+  // Over the window list: compute the insertion gap from the pointer's Y against
+  // each row's midpoint and show the line there. preventDefault marks the list a
+  // valid drop target so the drop actually fires.
+  onWinListDragOver(e) {
+    if (!this.draggingWindow) return;                 // only during a window drag
     e.preventDefault();
-    const srcId = this.draggingWindow;
-    this.draggingWindow = '';
-    this.dragOverWindow = '';
+    try { e.dataTransfer.dropEffect = 'move'; } catch (_) {}
+    const idx = this._dropIndexAt(e.clientY);
+    if (idx !== this.dropIndex) this.dropIndex = idx;
+  }
+
+  // Clear the line only when the pointer truly leaves the list (not when crossing
+  // between child rows, where dragleave also fires and relatedTarget stays inside).
+  onWinListDragLeave(e) {
+    if (!e.currentTarget.contains(e.relatedTarget)) this.dropIndex = -1;
+  }
+
+  onWinListDrop(e) {
+    e.preventDefault();
+    // Prefer the live drag state; fall back to the dataTransfer payload so a stray
+    // reactive re-render that cleared draggingWindow can never eat the drop.
+    const srcId = this.draggingWindow || this._dtWindowId(e);
+    const insert = this.dropIndex >= 0 ? this.dropIndex : this._dropIndexAt(e.clientY);
+    this.onDragEnd();
     if (!srcId) return;
     const wins = this.layout?.windows || [];
     const from = wins.findIndex(w => w.id === srcId);
-    if (from === -1 || from === targetIdx) return;
-    // targetIdx is the drop target's current ordinal — the dragged window takes
-    // that slot; the server bubbles it there (see Controller.MoveWindow).
-    this.unit?.moveWindow(srcId, targetIdx);
+    if (from === -1) return;
+    // Translate the insertion GAP (0..N) into MoveWindow's FINAL ordinal (0..N-1):
+    // removing the row first shifts everything after it down by one, so a gap past
+    // the source maps one lower. A no-op gap (same slot) is skipped.
+    const finalPos = insert > from ? insert - 1 : insert;
+    if (finalPos === from) return;
+    this.unit?.moveWindow(srcId, finalPos);
+  }
+
+  // The insertion gap for pointer-Y: the first row whose vertical midpoint is below
+  // the pointer marks the gap ABOVE it; past every row => after the last (end).
+  _dropIndexAt(y) {
+    const rows = [...this.renderRoot.querySelectorAll('.window-tab[data-widx]')];
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i].getBoundingClientRect();
+      if (y < r.top + r.height / 2) return i;
+    }
+    return rows.length;
+  }
+
+  // The dragged window id from the drop event's dataTransfer (robust fallback).
+  _dtWindowId(e) {
+    try { return e.dataTransfer.getData('text/plain') || ''; } catch (_) { return ''; }
   }
 
   onDragEnd() {
     this.draggingWindow = '';
-    this.dragOverWindow = '';
+    this.dropIndex = -1;
     this.dragOverSession = '';
   }
 
@@ -582,10 +640,11 @@ class WebtmuxSidebar extends LitElement {
 
   onSessionDrop(e, sessionName) {
     e.preventDefault();
-    const srcId = this.draggingWindow;
-    this.draggingWindow = '';
-    this.dragOverWindow = '';
-    this.dragOverSession = '';
+    e.stopPropagation();                              // don't also bubble to the window-list drop
+    // Prefer live drag state; fall back to the dataTransfer payload so the link
+    // fires even if a re-render cleared draggingWindow before the drop landed.
+    const srcId = this.draggingWindow || this._dtWindowId(e);
+    this.onDragEnd();
     if (!srcId || this._isCurrentSession(sessionName)) return;
     this.unit?.linkWindow(srcId, sessionName);
   }
@@ -608,26 +667,85 @@ class WebtmuxSidebar extends LitElement {
 
     if (e.key === 'ArrowUp') {
       e.preventDefault();
+      this._resetSearch();
       this.navigateWindow(-1);
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
+      this._resetSearch();
       this.navigateWindow(1);
     } else if (e.key === 'ArrowLeft') {
       e.preventDefault();
+      this._resetSearch();
       this.navigateSession(-1);
     } else if (e.key === 'ArrowRight') {
       e.preventDefault();
+      this._resetSearch();
       this.navigateSession(1);
     } else if (e.key === 'Escape') {
       // Escape always dismisses the panel, wherever focus sits inside it.
       e.preventDefault();
+      this._resetSearch();
       this.dismiss();
     } else if (e.key === 'Enter' && tag !== 'BUTTON') {
       // Enter dismisses too, but only from the panel itself — on a button
       // (window tab, +, mode toggle) Enter still activates that control.
       e.preventDefault();
+      this._resetSearch();
       this.dismiss();
+    } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      // Type-ahead: printable characters build a search phrase that selects a
+      // window (like the ↑/↓ preview). preventDefault so Space/Enter can't also
+      // activate a focused window-tab button.
+      e.preventDefault();
+      this._typeahead(e.key);
     }
+  }
+
+  // Type-ahead window selection. The phrase is split into space-separated WORDS;
+  // a window matches when EVERY word is a substring of its "index: name" label, and
+  // we select the FIRST such window — so "cla" lands on claude-1 while "cla 2" lands
+  // on claude-2. A printable char grows the current word; if the grown phrase would
+  // match nothing we DISCARD the char (pretend it wasn't typed), so the selection
+  // never jumps to nowhere. Space starts a new word. A ~2s pause resets the phrase.
+  _typeahead(ch) {
+    // Any keystroke restarts the idle-reset timer.
+    if (this._searchTimer) clearTimeout(this._searchTimer);
+    this._searchTimer = setTimeout(() => this._resetSearch(), 2000);
+
+    const words = this._searchWords.slice();
+    if (ch === ' ') {
+      // Separator: begin a new (empty) word, but don't stack empties.
+      if (words.length === 0 || words[words.length - 1] !== '') words.push('');
+      this._searchWords = words;
+      return;   // an empty trailing word doesn't narrow the match — selection holds
+    }
+    if (words.length === 0) words.push('');
+    words[words.length - 1] += ch.toLowerCase();
+
+    const match = this._findWindowByWords(words);
+    if (!match) return;                         // no match → reject this character
+    this._searchWords = words;
+    // Preview it in the pane exactly like arrow-key nav (suppress the MRU access).
+    this.unit?._suppressAccessIds?.add(match.id);
+    this.selectWindow(match.id);
+    this.focusPanel();
+  }
+
+  // First selectable window whose "index: name" label contains every non-empty
+  // search word as a substring, or null if none match.
+  _findWindowByWords(words) {
+    const terms = words.filter(w => w !== '');
+    if (terms.length === 0) return null;
+    return (this.layout?.windows || []).find(w => {
+      if (this._windowDisabled(w.id)) return false;
+      const hay = `${w.index}: ${w.name || 'bash'}`.toLowerCase();
+      return terms.every(t => hay.includes(t));
+    }) || null;
+  }
+
+  _resetSearch() {
+    if (this._searchTimer) { clearTimeout(this._searchTimer); this._searchTimer = null; }
+    this._searchWords = [];
   }
 
   // Collapse the panel and hand keyboard focus back to THIS unit's terminal, so

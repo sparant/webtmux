@@ -350,26 +350,40 @@ class WebtmuxToolbar extends LitElement {
     return this.renderRoot?.querySelector('.wt-tip');
   }
 
-  // Schedule the tooltip to appear under the hovered tab after a short delay.
+  // Schedule the tooltip to appear under the hovered target after a short delay —
+  // OR, if a tip is already visible (e.g. moving from a tab onto its child × or
+  // onto the pane dots), swap its text/position INSTANTLY so it tracks the pointer
+  // without a second delay.
   _tipEnter(ev, text) {
     if (!text) return;
     const target = ev.currentTarget;
     if (this._tipTimer) clearTimeout(this._tipTimer);
+    const tip = this._tipEl();
+    if (tip && tip.classList.contains('show')) {
+      this._tipShow(target, text);
+      return;
+    }
     this._tipTimer = setTimeout(() => {
-      const tip = this._tipEl();
-      if (!tip || !target.isConnected) return;
-      tip.textContent = text;
-      // Show first (still transparent) so it has real dimensions to clamp against.
-      tip.classList.add('show');
-      const r = target.getBoundingClientRect();
-      const tw = tip.offsetWidth;
-      const margin = 6;
-      let left = r.left;
-      if (left + tw > window.innerWidth - margin) left = window.innerWidth - tw - margin;
-      if (left < margin) left = margin;
-      tip.style.left = `${Math.round(left)}px`;
-      tip.style.top = `${Math.round(r.bottom + margin)}px`;
+      if (!target.isConnected) return;
+      this._tipShow(target, text);
     }, WebtmuxToolbar._TIP_DELAY);
+  }
+
+  // Position + reveal the tip under `target` with `text`. Clamped to the viewport.
+  _tipShow(target, text) {
+    const tip = this._tipEl();
+    if (!tip || !target?.isConnected) return;
+    tip.textContent = text;
+    // Show first (still transparent) so it has real dimensions to clamp against.
+    tip.classList.add('show');
+    const r = target.getBoundingClientRect();
+    const tw = tip.offsetWidth;
+    const margin = 6;
+    let left = r.left;
+    if (left + tw > window.innerWidth - margin) left = window.innerWidth - tw - margin;
+    if (left < margin) left = margin;
+    tip.style.left = `${Math.round(left)}px`;
+    tip.style.top = `${Math.round(r.bottom + margin)}px`;
   }
 
   _tipLeave() {
@@ -394,7 +408,9 @@ class WebtmuxToolbar extends LitElement {
             @click=${() => { this._tipLeave(); if (!w.disabled) this.manager?.pickRecentWindow(w); }}
           ><span class="sess">${w.session}:${w.index}</span><span class="wname">${w.name}</span><span
               class="close"
-              aria-label="Remove from recents (does not close the window)"
+              aria-label="Remove from Recent (does not close the window)"
+              @mouseenter=${(e) => { e.stopPropagation(); this._tipEnter(e, 'Remove this tab from Recent — the window keeps running (this does not close or kill it)'); }}
+              @mouseleave=${(e) => { e.stopPropagation(); this._tipEnter({ currentTarget: e.currentTarget.closest('.tab') }, tip); }}
               @click=${(e) => { e.stopPropagation(); this._tipLeave(); this.manager?.removeRecent(w.id); }}
             >×</span></button>
         `;})}
@@ -430,16 +446,20 @@ class WebtmuxToolbar extends LitElement {
         @click=${() => { this._tipLeave(); this.manager?.shortcuts?.toggle(); }}
       >⌨</button>
       ${this.panes.length > 1 ? html`
-        <div class="dots" title="Panes — green is the focused pane">
-          ${this.panes.map((focused, i) => html`<span
-            class="dot ${focused ? 'focused' : ''}"
-            title="Pane ${i + 1}${focused ? ' (focused)' : ''}"></span>`)}
+        <div
+          class="dots"
+          @mouseenter=${(e) => this._tipEnter(e, `Split panes — one dot per open terminal region (${this.panes.length} open); green is the focused pane. Drag a divider to resize; ${chord('X')} closes the focused region.`)}
+          @mouseleave=${() => this._tipLeave()}
+        >
+          ${this.panes.map((focused) => html`<span class="dot ${focused ? 'focused' : ''}"></span>`)}
         </div>
       ` : ''}
       <button
         class="mode ${this.copyMode ? 'copy' : ''}"
-        title="Focused pane is in ${this.copyMode ? 'COPY' : 'NORMAL'} mode — click to ${this.copyMode ? 'exit' : 'enter'} copy mode"
-        @click=${() => this.manager?.toggleCopyMode()}
+        aria-label="Copy mode"
+        @mouseenter=${(e) => this._tipEnter(e, `Focused pane is in ${this.copyMode ? 'COPY (scrollback)' : 'NORMAL (input)'} mode — click to ${this.copyMode ? 'exit' : 'enter'} copy mode. Shortcut: ${chord('[')} (tmux ⌃b [)`)}
+        @mouseleave=${() => this._tipLeave()}
+        @click=${() => { this._tipLeave(); this.manager?.toggleCopyMode(); }}
       ><span class="mdot"></span>${this.copyMode ? 'COPY' : 'NORMAL'}</button>
       <button
         class="pip-toggle ${this.pipActive ? 'on' : ''}"

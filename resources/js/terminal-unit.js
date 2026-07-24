@@ -174,12 +174,26 @@ export class TerminalUnit {
     const container = this.terminalEl;
     this.terminal.open(container);
 
-    // Try to load WebGL addon
-    try {
-      const webglAddon = new WebglAddon();
-      this.terminal.loadAddon(webglAddon);
-    } catch (e) {
-      console.warn('WebGL addon not supported:', e);
+    // Renderer choice — the crux of the glyph-rendering bug. xterm's WebGL renderer
+    // rasterizes glyphs into its own texture atlas and does NOT fall back to the
+    // browser's system fonts for codepoints the configured fontFamily lacks: a glyph
+    // missing from every listed font renders as tofu / a wrong shape. That's why the
+    // SAME Mac shows Claude's symbols (●, ⎿, ✓, box rules…) correctly in Terminal.app
+    // over ssh — the OS supplies them from Apple Symbols / a system fallback — but the
+    // browser terminal did not: WebGL never reached that fallback.
+    //
+    // xterm's DEFAULT (DOM) renderer draws through normal browser text layout, which
+    // DOES do full native font fallback — the same mechanism Terminal.app benefits
+    // from — so those glyphs resolve on every client regardless of which fonts happen
+    // to be installed. Correctness beats the WebGL throughput here, so we default to
+    // the DOM renderer and make WebGL strictly opt-in (localStorage webtmux-webgl=1)
+    // for anyone who wants the GPU path and has a font stack that covers their glyphs.
+    if (localStorage.getItem('webtmux-webgl') === '1') {
+      try {
+        this.terminal.loadAddon(new WebglAddon());
+      } catch (e) {
+        console.warn('WebGL addon not supported:', e);
+      }
     }
 
     // Fit terminal and focus
