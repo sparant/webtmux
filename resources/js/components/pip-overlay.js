@@ -25,6 +25,7 @@ import { LitElement, html, css } from 'lit';
 import { Terminal } from '@xterm/xterm';
 import { CaptureCache, placementKey } from '../capture-cache.js';
 import { chord } from '../os.js';
+import { stateStore } from '../state-store.js';
 
 const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css';
 const CORNERS = ['tl', 'tr', 'bl', 'br'];
@@ -33,8 +34,6 @@ const CORNER_NAME = { tl: 'top-left', tr: 'top-right', bl: 'bottom-left', br: 'b
 const EDGES = ['top', 'bottom', 'left', 'right'];
 const EDGE_GLYPH = { top: '↑', bottom: '↓', left: '←', right: '→' };
 const EDGE_NAME = { top: 'top', bottom: 'bottom', left: 'left', right: 'right' };
-const CORNER_KEY = 'webtmux-pip-corner';
-const EDGE_KEY = 'webtmux-preview-edge';
 const BAR_THICK = 200;     // px: bar height (top/bottom) or width (left/right)
 const POLL_MS = 1500;      // keep previews live (server coalesces to 500ms)
 const STALE_MS = 5000;     // no fresh capture for this long => the window is gone
@@ -326,8 +325,19 @@ class WebtmuxPip extends LitElement {
     super();
     this.mode = 'off';
     this.mini = false;
-    this.corner = readStored(CORNER_KEY, CORNERS, 'tr');
-    this.edge = readStored(EDGE_KEY, EDGES, 'bottom');
+    // Placement (corner for single PiP, edge for the docked bar) is a shared 'pip'
+    // pref → StateStore. The window SET + hidden flag are persisted too (for reload
+    // restore) but applied once via restoreState(), not from this subscription — so
+    // re-adding restored windows can't loop back through the store.
+    const pip = stateStore.section('pip');
+    this.corner = CORNERS.includes(pip.corner) ? pip.corner : 'tr';
+    this.edge = EDGES.includes(pip.previewEdge) ? pip.previewEdge : 'bottom';
+    stateStore.subscribe(() => {
+      const p = stateStore.section('pip');
+      if (CORNERS.includes(p.corner)) this.corner = p.corner;
+      if (EDGES.includes(p.previewEdge)) this.edge = p.previewEdge;
+      this.requestUpdate();
+    });
     this.cache = null;      // shared CaptureCache — set by SplitManager
     this.manager = null;    // SplitManager — set by SplitManager
     this.onChange = null;   // fired whenever the set / hidden state changes (toolbar sync)
@@ -434,14 +444,14 @@ class WebtmuxPip extends LitElement {
   setCorner(c) {
     if (!CORNERS.includes(c)) return;
     this.corner = c;
-    store(CORNER_KEY, c);
+    stateStore.patchSection('pip', { corner: c });
     this._rescaleAll();
   }
 
   setEdge(e) {
     if (!EDGES.includes(e)) return;
     this.edge = e;
-    store(EDGE_KEY, e);
+    stateStore.patchSection('pip', { previewEdge: e });
     // The reserved-space axis changes; re-letterbox once the bar re-lays-out.
     this.updateComplete.then(() => { this._applySpace(); this._rescaleAll(); });
   }
@@ -977,7 +987,42 @@ class WebtmuxPip extends LitElement {
       this._ensurePolling();
     }
     this.requestUpdate();
+    this._persist();
     if (this.onChange) this.onChange();
+  }
+
+  // Persist the preview SET (window ids + their labels) and hidden flag into the
+  // shared 'pip' section so a reload restores the preview. Full entries (not bare
+  // ids) so labels are right before the first capture arrives. Merged (patchSection)
+  // so corner/previewEdge are preserved. Skipped while restoreState() is applying,
+  // so re-adding restored windows can't re-enter here mid-restore.
+  _persist() {
+    if (this._restoring) return;
+    const wins = this._wins.map((w) => ({
+      windowId: w.windowId, session: w.session, index: w.index, name: w.name,
+    }));
+    stateStore.patchSection('pip', { wins, hidden: this._hidden });
+  }
+
+  // Restore the preview set + hidden flag from the shared 'pip' section (reload
+  // recovery). Called once by the SplitManager after cache/manager are wired. Guarded
+  // so the re-adds it performs don't write back through _persist() (idempotent churn).
+  restoreState() {
+    const pip = stateStore.section('pip');
+    const wins = Array.isArray(pip.wins) ? pip.wins : [];
+    if (!wins.length) return;
+    this._restoring = true;
+    try {
+      for (const w of wins) {
+        if (!w || !w.windowId) continue;
+        this.addWindow(w.windowId, { index: w.index, name: w.name, session: w.session });
+      }
+      if (pip.hidden) this.setHidden(true);
+    } finally {
+      this._restoring = false;
+    }
+    // Write the (unchanged) restored set back once so its rev is current.
+    this._persist();
   }
 
   // Reserve edge space for the docked BAR by publishing --wt-preview-* on :root
@@ -993,18 +1038,6 @@ class WebtmuxPip extends LitElement {
       s.setProperty('--wt-preview-right', vars.right);
     } catch (e) {}
   }
-}
-
-function readStored(key, allowed, fallback) {
-  try {
-    const v = localStorage.getItem(key);
-    if (allowed.includes(v)) return v;
-  } catch (e) { /* storage unavailable */ }
-  return fallback;
-}
-
-function store(key, v) {
-  try { localStorage.setItem(key, v); } catch (e) { /* best-effort */ }
 }
 
 customElements.define('webtmux-pip', WebtmuxPip);

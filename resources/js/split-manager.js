@@ -24,9 +24,11 @@
 // One-sidebar illusion: there is a SINGLE <webtmux-sidebar> element, always in the
 // same spot, bound to whichever region is FOCUSED. Clicking a region's terminal
 // focuses it and the shared sidebar re-points to reflect/control that region.
-import { TerminalUnit } from './terminal-unit.js';
+import { TerminalUnit, MSG } from './terminal-unit.js';
 import { CaptureCache } from './capture-cache.js';
 import { IS_MAC } from './os.js';
+import { stateStore } from './state-store.js';
+import { clientStore } from './client-store.js';
 
 export class SplitManager {
   constructor(container) {
@@ -89,6 +91,13 @@ export class SplitManager {
 
     // The primary/shared region (session '' => base 'services').
     this.addUnit({ sessionName: '', primary: true });
+
+    // Restore visual state that used to be lost on reload, now that a unit exists
+    // (so capture requests have a ws) and the StateStore sender is wired:
+    //   • the Preview/PiP window set + hidden flag (shared 'pip' section),
+    //   • any saved split-view regions (shared 'split' section, per-client widths).
+    this.pip.restoreState();
+    this._restoreSplitState();
   }
 
   // Short, sanitized, unique-ish grouped session name (server also sanitizes).
@@ -121,6 +130,10 @@ export class SplitManager {
 
     const unit = new TerminalUnit({ sessionName, terminalEl: term, primary });
     unit.region = region;
+    // The shared StateStore writes @wt_state over the PRIMARY unit's ws (any ws
+    // works — @wt_state is server-global — but the primary is always present and
+    // console-synced). Its layout pushes carry the blob back; feed them in below.
+    if (primary) stateStore.setSender((json) => unit.sendMessage(MSG.TmuxSetState, json));
     unit.onFocus = (u) => this.focus(u);
     unit.onLayout = (u) => this._onUnitLayout(u);
     // Route this unit's capture replies into the shared cache, and give the unit
@@ -142,6 +155,7 @@ export class SplitManager {
     this._equalizeRegions();   // a fresh region joins as an equal split, clearing any prior drag
     this.focus(unit);
     this._refitSoon();
+    if (!primary) this._persistSplitState();  // region count changed → shared 'split'
     return unit;
   }
 
@@ -150,6 +164,60 @@ export class SplitManager {
   // inherit stale grow ratios (which would render the un-stamped region as a sliver).
   _equalizeRegions() {
     for (const r of this.container.querySelectorAll('.region')) r.style.flexGrow = '';
+  }
+
+  // --- split-view persistence --------------------------------------------------
+  // Shared: which windows the EXTRA (non-primary) regions show, in order. The
+  // primary is always recreated and console-driven, so it's excluded — regions[i]
+  // here corresponds to units[i+1]. Per-client width/focus live in ClientStore.
+  _persistSplitState() {
+    if (this._restoringSplit) return;
+    const regions = this.units.slice(1).map((u) => ({
+      windowId: u._targetWindowId || u.layout?.activeWindowId || null,
+    }));
+    stateStore.patchSection('split', { regions });
+  }
+
+  // Per-client: the divider ratios (inline flex-grow) in region DOM order. A reload
+  // restores your own pane sizes without sharing them across browsers.
+  _persistWidths() {
+    if (this._restoringSplit) return;
+    const widths = [...this.container.querySelectorAll('.region')].map((r) => r.style.flexGrow || '');
+    clientStore.patch({ splitWidths: widths });
+  }
+
+  // Recreate the saved extra regions (shared) and re-apply per-client widths + focus.
+  // Called once from the constructor after the primary unit + StateStore sender exist.
+  // Defensive: a stale/absent window just leaves that region on its default (handled
+  // in _onUnitLayout via _restoreWindowId); no saved regions => a no-op.
+  _restoreSplitState() {
+    const saved = stateStore.section('split').regions;
+    const list = Array.isArray(saved) ? saved : [];
+    if (list.length) {
+      this._restoringSplit = true;
+      try {
+        for (const r of list) {
+          const unit = this.addUnit({});
+          if (r && r.windowId) unit._restoreWindowId = r.windowId;
+          else unit._autoPickPending = true;   // no saved window → MRU auto-pick
+        }
+      } finally {
+        this._restoringSplit = false;
+      }
+      this._persistSplitState();   // refresh the shared blob's rev to match reality
+    }
+
+    // Per-client widths (applied AFTER regions exist; _equalizeRegions cleared them).
+    const widths = clientStore.get('splitWidths', null);
+    if (Array.isArray(widths) && widths.length) {
+      const rgs = [...this.container.querySelectorAll('.region')];
+      widths.forEach((w, i) => { if (rgs[i] && w) rgs[i].style.flexGrow = w; });
+      this._refitSoon();
+    }
+
+    // Per-client focused region.
+    const fi = clientStore.get('focusedIndex', 0);
+    if (Number.isInteger(fi) && this.units[fi]) this.focus(this.units[fi]);
   }
 
   removeUnit(unit) {
@@ -172,6 +240,8 @@ export class SplitManager {
     this._equalizeRegions();   // remaining regions re-split evenly
     this.focus(this.units[Math.min(idx, this.units.length - 1)] || this.units[0]);
     this._refitSoon();
+    this._persistSplitState();       // region count changed → shared 'split'
+    this._persistWidths();           // regions re-equalized → drop stale per-client widths
   }
 
   focus(unit) {
@@ -193,12 +263,20 @@ export class SplitManager {
     if (win) { unit._accessSeenId = win; this.noteAccess(win, this._metaFor(unit, win)); }
     else this._refreshToolbar();
     unit.terminal?.focus();
+    // Which region is focused is per-client viewport state → ClientStore (a reload
+    // restores your own focus without leaking to other browsers).
+    if (!this._restoringSplit) clientStore.patch({ focusedIndex: this.units.indexOf(unit) });
   }
 
   // Forward a unit's layout to the shared sidebar ONLY when it is the focused
   // region (so the one sidebar always reflects the focused window), and drive the
   // most-recently-used-window auto-pick for a freshly added region.
   _onUnitLayout(unit) {
+    // Shared visual state rides every layout push (layout.state === @wt_state). Feed
+    // it from the primary unit only — the blob is identical across units, so one
+    // authority avoids redundant applies. StateStore ignores echoes of our own write.
+    if (unit.primary) stateStore.load(unit.layout && unit.layout.state);
+
     if (unit === this.focusedUnit) this._pushLayout(unit);
     else this._pushDisabled();   // another region moved -> refresh what's occupied
 
@@ -227,6 +305,22 @@ export class SplitManager {
         unit.selectWindow(target);
       }
       unit._autoPickPending = false;
+    }
+
+    // Restore-target: a region recreated by _restoreSplitState() wants to land on the
+    // specific window it showed last session. Navigate there once its layout arrives,
+    // but only if that window still exists and isn't already claimed by another region
+    // (a tmux server restart may have changed the window set — then we just stay put).
+    if (unit._restoreWindowId && unit.layout) {
+      const target = unit._restoreWindowId;
+      unit._restoreWindowId = null;
+      const used = this.occupiedWindowIds(unit);
+      const exists = (unit.layout.windows || []).some((w) => w.id === target);
+      if (exists && !used.has(target) && target !== unit.layout.activeWindowId) {
+        unit._targetWindowId = target;
+        unit._accessSeenId = unit.layout.activeWindowId;
+        unit.selectWindow(target);
+      }
     }
 
     // An in-flight goToWindow target that the layout now confirms is no longer
@@ -258,6 +352,9 @@ export class SplitManager {
       }
       if (unit._navSuppress && landSession !== unit._navSuppress.session) unit._navSuppress = null;
       if (!suppressed) this.noteAccess(newId, this._metaFor(unit, newId));
+      // A non-primary region landing on a new window changes the saved split layout
+      // (the primary's window is console-driven and never restored, so skip it).
+      if (!unit.primary) this._persistSplitState();
     }
     this._refreshToolbar();
   }
@@ -845,6 +942,7 @@ export class SplitManager {
       document.body.style.userSelect = '';
       document.body.style.cursor = '';
       this._refitSoon();
+      this._persistWidths();   // final divider ratios → per-client ClientStore
     };
     // userSelect/cursor overrides keep the drag from selecting page text or
     // flipping to the default cursor when the pointer briefly leaves the 4px bar.

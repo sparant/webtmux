@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os/exec"
@@ -411,6 +412,15 @@ func (c *Controller) RefreshLayout() error {
 			}
 		}
 		layout.AllWorking = working
+	}
+
+	// Shared UI visual-state blob (@wt_state SERVER-global option). Rides this push
+	// so every attaching client converges on the same visual state. Unset => "" =>
+	// omitted; a non-JSON value is ignored rather than breaking the layout marshal.
+	if raw, err := c.runTmux("show-options", "-gqv", "@wt_state"); err == nil {
+		if s := strings.TrimSpace(raw); s != "" && json.Valid([]byte(s)) {
+			layout.State = json.RawMessage(s)
+		}
 	}
 
 	c.layoutMu.Lock()
@@ -913,6 +923,16 @@ func (c *Controller) RenameSession(oldName, newName string) error {
 	}
 	c.RefreshLayout()
 	return nil
+}
+
+// SetGlobalOption sets a tmux SERVER-global user option (`set-option -g`). Used to
+// persist the shared UI visual-state blob in @wt_state: it lives in the tmux server
+// process, so it survives client detach/reattach and webtmux restarts (but not
+// kill-server — by design, since the sessions it describes are gone then too). The
+// value passes as a single argv element (exec, no shell), so no escaping is needed.
+func (c *Controller) SetGlobalOption(key, val string) error {
+	_, err := c.runTmux("set-option", "-g", key, val)
+	return err
 }
 
 // runTmux executes a tmux command with the given arguments, prefixing the

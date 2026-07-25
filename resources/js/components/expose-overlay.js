@@ -17,6 +17,7 @@ import { LitElement, html, css } from 'lit';
 import { Terminal } from '@xterm/xterm';
 import { CaptureCache, placementKey } from '../capture-cache.js';
 import { matchesWords, appendChar, backspace, phraseText } from '../search.js';
+import { stateStore } from '../state-store.js';
 
 const N_MAX_TILES = 24;
 const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css';
@@ -244,7 +245,8 @@ class WebtmuxExpose extends LitElement {
   constructor() {
     super();
     this.open = false;
-    this.density = 2; // first open shows a 2×2 block; a toggle steps it to 3×3
+    // Density (2×2 / 3×3) is a shared 'expose' pref now; seed from the store (default 2).
+    this.density = stateStore.section('expose').density || 2;
     this.cache = null; // shared CaptureCache — set by SplitManager
     this.manager = null; // SplitManager — set by SplitManager
     this._tiles = []; // { term? } live xterm instances, for disposal
@@ -267,6 +269,15 @@ class WebtmuxExpose extends LitElement {
     // When on, the type-ahead ALSO matches the captured pane content (like tmux's
     // find-mode over a pane's visible buffer); off => only session + window name.
     this._searchBuffers = readSearchBuffers();
+    // Re-apply shared expose prefs on a remote change (another client toggled sort /
+    // buffer-search / density). Only rebuild the grid when we're actually open.
+    stateStore.subscribe(() => {
+      this._sort = readSort();
+      this._searchBuffers = readSearchBuffers();
+      this.density = stateStore.section('expose').density || 2;
+      this.requestUpdate();
+      if (this.open) this._rebuild();
+    });
     this._pollTimer = null;
     // On a capture refresh, update tiles IN PLACE (keep cursor + no xterm churn)
     // when the window set is unchanged; only a membership/sort change rebuilds.
@@ -376,6 +387,7 @@ class WebtmuxExpose extends LitElement {
   setDensity(density) {
     if (!this.open || this.density === density) return;
     this.density = density;
+    stateStore.patchSection('expose', { density });
     this.updateComplete.then(() => {
       for (const rec of this._tiles) this._rescale(rec);
       this._paintCursor();
@@ -614,9 +626,7 @@ class WebtmuxExpose extends LitElement {
   _setSort(mode) {
     if (this._sort === mode) return;
     this._sort = mode; // reactive -> header re-renders with the new active button
-    try {
-      localStorage.setItem('webtmux-expose-sort', mode);
-    } catch (e) {}
+    stateStore.patchSection('expose', { sort: mode });
     this._rebuild(); // reorder tiles; cursor stays on the same window
   }
 
@@ -625,9 +635,7 @@ class WebtmuxExpose extends LitElement {
   _setSearchBuffers(on) {
     if (this._searchBuffers === on) return;
     this._searchBuffers = on; // reactive -> header re-renders the active button
-    try {
-      localStorage.setItem('webtmux-expose-search-buffers', on ? '1' : '0');
-    } catch (e) {}
+    stateStore.patchSection('expose', { searchBuffers: on });
     if (this.open) this._rebuild(); // re-narrow the grid under the new search scope
   }
 
@@ -746,19 +754,11 @@ function labelHtml(entry) {
 }
 
 function readSort() {
-  try {
-    return localStorage.getItem('webtmux-expose-sort') === 'recent' ? 'recent' : 'session';
-  } catch (e) {
-    return 'session';
-  }
+  return stateStore.section('expose').sort === 'recent' ? 'recent' : 'session';
 }
 
 function readSearchBuffers() {
-  try {
-    return localStorage.getItem('webtmux-expose-search-buffers') === '1';
-  } catch (e) {
-    return false;
-  }
+  return stateStore.section('expose').searchBuffers === true;
 }
 
 // Decoded + SGR-stripped pane text for content search, memoized on the entry and

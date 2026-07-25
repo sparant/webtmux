@@ -20,7 +20,7 @@ PLATFORMS = \
 
 export CGO_ENABLED=0
 
-.PHONY: all build clean test install cross-compile release help check-js
+.PHONY: all build clean test test-js install cross-compile release help check-js
 
 # Default target
 all: build
@@ -69,10 +69,21 @@ build: sync-assets
 install:
 	go install $(BUILD_OPTIONS) .
 
-# Run tests
-test:
+# Run tests (Go + the node store tests). The JS tests exercise the bug-prone
+# StateStore debounce/rev-conflict logic; skipped with a note if node is absent
+# (same policy as check-js), since state-store.js/client-store.js have no imports.
+test: test-js
 	go test ./...
 	go vet ./...
+
+test-js:
+	@node_bin=$$(command -v node 2>/dev/null || command -v nodejs 2>/dev/null || true); \
+	if [ -z "$$node_bin" ]; then \
+		echo "note: node not found — skipping JS store tests"; \
+	else \
+		echo "Running JS store tests..."; \
+		"$$node_bin" --test test/; \
+	fi
 
 # Clean build artifacts
 clean:

@@ -6,6 +6,7 @@ import { LitElement, html, css } from 'lit';
 import { Terminal } from '@xterm/xterm';
 import { CaptureCache, placementKey } from '../capture-cache.js';
 import { chord } from '../os.js';
+import { stateStore } from '../state-store.js';
 
 // xterm's own stylesheet, pulled into this component's shadow root so the hover
 // preview's terminal rows lay out correctly (same CDN the PiP overlay uses).
@@ -455,9 +456,8 @@ class WebtmuxToolbar extends LitElement {
     this.recent = [];
     this.collapsed = false;
     // Scroll-wheel mode mirror (moved here from the sidebar). Seeded from the same
-    // persisted key the terminal reads, so the label is right on first paint.
-    this.scrollMode = normalizeScroll(
-      (typeof localStorage !== 'undefined' && localStorage.getItem('webtmux-scroll-mode')) || '');
+    // shared 'renderer' pref the terminal reads, so the label is right on first paint.
+    this.scrollMode = normalizeScroll(stateStore.section('renderer').scrollMode || '');
     this.copyMode = false; // focused pane in tmux copy/view mode (SplitManager sets)
     this.previewCount = 0;        // windows currently in the preview (SplitManager sets)
     this.previewHidden = false;   // preview tucked away (SplitManager sets)
@@ -470,8 +470,14 @@ class WebtmuxToolbar extends LitElement {
     this.built = (typeof window !== 'undefined' && window.webtmux_built) || '';
     // Build-id chip hidden by default (it's clutter for daily use); Ctrl+Alt+B
     // reveals it when you need to read the running build aloud. Persisted.
-    this.showBuild = (typeof localStorage !== 'undefined' &&
-      localStorage.getItem('webtmux-show-build') === 'true');
+    this.showBuild = stateStore.section('toolbar').showBuild === true;
+    // Re-apply shared prefs (scroll mode, build-chip visibility) on any remote change
+    // — e.g. cycling scroll mode from a region sidebar, or another client toggling.
+    stateStore.subscribe(() => {
+      this.scrollMode = normalizeScroll(stateStore.section('renderer').scrollMode || '');
+      this.showBuild = stateStore.section('toolbar').showBuild === true;
+      this.requestUpdate();
+    });
     this._tipTimer = null; // pending show timer for the quick tab tooltip
     // Recent-tab hover-preview state (parallels the tooltip's, using the same delay).
     this._prevTimer = null;    // pending "pause then show" timer
@@ -488,7 +494,7 @@ class WebtmuxToolbar extends LitElement {
   // so the choice survives a reload.
   toggleBuild() {
     this.showBuild = !this.showBuild;
-    try { localStorage.setItem('webtmux-show-build', String(this.showBuild)); } catch (e) {}
+    stateStore.patchSection('toolbar', { showBuild: this.showBuild });
   }
 
   // Quick-tooltip delay (ms). Still snappier than the browser's native ~1s title
@@ -505,7 +511,7 @@ class WebtmuxToolbar extends LitElement {
     this.scrollMode = next;
     const u = this.manager?.focusedUnit;
     if (u?.setScrollMode) u.setScrollMode(next);
-    else if (typeof localStorage !== 'undefined') localStorage.setItem('webtmux-scroll-mode', next);
+    else stateStore.patchSection('renderer', { scrollMode: next });
   }
 
   // Toggle the save-buffer dropdown. On open, clear any stale result banner and

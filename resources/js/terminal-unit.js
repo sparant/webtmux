@@ -11,6 +11,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { CaptureCache } from './capture-cache.js';
+import { stateStore } from './state-store.js';
 
 // Protocol message types (must match Go constants)
 export const MSG = {
@@ -38,6 +39,7 @@ export const MSG = {
   TmuxLinkWindow: 'M',
   TmuxUnlinkWindow: 'N',
   TmuxSavePaneFile: 'O',
+  TmuxSetState: 'P',
 
   // Output (server -> client)
   Output: '1',
@@ -100,7 +102,13 @@ export class TerminalUnit {
     // history scrolling; 'passthrough' = let xterm forward the wheel to the app
     // (so a TUI like Claude, vim, less handles its own scrolling). Persisted +
     // toggled from the sidebar. Read here so the handlers below see it on load.
-    this.scrollMode = normalizeScrollMode(localStorage.getItem('webtmux-scroll-mode'));
+    this.scrollMode = normalizeScrollMode(stateStore.section('renderer').scrollMode);
+    // Keep scroll mode live-synced: it's a shared 'renderer' pref, so a change from
+    // any region's sidebar/toolbar (or another client) updates every unit. Store the
+    // unsubscribe so a removed split region doesn't leak the closure.
+    this._unsubState = stateStore.subscribe(() => {
+      this.scrollMode = normalizeScrollMode(stateStore.section('renderer').scrollMode);
+    });
     // adaptive-probe state: per-window cached decision + in-flight probe.
     this._scrollDecisions = new Map();   // windowId -> {cmd, decision:'app'|'buffer', ts}
     this._probing = false;
@@ -194,9 +202,9 @@ export class TerminalUnit {
     // DOES do full native font fallback — the same mechanism Terminal.app benefits
     // from — so those glyphs resolve on every client regardless of which fonts happen
     // to be installed. Correctness beats the WebGL throughput here, so we default to
-    // the DOM renderer and make WebGL strictly opt-in (localStorage webtmux-webgl=1)
+    // the DOM renderer and make WebGL strictly opt-in (StateStore renderer.webgl)
     // for anyone who wants the GPU path and has a font stack that covers their glyphs.
-    if (localStorage.getItem('webtmux-webgl') === '1') {
+    if (stateStore.section('renderer').webgl === true) {
       try {
         this.terminal.loadAddon(new WebglAddon());
       } catch (e) {
@@ -835,6 +843,7 @@ export class TerminalUnit {
   // observers. Used by the split manager when a region is closed.
   destroy() {
     this.destroyed = true;
+    if (this._unsubState) { try { this._unsubState(); } catch (e) {} this._unsubState = null; }
     if (this.resizeObserver) { try { this.resizeObserver.disconnect(); } catch (e) {} }
     if (this.ws) { try { this.ws.onclose = null; this.ws.close(); } catch (e) {} }
     if (this.terminal) { try { this.terminal.dispose(); } catch (e) {} }
@@ -978,7 +987,7 @@ export class TerminalUnit {
   // scrolled up in history; the adaptive modes may re-enter it on their own.
   setScrollMode(mode) {
     this.scrollMode = normalizeScrollMode(mode);
-    localStorage.setItem('webtmux-scroll-mode', this.scrollMode);
+    stateStore.patchSection('renderer', { scrollMode: this.scrollMode });
     if (this.scrollMode === 'app' && this.inCopyMode) {
       this.exitCopyMode();
     }

@@ -100,4 +100,9 @@ const (
 	// fresh, writes clean text, and replies with a TmuxSaveResult. Relative paths
 	// resolve against the pane's own working directory.
 	TmuxSavePaneFile = 'O'
+	// Persist the shared UI visual-state blob into the tmux SERVER-global option
+	// @wt_state (payload: the raw JSON blob). It round-trips back to every client on
+	// the next TmuxLayoutUpdate (Layout.State), so the visual state is shared across
+	// clients and survives reconnect / webtmux restart. See StateStore on the client.
+	TmuxSetState = 'P'
 )

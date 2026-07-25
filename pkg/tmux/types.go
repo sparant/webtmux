@@ -1,5 +1,7 @@
 package tmux
 
+import "encoding/json"
+
 // Session represents a tmux session
 type Session struct {
 	ID       string `json:"id"`
@@ -37,6 +39,11 @@ type Layout struct {
 	// have no status. Recent-tab dots read from this so each window's light reflects
 	// its OWN @wt_working regardless of which session is currently focused.
 	AllWorking map[string]string `json:"allWorking,omitempty"`
+	// State is the opaque UI visual-state blob stored in the tmux SERVER-global user
+	// option @wt_state (written via TmuxSetState). It rides every layout push so any
+	// client that attaches — even after a webtmux server/client restart — converges
+	// on the same shared visual state. Unset / empty / non-JSON => omitted.
+	State json.RawMessage `json:"state,omitempty"`
 }
 
 // Window represents a tmux window

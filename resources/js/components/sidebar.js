@@ -2,6 +2,8 @@
 import { LitElement, html, css } from 'lit';
 import { MOD_KEYS, chord } from '../os.js';
 import { matchesWords, appendChar } from '../search.js';
+import { stateStore } from '../state-store.js';
+import { clientStore } from '../client-store.js';
 
 class WebtmuxSidebar extends LitElement {
   static properties = {
@@ -319,12 +321,15 @@ class WebtmuxSidebar extends LitElement {
     this.layout = null;
     this.activePane = '';
     this.activeWindow = '';
-    this.collapsed = false;
-    // Hover-overlay vs side-by-side. Default hover (float over the terminal);
-    // persisted across reloads.
-    this.overlay = localStorage.getItem('webtmux-overlay') !== 'false';
-    // Pinned = stay open when clicking into the terminal (default: auto-hide).
-    this.pinned = localStorage.getItem('webtmux-pinned') === 'true';
+    // Collapsed is per-client viewport state (a reload restores YOUR collapse, it
+    // must not leak to other browsers) → ClientStore, not the shared blob.
+    this.collapsed = !!clientStore.section('sidebar').collapsed;
+    // overlay (hover vs side-by-side) and pinned are shared sidebar prefs → the
+    // shared StateStore. Read synchronously from its offline cache; a later remote
+    // blob re-applies via the subscription below.
+    const sb = stateStore.section('sidebar');
+    this.overlay = sb.overlay !== false;   // default hover (float over the terminal)
+    this.pinned = sb.pinned === true;      // default auto-hide
     // Window id currently being renamed inline ('' = none).
     this.editingWindow = '';
     // Session name currently being renamed inline ('' = none).
@@ -339,6 +344,10 @@ class WebtmuxSidebar extends LitElement {
     this.sessionDropTarget = '';
     this.sessionDropAfter = false;
     this._sessionOrder = readSessionOrder();
+    // Re-apply shared sidebar prefs whenever another client (or the initial tmux
+    // blob) changes them. Read-only apply — the StateStore `_applying` guard stops
+    // these property writes from looping back into a patch.
+    stateStore.subscribe(() => this._applySharedState());
     // Type-ahead search state (typing in the focused panel selects a window).
     this._searchWords = [];
     this._searchTimer = null;
@@ -375,6 +384,9 @@ class WebtmuxSidebar extends LitElement {
         // …and starts warming capture buffers so window switches paint instantly.
         this._startCapturePoll();
       }
+      // Persist collapse per-client (ephemeral, per-tab) so a reload restores it
+      // without leaking to other browsers or thrashing the shared tmux blob.
+      clientStore.patchSection('sidebar', { collapsed: this.collapsed });
       // Keep the toolbar's toggle icon in sync with our collapsed state.
       this.dispatchEvent(new CustomEvent('webtmux-sidebar-collapsed', {
         bubbles: true, composed: true, detail: { collapsed: this.collapsed },
@@ -436,12 +448,23 @@ class WebtmuxSidebar extends LitElement {
 
   toggleOverlay() {
     this.overlay = !this.overlay;
-    localStorage.setItem('webtmux-overlay', String(this.overlay));
+    stateStore.patchSection('sidebar', { overlay: this.overlay });
   }
 
   togglePin() {
     this.pinned = !this.pinned;
-    localStorage.setItem('webtmux-pinned', String(this.pinned));
+    stateStore.patchSection('sidebar', { pinned: this.pinned });
+  }
+
+  // Pull the shared sidebar prefs (overlay/pinned) and the session order out of the
+  // StateStore into our reactive props. Called on construct and on every remote
+  // change (another client wrote, or the first tmux blob arrived).
+  _applySharedState() {
+    const sb = stateStore.section('sidebar');
+    this.overlay = sb.overlay !== false;
+    this.pinned = sb.pinned === true;
+    this._sessionOrder = readSessionOrder();
+    this.requestUpdate();
   }
 
   closeRegion() {
@@ -939,7 +962,7 @@ class WebtmuxSidebar extends LitElement {
     else if (after) to += 1;
     cur.splice(to, 0, dragName);
     this._sessionOrder = cur;
-    try { localStorage.setItem('webtmux-session-order', JSON.stringify(cur)); } catch (e) {}
+    stateStore.patch({ sessionOrder: cur });
     this.requestUpdate();
   }
 
@@ -1113,12 +1136,8 @@ class WebtmuxSidebar extends LitElement {
 // absent/corrupt. tmux itself has no session order, so this is a per-browser
 // preference for how the sidebar lists sessions.
 function readSessionOrder() {
-  try {
-    const v = JSON.parse(localStorage.getItem('webtmux-session-order') || '[]');
-    return Array.isArray(v) ? v.filter((n) => typeof n === 'string') : [];
-  } catch (e) {
-    return [];
-  }
+  const v = stateStore.get('sessionOrder', []);
+  return Array.isArray(v) ? v.filter((n) => typeof n === 'string') : [];
 }
 
 customElements.define('webtmux-sidebar', WebtmuxSidebar);

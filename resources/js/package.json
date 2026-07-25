@@ -1,0 +1,5 @@
+{
+  "type": "module",
+  "private": true,
+  "description": "Marks the webtmux browser ES-modules as ESM so node's test runner (and check-js) treats resources/js/*.js as modules. No dependencies — the browser resolves lit/@xterm via the importmap in index.html. Only import-free modules (state-store.js, client-store.js) are unit-tested under node."
+}

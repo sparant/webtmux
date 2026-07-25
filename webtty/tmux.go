@@ -30,6 +30,7 @@ type TmuxController interface {
 	UnlinkWindow(windowID string) error
 	SplitPane(horizontal bool) error
 	ClosePane(paneID string) error
+	SetGlobalOption(key, val string) error
 	EnterCopyMode() error
 	ExitCopyMode() error
 	ScrollUp(lines int) error
@@ -264,6 +265,16 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 		}
 		return wt.SendTmuxLayout()
 
+	case TmuxSetState:
+		// Persist the shared UI visual-state blob into the tmux global option
+		// @wt_state. The payload is the raw JSON blob; it round-trips back to every
+		// client on the next layout push (argv, so no shell escaping). No layout
+		// resend here — the 500ms poll picks up the change and pushes it.
+		if err := wt.tmuxCtrl.SetGlobalOption("@wt_state", string(payload)); err != nil {
+			return errors.Wrap(err, "failed to set tmux state")
+		}
+		return nil
+
 	default:
 		return errors.Errorf("unknown tmux message type: %c", msgType)
 	}
@@ -431,7 +442,7 @@ func isTmuxMessage(msgType byte) bool {
 		TmuxCopyMode, TmuxSendCommand, TmuxScrollUp, TmuxScrollDown, TmuxNewWindow,
 		TmuxSwitchSession, TmuxRenameWindow, TmuxMoveWindow, TmuxNewSession,
 		TmuxRenameSession, TmuxKillWindow, TmuxKillSession, TmuxLinkWindow,
-		TmuxUnlinkWindow, TmuxCaptureRequest, TmuxSavePaneFile:
+		TmuxUnlinkWindow, TmuxCaptureRequest, TmuxSavePaneFile, TmuxSetState:
 		return true
 	default:
 		return false
