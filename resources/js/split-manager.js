@@ -815,9 +815,12 @@ export class SplitManager {
     this.toolbar.collapsed = !!this.sidebar?.collapsed;
     // Keep the toolbar's scroll-mode label reflecting the focused pane's setting.
     if (focused?.scrollMode) this.toolbar.scrollMode = focused.scrollMode;
-    // The same working map the recents dots read, handed to the Preview so its tiles
-    // (and the corner box) can show each window's stoplight in their top-right corner.
+    // The same working map the recents dots read, handed to the Preview and to Exposé
+    // so their tiles show each window's stoplight in their top-right corner. One map,
+    // four surfaces (strip, sidebar list, preview, Exposé) — a window's light can
+    // never say different things in two places.
     this.pip?.setWorking(workingById);
+    this.expose?.setWorking(workingById);
     this.toolbar.previewWindow = this.hover?.windowId || '';
     // Preview button state: how many windows are queued, whether it's hidden, and
     // whether the FOCUSED pane's current window is one of them (so the add/remove

@@ -1,9 +1,10 @@
 // WorkAlerts — decides which recent tabs should be FLASHING for attention.
 //
-// The stoplight dot (@wt_working: 1 green working / 0 red stopped / 2 amber waiting
-// for you) answers "what is that window doing", but only if you happen to be looking
-// at an 8px dot at the moment it changes. This turns the moment of change into
-// something you cannot miss: the tab itself flashes.
+// The stoplight dot (@wt_working: 1 green working / 0 red waiting for work to do /
+// 2 amber prompting you — see stoplight.js for the words) answers "what is that
+// window doing", but only if you happen to be looking at an 8px dot at the moment it
+// changes. This turns the moment of change into something you cannot miss: the tab
+// itself flashes.
 //
 // The rules, and why each one is the way it is:
 //

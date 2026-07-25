@@ -4,6 +4,7 @@ import { MOD_KEYS, chord } from '../os.js';
 import { matchesWords, appendChar } from '../search.js';
 import { stateStore } from '../state-store.js';
 import { clientStore } from '../client-store.js';
+import { workClass, workLabel, workTip } from '../stoplight.js';
 
 class WebtmuxSidebar extends LitElement {
   static properties = {
@@ -153,10 +154,11 @@ class WebtmuxSidebar extends LitElement {
     .wrow > .window-tab,
     .wrow > .window-edit { flex: 1 1 auto; min-width: 0; }
 
-    /* Working-status dot — the same stoplight the recents tabs and the preview tiles
-       show, read from the same @wt_working value: green = working, red = stopped,
-       amber = waiting for you, unfilled = unset. Clients drive it with:
-       tmux set -w @wt_working 1|0|2 (set -u to clear). */
+    /* Working-status dot — the same stoplight the recents tabs, the preview tiles and
+       Exposé show, read from the same @wt_working value: green = working, amber =
+       prompting (blocked on your answer), red = waiting for work to do, unfilled =
+       not reporting. Clients drive it with: tmux set -w @wt_working 1|0|2 (set -u to
+       clear). The words come from stoplight.js and hovering the dot prints the key. */
     .work, .work-gap {
       flex: 0 0 auto; width: 8px; height: 8px; box-sizing: border-box;
     }
@@ -626,8 +628,10 @@ class WebtmuxSidebar extends LitElement {
         ${this.layout.windows?.map((win, i) => html`
           <div class="wrow">
             <span
-              class="work ${this._workClass(this._working(win))}"
-              title=${this._workTip(this._working(win))}
+              class="work ${workClass(this._working(win))}"
+              role="img"
+              aria-label=${workLabel(this._working(win))}
+              title=${workTip(this._working(win))}
             ></span>
             ${win.id === this.editingWindow
               ? html`
@@ -986,20 +990,6 @@ class WebtmuxSidebar extends LitElement {
     const all = this.layout?.allWorking;
     if (all && win && Object.prototype.hasOwnProperty.call(all, win.id)) return all[win.id];
     return (win && win.working) || '';
-  }
-
-  // The dot's class from that raw value (mirrors Toolbar._workClass).
-  _workClass(working) {
-    return working === '1' ? 'on' : working === '0' ? 'off' : working === '2' ? 'wait' : '';
-  }
-
-  // Hover text for the dot. Same three words the preview tiles use, so the two
-  // surfaces describe one state identically.
-  _workTip(working) {
-    return working === '1' ? 'Working'
-      : working === '0' ? 'Idle'
-      : working === '2' ? 'Waiting for you'
-      : 'No status reported (@wt_working unset)';
   }
 
   // Step delta windows from the active one (wrapping), by the sidebar's own window

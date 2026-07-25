@@ -9,6 +9,7 @@
 import { LitElement, html, css } from 'lit';
 import { chord } from '../os.js';
 import { stateStore } from '../state-store.js';
+import { workClass, workLabel, workTip } from '../stoplight.js';
 
 // Recent-tab label shape. Two INDEPENDENT toggles rather than one four-way cycle,
 // because they answer unrelated questions: "which session is this in" and "how much
@@ -162,9 +163,11 @@ class WebtmuxToolbar extends LitElement {
     .rtab.drop-before::before { left: -4px; }
     .rtab.drop-end::after { right: -4px; }
 
-    /* Working-status dot: green = working, red = stopped, amber = waiting for you,
-       unfilled = unset. Clients drive it with: tmux set -w @wt_working 1|0|2
-       (set -u to clear). */
+    /* Working-status dot: green = working, amber = prompting (blocked on your
+       answer), red = waiting for work to do, unfilled = not reporting. Clients drive
+       it with: tmux set -w @wt_working 1|0|2 (set -u to clear). The words live in
+       stoplight.js — every surface that shows this dot says them the same way, and
+       hovering it prints the whole key. */
     .work {
       flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%;
       border: 1px solid #5a6a8a; background: transparent; box-sizing: border-box;
@@ -177,8 +180,8 @@ class WebtmuxToolbar extends LitElement {
     @keyframes wt-wait { 50% { opacity: 0.35; } }
 
     /* ATTENTION FLASH: this window's stoplight dropped out of green while you were
-       looking at some other window — it either stopped (red) or is waiting on you
-       (amber). The dot alone is a 8px change in the corner of your eye and is easy
+       looking at some other window — it either ran out of work (red) or is prompting
+       you (amber). The dot alone is a 8px change in the corner of your eye and is easy
        to miss for minutes; the whole tab flashing is not. It keeps flashing until
        you focus that window (SplitManager._markWorkAlerts owns that rule) — it is a
        "you missed something" signal, so it must not expire on its own.
@@ -841,23 +844,18 @@ class WebtmuxToolbar extends LitElement {
     `;
   }
 
-  // The status dot's class from a window's raw @wt_working value.
-  _workClass(working) {
-    return working === '1' ? 'on' : working === '0' ? 'off' : working === '2' ? 'wait' : '';
-  }
-
   // Flash classes for an unacknowledged drop out of green (entry.alert holds the
-  // value it dropped to; see SplitManager._markWorkAlerts). Reuses _workClass so
+  // value it dropped to; see SplitManager._markWorkAlerts). Reuses workClass so
   // the flash colour can never drift from the dot's.
   _alertClass(alert) {
-    return alert ? `alert alert-${this._workClass(alert)}` : '';
+    return alert ? `alert alert-${workClass(alert)}` : '';
   }
 
   // The line the tooltip adds while a tab is flashing — it has to answer both
   // "why is this blinking" and "how do I make it stop".
   _alertTip(alert) {
     if (!alert) return '';
-    const what = alert === '2' ? 'is waiting for you' : 'stopped';
+    const what = alert === '2' ? 'is prompting you' : 'ran out of work';
     return `\n● It ${what} since you last looked — flashes until you switch to it`;
   }
 
@@ -909,7 +907,13 @@ class WebtmuxToolbar extends LitElement {
             @dragend=${() => this._onTabDragEnd()}
             @mouseenter=${(e) => { this._tipEnter(e, tip); this.manager?.hover?.enter(w.id, w.session); }}
             @mouseleave=${() => { this._tipLeave(); this.manager?.hover?.leave(); }}
-          ><span class="work ${this._workClass(w.working)}" aria-hidden="true"></span><button
+          ><span
+            class="work ${workClass(w.working)}"
+            role="img"
+            aria-label=${workLabel(w.working)}
+            @mouseenter=${(e) => { e.stopPropagation(); this._tipEnter(e, workTip(w.working)); }}
+            @mouseleave=${(e) => { e.stopPropagation(); this._tipEnter({ currentTarget: e.currentTarget.closest('.rtab') }, tip); }}
+          ></span><button
             class="tab ${w.active ? 'active' : ''} ${w.disabled ? 'disabled' : ''} ${!w.active && this.previewWindow === w.id ? 'previewing' : ''} ${this._alertClass(w.alert)}"
             aria-label=${full}
             @click=${() => { this._tipLeave(); this.manager?.pickRecentWindow(w); }}
