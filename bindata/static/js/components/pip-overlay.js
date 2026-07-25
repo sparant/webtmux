@@ -26,6 +26,7 @@ import { Terminal } from '@xterm/xterm';
 import { CaptureCache, placementKey } from '../capture-cache.js';
 import { chord } from '../os.js';
 import { stateStore } from '../state-store.js';
+import { workClass, workLabel, workTip } from '../stoplight.js';
 
 const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css';
 const CORNERS = ['tl', 'tr', 'bl', 'br'];
@@ -34,6 +35,7 @@ const CORNER_NAME = { tl: 'top-left', tr: 'top-right', bl: 'bottom-left', br: 'b
 const EDGES = ['top', 'bottom', 'left', 'right'];
 const EDGE_GLYPH = { top: '↑', bottom: '↓', left: '←', right: '→' };
 const EDGE_NAME = { top: 'top', bottom: 'bottom', left: 'left', right: 'right' };
+const FRAME_TIP = 'Click to switch the focused view to this window';
 const BAR_THICK = 200;     // px: bar height (top/bottom) or width (left/right)
 const POLL_MS = 1500;      // keep previews live (server coalesces to 500ms)
 const STALE_MS = 5000;     // no fresh capture for this long => the window is gone
@@ -226,10 +228,12 @@ class WebtmuxPip extends LitElement {
     /* Working stoplight, top-right of every preview surface (bar tile and corner
        box alike). A preview exists so you can watch a window you're NOT looking at,
        so its "is it busy / is it waiting for me" state belongs on it — that's most
-       of why the window is in the preview at all. Same colors as the recents strip:
-       green working, red idle, amber waiting for you (pulsing), unfilled unknown.
-       Sits under the hover controls (z-index 3) so it never blocks the × / corner
-       buttons. */
+       of why the window is in the preview at all. Same colours, and the same words,
+       as every other stoplight (see stoplight.js): green working, amber prompting
+       (pulsing), red waiting for work to do, unfilled not reporting. Sits under the
+       hover controls (z-index 3) and passes the pointer through so it never blocks
+       the × / corner buttons it shares this corner with — which is why the colour
+       key lives on the frame's tooltip, not the dot's (see _paintWork). */
     .pwork {
       position: absolute;
       top: 7px; right: 7px;
@@ -571,7 +575,7 @@ class WebtmuxPip extends LitElement {
 
     const frame = document.createElement('div');
     frame.className = 'pframe';
-    frame.title = 'Click to switch the focused view to this window';
+    frame.title = FRAME_TIP;   // _paintWork appends the stoplight key to this
     frame.addEventListener('click', () => this._activate(w.windowId));
     tile.appendChild(frame);
 
@@ -583,7 +587,7 @@ class WebtmuxPip extends LitElement {
     // _paint so it exists before the first capture lands.
     const work = document.createElement('span');
     work.className = 'pwork';
-    work.setAttribute('aria-hidden', 'true');
+    work.setAttribute('role', 'img');
     frame.appendChild(work);
 
     const remove = document.createElement('button');
@@ -761,10 +765,19 @@ class WebtmuxPip extends LitElement {
     const dot = tile?.querySelector('.pwork');
     if (!dot) return;
     const v = this._working.get(id) || '';
-    dot.classList.toggle('on', v === '1');
-    dot.classList.toggle('off', v === '0');
-    dot.classList.toggle('wait', v === '2');
-    dot.title = v === '1' ? 'Working' : v === '0' ? 'Idle' : v === '2' ? 'Waiting for you' : '';
+    const cls = workClass(v);
+    dot.classList.toggle('on', cls === 'on');
+    dot.classList.toggle('off', cls === 'off');
+    dot.classList.toggle('wait', cls === 'wait');
+    dot.setAttribute('aria-label', workLabel(v));
+    // The colour key belongs on the FRAME, not on the dot itself. The dot is
+    // deliberately pointer-events:none — it shares the tile's top-right corner with
+    // the hover-revealed × (and, in single mode, the move-to-corner button), so
+    // making it hoverable would eat part of their hit area. Because it lets the
+    // pointer through, hovering the dot IS hovering the frame, so the frame's
+    // tooltip is what a user pointing at the dot actually reads.
+    const frame = tile.querySelector('.pframe');
+    if (frame) frame.title = `${FRAME_TIP}\n\n${workTip(v)}`;
   }
 
   _ensurePolling() {

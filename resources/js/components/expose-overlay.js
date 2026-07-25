@@ -18,6 +18,7 @@ import { Terminal } from '@xterm/xterm';
 import { CaptureCache, placementKey } from '../capture-cache.js';
 import { matchesWords, appendChar, backspace, phraseText } from '../search.js';
 import { stateStore } from '../state-store.js';
+import { workClass, workLabel, workTip } from '../stoplight.js';
 
 const N_MAX_TILES = 24;
 const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css';
@@ -220,6 +221,29 @@ class WebtmuxExpose extends LitElement {
       height: 100%;
       box-sizing: border-box;
     }
+    /* Working stoplight, top-right of every thumbnail — the same dot, the same
+       colours and the same words as the recents strip, the sidebar list and the
+       preview tiles (see stoplight.js). Exposé is the one place you see EVERY
+       window at once, so it is where "which of these is still going / which is
+       asking me something" is worth the most. Nothing else occupies this corner
+       here (unlike the preview's ×), so the dot keeps its pointer events and
+       answers for itself on hover; a click still falls through to the tile because
+       the tile's own click listener catches the bubbled event. */
+    .tile-work {
+      position: absolute;
+      top: 6px; right: 6px;
+      width: 9px; height: 9px;
+      border-radius: 50%;
+      border: 1px solid #5a6a8a;
+      background: transparent;
+      box-sizing: border-box;
+      z-index: 2;
+    }
+    .tile-work.on   { background: #2ecc71; border-color: #2ecc71; box-shadow: 0 0 5px #2ecc71; }
+    .tile-work.off  { background: #e74c3c; border-color: #e74c3c; }
+    .tile-work.wait { background: #f5c542; border-color: #f5c542; box-shadow: 0 0 6px #f5c542; animation: wt-wait 1.4s ease-in-out infinite; }
+    @keyframes wt-wait { 50% { opacity: 0.35; } }
+
     .tile-label {
       flex: 0 0 auto;
       padding: 6px 10px;
@@ -250,6 +274,7 @@ class WebtmuxExpose extends LitElement {
     this.cache = null; // shared CaptureCache — set by SplitManager
     this.manager = null; // SplitManager — set by SplitManager
     this._tiles = []; // { term? } live xterm instances, for disposal
+    this._working = new Map(); // window id -> @wt_working, pushed by the SplitManager
     this._cursor = -1; // keyboard-highlighted tile index
     // Cursor + render tracking are keyed by PLACEMENT ("session windowId"), not
     // window id, so a window linked into two sessions has a distinct, individually
@@ -527,6 +552,12 @@ class WebtmuxExpose extends LitElement {
     frame.className = 'tile-frame';
     tile.appendChild(frame);
 
+    // Built here, before the first capture lands, so the corner never pops in late.
+    const work = document.createElement('span');
+    work.className = 'tile-work';
+    work.setAttribute('role', 'img');
+    frame.appendChild(work);
+
     const rec = {
       windowId: entry.windowId,
       session: entry.sessionName,
@@ -536,6 +567,7 @@ class WebtmuxExpose extends LitElement {
       screen: null,
       term: null,
       pre: null,
+      work,
       cols: entry.cols,
       rows: entry.rows,
       labelLeft: null,
@@ -576,7 +608,36 @@ class WebtmuxExpose extends LitElement {
     // mousemove) fires only when the pointer crosses INTO a tile, so a resting mouse
     // never fights the keyboard — arrow-navigating away from a hovered tile sticks.
     tile.addEventListener('mouseenter', () => this._cursorToTile(tile));
+    this._paintWork(rec);
     return rec;
+  }
+
+  // ---- working stoplight -------------------------------------------------------
+
+  // Per-window @wt_working, pushed from the SplitManager on every layout refresh —
+  // the same map the recents dots and the preview tiles read, so one window's light
+  // says the same thing on every surface. Arrives whether or not the overlay is
+  // open; a closed overlay has no tiles to paint, and _buildTile paints from the
+  // stored map on the way up, so opening it is never a beat behind.
+  setWorking(map) {
+    if (!map) return;
+    let changed = map.size !== this._working.size;
+    if (!changed) { for (const [k, v] of map) if (this._working.get(k) !== v) { changed = true; break; } }
+    if (!changed) return;                       // this runs on the 500ms poll
+    this._working = new Map(map);
+    for (const rec of this._tiles) this._paintWork(rec);
+  }
+
+  _paintWork(rec) {
+    const dot = rec?.work;
+    if (!dot) return;
+    const v = this._working.get(rec.windowId) || '';
+    const cls = workClass(v);
+    dot.classList.toggle('on', cls === 'on');
+    dot.classList.toggle('off', cls === 'off');
+    dot.classList.toggle('wait', cls === 'wait');
+    dot.title = workTip(v);
+    dot.setAttribute('aria-label', workLabel(v));
   }
 
   // Repaint an existing tile with a fresh capture — no teardown.
