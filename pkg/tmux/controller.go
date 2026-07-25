@@ -393,6 +393,26 @@ func (c *Controller) RefreshLayout() error {
 		layout.Windows = append(layout.Windows, win)
 	}
 
+	// Global @wt_working across ALL sessions, keyed by window_id. The per-session
+	// Windows list above only covers `sess`, so a window in another session (e.g. a
+	// claude-editors window while this region views services) would carry no status
+	// and its recent-tab dot would go blank/stale as the focus roams between
+	// sessions. One `list-windows -a` makes every window's light foreground-
+	// independent. `|` is a safe delimiter here: both fields are tmux-controlled
+	// (window_id is `@<n>`, @wt_working is ""/"0"/"1").
+	if allOut, err := c.runTmux("list-windows", "-a", "-F", "#{window_id}|#{@wt_working}"); err == nil {
+		working := make(map[string]string)
+		for _, line := range strings.Split(strings.TrimSpace(allOut), "\n") {
+			if line == "" {
+				continue
+			}
+			if id, val, ok := strings.Cut(line, "|"); ok {
+				working[id] = val
+			}
+		}
+		layout.AllWorking = working
+	}
+
 	c.layoutMu.Lock()
 	c.layoutCache = layout
 	c.layoutMu.Unlock()

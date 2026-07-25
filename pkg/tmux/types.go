@@ -30,6 +30,13 @@ type Layout struct {
 	// tmux mode (copy-mode / view-mode) rather than normal input — the ground
 	// truth the toolbar uses to show/toggle copy mode. Read from #{pane_in_mode}.
 	ActivePaneInMode bool `json:"activePaneInMode"`
+	// AllWorking maps EVERY tmux window_id (across ALL sessions) to its @wt_working
+	// value ("1"/"0"/""), read once per refresh via `list-windows -a`. Windows above
+	// only covers the attached session `sess`, so a window living in another session
+	// (e.g. a claude-editors window while this region views services) would otherwise
+	// have no status. Recent-tab dots read from this so each window's light reflects
+	// its OWN @wt_working regardless of which session is currently focused.
+	AllWorking map[string]string `json:"allWorking,omitempty"`
 }
 
 // Window represents a tmux window

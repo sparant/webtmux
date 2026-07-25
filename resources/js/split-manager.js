@@ -530,6 +530,17 @@ export class SplitManager {
         if (!liveById.has(w.id)) liveById.set(w.id, w);
       }
     }
+    // Global @wt_working for EVERY window id, regardless of which session each region
+    // is attached to. Each region's `layout.windows` only lists ITS OWN session, so a
+    // window in another session (a claude-editors tab while this region views services)
+    // had no status and its dot flipped blank/stale as focus roamed. `allWorking` is
+    // the server's `list-windows -a` snapshot (same on every layout); merge across
+    // regions so it's populated even before the focused region's first layout arrives.
+    const workingById = new Map();
+    for (const u of this.units) {
+      const aw = u.layout?.allWorking;
+      if (aw) for (const id in aw) if (!workingById.has(id)) workingById.set(id, aw[id]);
+    }
     // Windows shown by OTHER panes are not selectable here (they'd put two panes on
     // one window) — greyed out, like the sidebar. One shared source: occupiedWindowIds.
     const occupied = this.occupiedWindowIds(focused);
@@ -551,9 +562,10 @@ export class SplitManager {
         // Active only when the focused pane shows this window IN THIS entry's session.
         active: e.id === activeId && e.session === focusedSession,
         disabled: occupied.has(e.id),
-        // Self-reported work status from the live layout's @wt_working option:
-        // "1" working (green), "0" stopped (red), "" unset (unfilled dot).
-        working: live?.working || '',
+        // Self-reported work status from @wt_working: "1" working (green), "0" stopped
+        // (red), "" unset (unfilled dot). Prefer the global map (correct across sessions)
+        // and fall back to the focused region's per-session copy only if absent.
+        working: workingById.has(e.id) ? workingById.get(e.id) : (live?.working || ''),
       };
     });
     this.toolbar.collapsed = !!this.sidebar?.collapsed;
