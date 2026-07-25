@@ -69,3 +69,67 @@ export function recentsSignature(list) {
     list.map((e) => [e.id, e.index, e.name, e.session]),
   );
 }
+
+// Owns the strip's half of the shared blob: the write guard, the change
+// signature, and — critically — the rule that NOTHING MAY BE WRITTEN BEFORE THE
+// FIRST READ.
+//
+// That rule exists because violating it silently destroys the user's data, and
+// the SplitManager constructor violates it by default. addUnit() -> focus() ->
+// _refreshToolbar() runs while recentWindows is still [], BEFORE _restoreRecents()
+// gets to look at the store. An unguarded persist there writes an empty strip;
+// StateStore.patchSection mutates the in-memory blob (and the localStorage cache)
+// synchronously, so the restore that follows reads back the empty array it just
+// wrote, and 400ms later the debounced flush pushes that emptiness to tmux —
+// erasing a strip the user spent real time arranging. The symptom is "recents
+// never restore", and it looks exactly like a restore that was never implemented.
+//
+// Reordering the constructor would fix today's instance, but the hazard is a
+// lifecycle invariant, not a line number: any future early refresh reintroduces
+// it. So the guard lives with the data, and this class is deliberately free of
+// DOM/lit dependencies so `node --test` can drive the real boot order against it.
+export class RecentsPersistence {
+  // `store` is the StateStore singleton (only .section()/.patchSection() are used,
+  // so a plain stub works in tests).
+  constructor(store, section = 'recentTabs') {
+    this.store = store;
+    this.sectionName = section;
+    this._sig = null;
+    this._restored = false;
+  }
+
+  // Read the persisted strip. Until this has run, persist() is inert.
+  restore() {
+    const list = sanitizeRecents(this.store.section(this.sectionName).windows);
+    this._sig = recentsSignature(list);
+    this._restored = true;
+    return list;
+  }
+
+  // Write the strip if it actually changed. Returns whether a write was issued —
+  // callers ignore it, but it makes the guard's behavior assertable.
+  persist(list) {
+    if (!this._restored) return false;      // the invariant above
+    const sig = recentsSignature(list);
+    if (sig === this._sig) return false;    // unchanged: do not bump the blob's rev
+    this._sig = sig;
+    // Only the durable identity fields; active/disabled/working are per-render.
+    this.store.patchSection(this.sectionName, {
+      windows: (list || []).map((e) => ({
+        id: e.id, index: e.index, name: e.name, session: e.session,
+      })),
+    });
+    return true;
+  }
+
+  // Re-read after another client wrote. Returns the new list, or null when the
+  // blob still matches what we hold (the echo of our own write, or an unrelated
+  // section changing) so the caller can skip a pointless re-render.
+  adopt() {
+    const list = sanitizeRecents(this.store.section(this.sectionName).windows);
+    const sig = recentsSignature(list);
+    if (sig === this._sig) return null;
+    this._sig = sig;
+    return list;
+  }
+}

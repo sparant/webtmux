@@ -6,15 +6,19 @@
 // round-trip test below also pulls in StateStore, which is import-free for the
 // same reason (see state-store.test.mjs).
 //
-// Worth testing because both functions guard a failure that is silent rather than
-// loud. sanitizeRecents sits between untrusted tmux state and a render loop that
-// assumes well-formed entries, and recentsSignature is the only thing standing
-// between a 500ms refresh tick and a write storm on the shared blob — if it ever
-// starts returning a fresh value per call, nothing breaks visibly, the strip just
-// quietly republishes @wt_state twice a second forever.
+// Worth testing because every failure here is silent rather than loud.
+// sanitizeRecents sits between untrusted tmux state and a render loop that assumes
+// well-formed entries. recentsSignature is the only thing standing between a 500ms
+// refresh tick and a write storm on the shared blob — if it ever starts returning a
+// fresh value per call, nothing breaks visibly, the strip just quietly republishes
+// @wt_state twice a second forever. And RecentsPersistence enforces the ordering
+// rule whose violation shipped as "recents never restore" while quietly destroying
+// the saved strip (see the block at the bottom of this file).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_RECENTS, sanitizeRecents, recentsSignature } from '../resources/js/recents-strip.js';
+import {
+  MAX_RECENTS, sanitizeRecents, recentsSignature, RecentsPersistence,
+} from '../resources/js/recents-strip.js';
 import { StateStore } from '../resources/js/state-store.js';
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -121,4 +125,102 @@ test('an empty strip is distinguishable from an absent one', () => {
   s.load(JSON.stringify({ v: 1, rev: 3, recentTabs: { windows: [] } }));
   assert.deepEqual(sanitizeRecents(s.section('recentTabs').windows), []);
   assert.equal(recentsSignature([]), '[]');
+});
+
+// --- RecentsPersistence: the write-before-read hazard -------------------------
+//
+// These pin the bug that made the first version of this feature look completely
+// broken: the strip persisted and restored correctly in isolation, but the
+// SplitManager constructor calls _refreshToolbar (via addUnit -> focus) BEFORE
+// _restoreRecents, so an empty strip was written over the saved one and the
+// restore then read back its own empty write. Nothing errored; the tabs just
+// never came back, and the user's saved arrangement was destroyed in the process.
+
+test('a persist before the first restore cannot clobber the saved strip', () => {
+  // tmux already holds a strip the user built up in an earlier session.
+  const store = new StateStore();
+  store.load(JSON.stringify({
+    v: 1, rev: 4, recentTabs: { windows: [entry('@1'), entry('@2', { name: 'editors' })] },
+  }));
+
+  const p = new RecentsPersistence(store);
+
+  // The constructor's early refresh: persist([]) while nothing has been read yet.
+  assert.equal(p.persist([]), false, 'the pre-restore write is refused');
+
+  // The saved strip must have survived that, both in the blob and through restore.
+  assert.equal(store.section('recentTabs').windows.length, 2, 'the blob is untouched');
+  assert.deepEqual(p.restore().map((e) => e.id), ['@1', '@2'], 'the strip comes back');
+});
+
+test('persist works normally once restore has run', () => {
+  const store = new StateStore();
+  const p = new RecentsPersistence(store);
+  p.restore();
+
+  assert.equal(p.persist([entry('@7')]), true, 'a real change is written');
+  assert.deepEqual(store.section('recentTabs').windows.map((e) => e.id), ['@7']);
+});
+
+test('an unchanged strip is not rewritten (the 500ms-refresh write guard)', () => {
+  const store = new StateStore();
+  const p = new RecentsPersistence(store);
+  p.restore();
+  p.persist([entry('@1')]);
+
+  // _refreshToolbar fires twice a second forever; only real edits may write.
+  assert.equal(p.persist([entry('@1')]), false, 'identical content does not write');
+  assert.equal(
+    p.persist([entry('@1', { active: true, working: '1', disabled: true })]), false,
+    'per-render flags changing does not count as an edit',
+  );
+  assert.equal(p.persist([entry('@1'), entry('@2')]), true, 'a genuine edit still writes');
+});
+
+test('persist only writes the durable fields', () => {
+  const store = new StateStore();
+  const p = new RecentsPersistence(store);
+  p.restore();
+  p.persist([entry('@1', { active: true, disabled: false, working: '1' })]);
+
+  assert.deepEqual(store.section('recentTabs').windows, [
+    { id: '@1', index: 1, name: '@1', session: 'services' },
+  ]);
+});
+
+test('adopt returns a remote change but ignores the echo of our own write', () => {
+  const store = new StateStore();
+  const p = new RecentsPersistence(store);
+  p.restore();
+  p.persist([entry('@1')]);
+
+  assert.equal(p.adopt(), null, 'our own write is not re-adopted');
+
+  // Another browser rewrites the strip.
+  store.load(JSON.stringify({ v: 1, rev: 99, recentTabs: { windows: [entry('@5')] } }));
+  assert.deepEqual(p.adopt().map((e) => e.id), ['@5'], 'a remote change is adopted');
+  assert.equal(p.adopt(), null, 'and only once');
+});
+
+test('the full boot order restores the strip end to end', async () => {
+  // Client A arranges a strip and it reaches tmux.
+  const a = new StateStore();
+  let wire = null;
+  a.setSender((json) => { wire = json; });
+  const pa = new RecentsPersistence(a);
+  pa.restore();
+  pa.persist([entry('@1'), entry('@2', { name: 'editors' })]);
+  await delay(500);
+  assert.ok(wire, 'the strip reached the wire');
+
+  // Client B reloads. Its SplitManager constructor runs the early refresh FIRST,
+  // exactly as addUnit -> focus does, and only then restores.
+  const b = new StateStore();
+  const pb = new RecentsPersistence(b);
+  pb.persist([]);                       // the constructor's premature write
+  b.load(wire);                         // the first layout push carries @wt_state
+  const restored = pb.restore();
+
+  assert.deepEqual(restored.map((e) => [e.id, e.name]), [['@1', '@1'], ['@2', 'editors']],
+    'the strip survives the boot sequence that used to erase it');
 });
