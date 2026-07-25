@@ -19,6 +19,7 @@ import { CaptureCache, placementKey } from '../capture-cache.js';
 import { matchesWords, appendChar, backspace, phraseText } from '../search.js';
 import { stateStore } from '../state-store.js';
 import { workClass, workLabel, workTip } from '../stoplight.js';
+import { Tip, TIP_CSS } from '../tooltip.js';
 
 const N_MAX_TILES = 24;
 const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css';
@@ -40,7 +41,9 @@ class WebtmuxExpose extends LitElement {
     _searchBuffers: { state: true },
   };
 
-  static styles = css`
+  // TIP_CSS is appended so a tile's stoplight hint matches the strip's and the
+  // sidebar's — same delay, same look, for the very same dot.
+  static styles = [css`
     :host {
       display: none;
     }
@@ -264,7 +267,7 @@ class WebtmuxExpose extends LitElement {
       font: 14px Menlo, Monaco, monospace;
       margin: auto;
     }
-  `;
+  `, TIP_CSS];
 
   constructor() {
     super();
@@ -275,6 +278,7 @@ class WebtmuxExpose extends LitElement {
     this.manager = null; // SplitManager — set by SplitManager
     this._tiles = []; // { term? } live xterm instances, for disposal
     this._working = new Map(); // window id -> @wt_working, pushed by the SplitManager
+    this._tip = new Tip(this); // shared hover hint — see tooltip.js
     this._cursor = -1; // keyboard-highlighted tile index
     // Cursor + render tracking are keyed by PLACEMENT ("session windowId"), not
     // window id, so a window linked into two sessions has a distinct, individually
@@ -360,6 +364,8 @@ class WebtmuxExpose extends LitElement {
         </div>
         <div class="grid" @click=${(e) => e.stopPropagation()}></div>
       </div>
+      <!-- The shared hover hint (position:fixed, so it can sit last here). -->
+      <div class="wt-tip"></div>
     `;
   }
 
@@ -425,6 +431,7 @@ class WebtmuxExpose extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     this.closeOverlay();
+    this._tip.dispose();
   }
 
   // ---- tile building ----------------------------------------------------------
@@ -556,6 +563,12 @@ class WebtmuxExpose extends LitElement {
     const work = document.createElement('span');
     work.className = 'tile-work';
     work.setAttribute('role', 'img');
+    // The shared hint rather than a native `title`: this is the same dot the strip
+    // and the sidebar show, and it must not answer more slowly here. _paintWork
+    // keeps `_tipText` current, and the handlers read it at hover time so a state
+    // change while the hint is up doesn't leave stale words on screen.
+    work.addEventListener('mouseenter', (e) => this._tip.enter(e, work._tipText || ''));
+    work.addEventListener('mouseleave', () => this._tip.leave());
     frame.appendChild(work);
 
     const rec = {
@@ -636,7 +649,7 @@ class WebtmuxExpose extends LitElement {
     dot.classList.toggle('on', cls === 'on');
     dot.classList.toggle('off', cls === 'off');
     dot.classList.toggle('wait', cls === 'wait');
-    dot.title = workTip(v);
+    dot._tipText = workTip(v);
     dot.setAttribute('aria-label', workLabel(v));
   }
 
