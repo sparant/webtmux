@@ -29,6 +29,7 @@ import { CaptureCache } from './capture-cache.js';
 import { HoverPreview } from './hover-preview.js';
 import { WorkAlerts } from './work-alerts.js';
 import { MAX_RECENTS, RecentsPersistence } from './recents-strip.js';
+import { readSplitState } from './split-state.js';
 import { IS_MAC } from './os.js';
 import { stateStore } from './state-store.js';
 import { clientStore } from './client-store.js';
@@ -94,6 +95,9 @@ export class SplitManager {
     // Must exist before addUnit() below: that path reaches _refreshToolbar (and so
     // _persistRecents) while the strip is still empty and unrestored.
     this._recents = new RecentsPersistence(stateStore);
+    // Same no-write-before-first-read rule for the 'split' section; set true once
+    // _restoreSplitState has read the blob.
+    this._splitRestored = false;
     // Which recent tabs are flashing for attention because their stoplight dropped
     // out of green while you were looking elsewhere (see work-alerts.js).
     this.workAlerts = new WorkAlerts();
@@ -192,15 +196,35 @@ export class SplitManager {
   }
 
   // --- split-view persistence --------------------------------------------------
-  // Shared: which windows the EXTRA (non-primary) regions show, in order. The
-  // primary is always recreated and console-driven, so it's excluded — regions[i]
-  // here corresponds to units[i+1]. Per-client width/focus live in ClientStore.
+  // Shared: which window each region shows. `regions` covers the EXTRA regions
+  // only — regions[i] is units[i+1] — and the primary's window is a SEPARATE
+  // `primaryWindowId` field rather than regions[0].
+  //
+  // That split looks redundant but is deliberate: `regions` already exists in every
+  // saved blob with the meaning "extras only". Folding the primary in as regions[0]
+  // would silently reinterpret that stored data, and a blob holding one extra region
+  // would read back as "primary, no splits" — quietly destroying a split on first
+  // load. A new key is unambiguous for old and new blobs alike.
+  //
+  // The primary's window is real tmux state (its attach is SHARED with the ssh
+  // console — server/handlers.go), not a private browser view, so it belongs in the
+  // shared blob rather than ClientStore. Restoring it re-selects the base session's
+  // current window, which moves the console too; that is the accepted trade for the
+  // main region remembering where you were. Per-client width/focus stay in ClientStore.
   _persistSplitState() {
-    if (this._restoringSplit) return;
+    // Nothing may be written before _restoreSplitState has read (see
+    // RecentsPersistence in recents-strip.js for the bug this prevents: a write
+    // during construction clobbers the saved value, and the restore then reads back
+    // its own empty write).
+    if (!this._splitRestored || this._restoringSplit) return;
     const regions = this.units.slice(1).map((u) => ({
       windowId: u._targetWindowId || u.layout?.activeWindowId || null,
     }));
-    stateStore.patchSection('split', { regions });
+    const primary = this.units[0];
+    const primaryWindowId = primary
+      ? (primary._targetWindowId || primary.layout?.activeWindowId || null)
+      : null;
+    stateStore.patchSection('split', { regions, primaryWindowId });
   }
 
   // Per-client: the divider ratios (inline flex-grow) in region DOM order. A reload
@@ -216,14 +240,27 @@ export class SplitManager {
   // Defensive: a stale/absent window just leaves that region on its default (handled
   // in _onUnitLayout via _restoreWindowId); no saved regions => a no-op.
   _restoreSplitState() {
-    const saved = stateStore.section('split').regions;
-    const list = Array.isArray(saved) ? saved : [];
+    // Read BEFORE anything can write (see _persistSplitState's guard). readSplitState
+    // also owns the rule that `regions` excludes the primary — see split-state.js.
+    const { regions: list, primaryWindowId: savedPrimary } = readSplitState(stateStore.section('split'));
+
+    // The main region's last window. Claimed first so that if a stale blob names the
+    // same window for the primary and an extra region, the primary wins deterministically
+    // rather than by whichever layout happens to arrive first. Absent on blobs written
+    // before this was persisted — the primary then just stays on whatever window the
+    // base session is currently showing, i.e. the old console-driven behavior.
+    if (savedPrimary && this.units[0]) this.units[0]._restoreWindowId = savedPrimary;
+
+    // Every read of the blob is done, so writes are safe from here on. Region
+    // creation below is covered separately by _restoringSplit.
+    this._splitRestored = true;
+
     if (list.length) {
       this._restoringSplit = true;
       try {
-        for (const r of list) {
+        for (const windowId of list) {
           const unit = this.addUnit({});
-          if (r && r.windowId) unit._restoreWindowId = r.windowId;
+          if (windowId) unit._restoreWindowId = windowId;
           else unit._autoPickPending = true;   // no saved window → MRU auto-pick
         }
       } finally {
@@ -344,10 +381,16 @@ export class SplitManager {
       unit._autoPickPending = false;
     }
 
-    // Restore-target: a region recreated by _restoreSplitState() wants to land on the
-    // specific window it showed last session. Navigate there once its layout arrives,
-    // but only if that window still exists and isn't already claimed by another region
-    // (a tmux server restart may have changed the window set — then we just stay put).
+    // Restore-target: a region wants to land on the specific window it showed last
+    // session — an extra region recreated by _restoreSplitState(), or the primary
+    // restored from primaryWindowId. Navigate there once its layout arrives, but only
+    // if that window still exists and isn't already claimed by another region (a tmux
+    // server restart may have changed the window set — then we just stay put).
+    //
+    // For the PRIMARY this issues a select-window on the base session, whose attach is
+    // shared with the ssh console, so the console follows. The `target !== activeWindowId`
+    // check below means that only happens when the window actually differs — a reload
+    // that lands where tmux already is stays silent.
     if (unit._restoreWindowId && unit.layout) {
       const target = unit._restoreWindowId;
       unit._restoreWindowId = null;
@@ -394,9 +437,9 @@ export class SplitManager {
       }
       if (unit._navSuppress && landSession !== unit._navSuppress.session) unit._navSuppress = null;
       if (!suppressed) this.noteAccess(newId, this._metaFor(unit, newId));
-      // A non-primary region landing on a new window changes the saved split layout
-      // (the primary's window is console-driven and never restored, so skip it).
-      if (!unit.primary) this._persistSplitState();
+      // Any region landing on a new window changes the saved layout — including the
+      // primary, whose window is now restored too (as primaryWindowId).
+      this._persistSplitState();
     }
     this._refreshToolbar();
   }
@@ -416,7 +459,11 @@ export class SplitManager {
     return new Set(
       this.units
         .filter(u => u !== exclude)
-        .map(u => u._targetWindowId || u.layout?.activeWindowId)
+        // A pending _restoreWindowId counts as a claim too: during boot several
+        // regions hold a restore target and none has navigated yet, so without this
+        // two of them could resolve onto the same window depending on which layout
+        // arrived first.
+        .map(u => u._targetWindowId || u._restoreWindowId || u.layout?.activeWindowId)
         .filter(Boolean)
     );
   }
