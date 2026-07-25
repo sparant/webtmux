@@ -10,6 +10,7 @@ import { LitElement, html, css } from 'lit';
 import { chord } from '../os.js';
 import { stateStore } from '../state-store.js';
 import { workClass, workLabel, workTip } from '../stoplight.js';
+import { Tip, TIP_CSS } from '../tooltip.js';
 
 // Recent-tab label shape. Two INDEPENDENT toggles rather than one four-way cycle,
 // because they answer unrelated questions: "which session is this in" and "how much
@@ -96,7 +97,8 @@ class WebtmuxToolbar extends LitElement {
     activity: { type: Number },
   };
 
-  static styles = css`
+  // TIP_CSS is appended so the hover hint is byte-identical to the sidebar's.
+  static styles = [css`
     :host {
       display: flex;
       align-items: center;
@@ -508,36 +510,12 @@ class WebtmuxToolbar extends LitElement {
       cursor: default;
     }
 
-    /* Custom quick tooltip for the recent tabs. The native title attribute has a
-       ~1s browser delay; this appears after ~180ms (see _TIP_DELAY). position:fixed
-       escapes the .tabs overflow clip (the strip hides overflow-y). Driven
-       imperatively (show/hide/move) so hovering a tab never re-renders the bar. */
-    .wt-tip {
-      position: fixed;
-      z-index: 100;
-      /* Show the WHOLE hint — no ellipsis clipping. Wrap long single-line hints and
-         honor \n in multi-line ones (pre-line), capping the width so it stays a
-         readable column rather than one very long line. */
-      max-width: min(440px, calc(100vw - 16px));
-      padding: 6px 10px;
-      border-radius: 5px;
-      background: #0b1020;
-      border: 1px solid #4a9eff;
-      color: #e8eefc;
-      font-size: 12px;
-      line-height: 1.45;
-      font-family: Menlo, Monaco, "Courier New", monospace;
-      white-space: pre-line;
-      overflow-wrap: anywhere;
-      pointer-events: none;
-      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
-      opacity: 0;
-      visibility: hidden;
-    }
-    .wt-tip.show {
-      opacity: 1;
-      visibility: visible;
-    }
+    /* The hover hint itself lives in tooltip.js (TIP_CSS, spliced in below the
+       component's own rules) — the sidebar shows the same hint for the same
+       stoplights, and a hint that appears after a different delay in each place
+       reads as one of them being slow. position:fixed also escapes the .tabs
+       overflow clip (the strip hides overflow-y), and the whole thing is driven
+       imperatively so hovering a tab never re-renders the bar. */
 
     /* Recent-tab label-shape menu, anchored under the "Recent" label. */
     .label-wrap { position: relative; flex: 0 0 auto; display: inline-flex; }
@@ -572,7 +550,7 @@ class WebtmuxToolbar extends LitElement {
       color: #6b7690; font-size: 11px; padding: 2px 2px 0;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-  `;
+  `, TIP_CSS];
 
   constructor() {
     super();
@@ -604,7 +582,7 @@ class WebtmuxToolbar extends LitElement {
       this._applyLabelPrefs();
       this.requestUpdate();
     });
-    this._tipTimer = null; // pending show timer for the quick tab tooltip
+    this._tip = new Tip(this);  // shared hover hint — see tooltip.js
     this.saveOpen = false;   // save dropdown open?
     this.saveStatus = null;  // transient save result banner (see properties)
     this.previewWindow = ''; // window the shared hover preview is showing
@@ -650,11 +628,6 @@ class WebtmuxToolbar extends LitElement {
     this.showBuild = !this.showBuild;
     stateStore.patchSection('toolbar', { showBuild: this.showBuild });
   }
-
-  // Quick-tooltip delay (ms). Still snappier than the browser's native ~1s title
-  // delay, but a deliberate hover pause so tooltips don't flash the instant the
-  // pointer touches a tab/button or sweeps across the strip.
-  static _TIP_DELAY = 600;
 
   // Cycle the scroll-wheel mode (app -> buffer -> auto -> auto+) and apply it live
   // to the focused unit's terminal (which also persists it). This control used to
@@ -702,55 +675,16 @@ class WebtmuxToolbar extends LitElement {
 
   disconnectedCallback() {
     super.disconnectedCallback();
-    if (this._tipTimer) { clearTimeout(this._tipTimer); this._tipTimer = null; }
+    this._tip.dispose();
     this.manager?.hover?.cancel();
   }
 
-  _tipEl() {
-    return this.renderRoot?.querySelector('.wt-tip');
-  }
-
-  // Schedule the tooltip to appear under the hovered target after a short delay —
-  // OR, if a tip is already visible (e.g. moving from a tab onto its child × or
-  // onto the pane dots), swap its text/position INSTANTLY so it tracks the pointer
-  // without a second delay.
-  _tipEnter(ev, text) {
-    if (!text) return;
-    const target = ev.currentTarget;
-    if (this._tipTimer) clearTimeout(this._tipTimer);
-    const tip = this._tipEl();
-    if (tip && tip.classList.contains('show')) {
-      this._tipShow(target, text);
-      return;
-    }
-    this._tipTimer = setTimeout(() => {
-      if (!target.isConnected) return;
-      this._tipShow(target, text);
-    }, WebtmuxToolbar._TIP_DELAY);
-  }
-
-  // Position + reveal the tip under `target` with `text`. Clamped to the viewport.
-  _tipShow(target, text) {
-    const tip = this._tipEl();
-    if (!tip || !target?.isConnected) return;
-    tip.textContent = text;
-    // Show first (still transparent) so it has real dimensions to clamp against.
-    tip.classList.add('show');
-    const r = target.getBoundingClientRect();
-    const tw = tip.offsetWidth;
-    const margin = 6;
-    let left = r.left;
-    if (left + tw > window.innerWidth - margin) left = window.innerWidth - tw - margin;
-    if (left < margin) left = margin;
-    tip.style.left = `${Math.round(left)}px`;
-    tip.style.top = `${Math.round(r.bottom + margin)}px`;
-  }
-
-  _tipLeave() {
-    if (this._tipTimer) { clearTimeout(this._tipTimer); this._tipTimer = null; }
-    const tip = this._tipEl();
-    if (tip) tip.classList.remove('show');
-  }
+  // Thin wrappers over the shared hint controller (tooltip.js). Kept as methods
+  // because the ~30 call sites in render() read better as _tipEnter/_tipLeave than
+  // as reaching through a field, and because the sidebar shows the same hint for
+  // the same stoplight — the delay and the look have to come from one place.
+  _tipEnter(ev, text) { this._tip.enter(ev, text); }
+  _tipLeave() { this._tip.leave(); }
 
   // ---- recents drag-reorder ----------------------------------------------------
   // The strip's order is deliberately stable (re-accessing a window never moves its

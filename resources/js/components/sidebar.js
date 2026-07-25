@@ -5,6 +5,7 @@ import { matchesWords, appendChar } from '../search.js';
 import { stateStore } from '../state-store.js';
 import { clientStore } from '../client-store.js';
 import { workClass, workLabel, workTip } from '../stoplight.js';
+import { Tip, TIP_CSS } from '../tooltip.js';
 
 class WebtmuxSidebar extends LitElement {
   static properties = {
@@ -42,7 +43,9 @@ class WebtmuxSidebar extends LitElement {
     previewWindow: { type: String },
   };
 
-  static styles = css`
+  // TIP_CSS is appended so the stoplight hint here is the same hint, after the
+  // same delay, as the one the recents strip shows for the very same dot.
+  static styles = [css`
     :host {
       display: block;
       width: 330px;
@@ -364,13 +367,14 @@ class WebtmuxSidebar extends LitElement {
     }
     .session-tab.sdrop-before::before { left: -3px; }
     .session-tab.sdrop-after::after { right: -3px; }
-  `;
+  `, TIP_CSS];
 
   constructor() {
     super();
     this.layout = null;
     this.activePane = '';
     this.activeWindow = '';
+    this._tip = new Tip(this);  // shared hover hint — see tooltip.js
     // Collapsed is per-client viewport state (a reload restores YOUR collapse, it
     // must not leak to other browsers) → ClientStore, not the shared blob.
     this.collapsed = !!clientStore.section('sidebar').collapsed;
@@ -480,6 +484,7 @@ class WebtmuxSidebar extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     this._stopCapturePoll();
+    this._tip.dispose();
   }
 
   // While the panel is open, keep this focused region's capture buffers warm so
@@ -631,7 +636,8 @@ class WebtmuxSidebar extends LitElement {
               class="work ${workClass(this._working(win))}"
               role="img"
               aria-label=${workLabel(this._working(win))}
-              title=${workTip(this._working(win))}
+              @mouseenter=${(e) => this._tip.enter(e, workTip(this._working(win)))}
+              @mouseleave=${() => this._tip.leave()}
             ></span>
             ${win.id === this.editingWindow
               ? html`
@@ -679,6 +685,9 @@ class WebtmuxSidebar extends LitElement {
         ${this.layout.windows?.length || 0} windows
       </div>
       </div>
+      <!-- The shared hover hint. position:fixed, so it can sit last and still land
+           anywhere on screen; it escapes the panel's own overflow-y clip. -->
+      <div class="wt-tip"></div>
     `;
   }
 
