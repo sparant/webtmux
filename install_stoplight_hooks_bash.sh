@@ -41,11 +41,22 @@ if [[ -n "$TMUX" && -z "$__wt_hooks_installed" && -z "$WT_STOPLIGHT_SUPPRESS" ]]
     return 1
   }
 
+  # Leaving the shell is not work, and green for `exit` is the last thing the
+  # shell ever does — no prompt follows to clear it, so walking away from a
+  # window would leave it green.
+  __wt_is_exit() {
+    case "${1%% *}" in
+      exit|logout) return 0 ;;
+    esac
+    return 1
+  }
+
   __wt_preexec() {
     [[ -n "$COMP_LINE" ]] && return                 # skip during completion
     [[ "$BASH_COMMAND" == "$PROMPT_COMMAND" ]] && return
     [[ -n "$__wt_running" ]] && return              # already green
     __wt_delegates_status "$BASH_COMMAND" && return # something else owns it now
+    __wt_is_exit "$BASH_COMMAND" && return          # leaving is not work
     __wt_running=1
     tmux set -w @wt_working 1 2>/dev/null           # start work -> green
   }
@@ -53,6 +64,10 @@ if [[ -n "$TMUX" && -z "$__wt_hooks_installed" && -z "$WT_STOPLIGHT_SUPPRESS" ]]
     tmux set -w @wt_working 0 2>/dev/null           # stop work -> red
     __wt_running=
   }
+  # However the shell ends — exit, EOF, or a signal — hand the window back red
+  # rather than stranding it in whatever colour it happened to be.
+  __wt_on_exit() { tmux set -w @wt_working 0 2>/dev/null; }
   trap '__wt_preexec' DEBUG
+  trap '__wt_on_exit' EXIT
   PROMPT_COMMAND="__wt_precmd${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
 fi
