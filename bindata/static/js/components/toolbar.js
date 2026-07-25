@@ -1,7 +1,7 @@
 // Top toolbar: a most-recently-accessed window strip on the LEFT and the sidebar
 // toggle on the RIGHT. The SplitManager owns the data — it sets `recent`
-// (up to 5 {id,index,name,active}) and `collapsed`, and handles clicks via
-// `manager.pickRecentWindow(id)` / `manager.sidebar.toggleCollapsed()`.
+// (up to 5 {id,index,name,active,working,alert}) and `collapsed`, and handles
+// clicks via `manager.pickRecentWindow(id)` / `manager.sidebar.toggleCollapsed()`.
 //
 // Hovering a recent tab does NOT pop a thumbnail here any more: it asks the shared
 // HoverPreview to show that window in a real terminal region (see hover-preview.js),
@@ -175,6 +175,35 @@ class WebtmuxToolbar extends LitElement {
        request: something is blocked until you go and answer it. */
     .work.wait { background: #f5c542; border-color: #f5c542; box-shadow: 0 0 5px #f5c542; animation: wt-wait 1.4s ease-in-out infinite; }
     @keyframes wt-wait { 50% { opacity: 0.35; } }
+
+    /* ATTENTION FLASH: this window's stoplight dropped out of green while you were
+       looking at some other window — it either stopped (red) or is waiting on you
+       (amber). The dot alone is a 8px change in the corner of your eye and is easy
+       to miss for minutes; the whole tab flashing is not. It keeps flashing until
+       you focus that window (SplitManager._markWorkAlerts owns that rule) — it is a
+       "you missed something" signal, so it must not expire on its own.
+       Colour says WHICH transition, matching the dot you'd have seen. */
+    .tab.alert { animation: wt-flash 1.05s ease-in-out infinite; }
+    .tab.alert-off  { --flash: #e74c3c; }
+    .tab.alert-wait { --flash: #f5c542; }
+    @keyframes wt-flash {
+      50% {
+        background: var(--flash);
+        border-color: var(--flash);
+        color: #10131f;
+        box-shadow: 0 0 10px var(--flash);
+      }
+      0%, 100% { border-color: var(--flash); }
+    }
+    /* Reduced motion: keep the signal, drop the blinking — a solid ring in the same
+       colour, which is still the loudest thing in the strip. */
+    @media (prefers-reduced-motion: reduce) {
+      .tab.alert {
+        animation: none;
+        border-color: var(--flash);
+        box-shadow: 0 0 0 2px var(--flash);
+      }
+    }
 
     .tab {
       display: inline-flex;
@@ -817,6 +846,21 @@ class WebtmuxToolbar extends LitElement {
     return working === '1' ? 'on' : working === '0' ? 'off' : working === '2' ? 'wait' : '';
   }
 
+  // Flash classes for an unacknowledged drop out of green (entry.alert holds the
+  // value it dropped to; see SplitManager._markWorkAlerts). Reuses _workClass so
+  // the flash colour can never drift from the dot's.
+  _alertClass(alert) {
+    return alert ? `alert alert-${this._workClass(alert)}` : '';
+  }
+
+  // The line the tooltip adds while a tab is flashing — it has to answer both
+  // "why is this blinking" and "how do I make it stop".
+  _alertTip(alert) {
+    if (!alert) return '';
+    const what = alert === '2' ? 'is waiting for you' : 'stopped';
+    return `\n● It ${what} since you last looked — flashes until you switch to it`;
+  }
+
   render() {
     return html`
       <span
@@ -852,9 +896,10 @@ class WebtmuxToolbar extends LitElement {
           // window would just mirror each other) — but it can be JUMPED to, which is
           // what clicking now does. Hovering it shows nothing new for the same reason:
           // it's already on screen.
-          const tip = w.disabled
+          const tip = (w.disabled
             ? `${full}\nAlready open in another region — click to jump there · drag to reorder`
-            : `${full}\nHover to preview it in a terminal region · click to switch there · drag to reorder`;
+            : `${full}\nHover to preview it in a terminal region · click to switch there · drag to reorder`)
+            + this._alertTip(w.alert);
           const last = i === this.recent.length - 1;
           return html`
           <span
@@ -865,7 +910,7 @@ class WebtmuxToolbar extends LitElement {
             @mouseenter=${(e) => { this._tipEnter(e, tip); this.manager?.hover?.enter(w.id, w.session); }}
             @mouseleave=${() => { this._tipLeave(); this.manager?.hover?.leave(); }}
           ><span class="work ${this._workClass(w.working)}" aria-hidden="true"></span><button
-            class="tab ${w.active ? 'active' : ''} ${w.disabled ? 'disabled' : ''} ${!w.active && this.previewWindow === w.id ? 'previewing' : ''}"
+            class="tab ${w.active ? 'active' : ''} ${w.disabled ? 'disabled' : ''} ${!w.active && this.previewWindow === w.id ? 'previewing' : ''} ${this._alertClass(w.alert)}"
             aria-label=${full}
             @click=${() => { this._tipLeave(); this.manager?.pickRecentWindow(w); }}
           ><span class="sess">${w.index}</span><span class="wname">${this._tabLabel(w)}</span><span

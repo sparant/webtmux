@@ -27,6 +27,7 @@
 import { TerminalUnit, MSG } from './terminal-unit.js';
 import { CaptureCache } from './capture-cache.js';
 import { HoverPreview } from './hover-preview.js';
+import { WorkAlerts } from './work-alerts.js';
 import { IS_MAC } from './os.js';
 import { stateStore } from './state-store.js';
 import { clientStore } from './client-store.js';
@@ -86,6 +87,9 @@ export class SplitManager {
     // noteAccess() and also read by the Exposé "Last accessed" sort — one code
     // path for both. This list holds only the toolbar's bounded/stable view.
     this.recentWindows = [];         // {id,index,name,session}, stable order (max 5)
+    // Which recent tabs are flashing for attention because their stoplight dropped
+    // out of green while you were looking elsewhere (see work-alerts.js).
+    this.workAlerts = new WorkAlerts();
     this.toolbar = document.createElement('webtmux-toolbar');
     this.toolbar.manager = this;
     this.container.parentNode.insertBefore(this.toolbar, this.container);
@@ -698,6 +702,10 @@ export class SplitManager {
         working: workingById.has(e.id) ? workingById.get(e.id) : (live?.working || ''),
       };
     });
+    // Flash the tabs whose stoplight dropped out of green behind your back. Runs on
+    // the SAME entries the toolbar is about to render, so what raises an alert is
+    // exactly the dot the user would have had to notice.
+    this.workAlerts.mark(this.toolbar.recent);
     this.toolbar.collapsed = !!this.sidebar?.collapsed;
     // Keep the toolbar's scroll-mode label reflecting the focused pane's setting.
     if (focused?.scrollMode) this.toolbar.scrollMode = focused.scrollMode;
