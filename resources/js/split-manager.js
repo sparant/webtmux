@@ -28,6 +28,7 @@ import { TerminalUnit, MSG } from './terminal-unit.js';
 import { CaptureCache } from './capture-cache.js';
 import { HoverPreview } from './hover-preview.js';
 import { WorkAlerts } from './work-alerts.js';
+import { MAX_RECENTS, sanitizeRecents, recentsSignature } from './recents-strip.js';
 import { IS_MAC } from './os.js';
 import { stateStore } from './state-store.js';
 import { clientStore } from './client-store.js';
@@ -86,7 +87,10 @@ export class SplitManager {
     // single source of truth is this.captureCache.accessed (persisted), fed by
     // noteAccess() and also read by the Exposé "Last accessed" sort — one code
     // path for both. This list holds only the toolbar's bounded/stable view.
-    this.recentWindows = [];         // {id,index,name,session}, stable order (max 5)
+    // Persisted (shared 'recentTabs' section) so the strip survives a reload — see
+    // _persistRecents/_restoreRecents. Recency lives in captureCache.accessed; this
+    // list is the bounded/stable ORDER, which recency alone can't reconstruct.
+    this.recentWindows = [];         // {id,index,name,session}, stable order (MAX_RECENTS)
     // Which recent tabs are flashing for attention because their stoplight dropped
     // out of green while you were looking elsewhere (see work-alerts.js).
     this.workAlerts = new WorkAlerts();
@@ -106,8 +110,10 @@ export class SplitManager {
     // Restore visual state that used to be lost on reload, now that a unit exists
     // (so capture requests have a ws) and the StateStore sender is wired:
     //   • the Preview/PiP window set + hidden flag (shared 'pip' section),
+    //   • the recents strip itself (shared 'recentTabs' section),
     //   • any saved split-view regions (shared 'split' section, per-client widths).
     this.pip.restoreState();
+    this._restoreRecents();
     this._restoreSplitState();
   }
 
@@ -443,7 +449,7 @@ export class SplitManager {
     } else {
       const entry = { id, index: meta.index, name: meta.name || 'bash', session };
       const list = [...this.recentWindows];
-      if (list.length < 5) {
+      if (list.length < MAX_RECENTS) {
         list.push(entry);
       } else {
         // Evict the least-recently-accessed slot (recency from the shared store).
@@ -480,6 +486,62 @@ export class SplitManager {
     if (!live.size) return;
     const kept = this.recentWindows.filter(e => live.has(e.id) || !covered.has(e.session));
     if (kept.length !== this.recentWindows.length) this.recentWindows = kept;
+  }
+
+  // --- recents-strip persistence -----------------------------------------------
+  // The strip is SHARED durable state (like the PiP window set): the tabs you built
+  // up are a view of the tmux server, so every browser on that server should see the
+  // same ones, and they should outlive a reload. captureCache.accessed already
+  // persists RECENCY, but it cannot rebuild the strip: entries are keyed by
+  // (session, id) so a linked window earns a tab per session, and the display ORDER
+  // is deliberately stable/drag-arranged rather than recency-derived.
+  //
+  // Called from _refreshToolbar — the one funnel every mutation routes through
+  // (noteAccess, removeRecent, reorderRecent, _pruneDeletedRecents) — so there is no
+  // path that changes the strip without persisting it. Because that funnel also runs
+  // on every 500ms layout push, the signature guard is what keeps this from writing
+  // (and bumping @wt_state's rev) 2x/second: only a real change schedules a write.
+  _persistRecents() {
+    const sig = recentsSignature(this.recentWindows);
+    if (sig === this._recentsSig) return;
+    this._recentsSig = sig;
+    // Only the durable identity fields. active/disabled/working are derived per
+    // render from live layouts and must never be frozen into the blob.
+    stateStore.patchSection('recentTabs', {
+      windows: this.recentWindows.map(e => ({
+        id: e.id, index: e.index, name: e.name, session: e.session,
+      })),
+    });
+  }
+
+  // Seed the strip from the shared blob at boot, and adopt it when ANOTHER client
+  // changes it. Entries are sanitized (the blob is user-writable tmux state) and
+  // capped at MAX_RECENTS, the same bound noteAccess enforces. Windows that died while this
+  // client was away are NOT filtered here — no layout has arrived yet, so there is
+  // nothing to compare against; _pruneDeletedRecents drops them on the first push.
+  _restoreRecents() {
+    const read = () => sanitizeRecents(stateStore.section('recentTabs').windows);
+
+    this.recentWindows = read();
+    // Match the signature to what we just read, so the restore itself can't be
+    // mistaken for a local edit and echo straight back out as a write.
+    this._recentsSig = recentsSignature(this.recentWindows);
+
+    // A remote write (another browser) replaces the strip wholesale — same
+    // last-writer-wins rule the rest of the blob follows. The refresh below runs
+    // inside StateStore's _applying guard, so the _persistRecents it triggers is a
+    // no-op and cannot loop the adopted value back to the server.
+    stateStore.subscribe((_state, fromRemote) => {
+      if (!fromRemote) return;
+      const next = read();
+      const sig = recentsSignature(next);
+      if (sig === this._recentsSig) return;
+      this.recentWindows = next;
+      this._recentsSig = sig;
+      this._refreshToolbar();
+    });
+
+    if (this.recentWindows.length) this._refreshToolbar();
   }
 
   // Remove a window from the recent strip WITHOUT killing the tmux window — the
@@ -706,6 +768,11 @@ export class SplitManager {
     // the SAME entries the toolbar is about to render, so what raises an alert is
     // exactly the dot the user would have had to notice.
     this.workAlerts.mark(this.toolbar.recent);
+    // Persist AFTER the loop above refreshed each entry's name/index from the live
+    // layouts, so a tmux rename is durable too (and after the prune, so a deleted
+    // window doesn't come back on the next reload). Signature-guarded — see
+    // _persistRecents; the common no-change case costs one JSON.stringify.
+    this._persistRecents();
     this.toolbar.collapsed = !!this.sidebar?.collapsed;
     // Keep the toolbar's scroll-mode label reflecting the focused pane's setting.
     if (focused?.scrollMode) this.toolbar.scrollMode = focused.scrollMode;

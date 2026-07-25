@@ -7,7 +7,8 @@
 //
 // Two stores, split by lifetime (see client-store.js for the other half):
 //   • StateStore  — SHARED durable config (sidebar prefs, session order, renderer,
-//                   expose/pip/toolbar prefs, split window assignment, recency).
+//                   expose/pip/toolbar prefs, split window assignment, the recents
+//                   strip, and access recency).
 //   • ClientStore — per-tab ephemeral (focused window/pane, split flex widths).
 // Every persisted field lives in exactly ONE of the two.
 //
