@@ -4,7 +4,7 @@
 //
 // The global chords use the Ctrl+Alt modifier (Ctrl+Option on macOS) and, where
 // tmux has a natural key after its Ctrl-b prefix, reuse that same letter so the
-// muscle memory carries over — w=choose-tree, p/n=prev/next-window, x=kill-pane,
+// muscle memory carries over — w=choose-tree, p/n and ⇧P/⇧N=prev/next-window, x=kill-pane,
 // ?=list-keys. Split-add has no unmodified tmux letter (% / " need Shift) so it
 // keeps Enter; Exposé is webtmux-only so it keeps E.
 import { LitElement, html, css } from 'lit';
@@ -31,6 +31,8 @@ const GROUPS = [
       { keys: [...M, '['], desc: 'Toggle copy / normal (scrollback) mode — tmux ⌃b [' },
       { keys: [...M, 'P'], desc: 'Recents — previous window (left) — tmux ⌃b p' },
       { keys: [...M, 'N'], desc: 'Recents — next window (right) — tmux ⌃b n' },
+      { keys: [...M, '⇧', 'P'], desc: 'This session’s window list — previous window, in tmux index order (also ⌘⌥⇧P on a Mac)' },
+      { keys: [...M, '⇧', 'N'], desc: 'This session’s window list — next window, in tmux index order (also ⌘⌥⇧N on a Mac)' },
       { keys: [...M, 'L'], desc: 'Cycle most-recently-used windows — hold the chord and tap L to walk back through history (⇧L reverses); like alt-tab' },
       { keys: [...M, ','], desc: 'Rename the current window (caret at the end, ready to add to the name) — tmux ⌃b ,' },
       { keys: [...M, 'B'], desc: 'Show / hide the build-id chip (top-left)' },

@@ -866,6 +866,37 @@ export class SplitManager {
     if (next && !isActive(next)) this.goToWindow(next.id, next.session);
   }
 
+  // Keyboard nav across the focused pane's OWN tmux window list (⌃⌥⇧N / ⌃⌥⇧P, and
+  // ⌘⌥⇧N/P on a Mac) — the direct analogue of tmux's next-window / previous-window.
+  // It walks EVERY window of the session that pane is attached to, in tmux's index
+  // order (the same order the sidebar lists), and never leaves that session. That
+  // is what makes it worth its own key next to navigateRecents, which walks the ≤5
+  // hand-ordered strip and will happily hop sessions.
+  // Windows another region already shows are skipped, not landed on (occupiedWindowIds,
+  // the one rule every switcher shares — two panes on one window would just mirror),
+  // and the walk wraps at both ends exactly like tmux's. If the pane's current
+  // window somehow isn't in the list, next starts at the first entry and previous
+  // at the last. dir = -1 (previous) or +1 (next).
+  navigateWindows(dir) {
+    const focused = this.focusedUnit;
+    const windows = focused?.layout?.windows || [];
+    if (!windows.length) return;
+    const activeId = focused.layout?.activeWindowId;
+    const occupied = this.occupiedWindowIds(focused);
+    const found = windows.findIndex(w => w.id === activeId);
+    // Start one step BEFORE the first candidate so the loop's first advance lands on it.
+    let i = found === -1 ? (dir > 0 ? -1 : 0) : found;
+    for (let n = 0; n < windows.length; n++) {
+      i = ((i + dir) % windows.length + windows.length) % windows.length;
+      const cand = windows[i];
+      if (!cand || cand.id === activeId) continue;   // wrapped back to where we started
+      if (occupied.has(cand.id)) continue;           // already on screen in another region
+      this.goToWindow(cand.id, this.logicalSession(focused));
+      return;
+    }
+    // Every other window in this session is occupied — nothing to move to.
+  }
+
   // Ctrl+Alt+L recent-window cycle — the "hold the chord and tap L" MRU walker,
   // like alt-tab. Distinct from navigateRecents (the ≤5 stable strip on P/N): this
   // walks the FULL access history newest→oldest. The order is SNAPSHOTTED when a
@@ -1121,6 +1152,7 @@ export class SplitManager {
     // carries over (Ctrl+Alt+<key> here == Ctrl-b <key> in tmux):
     //   w  choose-tree (window/session list) -> toggle the sidebar
     //   p  previous-window / n  next-window   -> step the recents strip
+    //   P  previous-window / N  next-window   -> step the SESSION's window list
     //   x  kill-pane                          -> close the focused region
     //   [  copy-mode                          -> toggle copy/normal on the focused pane
     //   ?  list-keys                          -> the shortcuts overlay (physical '/')
@@ -1137,6 +1169,20 @@ export class SplitManager {
       // handler in terminal-unit.js).
       if (ev.altKey && (ev.ctrlKey || ev.metaKey) && ev.code === 'KeyC') {
         this.newWindowInFocused();
+        ev.preventDefault();
+        ev.stopPropagation();
+        return;
+      }
+      // CAPITAL N / P (i.e. the chord + Shift): step the focused pane's own tmux
+      // WINDOW LIST, in tmux's index order — literally tmux's ⌃b n / ⌃b p. The
+      // lowercase n/p in the switch below step the recents strip instead; the two
+      // are different lists (the strip holds ≤5 windows, can span sessions, and is
+      // hand-ordered), so they get different keys rather than one key that guesses.
+      // Matched HERE, above the ⌃⌥-only guard, so Command+Option+⇧N/P works on a
+      // Mac too — same both-hands-fit reasoning as the ⌥C new-window chord above.
+      if (ev.altKey && ev.shiftKey && (ev.ctrlKey || ev.metaKey) &&
+          (ev.code === 'KeyN' || ev.code === 'KeyP')) {
+        this.navigateWindows(ev.code === 'KeyN' ? +1 : -1);
         ev.preventDefault();
         ev.stopPropagation();
         return;

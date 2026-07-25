@@ -138,6 +138,40 @@ class WebtmuxSidebar extends LitElement {
       margin-bottom: 16px;
     }
 
+    /* One row of the window list = the stoplight dot + the tab, side by side. The
+       dot lives OUTSIDE the tab button for the same reason it does in the recents
+       strip: the active row is filled solid #e94560, and a red "stopped" dot on that
+       fill was nearly invisible — precisely when you most want to see it. Out here it
+       always has the sidebar's own background behind it. The "+" row carries an empty
+       dot-width spacer so every tab in the list still shares one left edge. */
+    .wrow {
+      --dotcol: 14px;   /* dot width + gap — the tabs' inset, reused by the drop line */
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .wrow > .window-tab,
+    .wrow > .window-edit { flex: 1 1 auto; min-width: 0; }
+
+    /* Working-status dot — the same stoplight the recents tabs and the preview tiles
+       show, read from the same @wt_working value: green = working, red = stopped,
+       amber = waiting for you, unfilled = unset. Clients drive it with:
+       tmux set -w @wt_working 1|0|2 (set -u to clear). */
+    .work, .work-gap {
+      flex: 0 0 auto; width: 8px; height: 8px; box-sizing: border-box;
+    }
+    .work {
+      border-radius: 50%;
+      border: 1px solid #5a6a8a;
+      background: transparent;
+    }
+    .work.on   { background: #2ecc71; border-color: #2ecc71; box-shadow: 0 0 4px #2ecc71; }
+    .work.off  { background: #e74c3c; border-color: #e74c3c; }
+    /* Waiting for user input — pulses, because unlike the other two states it is a
+       request: something is blocked until you go and answer it. */
+    .work.wait { background: #f5c542; border-color: #f5c542; box-shadow: 0 0 5px #f5c542; animation: wt-wait 1.4s ease-in-out infinite; }
+    @keyframes wt-wait { 50% { opacity: 0.35; } }
+
     .window-tab {
       display: block;
       position: relative;
@@ -216,11 +250,12 @@ class WebtmuxSidebar extends LitElement {
        land — drawn in the gap ABOVE the row at the current drop index (and above the
        "+" row when dropping at the end). Unmistakable, and it makes "move to end"
        obvious, unlike highlighting a whole target row. Sits in the 4px flex gap so it
-       never shifts layout. */
+       never shifts layout. Extends back across the stoplight column (--dotcol) so it
+       still spans the whole list, not just the inset tab. */
     .window-tab.drop-before::before {
       content: '';
       position: absolute;
-      left: 0;
+      left: calc(-1 * var(--dotcol, 0px));
       right: 0;
       top: -3px;
       height: 2px;
@@ -588,8 +623,14 @@ class WebtmuxSidebar extends LitElement {
         @dragleave=${(e) => this.onWinListDragLeave(e)}
         @drop=${(e) => this.onWinListDrop(e)}
       >
-        ${this.layout.windows?.map((win, i) => win.id === this.editingWindow
-          ? html`
+        ${this.layout.windows?.map((win, i) => html`
+          <div class="wrow">
+            <span
+              class="work ${this._workClass(this._working(win))}"
+              title=${this._workTip(this._working(win))}
+            ></span>
+            ${win.id === this.editingWindow
+              ? html`
             <input
               class="window-edit"
               .value=${win.name || ''}
@@ -597,7 +638,7 @@ class WebtmuxSidebar extends LitElement {
               @blur=${(e) => this.commitRename(e, win.id)}
               @click=${(e) => e.stopPropagation()}
             >`
-          : html`
+              : html`
             <button
               data-widx=${i}
               class="window-tab ${win.id === this.activeWindow ? 'active' : ''} ${this._windowDisabled(win.id) ? 'disabled' : ''} ${win.id === this.draggingWindow ? 'dragging' : ''} ${this.draggingWindow && this.dropIndex === i ? 'drop-before' : ''} ${win.id !== this.activeWindow && win.id === this.previewWindow ? 'previewing' : ''}"
@@ -616,13 +657,17 @@ class WebtmuxSidebar extends LitElement {
                 title=${this._windowKillLabel(win)}
                 @click=${(e) => { e.stopPropagation(); this.killWindow(win.id); }}
               >×</span>
-            </button>`
+            </button>`}
+          </div>`
         )}
-        <button
-          class="window-tab ${this.draggingWindow && this.dropIndex === (this.layout.windows?.length || 0) ? 'drop-before' : ''}"
-          title="New window"
-          @click=${() => this.newWindow()}
-        >+</button>
+        <div class="wrow">
+          <span class="work-gap" aria-hidden="true"></span>
+          <button
+            class="window-tab ${this.draggingWindow && this.dropIndex === (this.layout.windows?.length || 0) ? 'drop-before' : ''}"
+            title="New window"
+            @click=${() => this.newWindow()}
+          >+</button>
+        </div>
       </div>
 
       <div class="session-info">
@@ -930,6 +975,31 @@ class WebtmuxSidebar extends LitElement {
   // this pane). The pane's own current window is never "disabled".
   _windowDisabled(id) {
     return id !== this.activeWindow && (this.disabledWindows || []).includes(id);
+  }
+
+  // A window's raw @wt_working value for its stoplight dot. Prefer the layout's
+  // GLOBAL allWorking map (one `list-windows -a` covering every session) over the
+  // per-session copy carried on the window row — the same order of preference the
+  // recents dots use, so one window's dot can never read differently in the sidebar
+  // than it does in the strip. allWorking is omitempty, hence the fallback.
+  _working(win) {
+    const all = this.layout?.allWorking;
+    if (all && win && Object.prototype.hasOwnProperty.call(all, win.id)) return all[win.id];
+    return (win && win.working) || '';
+  }
+
+  // The dot's class from that raw value (mirrors Toolbar._workClass).
+  _workClass(working) {
+    return working === '1' ? 'on' : working === '0' ? 'off' : working === '2' ? 'wait' : '';
+  }
+
+  // Hover text for the dot. Same three words the preview tiles use, so the two
+  // surfaces describe one state identically.
+  _workTip(working) {
+    return working === '1' ? 'Working'
+      : working === '0' ? 'Idle'
+      : working === '2' ? 'Waiting for you'
+      : 'No status reported (@wt_working unset)';
   }
 
   // Step delta windows from the active one (wrapping), by the sidebar's own window
