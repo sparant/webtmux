@@ -28,7 +28,7 @@ import { TerminalUnit, MSG } from './terminal-unit.js';
 import { CaptureCache } from './capture-cache.js';
 import { HoverPreview } from './hover-preview.js';
 import { WorkAlerts } from './work-alerts.js';
-import { MAX_RECENTS, sanitizeRecents, recentsSignature } from './recents-strip.js';
+import { MAX_RECENTS, RecentsPersistence } from './recents-strip.js';
 import { IS_MAC } from './os.js';
 import { stateStore } from './state-store.js';
 import { clientStore } from './client-store.js';
@@ -91,6 +91,9 @@ export class SplitManager {
     // _persistRecents/_restoreRecents. Recency lives in captureCache.accessed; this
     // list is the bounded/stable ORDER, which recency alone can't reconstruct.
     this.recentWindows = [];         // {id,index,name,session}, stable order (MAX_RECENTS)
+    // Must exist before addUnit() below: that path reaches _refreshToolbar (and so
+    // _persistRecents) while the strip is still empty and unrestored.
+    this._recents = new RecentsPersistence(stateStore);
     // Which recent tabs are flashing for attention because their stoplight dropped
     // out of green while you were looking elsewhere (see work-alerts.js).
     this.workAlerts = new WorkAlerts();
@@ -501,17 +504,13 @@ export class SplitManager {
   // path that changes the strip without persisting it. Because that funnel also runs
   // on every 500ms layout push, the signature guard is what keeps this from writing
   // (and bumping @wt_state's rev) 2x/second: only a real change schedules a write.
+  //
+  // That funnel ALSO runs during construction (addUnit -> focus -> _refreshToolbar),
+  // before _restoreRecents has read anything. RecentsPersistence.persist is inert
+  // until restore() has run precisely because of that: writing there would clobber
+  // the saved strip with [] and make the restore read back its own empty write.
   _persistRecents() {
-    const sig = recentsSignature(this.recentWindows);
-    if (sig === this._recentsSig) return;
-    this._recentsSig = sig;
-    // Only the durable identity fields. active/disabled/working are derived per
-    // render from live layouts and must never be frozen into the blob.
-    stateStore.patchSection('recentTabs', {
-      windows: this.recentWindows.map(e => ({
-        id: e.id, index: e.index, name: e.name, session: e.session,
-      })),
-    });
+    this._recents.persist(this.recentWindows);
   }
 
   // Seed the strip from the shared blob at boot, and adopt it when ANOTHER client
@@ -520,12 +519,7 @@ export class SplitManager {
   // client was away are NOT filtered here — no layout has arrived yet, so there is
   // nothing to compare against; _pruneDeletedRecents drops them on the first push.
   _restoreRecents() {
-    const read = () => sanitizeRecents(stateStore.section('recentTabs').windows);
-
-    this.recentWindows = read();
-    // Match the signature to what we just read, so the restore itself can't be
-    // mistaken for a local edit and echo straight back out as a write.
-    this._recentsSig = recentsSignature(this.recentWindows);
+    this.recentWindows = this._recents.restore();
 
     // A remote write (another browser) replaces the strip wholesale — same
     // last-writer-wins rule the rest of the blob follows. The refresh below runs
@@ -533,11 +527,9 @@ export class SplitManager {
     // no-op and cannot loop the adopted value back to the server.
     stateStore.subscribe((_state, fromRemote) => {
       if (!fromRemote) return;
-      const next = read();
-      const sig = recentsSignature(next);
-      if (sig === this._recentsSig) return;
+      const next = this._recents.adopt();
+      if (!next) return;                // echo of our own write, or another section
       this.recentWindows = next;
-      this._recentsSig = sig;
       this._refreshToolbar();
     });
 
