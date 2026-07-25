@@ -2,6 +2,8 @@
 import { LitElement, html, css } from 'lit';
 import { MOD_KEYS, chord } from '../os.js';
 import { matchesWords, appendChar } from '../search.js';
+import { stateStore } from '../state-store.js';
+import { clientStore } from '../client-store.js';
 
 class WebtmuxSidebar extends LitElement {
   static properties = {
@@ -33,6 +35,10 @@ class WebtmuxSidebar extends LitElement {
     // Window ids currently displayed by OTHER split regions — not selectable here
     // (two panes on one window share it / stay in sync). Set by the SplitManager.
     disabledWindows: { type: Array },
+    // The window the shared HoverPreview is showing ('' = none). Browsing — with the
+    // pointer or the arrow keys — moves THIS, not activeWindow: nothing is committed
+    // until you click or press Enter. Set by the SplitManager.
+    previewWindow: { type: String },
   };
 
   static styles = css`
@@ -181,6 +187,15 @@ class WebtmuxSidebar extends LitElement {
       color: #fff;
     }
 
+    /* Being PREVIEWED (pointer resting on it, or the arrow keys/type-ahead sitting
+       on it). Dashed and unfilled so it never reads as the committed selection —
+       the whole point of the browse is that nothing has happened yet. */
+    .window-tab.previewing {
+      border-style: dashed;
+      border-color: #37d17a;
+      color: #fff;
+    }
+
     /* Shown in another split pane -> not selectable from here. */
     .window-tab.disabled {
       opacity: 0.35;
@@ -319,12 +334,15 @@ class WebtmuxSidebar extends LitElement {
     this.layout = null;
     this.activePane = '';
     this.activeWindow = '';
-    this.collapsed = false;
-    // Hover-overlay vs side-by-side. Default hover (float over the terminal);
-    // persisted across reloads.
-    this.overlay = localStorage.getItem('webtmux-overlay') !== 'false';
-    // Pinned = stay open when clicking into the terminal (default: auto-hide).
-    this.pinned = localStorage.getItem('webtmux-pinned') === 'true';
+    // Collapsed is per-client viewport state (a reload restores YOUR collapse, it
+    // must not leak to other browsers) → ClientStore, not the shared blob.
+    this.collapsed = !!clientStore.section('sidebar').collapsed;
+    // overlay (hover vs side-by-side) and pinned are shared sidebar prefs → the
+    // shared StateStore. Read synchronously from its offline cache; a later remote
+    // blob re-applies via the subscription below.
+    const sb = stateStore.section('sidebar');
+    this.overlay = sb.overlay !== false;   // default hover (float over the terminal)
+    this.pinned = sb.pinned === true;      // default auto-hide
     // Window id currently being renamed inline ('' = none).
     this.editingWindow = '';
     // Session name currently being renamed inline ('' = none).
@@ -339,6 +357,10 @@ class WebtmuxSidebar extends LitElement {
     this.sessionDropTarget = '';
     this.sessionDropAfter = false;
     this._sessionOrder = readSessionOrder();
+    // Re-apply shared sidebar prefs whenever another client (or the initial tmux
+    // blob) changes them. Read-only apply — the StateStore `_applying` guard stops
+    // these property writes from looping back into a patch.
+    stateStore.subscribe(() => this._applySharedState());
     // Type-ahead search state (typing in the focused panel selects a window).
     this._searchWords = [];
     this._searchTimer = null;
@@ -350,6 +372,7 @@ class WebtmuxSidebar extends LitElement {
     this._baseline = null;
     // Windows shown by other split regions (disabled here). SplitManager updates it.
     this.disabledWindows = [];
+    this.previewWindow = '';
 
     // The TerminalUnit that owns this sidebar sets `this.unit = <unit>` when it
     // binds, and pushes layout/activePane/activeWindow onto us directly (scoped —
@@ -362,6 +385,9 @@ class WebtmuxSidebar extends LitElement {
       if (this.collapsed) {
         this.classList.add('collapsed');
         this._stopCapturePoll();
+        // The panel is going away; any browse it was driving goes with it. A no-op
+        // when the collapse came from dismissAccept/dismissDiscard (already settled).
+        this.unit?.manager?.hover.cancel();
       } else {
         this.classList.remove('collapsed');
         // Remember the view we're on BEFORE any browsing, so Escape can restore it.
@@ -375,6 +401,9 @@ class WebtmuxSidebar extends LitElement {
         // …and starts warming capture buffers so window switches paint instantly.
         this._startCapturePoll();
       }
+      // Persist collapse per-client (ephemeral, per-tab) so a reload restores it
+      // without leaking to other browsers or thrashing the shared tmux blob.
+      clientStore.patchSection('sidebar', { collapsed: this.collapsed });
       // Keep the toolbar's toggle icon in sync with our collapsed state.
       this.dispatchEvent(new CustomEvent('webtmux-sidebar-collapsed', {
         bubbles: true, composed: true, detail: { collapsed: this.collapsed },
@@ -436,12 +465,23 @@ class WebtmuxSidebar extends LitElement {
 
   toggleOverlay() {
     this.overlay = !this.overlay;
-    localStorage.setItem('webtmux-overlay', String(this.overlay));
+    stateStore.patchSection('sidebar', { overlay: this.overlay });
   }
 
   togglePin() {
     this.pinned = !this.pinned;
-    localStorage.setItem('webtmux-pinned', String(this.pinned));
+    stateStore.patchSection('sidebar', { pinned: this.pinned });
+  }
+
+  // Pull the shared sidebar prefs (overlay/pinned) and the session order out of the
+  // StateStore into our reactive props. Called on construct and on every remote
+  // change (another client wrote, or the first tmux blob arrived).
+  _applySharedState() {
+    const sb = stateStore.section('sidebar');
+    this.overlay = sb.overlay !== false;
+    this.pinned = sb.pinned === true;
+    this._sessionOrder = readSessionOrder();
+    this.requestUpdate();
   }
 
   closeRegion() {
@@ -560,13 +600,15 @@ class WebtmuxSidebar extends LitElement {
           : html`
             <button
               data-widx=${i}
-              class="window-tab ${win.id === this.activeWindow ? 'active' : ''} ${this._windowDisabled(win.id) ? 'disabled' : ''} ${win.id === this.draggingWindow ? 'dragging' : ''} ${this.draggingWindow && this.dropIndex === i ? 'drop-before' : ''}"
+              class="window-tab ${win.id === this.activeWindow ? 'active' : ''} ${this._windowDisabled(win.id) ? 'disabled' : ''} ${win.id === this.draggingWindow ? 'dragging' : ''} ${this.draggingWindow && this.dropIndex === i ? 'drop-before' : ''} ${win.id !== this.activeWindow && win.id === this.previewWindow ? 'previewing' : ''}"
               draggable="true"
+              @mouseenter=${() => this.previewWindowRow(win.id)}
+              @mouseleave=${() => this.endPreview()}
               @click=${() => this.selectWindow(win.id)}
               @dblclick=${() => this.startRename(win.id)}
               @dragstart=${(e) => this.onDragStart(e, win.id)}
               @dragend=${() => this.onDragEnd()}
-              title=${this._windowDisabled(win.id) ? 'Shown in another split pane' : 'Double-click to rename · drag between rows to reorder, or onto a session to link'}
+              title=${this._windowDisabled(win.id) ? 'Shown in another split pane' : 'Hover to preview · click to switch · double-click to rename · drag between rows to reorder, or onto a session to link'}
             >
               ${win.index}: ${win.name || 'bash'}<span
                 class="kill"
@@ -810,9 +852,8 @@ class WebtmuxSidebar extends LitElement {
     const match = this._findWindowByWords(words);
     if (!match) return;                         // no match → reject this character
     this._searchWords = words;
-    // Preview it in the pane exactly like arrow-key nav (suppress the MRU access).
-    this.unit?._suppressAccessIds?.add(match.id);
-    this.selectWindow(match.id);
+    // Preview it in the pane exactly like arrow-key nav — Enter commits.
+    this.previewWindowRow(match.id);
     this.focusPanel();
   }
 
@@ -840,6 +881,11 @@ class WebtmuxSidebar extends LitElement {
   dismissAccept() {
     this._baseline = null;
     this.collapsed = true;
+    // Commit whatever the browse is sitting on. Window browsing is a preview now, so
+    // this is the moment it becomes real (and enters the recents strip); a SESSION
+    // browse already switched for real, and focusing the unit records it as before.
+    const mgr = this.unit?.manager;
+    if (mgr?.hover.windowId) mgr.hover.commit();
     try { this.unit?.focus(); } catch (e) { try { this.unit?.terminal?.focus(); } catch (_) {} }
   }
 
@@ -851,6 +897,10 @@ class WebtmuxSidebar extends LitElement {
     const b = this._baseline;
     this._baseline = null;
     this.collapsed = true;
+    // Drop the window preview outright — it never touched tmux, so "undo" is just
+    // restoring the region. A session browse DID switch for real, so that still has
+    // to be walked back (_revertTo).
+    this.unit?.manager?.hover.cancel();
     this._revertTo(b);
   }
 
@@ -890,16 +940,19 @@ class WebtmuxSidebar extends LitElement {
   navigateWindow(delta) {
     const windows = this.layout?.windows || [];
     if (windows.length === 0) return;
-    let idx = windows.findIndex(w => w.id === this.activeWindow);
+    // Step from wherever the browse currently sits — the previewed window if one is
+    // up, otherwise the pane's real window.
+    const from = this.previewWindow || this.activeWindow;
+    let idx = windows.findIndex(w => w.id === from);
     if (idx === -1) idx = 0;
     for (let n = 0; n < windows.length; n++) {
       idx = (idx + delta + windows.length) % windows.length;
       const cand = windows[idx];
       if (cand && !this._windowDisabled(cand.id)) {
-        // Arrow-key browsing must NOT count as a toolbar "access" — mark the
-        // target so the SplitManager skips it when the layout comes back.
-        this.unit?._suppressAccessIds?.add(cand.id);
-        this.selectWindow(cand.id);
+        // Arrow-key browsing is a PREVIEW, exactly like hovering: the region shows
+        // the window's captured screen, tmux is not touched, and nothing enters the
+        // recents strip until Enter (or a click) commits it.
+        this.previewWindowRow(cand.id);
         this.focusPanel();
         return;
       }
@@ -939,7 +992,7 @@ class WebtmuxSidebar extends LitElement {
     else if (after) to += 1;
     cur.splice(to, 0, dragName);
     this._sessionOrder = cur;
-    try { localStorage.setItem('webtmux-session-order', JSON.stringify(cur)); } catch (e) {}
+    stateStore.patch({ sessionOrder: cur });
     this.requestUpdate();
   }
 
@@ -976,16 +1029,55 @@ class WebtmuxSidebar extends LitElement {
     });
   }
 
+  // Click a window row = COMMIT the browse: the previewed window becomes real. Goes
+  // through the shared HoverPreview so it lands in the region the preview was shown
+  // in — the same path the toolbar recents and the Preview tiles take.
   selectWindow(windowId) {
     if (this._windowDisabled(windowId)) return;   // shown in another split pane
-    this.unit?.selectWindow(windowId);
+    const mgr = this.unit?.manager;
+    if (mgr) mgr.hover.commit(windowId, this._ownSession());
+    else this.unit?.selectWindow(windowId);       // no manager (shouldn't happen) — direct
   }
 
-  startRename(windowId) {
+  // Point at a window row: PREVIEW it (see hover-preview.js). Pure browsing —
+  // nothing switches until a click or Enter. Rows for windows another region already
+  // shows are NOT skipped: the preview controller sees they're on screen and simply
+  // draws nothing, which keeps the browse "engaged" so moving on to the next row is
+  // still instant instead of re-pausing.
+  previewWindowRow(windowId) {
+    this.unit?.manager?.hover.enter(windowId, this._ownSession());
+  }
+
+  // Stop pointing at a row. The preview controller applies its own grace, so
+  // sweeping between adjacent rows doesn't flicker.
+  endPreview() {
+    this.unit?.manager?.hover.leave();
+  }
+
+  // This panel's logical session — the session a window listed here is reached
+  // through (a linked window can be browsed via more than one).
+  _ownSession() {
+    return this.layout?.sessionBase || this.layout?.sessionName || '';
+  }
+
+  // Begin an inline rename. `append` puts the caret at the END instead of selecting
+  // the whole name: that's what the rename CHORD wants, because reaching for it
+  // mid-work almost always means "add something to this name" (a ticket, a branch),
+  // and a select-all makes the next keystroke silently destroy the existing name.
+  // Double-click keeps select-all — deliberately picking a name out of a list reads
+  // as "replace this".
+  startRename(windowId, { append = false } = {}) {
     this.editingWindow = windowId;
     this.updateComplete.then(() => {
       const input = this.renderRoot.querySelector('.window-edit');
-      if (input) { input.focus(); input.select(); }
+      if (!input) return;
+      input.focus();
+      if (append) {
+        const end = input.value.length;
+        input.setSelectionRange(end, end);
+      } else {
+        input.select();
+      }
     });
   }
 
@@ -1113,12 +1205,8 @@ class WebtmuxSidebar extends LitElement {
 // absent/corrupt. tmux itself has no session order, so this is a per-browser
 // preference for how the sidebar lists sessions.
 function readSessionOrder() {
-  try {
-    const v = JSON.parse(localStorage.getItem('webtmux-session-order') || '[]');
-    return Array.isArray(v) ? v.filter((n) => typeof n === 'string') : [];
-  } catch (e) {
-    return [];
-  }
+  const v = stateStore.get('sessionOrder', []);
+  return Array.isArray(v) ? v.filter((n) => typeof n === 'string') : [];
 }
 
 customElements.define('webtmux-sidebar', WebtmuxSidebar);

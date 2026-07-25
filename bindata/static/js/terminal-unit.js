@@ -11,6 +11,8 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { CaptureCache } from './capture-cache.js';
+import { CopyModeArbiter } from './copy-mode.js';
+import { stateStore } from './state-store.js';
 
 // Protocol message types (must match Go constants)
 export const MSG = {
@@ -38,6 +40,8 @@ export const MSG = {
   TmuxLinkWindow: 'M',
   TmuxUnlinkWindow: 'N',
   TmuxSavePaneFile: 'O',
+  TmuxSetState: 'P',
+  TmuxRefresh: 'Q',
 
   // Output (server -> client)
   Output: '1',
@@ -63,6 +67,19 @@ export const MSG = {
 //                    later; if it barely changed the app ignored it, so switch to
 //                    history scroll. Decision is cached per (window, command).
 export const SCROLL_MODES = ['app', 'buffer', 'adaptive-mode', 'adaptive-probe'];
+
+// Client messages that make webtmux TALK TO TMUX (as opposed to writing bytes to
+// the pty, which is the shell's business). The toolbar's activity spinner ticks on
+// these — it's a "webtmux is driving tmux right now" light. Input/Ping/resize are
+// deliberately absent: they're pty traffic and would keep it spinning while you type.
+const TMUX_MSG_TYPES = new Set([
+  MSG.TmuxSelectPane, MSG.TmuxSelectWindow, MSG.TmuxSplitPane, MSG.TmuxClosePane,
+  MSG.TmuxCopyMode, MSG.TmuxScrollUp, MSG.TmuxScrollDown, MSG.TmuxNewWindow,
+  MSG.TmuxSwitchSession, MSG.TmuxRenameWindow, MSG.TmuxCaptureRequest,
+  MSG.TmuxMoveWindow, MSG.TmuxNewSession, MSG.TmuxRenameSession, MSG.TmuxKillWindow,
+  MSG.TmuxKillSession, MSG.TmuxLinkWindow, MSG.TmuxUnlinkWindow,
+  MSG.TmuxSavePaneFile, MSG.TmuxSetState, MSG.TmuxRefresh,
+]);
 
 // Map any stored/legacy value onto a valid mode. The old two-state setting used
 // 'passthrough' for what is now 'app'.
@@ -95,12 +112,18 @@ export class TerminalUnit {
     this.ws = null;
     this.reconnectInterval = null;
     this.bufferSize = 1024 * 1024;
-    this.inCopyMode = false;
+    this._inCopyMode = false;
     // Scroll-wheel behavior: 'buffer' (default) = wheel drives tmux copy-mode
     // history scrolling; 'passthrough' = let xterm forward the wheel to the app
     // (so a TUI like Claude, vim, less handles its own scrolling). Persisted +
     // toggled from the sidebar. Read here so the handlers below see it on load.
-    this.scrollMode = normalizeScrollMode(localStorage.getItem('webtmux-scroll-mode'));
+    this.scrollMode = normalizeScrollMode(stateStore.section('renderer').scrollMode);
+    // Keep scroll mode live-synced: it's a shared 'renderer' pref, so a change from
+    // any region's sidebar/toolbar (or another client) updates every unit. Store the
+    // unsubscribe so a removed split region doesn't leak the closure.
+    this._unsubState = stateStore.subscribe(() => {
+      this.scrollMode = normalizeScrollMode(stateStore.section('renderer').scrollMode);
+    });
     // adaptive-probe state: per-window cached decision + in-flight probe.
     this._scrollDecisions = new Map();   // windowId -> {cmd, decision:'app'|'buffer', ts}
     this._probing = false;
@@ -134,8 +157,30 @@ export class TerminalUnit {
     this._navSuppress = null;
     this.oscBuffer = ''; // Buffer for OSC sequence detection
     this.resizeObserver = null;
+    // Copy-mode keystroke arbitration: works out whether keys typed at a pane in
+    // copy mode are motions or someone typing, holding them until it can tell.
+    this._copyArbiter = new CopyModeArbiter({
+      sendKeys: (s) => this.sendInput(s),
+      exitCopyMode: () => { if (this.inCopyMode) this.exitCopyMode(); },
+    });
+    // Preview hold: while a HoverPreview is borrowing this region's xterm to show
+    // ANOTHER window, our own output is buffered here instead of being painted over
+    // the preview, and replayed when the region is handed back.
+    this._previewHold = false;
+    this._previewBuf = [];
 
     this.init();
+  }
+
+  // Copy-mode flag. An accessor rather than a plain field so the ONE thing that must
+  // happen on every entry into copy mode — rearming the keystroke arbiter — can't be
+  // forgotten at any of the half-dozen places that set it (wheel, drag-select, touch,
+  // the probe, the toolbar pill, the server's mode push).
+  get inCopyMode() { return this._inCopyMode; }
+  set inCopyMode(v) {
+    const on = !!v;
+    if (on && !this._inCopyMode) this._copyArbiter?.reset();
+    this._inCopyMode = on;
   }
 
   init() {
@@ -194,9 +239,9 @@ export class TerminalUnit {
     // DOES do full native font fallback — the same mechanism Terminal.app benefits
     // from — so those glyphs resolve on every client regardless of which fonts happen
     // to be installed. Correctness beats the WebGL throughput here, so we default to
-    // the DOM renderer and make WebGL strictly opt-in (localStorage webtmux-webgl=1)
+    // the DOM renderer and make WebGL strictly opt-in (StateStore renderer.webgl)
     // for anyone who wants the GPU path and has a font stack that covers their glyphs.
-    if (localStorage.getItem('webtmux-webgl') === '1') {
+    if (stateStore.section('renderer').webgl === true) {
       try {
         this.terminal.loadAddon(new WebglAddon());
       } catch (e) {
@@ -306,11 +351,10 @@ export class TerminalUnit {
     });
 
     this.terminal.onData((data) => {
-      if (this.inCopyMode && data.length === 1) {
-        // Exit copy mode on any key press (except scroll keys)
-        this.sendMessage(MSG.TmuxCopyMode, '0');
-        this.inCopyMode = false;
-      }
+      // In copy mode a keystroke is ambiguous: a command, or someone typing at a
+      // pane they forgot was scrolled up. The arbiter decides (see copy-mode.js) and
+      // owns the send when it takes the keys.
+      if (this.inCopyMode && this._copyArbiter.handle(data)) return;
       this.sendInput(data);
     });
 
@@ -660,7 +704,10 @@ export class TerminalUnit {
         for (let i = 0; i < processed.length; i++) {
           bytes[i] = processed.charCodeAt(i);
         }
-        this.terminal.write(bytes);
+        // Held for a hover preview? Park the bytes rather than painting them over
+        // the preview (and rather than dropping them — they replay on release).
+        if (this._previewHold) this._holdOutput(bytes);
+        else this.terminal.write(bytes);
         break;
 
       case MSG.Pong:
@@ -699,6 +746,9 @@ export class TerminalUnit {
       case MSG.TmuxModeUpdate:
         const modeState = JSON.parse(payload);
         this.inCopyMode = modeState.inCopyMode;
+        // Left copy mode (from anywhere — the toolbar pill, tmux itself, `q`): any
+        // keys still held for arbitration belong at the prompt now.
+        if (!this.inCopyMode && this._copyArbiter.held) this._copyArbiter.flush('typing');
         break;
 
       case MSG.TmuxCaptureData:
@@ -728,10 +778,57 @@ export class TerminalUnit {
 
   sendMessage(type, payload = '') {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      // Tick the toolbar's activity spinner for anything that drives tmux (the
+      // callback debounces, so a burst is one increment).
+      if (TMUX_MSG_TYPES.has(type) && this.onTmuxActivity) this.onTmuxActivity();
       this.ws.send(type + payload);
     } else {
       console.warn('WebSocket not ready, state:', this.ws?.readyState);
     }
+  }
+
+  // ----- preview hold -----------------------------------------------------------
+  // Lend this region's xterm to a HoverPreview. While held, our own output is
+  // buffered (see the Output case) so it neither paints over the preview nor goes
+  // missing. Cap the buffer: a chatty window under a long hover shouldn't grow it
+  // without bound — past the cap the oldest chunks are dropped, and the repaint on
+  // release fixes up the visible screen anyway.
+  beginPreviewHold() {
+    this._previewHold = true;
+    this._previewBuf = [];
+  }
+
+  _holdOutput(bytes) {
+    this._previewBuf.push(bytes);
+    let total = 0;
+    for (const b of this._previewBuf) total += b.length;
+    while (total > 512 * 1024 && this._previewBuf.length > 1) total -= this._previewBuf.shift().length;
+  }
+
+  // Hand the region back.
+  //
+  // restore:true (the normal end-of-hover path) — replay what this region's own
+  //   window printed while we held it, and ask tmux to repaint. The replay alone
+  //   can't be trusted to undo the preview's full-screen blit, and the repaint alone
+  //   would be a beat late; together the screen is right immediately and exact
+  //   shortly after.
+  // restore:false — the caller is COMMITTING, i.e. this region is about to switch to
+  //   a different window entirely. The buffered bytes belong to the window we're
+  //   leaving, so they're dropped rather than flashed on screen just before the new
+  //   window paints over them.
+  endPreviewHold({ restore = true } = {}) {
+    if (!this._previewHold) return;
+    this._previewHold = false;
+    const buf = this._previewBuf;
+    this._previewBuf = [];
+    if (!restore) return;
+    this.refreshClient();
+    for (const bytes of buf) { try { this.terminal?.write(bytes); } catch (e) {} }
+  }
+
+  // Ask tmux to fully repaint this pane's client.
+  refreshClient() {
+    this.sendMessage(MSG.TmuxRefresh, '');
   }
 
   // Send terminal input (keystrokes OR a paste) to the server as one or more
@@ -835,6 +932,7 @@ export class TerminalUnit {
   // observers. Used by the split manager when a region is closed.
   destroy() {
     this.destroyed = true;
+    if (this._unsubState) { try { this._unsubState(); } catch (e) {} this._unsubState = null; }
     if (this.resizeObserver) { try { this.resizeObserver.disconnect(); } catch (e) {} }
     if (this.ws) { try { this.ws.onclose = null; this.ws.close(); } catch (e) {} }
     if (this.terminal) { try { this.terminal.dispose(); } catch (e) {} }
@@ -978,7 +1076,7 @@ export class TerminalUnit {
   // scrolled up in history; the adaptive modes may re-enter it on their own.
   setScrollMode(mode) {
     this.scrollMode = normalizeScrollMode(mode);
-    localStorage.setItem('webtmux-scroll-mode', this.scrollMode);
+    stateStore.patchSection('renderer', { scrollMode: this.scrollMode });
     if (this.scrollMode === 'app' && this.inCopyMode) {
       this.exitCopyMode();
     }

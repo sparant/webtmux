@@ -33,7 +33,7 @@ type Layout struct {
 	// truth the toolbar uses to show/toggle copy mode. Read from #{pane_in_mode}.
 	ActivePaneInMode bool `json:"activePaneInMode"`
 	// AllWorking maps EVERY tmux window_id (across ALL sessions) to its @wt_working
-	// value ("1"/"0"/""), read once per refresh via `list-windows -a`. Windows above
+	// value ("1"/"0"/"2"/""), read once per refresh via `list-windows -a`. Windows above
 	// only covers the attached session `sess`, so a window living in another session
 	// (e.g. a claude-editors window while this region views services) would otherwise
 	// have no status. Recent-tab dots read from this so each window's light reflects
@@ -54,7 +54,10 @@ type Window struct {
 	Active bool   `json:"active"`
 	// Working is the window's self-reported work status, read from the @wt_working
 	// tmux user option: "1" = working (green dot), "0" = stopped (red dot),
-	// "" = unset (unfilled dot). Clients set it with `tmux set -w @wt_working 1|0`.
+	// "2" = waiting for user input (amber dot — an agent asked a question or needs a
+	// permission decision, so the window is blocked on a human, which is distinct
+	// from simply being idle), "" = unset (unfilled dot). Clients set it with
+	// `tmux set -w @wt_working 1|0|2`.
 	Working string `json:"working"`
 	Panes   []Pane `json:"panes"`
 	// SessionCount is how many DISTINCT logical sessions this window is linked into

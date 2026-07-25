@@ -67,6 +67,30 @@
       outline: 2px solid #4a9eff;
       outline-offset: -2px;
     }
+    /* A region on loan to a hover preview: it is showing some OTHER window's last
+       captured screen, and its own window comes back the moment you move away. The
+       dashed green frame says "this is a look, not a switch" — without it a preview
+       is indistinguishable from having actually navigated, which is exactly the
+       confusion the preview model exists to avoid. Shown even in single-view (unlike
+       the focus outline) because that's where the swap is most surprising. */
+    .region.previewing {
+      outline: 2px dashed #37d17a;
+      outline-offset: -2px;
+    }
+    .region.previewing::after {
+      content: 'preview — click to switch';
+      position: absolute;
+      right: 8px;
+      bottom: 6px;
+      z-index: 20;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: rgba(9, 13, 28, 0.88);
+      border: 1px solid #37d17a;
+      color: #9fe3bd;
+      font: 11px Menlo, Monaco, "Courier New", monospace;
+      pointer-events: none;
+    }
     .xterm {
       height: 100%;
       padding: 8px;

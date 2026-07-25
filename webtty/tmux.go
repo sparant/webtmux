@@ -33,6 +33,7 @@ type TmuxController interface {
 	SetGlobalOption(key, val string) error
 	EnterCopyMode() error
 	ExitCopyMode() error
+	RefreshClient() error
 	ScrollUp(lines int) error
 	ScrollDown(lines int) error
 	NewWindow() error
@@ -275,6 +276,16 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 		}
 		return nil
 
+	case TmuxRefresh:
+		// Put this region's REAL screen back after a hover preview blitted another
+		// window's capture over it. Best-effort: a failed repaint is cosmetic (the
+		// next output or a window switch redraws anyway), so it must not tear the
+		// connection down.
+		if err := wt.tmuxCtrl.RefreshClient(); err != nil {
+			log.Printf("refresh-client failed: %v", err)
+		}
+		return nil
+
 	default:
 		return errors.Errorf("unknown tmux message type: %c", msgType)
 	}
@@ -442,7 +453,8 @@ func isTmuxMessage(msgType byte) bool {
 		TmuxCopyMode, TmuxSendCommand, TmuxScrollUp, TmuxScrollDown, TmuxNewWindow,
 		TmuxSwitchSession, TmuxRenameWindow, TmuxMoveWindow, TmuxNewSession,
 		TmuxRenameSession, TmuxKillWindow, TmuxKillSession, TmuxLinkWindow,
-		TmuxUnlinkWindow, TmuxCaptureRequest, TmuxSavePaneFile, TmuxSetState:
+		TmuxUnlinkWindow, TmuxCaptureRequest, TmuxSavePaneFile, TmuxSetState,
+		TmuxRefresh:
 		return true
 	default:
 		return false

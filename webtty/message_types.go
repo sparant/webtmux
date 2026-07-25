@@ -105,4 +105,10 @@ const (
 	// the next TmuxLayoutUpdate (Layout.State), so the visual state is shared across
 	// clients and survives reconnect / webtmux restart. See StateStore on the client.
 	TmuxSetState = 'P'
+	// Force tmux to fully redraw THIS pane's client (no payload). The browser paints
+	// hover previews by blitting another window's cached capture straight into a
+	// region's xterm; ending the hover has to put the region's REAL screen back, and
+	// only tmux knows it. `refresh-client` repaints it authoritatively. See
+	// hover-preview.js on the client.
+	TmuxRefresh = 'Q'
 )

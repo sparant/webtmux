@@ -671,6 +671,23 @@ func (c *Controller) ExitCopyMode() error {
 	return err
 }
 
+// RefreshClient forces tmux to fully repaint THIS pane's client. The browser
+// paints a hover preview by blitting another window's cached capture into the
+// region's xterm; when the hover ends the region's real screen has to come back,
+// and only tmux can reproduce it. Targeting the pane's own client tty (not the
+// session) keeps the repaint scoped to this region — a grouped split's siblings
+// and the ssh console are untouched. Falls back to the session when the tty is
+// unknown (the redraw is then whatever client(s) that session has, still safe:
+// refresh-client only repaints, it never changes what is displayed).
+func (c *Controller) RefreshClient() error {
+	if c.clientTTY != "" {
+		_, err := c.runTmux("refresh-client", "-t", c.clientTTY)
+		return err
+	}
+	_, err := c.runTmux("refresh-client")
+	return err
+}
+
 // ScrollUp scrolls up in copy mode
 func (c *Controller) ScrollUp(lines int) error {
 	for i := 0; i < lines; i++ {

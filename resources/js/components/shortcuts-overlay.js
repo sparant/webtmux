@@ -32,7 +32,7 @@ const GROUPS = [
       { keys: [...M, 'P'], desc: 'Recents — previous window (left) — tmux ⌃b p' },
       { keys: [...M, 'N'], desc: 'Recents — next window (right) — tmux ⌃b n' },
       { keys: [...M, 'L'], desc: 'Cycle most-recently-used windows — hold the chord and tap L to walk back through history (⇧L reverses); like alt-tab' },
-      { keys: [...M, ','], desc: 'Rename the current window — tmux ⌃b ,' },
+      { keys: [...M, ','], desc: 'Rename the current window (caret at the end, ready to add to the name) — tmux ⌃b ,' },
       { keys: [...M, 'B'], desc: 'Show / hide the build-id chip (top-left)' },
       { keys: [...M, '/'], desc: 'Show this shortcuts list — tmux ⌃b ?' },
     ],
@@ -44,11 +44,12 @@ const GROUPS = [
       { keys: ['↓'], desc: 'Preview the next window' },
       { keys: ['←'], desc: 'Preview the previous session' },
       { keys: ['→'], desc: 'Preview the next session' },
-      { keys: ['⏎'], desc: 'Accept the previewed window as the new focus & return to the terminal (clicking the terminal also accepts)' },
-      { keys: ['Esc'], desc: 'Discard the preview — restore the window you were on before opening the panel' },
-      { keys: ['a–z'], desc: 'Type to find & select a window (space = new word; a short pause resets)' },
+      { keys: ['⏎'], desc: 'Commit the previewed window — it becomes the region’s real window & the keyboard returns to the terminal (clicking also commits)' },
+      { keys: ['Esc'], desc: 'Discard the preview — nothing switched, so the region simply goes back to its own window' },
+      { keys: ['a–z'], desc: 'Type to find & preview a window (space = new word; a short pause resets)' },
       { keys: ['drag'], desc: 'Drag a window between rows to reorder, or onto a session to link it' },
-      { keys: ['dbl-click'], desc: 'Rename a window' },
+      { keys: ['hover'], desc: 'Point at a window to preview it in a terminal region; click to switch to it' },
+      { keys: ['dbl-click'], desc: 'Rename a window (name selected, ready to replace)' },
     ],
   },
   {
@@ -56,6 +57,7 @@ const GROUPS = [
     rows: [
       { keys: ['⌘/⌃', 'C'], desc: 'Copy the selection (or interrupt if nothing is selected); stays in copy mode so you can copy several regions in a row' },
       { keys: ['⌘/⌃', 'V'], desc: 'Paste (auto-exits copy mode first so the text lands at the prompt)' },
+      { keys: ['a–z'], desc: 'Typing at a pane that is scrolled up in copy mode leaves copy mode and goes to the prompt — copy-mode motions (hjkl, g/G, q, arrows, ␣, y, /) still work' },
     ],
   },
   {

@@ -75,12 +75,10 @@ class WebtmuxPip extends LitElement {
       overflow: hidden;
       font-family: Menlo, Monaco, "Courier New", monospace;
     }
-    /* Hover + pause grows the floating corner box to 3× its base size (both
-       dimensions: 360→1080 wide, and the frame 216→648 tall just below), clamped to
-       the viewport so it can't spill off-screen. Grow is delayed (deliberate pause),
-       shrink-back is prompt. */
+    /* The corner box no longer balloons to 3× on hover: hovering it now previews the
+       window in a real terminal region, which is bigger and doesn't cover whatever
+       was underneath the box. The transition stays for the mini↔normal change below. */
     :host([mode='single']) { transition: width 0.2s ease; }
-    :host([mode='single']:hover) { width: min(1080px, calc(100vw - 32px)); transition-delay: 0.35s; }
     :host([mode='single'][corner='tl']) { top: calc(var(--wt-toolbar-h, 44px) + 12px); left: 16px; }
     :host([mode='single'][corner='tr']) { top: calc(var(--wt-toolbar-h, 44px) + 12px); right: calc(var(--wt-sidebar-w, 0px) + 16px); }
     :host([mode='single'][corner='bl']) { bottom: 16px; left: 16px; }
@@ -138,8 +136,9 @@ class WebtmuxPip extends LitElement {
     :host([mode='bar'][edge='right']) .tiles { flex-direction: column; overflow-y: auto; overflow-x: hidden; padding: 8px; }
 
     /* A single preview tile: a scaled screen + a label strip. Bar tiles keep a FIXED
-       size (the bar never grows) — hovering a bar tile instead pops a proportionally
-       up-to-4x floating magnifier (.zoom) NEXT TO the bar; see _showZoom. */
+       size (the bar never grows). Hovering one used to pop a floating magnifier next
+       to the bar; it now previews the window in a real terminal region instead (see
+       hover-preview.js) — bigger, in place, and the same gesture everywhere else. */
     .ptile {
       position: relative;
       display: flex;
@@ -175,10 +174,10 @@ class WebtmuxPip extends LitElement {
     }
     /* Single mode keeps the classic fixed-height frame. */
     :host([mode='single']) .pframe { height: 216px; flex: none; transition: height 0.2s ease; }
-    /* 3× the base frame height (216→648), capped to the viewport so a tall grow can't
-       run off a short screen. */
-    :host([mode='single']:hover) .pframe { height: min(648px, calc(100vh - 160px)); transition-delay: 0.35s; }
-    /* Mini self-preview frame: 1/4 height at rest, back to the normal 216 on hover. */
+    /* Mini self-preview frame: 1/4 height at rest, back to the normal 216 on hover.
+       This grow SURVIVES the change above, because the mini box holds the window the
+       focused region is already showing — so hovering it previews nothing (there'd be
+       nothing new to see), and popping it back to full size is the only way to read it. */
     :host([mode='single'][mini]) .pframe { height: 54px; }
     :host([mode='single'][mini]:hover) .pframe { height: 216px; transition-delay: 0.35s; }
     .screen-host { position: absolute; inset: 0; }
@@ -224,44 +223,28 @@ class WebtmuxPip extends LitElement {
     .plabel .name { overflow: hidden; text-overflow: ellipsis; }
     .plabel .sess { flex: 0 0 auto; color: #7f8bb5; letter-spacing: 0.06em; font-size: 11px; }
 
-    /* ---- bar-tile hover MAGNIFIER (.zoom) -----------------------------------
-       A floating up-to-4x copy of the hovered bar tile, shown NEXT TO the bar (on
-       the terminal side, away from the docked edge) so it never covers the tiles —
-       you can sweep the pointer across the thumbnails and the magnifier follows the
-       hovered one. It's PASSIVE (pointer-events: none): the per-preview controls
-       (remove ×, click-to-activate) stay on the normal-size tiles, which the
-       magnifier never covers. Sized to fit the space beside the bar (capped so it
-       can't overlap the bar or leave the viewport). position:fixed + inline
-       left/top/width/height set imperatively in _showZoom. */
-    .zoom {
-      position: fixed;
-      display: none;
-      z-index: 80;
-      flex-direction: column;
-      background: #12131f;
-      border: 1px solid #37d17a;
-      border-radius: 8px;
-      overflow: hidden;
-      box-shadow: 0 14px 40px rgba(0, 0, 0, 0.66);
-      pointer-events: none;            /* passive preview — never steals hover/clicks */
+    /* Working stoplight, top-right of every preview surface (bar tile and corner
+       box alike). A preview exists so you can watch a window you're NOT looking at,
+       so its "is it busy / is it waiting for me" state belongs on it — that's most
+       of why the window is in the preview at all. Same colors as the recents strip:
+       green working, red idle, amber waiting for you (pulsing), unfilled unknown.
+       Sits under the hover controls (z-index 3) so it never blocks the × / corner
+       buttons. */
+    .pwork {
+      position: absolute;
+      top: 7px; right: 7px;
+      width: 9px; height: 9px;
+      border-radius: 50%;
+      border: 1px solid #5a6a8a;
+      background: transparent;
+      box-sizing: border-box;
+      z-index: 2;
+      pointer-events: none;
     }
-    .zoom.show { display: flex; }
-    .zoom .zframe {
-      position: relative;
-      flex: 1 1 auto;
-      min-height: 0;
-      background: #1a1a2e;
-      overflow: hidden;
-      border-bottom: 1px solid #0f3460;
-    }
-    .zoom .screen-host { position: absolute; inset: 0; }
-    .zoom .zlabel {
-      flex: 0 0 auto;
-      display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
-      padding: 6px 10px; font-size: 13px; color: #d6ddf5; white-space: nowrap;
-    }
-    .zoom .zlabel .name { overflow: hidden; text-overflow: ellipsis; }
-    .zoom .zlabel .sess { flex: 0 0 auto; color: #7f8bb5; letter-spacing: 0.06em; font-size: 12px; }
+    .pwork.on   { background: #2ecc71; border-color: #2ecc71; box-shadow: 0 0 5px #2ecc71; }
+    .pwork.off  { background: #e74c3c; border-color: #e74c3c; }
+    .pwork.wait { background: #f5c542; border-color: #f5c542; box-shadow: 0 0 6px #f5c542; animation: wt-wait 1.4s ease-in-out infinite; }
+    @keyframes wt-wait { 50% { opacity: 0.35; } }
 
     /* ---- classic single-box hover controls (corner move + close) ------------ */
     .controls { position: absolute; inset: 0; pointer-events: none; z-index: 3; }
@@ -347,18 +330,14 @@ class WebtmuxPip extends LitElement {
     this._focusedWinId = null; // set by SplitManager: the window the focused pane shows
     this._terms = new Map(); // windowId -> {term, screen, cols, rows}
     this._pollTimer = null;
-    // Bar-tile hover magnifier state.
-    this._zoomId = null;     // window id currently magnified (bar mode), or null
-    this._zoomRec = null;    // { term, screen, cols, rows } for the magnifier's xterm
-    this._zoomTimer = null;  // pending "pause then show" timer
-    this._zoomHideTimer = null; // grace timer so moving tile↔magnifier doesn't flicker
-    // Repaint only the tiles whose captures actually arrived (and the magnifier if
-    // it's showing that window, so it stays live too).
+    // Per-window @wt_working, pushed by the SplitManager (the same map the recents
+    // strip reads) so each tile can show its stoplight.
+    this._working = new Map();
+    // Repaint only the tiles whose captures actually arrived.
     this._onCacheUpdate = (e) => {
       const caps = (e && e.detail && e.detail.captures) || [];
       for (const c of caps) {
         if (this._has(c.windowId)) this._paint(c.windowId);
-        if (c.windowId === this._zoomId) this._paintZoom();
       }
     };
     // The hover-to-enlarge CSS resizes the frame; re-letterbox the xterm inside it
@@ -371,7 +350,7 @@ class WebtmuxPip extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     this._teardownAll();
-    this._teardownZoom();
+    this.manager?.hover?.cancel();
     if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null; }
     this.cache?.removeEventListener('update', this._onCacheUpdate);
     this.mode = 'off';    // so _applySpace releases any reserved edge padding
@@ -481,13 +460,6 @@ class WebtmuxPip extends LitElement {
     this._syncTiles();
     this._applySpace();
     this._rescaleAll();
-    // The magnifier only makes sense in bar mode, and only for a window still in the
-    // set; drop it (and free its xterm) otherwise — mode flip to single/off, or its
-    // window removed.
-    if (this._zoomId && (this.mode !== 'bar' || !this._has(this._zoomId))) {
-      this._hideZoom();
-      this._teardownZoom();
-    }
   }
 
   render() {
@@ -496,7 +468,6 @@ class WebtmuxPip extends LitElement {
     return html`
       <link rel="stylesheet" href=${XTERM_CSS} />
       <div class="tiles"></div>
-      <div class="zoom"></div>
       ${single ? this._singleChrome() : ''}
       ${bar ? this._barChrome() : ''}
     `;
@@ -592,11 +563,11 @@ class WebtmuxPip extends LitElement {
     // pframe grows on hover; bubbles to the tile within the shadow tree).
     tile.addEventListener('transitionend', () => this._rescale(w.windowId));
 
-    // Bar mode: hovering + pausing over a tile pops the floating 3x magnifier over
-    // it (the bar itself never grows). Grace-hide on leave so moving the pointer from
-    // the tile onto the magnifier (which sits on top of it) doesn't flap it closed.
-    tile.addEventListener('mouseenter', () => this._zoomEnter(w.windowId));
-    tile.addEventListener('mouseleave', () => this._zoomLeaveSoon());
+    // Hovering a preview shows that window full size in a terminal region (the
+    // shared browse gesture — see hover-preview.js). A thumbnail is for noticing
+    // that something happened; when you want to actually READ it, you get a region.
+    tile.addEventListener('mouseenter', () => this.manager?.hover?.enter(w.windowId, w.session || ''));
+    tile.addEventListener('mouseleave', () => this.manager?.hover?.leave());
 
     const frame = document.createElement('div');
     frame.className = 'pframe';
@@ -607,6 +578,13 @@ class WebtmuxPip extends LitElement {
     const host = document.createElement('div');
     host.className = 'screen-host';
     frame.appendChild(host);
+
+    // Working stoplight, top-right (see the .pwork rules). Built here rather than in
+    // _paint so it exists before the first capture lands.
+    const work = document.createElement('span');
+    work.className = 'pwork';
+    work.setAttribute('aria-hidden', 'true');
+    frame.appendChild(work);
 
     const remove = document.createElement('button');
     remove.className = 'premove';
@@ -667,6 +645,7 @@ class WebtmuxPip extends LitElement {
     // Mark active (matches the focused pane's current window).
     const activeId = this.manager?.focusedUnit?.layout?.activeWindowId;
     tile.classList.toggle('current', id === activeId);
+    this._paintWork(id);
     // A capture just arrived => alive; clear any stale flag.
     if (this._stale.has(id)) { this._stale.delete(id); this._setStaleUI(id, false); }
   }
@@ -714,202 +693,6 @@ class WebtmuxPip extends LitElement {
 
   _rescaleAll() { for (const id of this._terms.keys()) this._rescale(id); }
 
-  // ---- bar-tile hover magnifier ------------------------------------------------
-  // A floating, PASSIVE up-to-4x copy of the hovered bar tile, shown NEXT TO the bar
-  // so it never covers the thumbnails: sweep the pointer across the tiles and the
-  // magnifier follows the hovered one, instantly. The tiles keep their own controls
-  // (× / click-to-activate) since the magnifier never covers them. Kept ALIVE via
-  // the same capture poll as the tiles (its window is already in _wins). Bar mode only.
-
-  ZOOM_SCALE = 4;               // up to 4x the tile (capped to the room beside the bar)
-  ZOOM_DELAY_MS = 300;          // deliberate hover pause before it first appears
-  ZOOM_HIDE_GRACE_MS = 120;     // bridge the tiny gap when moving between adjacent tiles
-
-  _zoomEnter(id) {
-    if (this.mode !== 'bar') return;
-    if (this._zoomHideTimer) { clearTimeout(this._zoomHideTimer); this._zoomHideTimer = null; }
-    if (this._zoomId === id) return;                 // already magnifying this tile
-    if (this._zoomId) { this._showZoom(id); return; } // already visible → switch instantly
-    if (this._zoomTimer) clearTimeout(this._zoomTimer);
-    this._zoomTimer = setTimeout(() => this._showZoom(id), this.ZOOM_DELAY_MS);
-  }
-
-  // Leave with a short grace so moving between two adjacent tiles (a brief gap where
-  // neither is hovered) doesn't flap the magnifier shut; the next tile's mouseenter
-  // cancels it. Hides only when the pointer truly leaves the strip.
-  _zoomLeaveSoon() {
-    if (this._zoomTimer) { clearTimeout(this._zoomTimer); this._zoomTimer = null; }
-    if (this._zoomHideTimer) clearTimeout(this._zoomHideTimer);
-    this._zoomHideTimer = setTimeout(() => this._hideZoom(), this.ZOOM_HIDE_GRACE_MS);
-  }
-
-  _zoomEl() { return this.renderRoot?.querySelector('.zoom'); }
-
-  _showZoom(id) {
-    this._zoomTimer = null;
-    if (this.mode !== 'bar' || !this._has(id)) return;
-    const tile = this._tileEl(id);
-    const zoom = this._zoomEl();
-    if (!tile || !zoom) return;
-    this._zoomId = id;
-    this._buildZoomChrome(zoom, id);
-
-    // Position the magnifier in the strip of space NEXT TO the bar (on the terminal
-    // side), never over the bar. Its own rect is the bar (:host([mode='bar'])); the
-    // room beside it caps the size so the magnifier can neither overlap the bar nor
-    // leave the viewport, while staying a proportional (up to ZOOM_SCALE×) copy.
-    const tr = tile.getBoundingClientRect();
-    const bar = this.getBoundingClientRect();
-    const g = 10;                                 // gap between bar and magnifier
-    const m = 8;                                  // viewport margin
-    const toolbarH = parseInt(getComputedStyle(document.documentElement)
-      .getPropertyValue('--wt-toolbar-h')) || 44;
-
-    // Available box beside the bar for each docked edge.
-    let availW, availH;
-    switch (this.edge) {
-      case 'top':    availW = window.innerWidth - 2 * m;  availH = window.innerHeight - bar.bottom - g - m; break;
-      case 'bottom': availW = window.innerWidth - 2 * m;  availH = bar.top - g - (toolbarH + m);           break;
-      case 'left':   availW = window.innerWidth - bar.right - g - m; availH = bar.height - 2 * m;          break;
-      case 'right':  availW = bar.left - g - m;           availH = bar.height - 2 * m;                     break;
-      default:       availW = window.innerWidth - 2 * m;  availH = window.innerHeight - 2 * m;
-    }
-    // Proportional scale, capped so the WHOLE magnifier fits the space beside the bar
-    // — this is what keeps an otherwise-4x preview from overflowing when the bar eats
-    // most of the screen: it shrinks to fit instead of spilling off. If even a 1x
-    // copy wouldn't fit beside the bar (extremely cramped viewport), skip it entirely
-    // rather than draw something smaller than the thumbnail or off-screen.
-    const scale = Math.min(this.ZOOM_SCALE, availW / tr.width, availH / tr.height);
-    if (!(scale >= 1)) { this._hideZoom(); return; }
-    const zw = Math.round(tr.width * scale);
-    const zh = Math.round(tr.height * scale);
-    const cx = tr.left + tr.width / 2;
-    const cy = tr.top + tr.height / 2;
-
-    let left, top;
-    switch (this.edge) {
-      case 'top':    left = cx - zw / 2;      top = bar.bottom + g;      break; // below the bar
-      case 'bottom': left = cx - zw / 2;      top = bar.top - g - zh;    break; // above the bar
-      case 'left':   left = bar.right + g;    top = cy - zh / 2;         break; // right of the bar
-      case 'right':  left = bar.left - g - zw; top = cy - zh / 2;        break; // left of the bar
-      default:       left = cx - zw / 2;      top = cy - zh / 2;
-    }
-    // Clamp along the free (cross) axis so the box stays on-screen; the docked-edge
-    // axis is already fixed just beside the bar above.
-    left = Math.max(m, Math.min(window.innerWidth - zw - m, left));
-    top = Math.max(toolbarH + m, Math.min(window.innerHeight - zh - m, top));
-
-    zoom.style.width = zw + 'px';
-    zoom.style.height = zh + 'px';
-    zoom.style.left = Math.round(left) + 'px';
-    zoom.style.top = Math.round(top) + 'px';
-    zoom.classList.add('show');
-    this.cache?.request([id], true);   // prime a fresh frame for the magnifier
-    this._paintZoom();
-  }
-
-  _hideZoom() {
-    if (this._zoomHideTimer) { clearTimeout(this._zoomHideTimer); this._zoomHideTimer = null; }
-    this._zoomId = null;
-    const zoom = this._zoomEl();
-    if (zoom) zoom.classList.remove('show');
-  }
-
-  // Build the magnifier's chrome (frame + label) once, then reuse it. The xterm lives
-  // in a static .screen-host div (like the tiles) so re-showing never orphans it. No
-  // controls or handlers here — the magnifier is passive (pointer-events:none); the
-  // remove × / click-to-activate stay on the normal-size tiles it sits beside.
-  _buildZoomChrome(zoom, id) {
-    if (!zoom._wired) {
-      const frame = document.createElement('div');
-      frame.className = 'zframe';
-      const host = document.createElement('div');
-      host.className = 'screen-host';
-      frame.appendChild(host);
-      const label = document.createElement('div');
-      label.className = 'zlabel';
-      const name = document.createElement('span'); name.className = 'name';
-      const sess = document.createElement('span'); sess.className = 'sess';
-      label.append(name, sess);
-      zoom.append(frame, label);
-      zoom._wired = true;
-    }
-    const win = this._wins.find((w) => w.windowId === id);
-    zoom.querySelector('.zlabel .name').textContent = win?.label || '…';
-    zoom.querySelector('.zlabel .sess').textContent = win?.session || '';
-  }
-
-  _paintZoom() {
-    const id = this._zoomId;
-    if (!id) return;
-    const zoom = this._zoomEl();
-    if (!zoom || !zoom.classList.contains('show')) return;
-    const win = this._wins.find((w) => w.windowId === id);
-    const entry = (win && this.cache?.byPlacement?.get(placementKey(win.session, id)))
-      || this.cache?.get(id);
-    if (!entry) return;
-    const rec = this._ensureZoomTerm(zoom, entry);
-    if (!rec) return;
-    if (entry.cols && entry.rows && (entry.cols !== rec.cols || entry.rows !== rec.rows)) {
-      try { rec.term.resize(entry.cols, entry.rows); } catch (e) {}
-      rec.cols = entry.cols; rec.rows = entry.rows;
-    }
-    rec.term.write('\x1b[H\x1b[2J');
-    rec.term.write(CaptureCache.decodeAnsi(entry));
-    if (win) {
-      const nameEl = zoom.querySelector('.zlabel .name');
-      const sessEl = zoom.querySelector('.zlabel .sess');
-      if (nameEl) nameEl.textContent = win.label || '…';
-      if (sessEl) sessEl.textContent = win.session || '';
-    }
-    this._rescaleZoom();
-  }
-
-  _ensureZoomTerm(zoom, entry) {
-    if (this._zoomRec) return this._zoomRec;
-    const screenHost = zoom.querySelector('.screen-host');
-    if (!screenHost) return null;
-    const screen = document.createElement('div');
-    screen.className = 'screen';
-    screenHost.appendChild(screen);
-    const term = new Terminal({
-      cols: entry?.cols || 80,
-      rows: entry?.rows || 24,
-      fontSize: 14,
-      fontFamily: '"DejaVu Sans Mono", Menlo, Monaco, "Cascadia Mono", "Noto Sans Mono", "Liberation Mono", "Courier New", "Symbols Nerd Font", monospace',
-      theme: { background: '#1a1a2e', foreground: '#eaeaea' },
-      scrollback: 0,
-      disableStdin: true,
-      cursorStyle: 'bar',
-      cursorInactiveStyle: 'none',
-      allowProposedApi: true,
-    });
-    term.open(screen);
-    this._zoomRec = { term, screen, cols: entry?.cols || 0, rows: entry?.rows || 0 };
-    return this._zoomRec;
-  }
-
-  _rescaleZoom() {
-    const rec = this._zoomRec;
-    const zoom = this._zoomEl();
-    if (!rec || !zoom) return;
-    const frame = zoom.querySelector('.zframe');
-    if (!frame) return;
-    requestAnimationFrame(() => {
-      const nw = rec.screen.offsetWidth || 1;
-      const nh = rec.screen.offsetHeight || 1;
-      const scale = Math.min(frame.clientWidth / nw, frame.clientHeight / nh);
-      rec.screen.style.transform = `scale(${scale})`;
-    });
-  }
-
-  _teardownZoom() {
-    if (this._zoomTimer) { clearTimeout(this._zoomTimer); this._zoomTimer = null; }
-    if (this._zoomHideTimer) { clearTimeout(this._zoomHideTimer); this._zoomHideTimer = null; }
-    if (this._zoomRec) { try { this._zoomRec.term.dispose(); } catch (e) {} this._zoomRec = null; }
-    this._zoomId = null;
-  }
-
   // ---- staleness --------------------------------------------------------------
 
   _checkStale() {
@@ -954,7 +737,34 @@ class WebtmuxPip extends LitElement {
   _activate(id) {
     if (!id) return;
     const win = this._wins.find((w) => w.windowId === id);
-    this.manager?.goToWindow(id, win?.session || '');
+    // Commit through the shared preview so the window lands in the region that was
+    // showing it while you hovered — clicking a preview means "put THAT where I was
+    // just looking at it", not "hijack whichever pane happens to be focused".
+    this.manager?.hover.commit(id, win?.session || '');
+  }
+
+  // ---- working stoplight -------------------------------------------------------
+
+  // Per-window @wt_working, pushed from the SplitManager on every layout refresh.
+  // Only repaints when something actually changed — this runs on the 500ms poll.
+  setWorking(map) {
+    if (!map) return;
+    let changed = map.size !== this._working.size;
+    if (!changed) { for (const [k, v] of map) if (this._working.get(k) !== v) { changed = true; break; } }
+    if (!changed) return;
+    this._working = new Map(map);
+    for (const w of this._wins) this._paintWork(w.windowId);
+  }
+
+  _paintWork(id) {
+    const tile = this._tileEl(id);
+    const dot = tile?.querySelector('.pwork');
+    if (!dot) return;
+    const v = this._working.get(id) || '';
+    dot.classList.toggle('on', v === '1');
+    dot.classList.toggle('off', v === '0');
+    dot.classList.toggle('wait', v === '2');
+    dot.title = v === '1' ? 'Working' : v === '0' ? 'Idle' : v === '2' ? 'Waiting for you' : '';
   }
 
   _ensurePolling() {

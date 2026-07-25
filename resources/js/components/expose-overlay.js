@@ -347,6 +347,9 @@ class WebtmuxExpose extends LitElement {
     }
     this.density = density;
     this.open = true;
+    // Exposé is its own full-screen browser; a hover preview left over from the
+    // toolbar/sidebar underneath it would keep a region hostage behind the overlay.
+    this.manager?.hover?.cancel();
     // Start the cursor on the focused region's current window's OWN-session tile.
     // (Access recency is owned by SplitManager — the focused window was already
     // recorded when focused — so opening Exposé doesn't itself write recency.)

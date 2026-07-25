@@ -2,14 +2,32 @@
 // toggle on the RIGHT. The SplitManager owns the data — it sets `recent`
 // (up to 5 {id,index,name,active}) and `collapsed`, and handles clicks via
 // `manager.pickRecentWindow(id)` / `manager.sidebar.toggleCollapsed()`.
+//
+// Hovering a recent tab does NOT pop a thumbnail here any more: it asks the shared
+// HoverPreview to show that window in a real terminal region (see hover-preview.js),
+// which is bigger, in place, and the same behavior every other switcher now has.
 import { LitElement, html, css } from 'lit';
-import { Terminal } from '@xterm/xterm';
-import { CaptureCache, placementKey } from '../capture-cache.js';
 import { chord } from '../os.js';
+import { stateStore } from '../state-store.js';
 
-// xterm's own stylesheet, pulled into this component's shadow root so the hover
-// preview's terminal rows lay out correctly (same CDN the PiP overlay uses).
-const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css';
+// Recent-tab label shape. Two INDEPENDENT toggles rather than one four-way cycle,
+// because they answer unrelated questions: "which session is this in" and "how much
+// of the name do I need". Defaults are the quiet ones — most windows live in the
+// session you're already in, and long names are usually "<tool> <what>", where the
+// leading word is the part you already know.
+const LABEL_DEFAULTS = { showSession: false, trimName: true };
+
+// Drop everything up to and including the first space: "claude Dominion-wq" reads
+// as "Dominion-wq". A name with no space is left alone (there's nothing redundant
+// to remove), and a name that is ALL prefix ("claude ") keeps the original rather
+// than collapsing to nothing.
+function trimWindowName(name) {
+  const s = String(name || '');
+  const i = s.indexOf(' ');
+  if (i < 0) return s;
+  const tail = s.slice(i + 1).trim();
+  return tail || s;
+}
 
 // Scroll-wheel modes, in the order the toolbar button cycles them. Kept in sync
 // with SCROLL_MODES in terminal-unit.js. `label` is the compact toolbar text;
@@ -62,6 +80,19 @@ class WebtmuxToolbar extends LitElement {
     // for saveStatus, by the SplitManager when a server-side save resolves.
     saveOpen: { type: Boolean },
     saveStatus: { type: Object },
+    // The window the shared HoverPreview is currently showing ('' = none). Marks
+    // which tab the preview on screen belongs to. Set by the SplitManager.
+    previewWindow: { type: String },
+    // Recent-tab label shape (see LABEL_DEFAULTS) + whether its little menu is open.
+    showSession: { type: Boolean },
+    trimName: { type: Boolean },
+    labelMenuOpen: { type: Boolean },
+    // Recents drag-reorder: the tab being dragged, and the insertion GAP the drop
+    // would land in (0..n, -1 = not over the strip).
+    dragKey: { type: String },
+    dropIndex: { type: Number },
+    // tmux-activity spinner position, in increments (rendered as rotation).
+    activity: { type: Number },
   };
 
   static styles = css`
@@ -95,7 +126,56 @@ class WebtmuxToolbar extends LitElement {
     }
     .tabs::-webkit-scrollbar { height: 6px; }
     .tabs::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 3px; }
-    .label { color: #666; font-size: 12px; margin-right: 2px; white-space: nowrap; flex: 0 0 auto; }
+    .label {
+      color: #666; font-size: 12px; margin-right: 2px; white-space: nowrap; flex: 0 0 auto;
+      background: none; border: none; padding: 2px 4px; border-radius: 4px;
+      font-family: inherit; cursor: pointer;
+    }
+    .label:hover { color: #9fc4ff; background: #1a1a2e; }
+
+    /* A recents entry = the status dot + the tab, as one drag unit. The dot lives
+       OUTSIDE the tab button on purpose: inside, it sat on the tab's own background,
+       and a red dot on the selected tab's red fill was nearly invisible — exactly
+       when you most want to see it. Out here it always has the toolbar behind it. */
+    .rtab {
+      position: relative;
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .rtab[draggable] { cursor: grab; user-select: none; }
+    .rtab.dragging { opacity: 0.4; cursor: grabbing; }
+    /* Insertion line for the reorder drop, drawn in the gap before this entry (or
+       after the last one). Same vocabulary as the sidebar's window-list reorder. */
+    .rtab.drop-before::before,
+    .rtab.drop-end::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      bottom: 2px;
+      width: 2px;
+      border-radius: 2px;
+      background: #4a9eff;
+      box-shadow: 0 0 6px rgba(74, 158, 255, 0.9);
+    }
+    .rtab.drop-before::before { left: -4px; }
+    .rtab.drop-end::after { right: -4px; }
+
+    /* Working-status dot: green = working, red = stopped, amber = waiting for you,
+       unfilled = unset. Clients drive it with: tmux set -w @wt_working 1|0|2
+       (set -u to clear). */
+    .work {
+      flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%;
+      border: 1px solid #5a6a8a; background: transparent; box-sizing: border-box;
+    }
+    .work.on   { background: #2ecc71; border-color: #2ecc71; box-shadow: 0 0 4px #2ecc71; }
+    .work.off  { background: #e74c3c; border-color: #e74c3c; }
+    /* Waiting for user input — pulses, because unlike the other two states it is a
+       request: something is blocked until you go and answer it. */
+    .work.wait { background: #f5c542; border-color: #f5c542; box-shadow: 0 0 5px #f5c542; animation: wt-wait 1.4s ease-in-out infinite; }
+    @keyframes wt-wait { 50% { opacity: 0.35; } }
+
     .tab {
       display: inline-flex;
       align-items: baseline;
@@ -115,20 +195,17 @@ class WebtmuxToolbar extends LitElement {
     }
     .tab:hover { border-color: #4a9eff; color: #fff; }
     .tab.active { background: #e94560; border-color: #e94560; color: #fff; }
-    /* Shown in another pane -> not selectable from here. */
-    .tab.disabled { opacity: 0.4; cursor: not-allowed; }
-    .tab.disabled:hover { border-color: #0f3460; color: #ddd; }
+    /* Open in another region: it can't be moved HERE (two regions on one window would
+       just mirror each other), so it reads as dimmed — but clicking jumps to the
+       region that has it, which is the only useful thing left to do with it. */
+    .tab.disabled { opacity: 0.5; }
+    .tab.disabled:hover { border-color: #4a9eff; color: #fff; }
     .tab .sess { color: #4a9eff; font-size: 11px; opacity: 0.85; flex: 0 0 auto; }
     .tab.active .sess { color: #ffd7de; }
-    /* Working-status dot: green = working, red = stopped, unfilled = unset.
-       Clients drive it with: tmux set -w @wt_working 1|0  (set -u to clear). */
-    .tab .work {
-      flex: 0 0 auto; align-self: center; width: 8px; height: 8px; border-radius: 50%;
-      border: 1px solid #5a6a8a; background: transparent; box-sizing: border-box;
-    }
-    .tab .work.on  { background: #2ecc71; border-color: #2ecc71; box-shadow: 0 0 4px #2ecc71; }
-    .tab .work.off { background: #e74c3c; border-color: #e74c3c; }
-    .tab.active .work { border-color: #ffd7de; }
+    /* The tab whose window the shared hover preview is currently showing. Dashed,
+       not filled: the preview is transient and nothing has been committed yet, so it
+       must not look like the selected tab. */
+    .tab.previewing { border-style: dashed; border-color: #37d17a; color: #fff; }
     .tab .wname { overflow: hidden; text-overflow: ellipsis; }
     /* Per-tab remove-from-recents affordance: hidden until the tab is hovered. */
     .tab .close {
@@ -363,6 +440,27 @@ class WebtmuxToolbar extends LitElement {
       background: #37d17a;              /* green — the focused pane */
       box-shadow: 0 0 6px rgba(55, 209, 122, 0.8);
     }
+    /* tmux-activity spinner, far left. Advances one notch (45°) every time webtmux
+       sends tmux a command, debounced — so it flicks when you switch/rename/capture
+       and sits still when nothing is talking to tmux. A liveness tell you can read
+       out of the corner of your eye; there is no other signal that the tmux side of
+       the connection is actually doing anything. */
+    .spin {
+      flex: 0 0 auto;
+      width: 20px;
+      height: 20px;
+      margin-right: 2px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #4a9eff;
+      font-size: 15px;
+      line-height: 1;
+      opacity: 0.75;
+      cursor: default;
+      transition: transform 0.18s ease-out;
+    }
+
     /* Build id on the far left — read it aloud to identify the running build. */
     .build {
       flex: 0 0 auto;
@@ -409,45 +507,39 @@ class WebtmuxToolbar extends LitElement {
       visibility: visible;
     }
 
-    /* Recent-tab HOVER PREVIEW: a small pip-sized live thumbnail that drops beneath a
-       recent tab while you pause on it — but only when that window isn't already shown
-       in the Preview (corner box / bar), where it'd just duplicate. Passive
-       (pointer-events:none) and position:fixed so it escapes the .tabs overflow clip.
-       Coexists with the tooltip: the tip sits just under the tab, this just under the
-       tip (positioned imperatively in _tabPrevShow). */
-    .tabprev {
-      position: fixed;
-      z-index: 90;
-      display: none;
+    /* Recent-tab label-shape menu, anchored under the "Recent" label. */
+    .label-wrap { position: relative; flex: 0 0 auto; display: inline-flex; }
+    .label-backdrop { position: fixed; inset: 0; z-index: 90; background: transparent; }
+    .label-menu {
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      z-index: 95;
+      min-width: 230px;
+      box-sizing: border-box;
+      padding: 8px;
+      display: flex;
       flex-direction: column;
-      background: #12131f;
-      border: 1px solid #37d17a;
+      gap: 6px;
+      background: #0b1020;
+      border: 1px solid #4a9eff;
       border-radius: 8px;
-      overflow: hidden;
-      box-shadow: 0 14px 40px rgba(0, 0, 0, 0.66);
-      pointer-events: none;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
       font-family: Menlo, Monaco, "Courier New", monospace;
     }
-    .tabprev.show { display: flex; }
-    .tabprev .tp-frame {
-      position: relative;
-      /* Match the size the single-window corner PiP grows to on hover (see
-         pip-overlay.js: width min(1080, 100vw-32) × frame min(648, 100vh-160)) so a
-         recent-tab preview is as big and readable as the PiP's zoomed state — no
-         squinting at a tiny thumbnail. Width is set imperatively in _tabPrevShow. */
-      height: min(648px, calc(100vh - 160px));
-      background: #1a1a2e;
-      overflow: hidden;
-      border-bottom: 1px solid #0f3460;
+    .label-menu .mtitle { color: #9fc4ff; font-size: 11px; letter-spacing: 0.02em; }
+    .label-menu .mitem {
+      display: flex; align-items: center; gap: 8px;
+      background: #1a1a2e; color: #e8eefc;
+      border: 1px solid #0f3460; border-radius: 6px;
+      padding: 7px 9px; font-size: 12.5px; cursor: pointer; text-align: left;
     }
-    .tabprev .tp-host { position: absolute; inset: 0; }
-    .tabprev .tp-host .screen { position: absolute; top: 0; left: 0; transform-origin: top left; }
-    .tabprev .tp-label {
-      display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
-      padding: 5px 9px; font-size: 12px; color: #d6ddf5; white-space: nowrap;
+    .label-menu .mitem:hover { border-color: #4a9eff; }
+    .label-menu .mitem .mark { width: 12px; flex: 0 0 auto; color: #37d17a; }
+    .label-menu .mprev {
+      color: #6b7690; font-size: 11px; padding: 2px 2px 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-    .tabprev .tp-label .tp-name { overflow: hidden; text-overflow: ellipsis; }
-    .tabprev .tp-label .tp-sess { flex: 0 0 auto; color: #7f8bb5; letter-spacing: 0.06em; font-size: 11px; }
   `;
 
   constructor() {
@@ -455,9 +547,8 @@ class WebtmuxToolbar extends LitElement {
     this.recent = [];
     this.collapsed = false;
     // Scroll-wheel mode mirror (moved here from the sidebar). Seeded from the same
-    // persisted key the terminal reads, so the label is right on first paint.
-    this.scrollMode = normalizeScroll(
-      (typeof localStorage !== 'undefined' && localStorage.getItem('webtmux-scroll-mode')) || '');
+    // shared 'renderer' pref the terminal reads, so the label is right on first paint.
+    this.scrollMode = normalizeScroll(stateStore.section('renderer').scrollMode || '');
     this.copyMode = false; // focused pane in tmux copy/view mode (SplitManager sets)
     this.previewCount = 0;        // windows currently in the preview (SplitManager sets)
     this.previewHidden = false;   // preview tucked away (SplitManager sets)
@@ -470,25 +561,62 @@ class WebtmuxToolbar extends LitElement {
     this.built = (typeof window !== 'undefined' && window.webtmux_built) || '';
     // Build-id chip hidden by default (it's clutter for daily use); Ctrl+Alt+B
     // reveals it when you need to read the running build aloud. Persisted.
-    this.showBuild = (typeof localStorage !== 'undefined' &&
-      localStorage.getItem('webtmux-show-build') === 'true');
+    this.showBuild = stateStore.section('toolbar').showBuild === true;
+    this._applyLabelPrefs();
+    // Re-apply shared prefs (scroll mode, build-chip visibility, recents label shape)
+    // on any remote change — e.g. cycling scroll mode from a region sidebar, or
+    // another client toggling.
+    stateStore.subscribe(() => {
+      this.scrollMode = normalizeScroll(stateStore.section('renderer').scrollMode || '');
+      this.showBuild = stateStore.section('toolbar').showBuild === true;
+      this._applyLabelPrefs();
+      this.requestUpdate();
+    });
     this._tipTimer = null; // pending show timer for the quick tab tooltip
-    // Recent-tab hover-preview state (parallels the tooltip's, using the same delay).
-    this._prevTimer = null;    // pending "pause then show" timer
-    this._prevHideTimer = null; // grace timer so sweeping tab→tab doesn't re-pause
-    this._prevId = null;       // window id currently previewed on hover, or null
-    this._prevSess = '';       // that window's logical session (for the placement-keyed capture)
-    this._prevRec = null;      // { term, screen, cols, rows } for the preview's xterm
-    this._prevOnUpdate = null; // capture-cache 'update' listener (keeps the preview live)
     this.saveOpen = false;   // save dropdown open?
     this.saveStatus = null;  // transient save result banner (see properties)
+    this.previewWindow = ''; // window the shared hover preview is showing
+    this.labelMenuOpen = false;
+    this.dragKey = '';
+    this.dropIndex = -1;
+    this.activity = 0;
+  }
+
+  // Pull the recents label-shape prefs out of the shared store (they ride @wt_state,
+  // so the strip looks the same in every browser on this tmux server).
+  _applyLabelPrefs() {
+    const t = stateStore.section('toolbar');
+    this.showSession = t.recentShowSession === undefined
+      ? LABEL_DEFAULTS.showSession : t.recentShowSession === true;
+    this.trimName = t.recentTrimName === undefined
+      ? LABEL_DEFAULTS.trimName : t.recentTrimName === true;
+  }
+
+  _setLabelPref(key, value) {
+    if (key === 'showSession') this.showSession = value;
+    else this.trimName = value;
+    stateStore.patchSection('toolbar', {
+      recentShowSession: this.showSession, recentTrimName: this.trimName,
+    });
+  }
+
+  // The visible text of a recent tab under the current label prefs.
+  _tabLabel(w) {
+    const name = this.trimName ? trimWindowName(w.name) : (w.name || 'bash');
+    return this.showSession ? `${w.session}: ${name}` : name;
+  }
+
+  // Advance the tmux-activity spinner one notch. Called (debounced) by the
+  // SplitManager whenever a region sends tmux a command.
+  tickActivity() {
+    this.activity = (this.activity + 1) % 8;
   }
 
   // Show/hide the build-id chip (Ctrl+Alt+B, wired by the SplitManager). Persisted
   // so the choice survives a reload.
   toggleBuild() {
     this.showBuild = !this.showBuild;
-    try { localStorage.setItem('webtmux-show-build', String(this.showBuild)); } catch (e) {}
+    stateStore.patchSection('toolbar', { showBuild: this.showBuild });
   }
 
   // Quick-tooltip delay (ms). Still snappier than the browser's native ~1s title
@@ -505,7 +633,7 @@ class WebtmuxToolbar extends LitElement {
     this.scrollMode = next;
     const u = this.manager?.focusedUnit;
     if (u?.setScrollMode) u.setScrollMode(next);
-    else if (typeof localStorage !== 'undefined') localStorage.setItem('webtmux-scroll-mode', next);
+    else stateStore.patchSection('renderer', { scrollMode: next });
   }
 
   // Toggle the save-buffer dropdown. On open, clear any stale result banner and
@@ -543,13 +671,7 @@ class WebtmuxToolbar extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     if (this._tipTimer) { clearTimeout(this._tipTimer); this._tipTimer = null; }
-    if (this._prevTimer) { clearTimeout(this._prevTimer); this._prevTimer = null; }
-    if (this._prevHideTimer) { clearTimeout(this._prevHideTimer); this._prevHideTimer = null; }
-    const cache = this.manager?.captureCache;
-    if (cache && this._prevOnUpdate) cache.removeEventListener('update', this._prevOnUpdate);
-    this._prevOnUpdate = null;
-    if (this._prevRec) { try { this._prevRec.term.dispose(); } catch (e) {} this._prevRec = null; }
-    this._prevId = null;
+    this.manager?.hover?.cancel();
   }
 
   _tipEl() {
@@ -598,212 +720,164 @@ class WebtmuxToolbar extends LitElement {
     if (tip) tip.classList.remove('show');
   }
 
-  // ---- recent-tab hover preview -----------------------------------------------
-  // A small pip-sized live thumbnail beneath a recent tab, shown after the SAME pause
-  // as the tooltip — but only when the window isn't already visible in the Preview
-  // (corner box / bar), where a copy would be redundant. Fed by the shared
-  // CaptureCache (same frames Exposé/Preview read) and kept live via its 'update'
-  // event. Passive (pointer-events:none); it never covers the tooltip (positioned
-  // just below it).
+  // ---- recents drag-reorder ----------------------------------------------------
+  // The strip's order is deliberately stable (re-accessing a window never moves its
+  // tab), which is what makes it a place you can build muscle memory — so it should
+  // be arrangeable by hand. Horizontal INSERTION-GAP semantics, mirroring the
+  // sidebar's vertical window reorder: a line shows the gap the tab will land in,
+  // and the drop moves it there.
 
-  // Hover-preview box width — matches the single-window corner PiP's grown-on-hover
-  // width (pip-overlay.js: min(1080px, 100vw-32)), so a recent-tab preview is the
-  // same big, readable size as the PiP's zoomed state. Frame height is the matching
-  // clamp in CSS (.tabprev .tp-frame). A CSS expression (not a px number) so it
-  // tracks the viewport; set on box.style.width in _tabPrevShow.
-  static _PREV_W = 'min(1080px, calc(100vw - 32px))';
+  // A stable identity for a tab. Not the window id alone: a window linked into two
+  // sessions earns a tab per session, and they must be independently draggable.
+  _key(w) { return `${w.session} ${w.id}`; }
 
-  _tabPrevEl() { return this.renderRoot?.querySelector('.tabprev'); }
-
-  _tabPrevEnter(ev, w) {
-    const cache = this.manager?.captureCache;
-    if (!w?.id || !cache) return;
-    // Cancel a pending grace-hide from the tab we just left, so sweeping onto this
-    // tab keeps the preview up instead of letting it disappear mid-move.
-    if (this._prevHideTimer) { clearTimeout(this._prevHideTimer); this._prevHideTimer = null; }
-    // Already shown live in the Preview? Then a hover copy just duplicates it — skip.
-    if (this.manager?.pip?.isShowing?.(w.id)) { this._tabPrevLeave(); return; }
-    const target = ev.currentTarget;
-    if (this._prevTimer) { clearTimeout(this._prevTimer); this._prevTimer = null; }
-    const box = this._tabPrevEl();
-    // Already visible (sweeping tab→tab, including across the brief gap the
-    // grace-hide bridges) → switch instantly, no second pause. Once you've paused to
-    // see ONE preview, moving left/right shows each next tab's preview immediately.
-    if (box && box.classList.contains('show')) { this._tabPrevShow(target, w); return; }
-    this._prevTimer = setTimeout(() => {
-      if (!target.isConnected) return;
-      this._tabPrevShow(target, w);
-    }, WebtmuxToolbar._TIP_DELAY);
+  _onTabDragStart(e, w) {
+    this.dragKey = this._key(w);
+    this._tipLeave();
+    this.manager?.hover?.cancel();     // a drag is a rearrangement, not a browse
+    try {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', this.dragKey);
+    } catch (_) {}
   }
 
-  _tabPrevShow(target, w) {
-    this._prevTimer = null;
-    const cache = this.manager?.captureCache;
-    const box = this._tabPrevEl();
-    if (!box || !cache || !target?.isConnected) return;
-    if (this.manager?.pip?.isShowing?.(w.id)) { this._tabPrevLeave(); return; }
-    this._prevId = w.id;
-    this._prevSess = w.session || '';
-    this._buildTabPrevChrome(box);
-    box.querySelector('.tp-name').textContent = `${w.index}: ${w.name}`;
-    box.querySelector('.tp-sess').textContent = w.session || '';
-    box.style.width = WebtmuxToolbar._PREV_W;
-    // Show first (so it has real dimensions to clamp against), then position it just
-    // below the tooltip (kept visible) — or below the tab if the tip isn't up yet.
-    box.classList.add('show');
-    const tip = this._tipEl();
-    const tr = target.getBoundingClientRect();
-    const margin = 6;
-    const anchorBottom = (tip && tip.classList.contains('show'))
-      ? tip.getBoundingClientRect().bottom : tr.bottom;
-    const bw = box.offsetWidth;
-    let left = tr.left;
-    if (left + bw > window.innerWidth - margin) left = window.innerWidth - bw - margin;
-    if (left < margin) left = margin;
-    box.style.left = `${Math.round(left)}px`;
-    box.style.top = `${Math.round(anchorBottom + margin)}px`;
-    this._ensurePrevListener();
-    cache.request([w.id], true);   // prime a fresh frame
-    this._paintTabPrev();
+  _onTabDragEnd() {
+    this.dragKey = '';
+    this.dropIndex = -1;
   }
 
-  _buildTabPrevChrome(box) {
-    if (box._wired) return;
-    const frame = document.createElement('div');
-    frame.className = 'tp-frame';
-    const host = document.createElement('div');
-    host.className = 'tp-host';
-    frame.appendChild(host);
-    const label = document.createElement('div');
-    label.className = 'tp-label';
-    const name = document.createElement('span'); name.className = 'tp-name';
-    const sess = document.createElement('span'); sess.className = 'tp-sess';
-    label.append(name, sess);
-    box.append(frame, label);
-    box._wired = true;
+  // Over the strip: the insertion gap is the first tab whose horizontal midpoint is
+  // right of the pointer; past them all means "move to the end".
+  _onStripDragOver(e) {
+    if (!this.dragKey) return;
+    e.preventDefault();
+    try { e.dataTransfer.dropEffect = 'move'; } catch (_) {}
+    const idx = this._dropIndexAt(e.clientX);
+    if (idx !== this.dropIndex) this.dropIndex = idx;
   }
 
-  _paintTabPrev() {
-    const id = this._prevId;
-    if (!id) return;
-    const box = this._tabPrevEl();
-    if (!box || !box.classList.contains('show')) return;
-    const cache = this.manager?.captureCache;
-    const sess = this._prevSess;
-    const entry = (sess && cache?.byPlacement?.get(placementKey(sess, id))) || cache?.get(id);
-    if (!entry) return;
-    const rec = this._ensurePrevTerm(box, entry);
-    if (!rec) return;
-    if (entry.cols && entry.rows && (entry.cols !== rec.cols || entry.rows !== rec.rows)) {
-      try { rec.term.resize(entry.cols, entry.rows); } catch (e) {}
-      rec.cols = entry.cols; rec.rows = entry.rows;
+  // Only clear the line when the pointer truly leaves the strip — dragleave also
+  // fires when crossing between child tabs, where relatedTarget is still inside.
+  _onStripDragLeave(e) {
+    if (!e.currentTarget.contains(e.relatedTarget)) this.dropIndex = -1;
+  }
+
+  _onStripDrop(e) {
+    e.preventDefault();
+    // Prefer live drag state; fall back to the dataTransfer payload so a stray
+    // re-render that cleared dragKey can never eat the drop.
+    const key = this.dragKey || this._dtKey(e);
+    const gap = this.dropIndex >= 0 ? this.dropIndex : this._dropIndexAt(e.clientX);
+    this._onTabDragEnd();
+    if (!key) return;
+    const entry = this.recent.find((w) => this._key(w) === key);
+    if (entry) this.manager?.reorderRecent(entry, gap);
+  }
+
+  _dropIndexAt(x) {
+    const tabs = [...(this.renderRoot?.querySelectorAll('.rtab') || [])];
+    for (let i = 0; i < tabs.length; i++) {
+      const r = tabs[i].getBoundingClientRect();
+      if (x < r.left + r.width / 2) return i;
     }
-    rec.term.write('\x1b[H\x1b[2J');
-    rec.term.write(CaptureCache.decodeAnsi(entry));
-    this._rescalePrev();
+    return tabs.length;
   }
 
-  _ensurePrevTerm(box, entry) {
-    if (this._prevRec) return this._prevRec;
-    const host = box.querySelector('.tp-host');
-    if (!host) return null;
-    const screen = document.createElement('div');
-    screen.className = 'screen';
-    host.appendChild(screen);
-    const term = new Terminal({
-      cols: entry?.cols || 80,
-      rows: entry?.rows || 24,
-      fontSize: 14,
-      fontFamily: '"DejaVu Sans Mono", Menlo, Monaco, "Cascadia Mono", "Noto Sans Mono", "Liberation Mono", "Courier New", "Symbols Nerd Font", monospace',
-      theme: { background: '#1a1a2e', foreground: '#eaeaea' },
-      scrollback: 0,
-      disableStdin: true,
-      cursorStyle: 'bar',
-      cursorInactiveStyle: 'none',
-      allowProposedApi: true,
-    });
-    term.open(screen);
-    this._prevRec = { term, screen, cols: entry?.cols || 0, rows: entry?.rows || 0 };
-    return this._prevRec;
+  _dtKey(e) {
+    try { return e.dataTransfer.getData('text/plain') || ''; } catch (_) { return ''; }
   }
 
-  _rescalePrev() {
-    const rec = this._prevRec;
-    const box = this._tabPrevEl();
-    if (!rec || !box) return;
-    const frame = box.querySelector('.tp-frame');
-    if (!frame) return;
-    requestAnimationFrame(() => {
-      const nw = rec.screen.offsetWidth || 1;
-      const nh = rec.screen.offsetHeight || 1;
-      const scale = Math.min(frame.clientWidth / nw, frame.clientHeight / nh);
-      rec.screen.style.transform = `scale(${scale})`;
-    });
-  }
-
-  _ensurePrevListener() {
-    if (this._prevOnUpdate) return;
-    const cache = this.manager?.captureCache;
-    if (!cache) return;
-    this._prevOnUpdate = (e) => {
-      const caps = (e && e.detail && e.detail.captures) || [];
-      if (this._prevId && caps.some((c) => c.windowId === this._prevId)) this._paintTabPrev();
+  // ---- recents label-shape menu ------------------------------------------------
+  // Hung off the "Recent" label itself rather than adding another toolbar button:
+  // it's a rarely-touched display preference, and the label is exactly the thing it
+  // is about.
+  _labelMenu() {
+    const sample = this.recent[0] || { session: 'services', name: 'claude Dominion', index: 3 };
+    const shape = (showSession, trimName) => {
+      const name = trimName ? trimWindowName(sample.name) : (sample.name || 'bash');
+      return showSession ? `${sample.session}: ${name}` : name;
     };
-    cache.addEventListener('update', this._prevOnUpdate);
+    return html`
+      <div class="label-backdrop" @click=${() => { this.labelMenuOpen = false; }}></div>
+      <div class="label-menu" @click=${(e) => e.stopPropagation()}>
+        <div class="mtitle">Recent tab labels</div>
+        <button class="mitem" @click=${() => this._setLabelPref('showSession', !this.showSession)}>
+          <span class="mark">${this.showSession ? '✓' : ''}</span>Show session
+        </button>
+        <button class="mitem" @click=${() => this._setLabelPref('trimName', !this.trimName)}>
+          <span class="mark">${this.trimName ? '✓' : ''}</span>Trim name to after first space
+        </button>
+        <div class="mprev">now: ${shape(this.showSession, this.trimName)}</div>
+      </div>
+    `;
   }
 
-  // Grace-hide window (ms): keep the preview up briefly after leaving a tab so
-  // moving to an ADJACENT tab (a moment where no tab is hovered) doesn't force a
-  // fresh pause — the next tab's _tabPrevEnter cancels the hide and switches
-  // instantly. Same hover-intent trick as the PiP bar magnifier's grace.
-  static _PREV_HIDE_GRACE = 260;
-
-  // Leave a tab: schedule the hide after the grace window rather than hiding at
-  // once. _prevId stays set through the grace so live captures keep the preview
-  // painted while you're mid-sweep.
-  _tabPrevLeave() {
-    if (this._prevTimer) { clearTimeout(this._prevTimer); this._prevTimer = null; }
-    if (this._prevHideTimer) clearTimeout(this._prevHideTimer);
-    this._prevHideTimer = setTimeout(() => this._tabPrevHideNow(), WebtmuxToolbar._PREV_HIDE_GRACE);
-  }
-
-  // Hide the preview immediately (a click committed the switch, or teardown) —
-  // no grace.
-  _tabPrevHideNow() {
-    if (this._prevTimer) { clearTimeout(this._prevTimer); this._prevTimer = null; }
-    if (this._prevHideTimer) { clearTimeout(this._prevHideTimer); this._prevHideTimer = null; }
-    this._prevId = null;
-    this._prevSess = '';
-    const box = this._tabPrevEl();
-    if (box) box.classList.remove('show');
+  // The status dot's class from a window's raw @wt_working value.
+  _workClass(working) {
+    return working === '1' ? 'on' : working === '0' ? 'off' : working === '2' ? 'wait' : '';
   }
 
   render() {
     return html`
-      <link rel="stylesheet" href=${XTERM_CSS} />
+      <span
+        class="spin"
+        style="transform: rotate(${this.activity * 45}deg)"
+        aria-hidden="true"
+        @mouseenter=${(e) => this._tipEnter(e, 'tmux activity — advances one notch each time webtmux sends tmux a command (window switches, renames, captures, saved state).')}
+        @mouseleave=${() => this._tipLeave()}
+      >✳</span>
       ${this.showBuild ? html`<span class="build" title="webtmux build ${this.build}${this.built ? ' — built ' + this.built : ''} — hide with ${chord('B')}">⬢ ${this.build}</span>` : ''}
-      <div class="tabs">
-        ${this.recent.length ? html`<span class="label">Recent</span>` : ''}
-        ${this.recent.map(w => {
-          const tip = w.disabled ? 'Shown in another pane' : `${w.session} — window ${w.index}: ${w.name}`;
+      <div
+        class="tabs"
+        @dragover=${(e) => this._onStripDragOver(e)}
+        @dragleave=${(e) => this._onStripDragLeave(e)}
+        @drop=${(e) => this._onStripDrop(e)}
+      >
+        ${this.recent.length ? html`
+          <span class="label-wrap">
+            <button
+              class="label"
+              aria-label="Recent tab label options"
+              @mouseenter=${(e) => this._tipEnter(e, 'Recent windows — click for label options (show the session, trim the window name). Drag tabs to reorder them.')}
+              @mouseleave=${() => this._tipLeave()}
+              @click=${() => { this._tipLeave(); this.labelMenuOpen = !this.labelMenuOpen; }}
+            >Recent ▾</button>
+            ${this.labelMenuOpen ? this._labelMenu() : ''}
+          </span>
+        ` : ''}
+        ${this.recent.map((w, i) => {
+          const key = this._key(w);
+          const full = `${w.session} — window ${w.index}: ${w.name}`;
+          // A window shown in ANOTHER region can't be moved here (two regions on one
+          // window would just mirror each other) — but it can be JUMPED to, which is
+          // what clicking now does. Hovering it shows nothing new for the same reason:
+          // it's already on screen.
+          const tip = w.disabled
+            ? `${full}\nAlready open in another region — click to jump there · drag to reorder`
+            : `${full}\nHover to preview it in a terminal region · click to switch there · drag to reorder`;
+          const last = i === this.recent.length - 1;
           return html`
-          <button
-            class="tab ${w.active ? 'active' : ''} ${w.disabled ? 'disabled' : ''}"
-            aria-label=${tip}
-            @mouseenter=${(e) => { this._tipEnter(e, tip); this._tabPrevEnter(e, w); }}
-            @mouseleave=${() => { this._tipLeave(); this._tabPrevLeave(); }}
-            @click=${() => { this._tipLeave(); this._tabPrevHideNow(); if (!w.disabled) this.manager?.pickRecentWindow(w); }}
-          ><span class="work ${w.working === '1' ? 'on' : w.working === '0' ? 'off' : ''}" aria-hidden="true"></span><span class="sess">${w.index}</span><span class="wname">${w.name}</span><span
+          <span
+            class="rtab ${this.dragKey === key ? 'dragging' : ''} ${this.dragKey && this.dropIndex === i ? 'drop-before' : ''} ${this.dragKey && last && this.dropIndex === this.recent.length ? 'drop-end' : ''}"
+            draggable="true"
+            @dragstart=${(e) => this._onTabDragStart(e, w)}
+            @dragend=${() => this._onTabDragEnd()}
+            @mouseenter=${(e) => { this._tipEnter(e, tip); this.manager?.hover?.enter(w.id, w.session); }}
+            @mouseleave=${() => { this._tipLeave(); this.manager?.hover?.leave(); }}
+          ><span class="work ${this._workClass(w.working)}" aria-hidden="true"></span><button
+            class="tab ${w.active ? 'active' : ''} ${w.disabled ? 'disabled' : ''} ${!w.active && this.previewWindow === w.id ? 'previewing' : ''}"
+            aria-label=${full}
+            @click=${() => { this._tipLeave(); this.manager?.pickRecentWindow(w); }}
+          ><span class="sess">${w.index}</span><span class="wname">${this._tabLabel(w)}</span><span
               class="close"
               aria-label="Remove from Recent (does not close the window)"
               @mouseenter=${(e) => { e.stopPropagation(); this._tipEnter(e, 'Remove this tab from Recent — the window keeps running (this does not close or kill it)'); }}
               @mouseleave=${(e) => { e.stopPropagation(); this._tipEnter({ currentTarget: e.currentTarget.closest('.tab') }, tip); }}
               @click=${(e) => { e.stopPropagation(); this._tipLeave(); this.manager?.removeRecent(w); }}
-            >×</span></button>
+            >×</span></button></span>
         `;})}
       </div>
       <div class="wt-tip"></div>
-      <div class="tabprev"></div>
       <span class="tsep"></span>
       <button
         class="tbtn"
