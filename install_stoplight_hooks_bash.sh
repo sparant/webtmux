@@ -20,16 +20,19 @@
 if [[ -n "$TMUX" && -z "$__wt_hooks_installed" && -z "$WT_STOPLIGHT_SUPPRESS" ]]; then
   __wt_hooks_installed=1
 
-  # Agent windows own their OWN stoplight: claude/pi inside the container drive
-  # @wt_working via their app lifecycle hooks + the host bridge. The host command
-  # that launches them (`WT_WINDOW=... docker exec ... claude-docker/launch.sh N`)
-  # is ONE foreground command that runs for the container's whole life — painting
-  # it green here would latch green forever (precmd can't fire until it exits)
-  # and fight the agent's real busy/idle signal. Match the LAUNCH COMMAND STRING
-  # (not the first token — env-var prefixes and docker exec bury the real target).
-  __wt_is_agent_launch() {
+  # Some commands HAND this window's status to something else for their whole
+  # lifetime, and must not be painted here:
+  #   - agent launches (claude/pi) — the agent drives @wt_working from its own
+  #     lifecycle hooks inside the container;
+  #   - entering the secure daemon — the shell you land on in there installs these
+  #     same hooks and reports its own commands.
+  # Each is ONE foreground command that runs until you exit it, so preexec-green
+  # would latch for the entire session (precmd cannot fire until it returns) and
+  # mask the real state coming from inside. Match the COMMAND STRING, not the
+  # first token: env-var prefixes and `docker exec` bury the real target.
+  __wt_delegates_status() {
     case "$1" in
-      *claude-docker/launch.sh*|*pi-docker/launch.sh*) return 0 ;;
+      *claude-docker/launch.sh*|*pi-docker/launch.sh*|*enter_secure_container.sh*) return 0 ;;
     esac
     local first="${1%% *}"
     case "${first##*/}" in
@@ -42,7 +45,7 @@ if [[ -n "$TMUX" && -z "$__wt_hooks_installed" && -z "$WT_STOPLIGHT_SUPPRESS" ]]
     [[ -n "$COMP_LINE" ]] && return                 # skip during completion
     [[ "$BASH_COMMAND" == "$PROMPT_COMMAND" ]] && return
     [[ -n "$__wt_running" ]] && return              # already green
-    __wt_is_agent_launch "$BASH_COMMAND" && return  # agent owns its own status
+    __wt_delegates_status "$BASH_COMMAND" && return # something else owns it now
     __wt_running=1
     tmux set -w @wt_working 1 2>/dev/null           # start work -> green
   }
