@@ -3,6 +3,12 @@
 // (up to 5 {id,index,name,active,working,alert}) and `collapsed`, and handles
 // clicks via `manager.pickRecentWindow(id)` / `manager.sidebar.toggleCollapsed()`.
 //
+// The strip ends in an OVERFLOW ARROW (`overflowAlerts`, also from the SplitManager):
+// the windows that need attention and have no tab here, because five slots cannot
+// promise to hold every window that stops. Without it, "nothing in the strip is
+// flashing" quietly meant "nothing in the five windows I happen to be keeping tabs on
+// is flashing" — which is not a thing anyone can act on.
+//
 // Hovering a recent tab does NOT pop a thumbnail here any more: it asks the shared
 // HoverPreview to show that window in a real terminal region (see hover-preview.js),
 // which is bigger, in place, and the same behavior every other switcher now has.
@@ -10,6 +16,7 @@ import { LitElement, html, css } from 'lit';
 import { chord, IS_MAC } from '../os.js';
 import { stateStore } from '../state-store.js';
 import { workClass, workLabel, workTip } from '../stoplight.js';
+import { ALERT_CSS, alertClass, alertTip } from '../alert-flash.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
 import { saveHint } from '../save-target.js';
 import { copyText } from '../clipboard.js';
@@ -86,6 +93,19 @@ function exposeIcon() {
   `;
 }
 
+// The overflow arrow's glyph: "there is more, that way". Drawn rather than typed for
+// the same reason the Exposé icon is — a font without a usable ➜ would silently ship
+// a tofu box on the one control whose entire job is to be noticed. A solid shaft into
+// a filled head, so it still reads as an arrow at 14px and while flashing.
+function overflowIcon() {
+  return html`
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+      <path d="M1.5 8h9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+      <path d="M9.5 3.4 14.6 8l-5.1 4.6z" fill="currentColor"></path>
+    </svg>
+  `;
+}
+
 // Exposé's hover text. The trackpad gesture is listed HERE, on the button that
 // does the same thing, because that is where someone looking for "how do I get
 // all my windows" is already pointing — the shortcuts overlay only helps people
@@ -136,6 +156,9 @@ class WebtmuxToolbar extends LitElement {
     dropIndex: { type: Number },
     // tmux-activity spinner position, in increments (rendered as rotation).
     activity: { type: Number },
+    // Flashing windows with no tab of their own — see the overflow arrow below.
+    // [{id, session, index, name, alert}], most recently raised first.
+    overflowAlerts: { type: Array },
   };
 
   // TIP_CSS is appended so the hover hint is byte-identical to the sidebar's.
@@ -222,34 +245,43 @@ class WebtmuxToolbar extends LitElement {
     .work.wait { background: #f5c542; border-color: #f5c542; box-shadow: 0 0 5px #f5c542; animation: wt-wait 1.4s ease-in-out infinite; }
     @keyframes wt-wait { 50% { opacity: 0.35; } }
 
-    /* ATTENTION FLASH: this window's stoplight dropped out of green while you were
-       looking at some other window — it either ran out of work (red) or is prompting
-       you (amber). The dot alone is a 8px change in the corner of your eye and is easy
-       to miss for minutes; the whole tab flashing is not. It keeps flashing until
-       you focus that window (SplitManager._markWorkAlerts owns that rule) — it is a
-       "you missed something" signal, so it must not expire on its own.
-       Colour says WHICH transition, matching the dot you'd have seen. */
-    .tab.alert { animation: wt-flash 1.05s ease-in-out infinite; }
-    .tab.alert-off  { --flash: #e74c3c; }
-    .tab.alert-wait { --flash: #f5c542; }
-    @keyframes wt-flash {
-      50% {
-        background: var(--flash);
-        border-color: var(--flash);
-        color: #10131f;
-        box-shadow: 0 0 10px var(--flash);
-      }
-      0%, 100% { border-color: var(--flash); }
+    /* The attention flash itself (.wt-alert and friends) is spliced in from
+       alert-flash.js — the sidebar rows and the preview tiles flash for the same
+       windows, and a signal that pulses differently in each place stops reading as
+       one signal. Colour says WHICH transition, matching the dot you'd have seen. */
+
+    /* OVERFLOW ARROW: the strip holds five tabs, and the windows that need you do not
+       care about that. When a window drops out of green with no tab, no preview tile
+       and no region of its own, this arrow appears at the end of the strip and flashes
+       in its place — so "nothing is flashing" can be trusted to mean "nothing needs
+       you", which is the only thing that makes the flashes worth watching at all.
+       Reuses .tbtn's shape (it is an action, not a tab) with the count beside it.
+
+       It sits just PAST .tabs rather than inside it. The strip scrolls horizontally
+       once the tabs outgrow the bar, and a warning that can scroll out of sight is
+       not a warning — this is the one control in here that has to be on screen
+       whenever it exists. */
+    .oflow {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      height: 28px;
+      box-sizing: border-box;
+      padding: 0 8px;
+      margin-left: 2px;
+      background: #1a1a2e;
+      color: #ddd;
+      border: 1px solid #0f3460;
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: Menlo, Monaco, "Courier New", monospace;
+      font-size: 12px;
+      white-space: nowrap;
     }
-    /* Reduced motion: keep the signal, drop the blinking — a solid ring in the same
-       colour, which is still the loudest thing in the strip. */
-    @media (prefers-reduced-motion: reduce) {
-      .tab.alert {
-        animation: none;
-        border-color: var(--flash);
-        box-shadow: 0 0 0 2px var(--flash);
-      }
-    }
+    .oflow:hover { border-color: #4a9eff; color: #fff; }
+    .oflow svg { display: block; }
+    .oflow .n { font-weight: 600; letter-spacing: 0.02em; }
 
     .tab {
       display: inline-flex;
@@ -636,7 +668,7 @@ class WebtmuxToolbar extends LitElement {
       color: #6b7690; font-size: 11px; padding: 2px 2px 0;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-  `, TIP_CSS];
+  `, ALERT_CSS, TIP_CSS];
 
   constructor() {
     super();
@@ -678,6 +710,7 @@ class WebtmuxToolbar extends LitElement {
     this.dragKey = '';
     this.dropIndex = -1;
     this.activity = 0;
+    this.overflowAlerts = [];
   }
 
   // Pull the recents label-shape prefs out of the shared store (they ride @wt_state,
@@ -957,19 +990,35 @@ class WebtmuxToolbar extends LitElement {
     `;
   }
 
-  // Flash classes for an unacknowledged drop out of green (entry.alert holds the
-  // value it dropped to; see SplitManager._markWorkAlerts). Reuses workClass so
-  // the flash colour can never drift from the dot's.
-  _alertClass(alert) {
-    return alert ? `alert alert-${workClass(alert)}` : '';
-  }
-
-  // The line the tooltip adds while a tab is flashing — it has to answer both
-  // "why is this blinking" and "how do I make it stop".
-  _alertTip(alert) {
-    if (!alert) return '';
-    const what = alert === '2' ? 'is prompting you' : 'ran out of work';
-    return `\n● It ${what} since you last looked — flashes until you switch to it`;
+  // The overflow arrow at the end of the strip: N windows need you and none of them
+  // has a tab here. Clicking it opens the window list and points the browse at the
+  // most recent one — see SplitManager.revealOverflowAlert.
+  _overflowArrow() {
+    const list = this.overflowAlerts || [];
+    if (!list.length) return '';
+    const top = list[0];
+    // Loudest of the pending alerts wins the colour: amber (something is BLOCKED on
+    // you) outranks red (something merely ran out of work), because one of them is a
+    // request and the other is a report.
+    const worst = list.some((w) => w.alert === '2') ? '2' : '0';
+    const names = list.slice(0, 5)
+      .map((w) => `  ● ${w.session}${w.index == null ? '' : ' — window ' + w.index}: ${w.name}`)
+      .join('\n');
+    const more = list.length > 5 ? `\n  …and ${list.length - 5} more` : '';
+    const tip = `${list.length} window${list.length === 1 ? '' : 's'} need${list.length === 1 ? 's' : ''}`
+      + ` attention and ${list.length === 1 ? 'has' : 'have'} no tab here:\n${names}${more}`
+      + `\n\nClick to open the window list (${chord('W')}) and preview the most recent`
+      + ` — ${top.session}: ${top.name}. Nothing switches until you press Enter or click it;`
+      + ` Escape puts everything back.`;
+    return html`
+      <button
+        class="oflow ${alertClass(worst)}"
+        aria-label="${list.length} more windows need attention"
+        @mouseenter=${(e) => this._tipEnter(e, tip)}
+        @mouseleave=${() => this._tipLeave()}
+        @click=${() => { this._tipLeave(); this.manager?.revealOverflowAlert(); }}
+      ><span class="n">${list.length}</span>${overflowIcon()}</button>
+    `;
   }
 
   render() {
@@ -1025,7 +1074,7 @@ class WebtmuxToolbar extends LitElement {
           const tip = (w.disabled
             ? `${full}\nAlready open in another region — click to jump there · drag to reorder`
             : `${full}\nHover to preview it in a terminal region · click to switch there · drag to reorder`)
-            + this._alertTip(w.alert);
+            + alertTip(w.alert);
           const last = i === this.recent.length - 1;
           return html`
           <span
@@ -1042,7 +1091,7 @@ class WebtmuxToolbar extends LitElement {
             @mouseenter=${(e) => { e.stopPropagation(); this._tipEnter(e, workTip(w.working)); }}
             @mouseleave=${(e) => { e.stopPropagation(); this._tipEnter({ currentTarget: e.currentTarget.closest('.rtab') }, tip); }}
           ></span><button
-            class="tab ${w.active ? 'active' : ''} ${w.disabled ? 'disabled' : ''} ${!w.active && this.previewWindow === w.id ? 'previewing' : ''} ${this._alertClass(w.alert)}"
+            class="tab ${w.active ? 'active' : ''} ${w.disabled ? 'disabled' : ''} ${!w.active && this.previewWindow === w.id ? 'previewing' : ''} ${alertClass(w.alert)}"
             aria-label=${full}
             @click=${() => { this._tipLeave(); this.manager?.pickRecentWindow(w); }}
           ><span class="sess">${w.index}</span><span class="wname">${this._tabLabel(w)}</span><span
@@ -1054,6 +1103,7 @@ class WebtmuxToolbar extends LitElement {
             >×</span></button></span>
         `;})}
       </div>
+      ${this._overflowArrow()}
       <div class="wt-tip"></div>
       <span class="tsep"></span>
       <button

@@ -39,11 +39,37 @@ type Layout struct {
 	// have no status. Recent-tab dots read from this so each window's light reflects
 	// its OWN @wt_working regardless of which session is currently focused.
 	AllWorking map[string]string `json:"allWorking,omitempty"`
+	// AllWindows is the server-wide window DIRECTORY: one entry per (session, window)
+	// placement, from the same `list-windows -a` that fills AllWorking. AllWorking
+	// answers "what is that window doing" but is keyed by window id alone, so a
+	// window outside every attached session could be known to be waiting and still be
+	// unreachable — the UI had no session to switch to, no name to show and no index
+	// to label it with. The attention arrow at the end of the recents strip navigates
+	// to exactly those windows, so it needs the placement, not just the light.
+	//
+	// Ephemeral web-* grouped split shadows are omitted: they mirror their base
+	// session's window list, so including them would double every window in a split.
+	AllWindows []WindowRef `json:"allWindows,omitempty"`
 	// State is the opaque UI visual-state blob stored in the tmux SERVER-global user
 	// option @wt_state (written via TmuxSetState). It rides every layout push so any
 	// client that attaches — even after a webtmux server/client restart — converges
 	// on the same shared visual state. Unset / empty / non-JSON => omitted.
 	State json.RawMessage `json:"state,omitempty"`
+}
+
+// WindowRef is one (session, window) placement in Layout.AllWindows — enough to
+// name a window, label it, and navigate to it, for windows that no attached region
+// currently lists. Deliberately NOT a full Window: it carries no panes, because the
+// directory covers every window on the server and running list-panes over all of
+// them on every 500ms refresh would be a real cost for data nothing reads.
+type WindowRef struct {
+	ID      string `json:"id"`
+	Session string `json:"session"`
+	Index   int    `json:"index"`
+	Name    string `json:"name"`
+	// Working is the same @wt_working value as AllWorking[ID] — carried here too so
+	// a consumer walking the directory doesn't have to join two structures.
+	Working string `json:"working"`
 }
 
 // Window represents a tmux window

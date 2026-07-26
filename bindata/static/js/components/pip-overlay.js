@@ -27,6 +27,8 @@ import { CaptureCache, placementKey } from '../capture-cache.js';
 import { chord } from '../os.js';
 import { stateStore } from '../state-store.js';
 import { workClass, workLabel, workTip } from '../stoplight.js';
+import { ALERT_CSS, alertClass, alertTip } from '../alert-flash.js';
+import { alertOf } from '../work-alerts.js';
 
 const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css';
 const CORNERS = ['tl', 'tr', 'bl', 'br'];
@@ -61,7 +63,7 @@ class WebtmuxPip extends LitElement {
     _focusedWinId: { state: true }, // window id the FOCUSED terminal is showing (self-preview suppression)
   };
 
-  static styles = css`
+  static styles = [css`
     :host { display: none; }
     :host([mode='single']), :host([mode='bar']) { display: block; }
 
@@ -306,7 +308,13 @@ class WebtmuxPip extends LitElement {
     .bbtn.active { border-color: #37d17a; color: #37d17a; }
     .bbtn.hide { border-color: rgba(233, 69, 96, 0.5); color: #f3a7b4; }
     .bbtn.hide:hover { background: #e94560; color: #fff; border-color: #e94560; }
-  `;
+
+    /* ATTENTION FLASH on a thumbnail: the RING variant from alert-flash.js, drawn
+       inset on the tile. A thumbnail is there to be read, so it is the one surface
+       that must not fill with the alert colour — that would hide the very screen the
+       flash is telling you to go and look at. Inset so the tile's own overflow can't
+       clip it and its size never changes mid-pulse. */
+  `, ALERT_CSS];
 
   constructor() {
     super();
@@ -337,6 +345,12 @@ class WebtmuxPip extends LitElement {
     // Per-window @wt_working, pushed by the SplitManager (the same map the recents
     // strip reads) so each tile can show its stoplight.
     this._working = new Map();
+    // Per-window attention flash, from the same shared registry the recents strip and
+    // the sidebar read (a WorkAlerts.snapshot()). A tile in the preview is often the
+    // ONLY place a window is visible at all, so a window that stops while it is sitting
+    // in the bar has to say so on the tile itself — otherwise the preview is the one
+    // surface showing you the window and staying silent about it.
+    this._alerts = null;
     // Repaint only the tiles whose captures actually arrived.
     this._onCacheUpdate = (e) => {
       const caps = (e && e.detail && e.detail.captures) || [];
@@ -366,6 +380,14 @@ class WebtmuxPip extends LitElement {
   get count() { return this._wins.length; }
   get hidden() { return this._hidden; }
   hasWindow(id) { return this._has(id); }
+  // The windows the preview is currently SHOWING. The SplitManager treats these as
+  // covered when deciding what the strip's overflow arrow still has to announce — a
+  // tile flashing in the bar has already done the arrow's job for that window.
+  //
+  // Empty while the preview is tucked away: a hidden tile flashes at nobody, and
+  // counting it would let the arrow go quiet about a window that has no visible
+  // surface anywhere — the exact failure the arrow exists to prevent.
+  windowIds() { return this._hidden ? [] : this._wins.map((w) => w.windowId); }
   _has(id) { return this._wins.some((w) => w.windowId === id); }
 
   // Is this window CURRENTLY drawn on screen in the preview (corner box or bar)?
@@ -554,8 +576,15 @@ class WebtmuxPip extends LitElement {
       if (!el) el = this._buildTile(w);
       if (host.children[i] !== el) host.insertBefore(el, host.children[i] || null);
     });
-    // Paint whatever's cached now.
-    for (const w of this._wins) this._paint(w.windowId);
+    // Paint whatever's cached now — screen, stoplight and flash. The status pass has
+    // to run here and not only from setWorking/setAlerts: those only fire when the
+    // VALUE changes, so a tile rebuilt while nothing was moving (re-showing the
+    // preview, reordering the set) would come back with a blank dot and no ring on a
+    // window that has been asking for attention the whole time.
+    for (const w of this._wins) {
+      this._paint(w.windowId);
+      this._paintWork(w.windowId);
+    }
   }
 
   _buildTile(w) {
@@ -760,6 +789,19 @@ class WebtmuxPip extends LitElement {
     for (const w of this._wins) this._paintWork(w.windowId);
   }
 
+  // Per-window attention flashes, pushed on the same refresh as setWorking. Cheap
+  // change detection for the same reason: this runs on the 500ms poll, and rewriting
+  // class lists every tick would restart the CSS animation twice a second, leaving
+  // every tile stuck on the first frame of a pulse that never visibly moves.
+  setAlerts(snapshot) {
+    if (!snapshot) return;
+    const changed = !this._alerts || snapshot.size !== this._alerts.size
+      || [...snapshot].some(([k, v]) => this._alerts.get(k) !== v);
+    if (!changed) return;
+    this._alerts = new Map(snapshot);
+    for (const w of this._wins) this._paintWork(w.windowId);
+  }
+
   _paintWork(id) {
     const tile = this._tileEl(id);
     const dot = tile?.querySelector('.pwork');
@@ -770,6 +812,7 @@ class WebtmuxPip extends LitElement {
     dot.classList.toggle('off', cls === 'off');
     dot.classList.toggle('wait', cls === 'wait');
     dot.setAttribute('aria-label', workLabel(v));
+    this._paintAlert(id, tile);
     // The colour key belongs on the FRAME, not on the dot itself. The dot is
     // deliberately pointer-events:none — it shares the tile's top-right corner with
     // the hover-revealed × (and, in single mode, the move-to-corner button), so
@@ -777,7 +820,27 @@ class WebtmuxPip extends LitElement {
     // pointer through, hovering the dot IS hovering the frame, so the frame's
     // tooltip is what a user pointing at the dot actually reads.
     const frame = tile.querySelector('.pframe');
-    if (frame) frame.title = `${FRAME_TIP}\n\n${workTip(v)}`;
+    if (frame) frame.title = `${FRAME_TIP}\n\n${workTip(v)}${alertTip(this._alertFor(id))}`;
+  }
+
+  // This window's flash, keyed by the session the tile was ADDED from (a linked
+  // window's tile is anchored to one placement — see _paint's label refresh).
+  _alertFor(id) {
+    const win = this._wins.find((w) => w.windowId === id);
+    return alertOf(this._alerts, win?.session || '', id);
+  }
+
+  // Put the ring flash on (or take it off) a tile. Applied to the TILE rather than
+  // the frame so it rings the label too — in bar mode the label is what tells you
+  // WHICH window is asking, and a ring that stops short of it reads as decoration on
+  // a screenshot rather than a flag on a window.
+  _paintAlert(id, tile) {
+    const el = tile || this._tileEl(id);
+    if (!el) return;
+    const want = alertClass(this._alertFor(id), 'ring').split(' ').filter(Boolean);
+    for (const c of ['wt-alert-ring', 'wt-alert-off', 'wt-alert-wait']) {
+      el.classList.toggle(c, want.includes(c));
+    }
   }
 
   _ensurePolling() {

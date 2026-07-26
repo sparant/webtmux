@@ -151,6 +151,37 @@ saving a text file needs. Four environment variables adjust the resolution:
 | `WEBTMUX_HOME` | What `~` expands to. Unset inside a container, `~` is refused rather than expanded to the image's own home |
 | `WEBTMUX_IN_CONTAINER` | `1`/`0` to override container auto-detection, which only affects the *wording* of the explanation |
 
+### Knowing which window needs you
+
+A window can report what it is doing by setting a tmux option on itself:
+
+```sh
+tmux set -w @wt_working 1     # green  — working
+tmux set -w @wt_working 2     # amber  — prompting: blocked until you answer
+tmux set -w @wt_working 0     # red    — waiting for work to do
+tmux set -w -u @wt_working    # unfilled — not reporting
+```
+
+Anything running in the window can do this — a shell prompt hook, an agent's
+start/stop hooks, a script wrapping a long build. webtmux shows it as a stoplight
+dot everywhere a window appears: the recent tabs, the sidebar's window list, the
+preview thumbnails, Exposé.
+
+The dot tells you the state; the **flash** tells you it *changed*. When a window
+drops out of green while you are looking somewhere else, everything showing that
+window starts flashing in the colour it changed to — the tab, the sidebar row, the
+preview tile's border — and keeps flashing until you go and look at it. There is
+no expiry: a signal that gives up after thirty seconds is the one you miss when
+you step away.
+
+Five recent tabs cannot hold every window that stops, so the strip ends in an
+**attention arrow** (→) whenever a window needs you and has no tab, no preview
+tile and no region of its own. It carries the count and flashes like the tabs do,
+and clicking it opens the window list on the most recent of them, previewed in a
+terminal region. Nothing switches until you press Enter or click the row; Escape
+puts everything back. Between the flashes and the arrow, "nothing is blinking"
+means "nothing needs you" — which is what makes any of it worth watching.
+
 ## Architecture
 
 ```

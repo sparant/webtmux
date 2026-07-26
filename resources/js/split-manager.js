@@ -27,7 +27,7 @@
 import { TerminalUnit, MSG } from './terminal-unit.js';
 import { CaptureCache } from './capture-cache.js';
 import { HoverPreview } from './hover-preview.js';
-import { WorkAlerts } from './work-alerts.js';
+import { WorkAlerts, hiddenAlerts, alertOf } from './work-alerts.js';
 import { MAX_RECENTS, RecentsPersistence } from './recents-strip.js';
 import { readSplitState } from './split-state.js';
 import { saveOkText } from './save-target.js';
@@ -99,9 +99,19 @@ export class SplitManager {
     // Same no-write-before-first-read rule for the 'split' section; set true once
     // _restoreSplitState has read the blob.
     this._splitRestored = false;
-    // Which recent tabs are flashing for attention because their stoplight dropped
-    // out of green while you were looking elsewhere (see work-alerts.js).
+    // Which WINDOWS — every window on the server, not just the five in the strip —
+    // are flashing for attention because their stoplight dropped out of green while
+    // you were looking elsewhere (see work-alerts.js). Every surface that can show a
+    // window reads its flash from this one registry.
     this.workAlerts = new WorkAlerts();
+    // Every (session, window) placement on the server, marked with its alert — the
+    // universe the registry was last run over, kept so the overflow arrow can be
+    // recomputed (and survive a push that arrived without a directory).
+    this._placements = [];
+    // The flashing windows with nowhere to show themselves: not in the strip, not in
+    // the preview, not on screen in any region. The strip's overflow arrow renders
+    // them, and its click target is the first of them. Most recent first.
+    this.overflowAlerts = [];
     this.toolbar = document.createElement('webtmux-toolbar');
     this.toolbar.manager = this;
     this.container.parentNode.insertBefore(this.toolbar, this.container);
@@ -815,6 +825,10 @@ export class SplitManager {
       const aw = u.layout?.allWorking;
       if (aw) for (const id in aw) if (!workingById.has(id)) workingById.set(id, aw[id]);
     }
+    // Raise/clear the attention flashes across the WHOLE server before anything is
+    // rendered, so every surface below reads one settled answer.
+    this._placements = this._markWorkAlerts(workingById);
+    const alerts = this.workAlerts.snapshot();
     // Windows shown by OTHER panes are not selectable here (they'd put two panes on
     // one window) — greyed out, like the sidebar. One shared source: occupiedWindowIds.
     const occupied = this.occupiedWindowIds(focused);
@@ -840,12 +854,13 @@ export class SplitManager {
         // (red), "" unset (unfilled dot). Prefer the global map (correct across sessions)
         // and fall back to the focused region's per-session copy only if absent.
         working: workingById.has(e.id) ? workingById.get(e.id) : (live?.working || ''),
+        // Flash this tab if its window dropped out of green behind your back. Read
+        // from the server-wide registry rather than computed here, so a tab that gets
+        // evicted and later returns shows the same alert the sidebar and the preview
+        // have been showing for it all along.
+        alert: alertOf(alerts, e.session, e.id),
       };
     });
-    // Flash the tabs whose stoplight dropped out of green behind your back. Runs on
-    // the SAME entries the toolbar is about to render, so what raises an alert is
-    // exactly the dot the user would have had to notice.
-    this.workAlerts.mark(this.toolbar.recent);
     // Persist AFTER the loop above refreshed each entry's name/index from the live
     // layouts, so a tmux rename is durable too (and after the prune, so a deleted
     // window doesn't come back on the next reload). Signature-guarded — see
@@ -860,6 +875,13 @@ export class SplitManager {
     // never say different things in two places.
     this.pip?.setWorking(workingById);
     this.expose?.setWorking(workingById);
+    // …and the same for the attention flashes: the sidebar's window rows and the
+    // preview's thumbnails flash for exactly the windows the strip's tabs do. Between
+    // them and the overflow arrow below, EVERY window that needs you is announced
+    // somewhere, which is the whole point — five tabs could never promise that.
+    if (this.sidebar) this.sidebar.alerts = alerts;
+    this.pip?.setAlerts(alerts);
+    this._refreshOverflowAlerts();
     this.toolbar.previewWindow = this.hover?.windowId || '';
     // Preview button state: how many windows are queued, whether it's hidden, and
     // whether the FOCUSED pane's current window is one of them (so the add/remove
@@ -871,6 +893,85 @@ export class SplitManager {
     // of that very window blanks itself (it'd only duplicate what's already on
     // screen). Reappears the instant the focused pane moves to another window.
     this.pip?.setFocusedWindow(activeId);
+  }
+
+  // ---- attention flashes -------------------------------------------------------
+
+  // Run the alert state machine over EVERY (session, window) placement on the tmux
+  // server and return the marked list.
+  //
+  // The universe is `layout.allWindows` — the server-wide directory that rides every
+  // layout push (see pkg/tmux/types.go). It has to be the whole server, not the
+  // strip: an alert that is only computed for windows the strip happens to be holding
+  // is an alert you can only get for windows you were already watching, which is
+  // precisely backwards.
+  //
+  // ACKNOWLEDGEMENT (`active`) is "some region is displaying this placement" — the
+  // flash asks you to go and look at the window, and having it on screen IS having
+  // looked. Scoped per PLACEMENT, not per window: a linked window watched through
+  // session A says nothing about the tab you keep for it in session B, matching how
+  // the strip has always treated the two as separate tabs.
+  _markWorkAlerts(workingById) {
+    const shown = new Set();
+    for (const u of this.units) {
+      const id = u.layout?.activeWindowId;
+      if (id) shown.add(WorkAlerts.keyOf(this.logicalSession(u), id));
+    }
+    const placements = [];
+    const seen = new Set();
+    for (const u of this.units) {
+      for (const w of (u.layout?.allWindows || [])) {
+        const key = WorkAlerts.keyOf(w.session, w.id);
+        if (seen.has(key)) continue;       // every region carries the same directory
+        seen.add(key);
+        placements.push({
+          id: w.id,
+          session: w.session || '',
+          index: w.index,
+          name: w.name || 'bash',
+          // The directory's own copy can be a refresh behind the map the dots read;
+          // prefer the map so a flash can never disagree with the dot beside it.
+          working: workingById.has(w.id) ? workingById.get(w.id) : (w.working || ''),
+          active: shown.has(key),
+        });
+      }
+    }
+    // No directory yet (first paint, or a tmux error swallowed the listing): leave the
+    // registry ALONE. Marking an empty universe would evict every live alert as
+    // "gone", and the windows would then have to drop out of green a second time
+    // before anyone heard about it again.
+    if (!placements.length) return this._placements || [];
+    return this.workAlerts.mark(placements);
+  }
+
+  // Recompute the strip's overflow arrow: the flashing windows that have no surface
+  // of their own. A window is COVERED when it has a recents tab, sits in the preview,
+  // or is on screen in a region — in each case something else is already flashing (or
+  // simply visible) on its behalf.
+  _refreshOverflowAlerts() {
+    const covered = new Set();
+    for (const e of (this.toolbar?.recent || [])) covered.add(e.id);
+    for (const id of (this.pip?.windowIds?.() || [])) covered.add(id);
+    for (const u of this.units) {
+      const id = u.layout?.activeWindowId;
+      if (id) covered.add(id);
+    }
+    this.overflowAlerts = hiddenAlerts(this._placements || [], covered);
+    if (this.toolbar) this.toolbar.overflowAlerts = this.overflowAlerts;
+  }
+
+  // Click on the strip's overflow arrow: go and find the window it is flashing about.
+  //
+  // It deliberately does NOT switch to that window. It reuses the browse the whole app
+  // already speaks — open the window list, PREVIEW the target in a region, leave the
+  // commit to the user (Enter, or a click) — because the arrow's own claim is only
+  // "something over here changed", and an arrow that hijacked your focused region to
+  // prove it would be worse than the problem it solves. Escape restores exactly what
+  // was on screen, like every other browse.
+  revealOverflowAlert() {
+    const target = this.overflowAlerts[0];   // most recently raised
+    if (!target || !this.sidebar) return;
+    this.sidebar.revealWindow(target.id, target.session);
   }
 
   // Navigate to a window from ANY switcher (toolbar recent-strip, Exposé tile):
