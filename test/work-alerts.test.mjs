@@ -1,5 +1,6 @@
-// Unit tests for WorkAlerts — the "which recent tab should be flashing" state
-// machine. Run with:
+// Unit tests for WorkAlerts — the "which windows should be flashing" state machine —
+// and for hiddenAlerts, which decides what is left for the recents strip's overflow
+// arrow to announce. Run with:
 //
 //     node --test test/
 //
@@ -12,7 +13,7 @@
 // that silently stops firing is the failure you'd never notice.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { WorkAlerts } from '../resources/js/work-alerts.js';
+import { WorkAlerts, hiddenAlerts, alertOf } from '../resources/js/work-alerts.js';
 
 // One recents strip entry, shaped like the ones SplitManager._refreshToolbar builds.
 const tab = (id, working, extra = {}) => ({
@@ -113,4 +114,99 @@ test('a tab leaving the strip forgets its state, so re-entering does not re-flas
   run(a, [tab('@9', '1')]);                          // @1 evicted / ×'d
   const back = run(a, [tab('@1', '0')]);             // it comes back, still red
   assert.equal(back[0].alert, '', 'no stale prior-green, so no phantom transition');
+});
+
+// --- ordering: which alert is the MOST RECENT --------------------------------
+// The overflow arrow takes you to one window out of several, and it has to be the
+// latest — "some window somewhere stopped" is not a thing anyone can act on. Ordering
+// is the only part of this module a user can see directly, via where the arrow lands.
+
+test('alertSeq ranks alerts by when they were raised', () => {
+  const a = new WorkAlerts();
+  run(a, [tab('@1', '1'), tab('@2', '1'), tab('@3', '1')]);
+  run(a, [tab('@1', '0'), tab('@2', '1'), tab('@3', '1')]);   // @1 stops first
+  const out = run(a, [tab('@1', '0'), tab('@2', '1'), tab('@3', '0')]); // then @3
+  assert.ok(out[2].alertSeq > out[0].alertSeq, '@3 stopped later, so it ranks first');
+  assert.equal(out[1].alertSeq, 0, 'a quiet window carries no rank');
+});
+
+test('a quiet poll does not restamp an existing alert', () => {
+  // Otherwise "most recent" would decay into "whichever window the 500ms loop touched
+  // last", and the arrow would wander between windows that changed minutes apart.
+  const a = new WorkAlerts();
+  run(a, [tab('@1', '1'), tab('@2', '1')]);
+  const first = run(a, [tab('@1', '0'), tab('@2', '1')])[0].alertSeq;
+  run(a, [tab('@1', '1'), tab('@2', '0')]);   // @1 recovers, @2 stops (now the latest)
+  const later = run(a, [tab('@1', '0'), tab('@2', '0')]);
+  assert.ok(later[0].alertSeq > later[1].alertSeq, '@1 stopping again is the newer news');
+  assert.notEqual(later[0].alertSeq, first, 'a fresh transition earns a fresh rank');
+});
+
+test('a re-colour counts as fresh news', () => {
+  // red -> amber is "and now it wants you" — a stronger claim than the one before it,
+  // so it must be able to overtake alerts raised after the original red.
+  const a = new WorkAlerts();
+  run(a, [tab('@1', '1'), tab('@2', '1')]);
+  run(a, [tab('@1', '0'), tab('@2', '1')]);   // @1 red
+  run(a, [tab('@1', '0'), tab('@2', '0')]);   // @2 red, later
+  const out = run(a, [tab('@1', '2'), tab('@2', '0')]);   // @1 now PROMPTING
+  assert.ok(out[0].alertSeq > out[1].alertSeq, 'the escalation outranks the older red');
+});
+
+// --- the snapshot the surfaces read ------------------------------------------
+
+test('the snapshot answers per placement, and falls back to the window', () => {
+  const a = new WorkAlerts();
+  run(a,
+    [tab('@1', '1', { session: 'services' })],
+    [tab('@1', '0', { session: 'services' })],
+  );
+  const snap = a.snapshot();
+  assert.equal(alertOf(snap, 'services', '@1'), '0', 'the placement that flashed');
+  assert.equal(alertOf(snap, '', '@1'), '0', 'a surface with no session still sees it');
+  assert.equal(alertOf(snap, 'editors', '@1'), '0',
+    'a stale session label falls back to the window rather than going quiet');
+  assert.equal(alertOf(snap, 'services', '@9'), '', 'an unknown window is quiet');
+  assert.equal(alertOf(null, 'services', '@1'), '', 'no snapshot yet is quiet, not a crash');
+});
+
+test('a fresh snapshot is handed out each time', () => {
+  // lit re-renders on identity, so a reused map would freeze every row on whatever it
+  // showed when the sidebar first painted.
+  const a = new WorkAlerts();
+  run(a, [tab('@1', '1')], [tab('@1', '0')]);
+  assert.notEqual(a.snapshot(), a.snapshot());
+});
+
+// --- hiddenAlerts: what the overflow arrow still has to say -------------------
+
+test('hiddenAlerts drops the windows some surface is already showing', () => {
+  const a = new WorkAlerts();
+  run(a, [tab('@1', '1'), tab('@2', '1'), tab('@3', '1')]);
+  const marked = run(a, [tab('@1', '0'), tab('@2', '0'), tab('@3', '1')]);
+  // @1 has a tab in the strip; @3 never stopped.
+  const out = hiddenAlerts(marked, new Set(['@1']));
+  assert.deepEqual(out.map((w) => w.id), ['@2']);
+});
+
+test('hiddenAlerts returns the most recent first', () => {
+  const a = new WorkAlerts();
+  run(a, [tab('@1', '1'), tab('@2', '1')]);
+  run(a, [tab('@1', '0'), tab('@2', '1')]);
+  const marked = run(a, [tab('@1', '0'), tab('@2', '2')]);
+  assert.deepEqual(hiddenAlerts(marked, []).map((w) => w.id), ['@2', '@1'],
+    'the arrow lands on the latest, so it has to sort first');
+});
+
+test('one covered placement covers the window in every session', () => {
+  // A linked window flashing in the strip under services is already drawing the eye;
+  // announcing the editors placement too would inflate the arrow with the same news.
+  const a = new WorkAlerts();
+  const strip = (working) => [
+    tab('@1', working, { session: 'services' }),
+    tab('@1', working, { session: 'editors' }),
+  ];
+  run(a, strip('1'));
+  const marked = run(a, strip('0'));
+  assert.equal(hiddenAlerts(marked, new Set(['@1'])).length, 0);
 });

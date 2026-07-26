@@ -5,7 +5,15 @@ import { matchesWords, appendChar } from '../search.js';
 import { stateStore } from '../state-store.js';
 import { clientStore } from '../client-store.js';
 import { workClass, workLabel, workTip } from '../stoplight.js';
+import { ALERT_CSS, alertClass, alertTip } from '../alert-flash.js';
+import { alertOf } from '../work-alerts.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
+
+// How many renders revealWindow's "scroll this row into view" waits for its row to
+// appear. A cross-session reveal needs the new session's window list to arrive, which
+// is a layout push or two (~500ms each) — this is generous enough to cover a slow one
+// and short enough that a target which never arrives is forgotten, not remembered.
+const REVEAL_TRIES = 20;
 
 class WebtmuxSidebar extends LitElement {
   static properties = {
@@ -41,6 +49,13 @@ class WebtmuxSidebar extends LitElement {
     // pointer or the arrow keys — moves THIS, not activeWindow: nothing is committed
     // until you click or press Enter. Set by the SplitManager.
     previewWindow: { type: String },
+    // Attention flashes, as a WorkAlerts.snapshot() (see work-alerts.js): the windows
+    // whose stoplight dropped out of green while you were looking elsewhere. Rows
+    // flash for exactly the windows the recents tabs and the preview tiles flash for
+    // — and this list is where the strip's overflow arrow sends you, so the window it
+    // was flashing about has to be findable here the moment you arrive. Replaced
+    // wholesale on every refresh (lit re-renders on identity), never mutated.
+    alerts: { type: Object },
   };
 
   // TIP_CSS is appended so the stoplight hint here is the same hint, after the
@@ -235,6 +250,10 @@ class WebtmuxSidebar extends LitElement {
       color: #fff;
     }
 
+    /* The attention flash (.wt-alert…) is spliced in from alert-flash.js, so a row
+       here blinks in the same colours, at the same rate, as the tab in the recents
+       strip for the very same window. */
+
     /* Shown in another split pane -> not selectable from here. */
     .window-tab.disabled {
       opacity: 0.35;
@@ -367,7 +386,7 @@ class WebtmuxSidebar extends LitElement {
     }
     .session-tab.sdrop-before::before { left: -3px; }
     .session-tab.sdrop-after::after { right: -3px; }
-  `, TIP_CSS];
+  `, ALERT_CSS, TIP_CSS];
 
   constructor() {
     super();
@@ -414,6 +433,9 @@ class WebtmuxSidebar extends LitElement {
     // Windows shown by other split regions (disabled here). SplitManager updates it.
     this.disabledWindows = [];
     this.previewWindow = '';
+    this.alerts = null;      // WorkAlerts.snapshot(), pushed by the SplitManager
+    this._revealRow = '';    // pending revealWindow() scroll target
+    this._revealTries = 0;   // renders left to find it in before giving up
 
     // The TerminalUnit that owns this sidebar sets `this.unit = <unit>` when it
     // binds, and pushes layout/activePane/activeWindow onto us directly (scoped —
@@ -422,6 +444,9 @@ class WebtmuxSidebar extends LitElement {
   }
 
   updated(changedProperties) {
+    // A pending "scroll to this row" from revealWindow, re-tried until the row shows
+    // up (a cross-session reveal waits for the new session's window list to arrive).
+    if (this._revealRow) this._scrollRevealIntoView();
     if (changedProperties.has('collapsed')) {
       if (this.collapsed) {
         this.classList.add('collapsed');
@@ -651,7 +676,8 @@ class WebtmuxSidebar extends LitElement {
               : html`
             <button
               data-widx=${i}
-              class="window-tab ${win.id === this.activeWindow ? 'active' : ''} ${this._windowDisabled(win.id) ? 'disabled' : ''} ${win.id === this.draggingWindow ? 'dragging' : ''} ${this.draggingWindow && this.dropIndex === i ? 'drop-before' : ''} ${win.id !== this.activeWindow && win.id === this.previewWindow ? 'previewing' : ''}"
+              data-win=${win.id}
+              class="window-tab ${win.id === this.activeWindow ? 'active' : ''} ${this._windowDisabled(win.id) ? 'disabled' : ''} ${win.id === this.draggingWindow ? 'dragging' : ''} ${this.draggingWindow && this.dropIndex === i ? 'drop-before' : ''} ${win.id !== this.activeWindow && win.id === this.previewWindow ? 'previewing' : ''} ${alertClass(this._alert(win))}"
               draggable="true"
               @mouseenter=${() => this.previewWindowRow(win.id)}
               @mouseleave=${() => this.endPreview()}
@@ -659,7 +685,7 @@ class WebtmuxSidebar extends LitElement {
               @dblclick=${() => this.startRename(win.id)}
               @dragstart=${(e) => this.onDragStart(e, win.id)}
               @dragend=${() => this.onDragEnd()}
-              title=${this._windowDisabled(win.id) ? 'Shown in another split pane' : 'Hover to preview · click to switch · double-click to rename · drag between rows to reorder, or onto a session to link'}
+              title=${(this._windowDisabled(win.id) ? 'Shown in another split pane' : 'Hover to preview · click to switch · double-click to rename · drag between rows to reorder, or onto a session to link') + alertTip(this._alert(win))}
             >
               ${win.index}: ${win.name || 'bash'}<span
                 class="kill"
@@ -1001,6 +1027,13 @@ class WebtmuxSidebar extends LitElement {
     return (win && win.working) || '';
   }
 
+  // A window's attention flash ('' | '0' | '2'), from the shared registry. Keyed by
+  // (this panel's session, window) so a linked window is acknowledged per placement,
+  // exactly as its recents tabs are.
+  _alert(win) {
+    return alertOf(this.alerts, this._ownSession(), win?.id);
+  }
+
   // Step delta windows from the active one (wrapping), by the sidebar's own window
   // order, SKIPPING windows shown in another split pane, and select it. Refocus
   // the panel afterwards: selecting a window re-renders the tabs, which would
@@ -1106,6 +1139,61 @@ class WebtmuxSidebar extends LitElement {
     const mgr = this.unit?.manager;
     if (mgr) mgr.hover.commit(windowId, this._ownSession());
     else this.unit?.selectWindow(windowId);       // no manager (shouldn't happen) — direct
+  }
+
+  // Open the panel ON a specific window and point the browse at it — the landing for
+  // the recents strip's overflow arrow (SplitManager.revealOverflowAlert).
+  //
+  // Everything here is the browse the panel already does when you arrow onto a row:
+  // the window is PREVIEWED, not switched to. Enter (or clicking the row, or clicking
+  // into the terminal) commits it; Escape restores the baseline the panel captured on
+  // the way open. That is the whole reason the arrow reuses this path rather than
+  // navigating — you asked to see what changed, not to leave what you were doing.
+  //
+  // A target in ANOTHER session needs the panel pointed there first, or the row it is
+  // meant to land on simply isn't in the list. A session switch is real (unlike the
+  // window preview, which never touches tmux), so it is flagged NOT to count as an
+  // access — otherwise merely looking at what an arrow was flashing about would
+  // rewrite the recents strip — and Escape walks it back via the baseline.
+  revealWindow(windowId, session = '') {
+    if (!windowId) return;
+    // Open FIRST: the collapsed -> open transition is what captures the baseline, and
+    // it has to capture where you actually were, not where the session hop below has
+    // already taken us. (Already open = the baseline from when you opened it stands.)
+    if (this.collapsed) this.collapsed = false;
+    const target = session || this._ownSession();
+    if (target && target !== this._ownSession() && this.unit) {
+      this.unit._suppressAccessNext = true;
+      this.switchSession(target);
+    }
+    this.unit?.manager?.hover.enter(windowId, target);
+    // The row may not exist yet (a session hop lands a layout or two later), so the
+    // scroll is a standing request the next render fulfils.
+    this._revealRow = windowId;
+    this._revealTries = REVEAL_TRIES;
+    this._scrollRevealIntoView();
+    this.focusPanel();
+  }
+
+  // Bring the row `_revealRow` names into view, once it exists. Re-tried from
+  // updated() because the window list it lives in can arrive several pushes after the
+  // request — a long list would otherwise put the flashing row below the fold, which
+  // is the one place the arrow must never leave you.
+  //
+  // The retry is BOUNDED. A target that never shows up (the window was killed between
+  // the arrow being drawn and being clicked, or a session switch that never lands)
+  // would otherwise leave a standing request that fires the moment some unrelated
+  // future render happens to contain that id — a scroll with no cause, minutes later.
+  _scrollRevealIntoView() {
+    const id = this._revealRow;
+    if (!id) return;
+    if (this.collapsed || --this._revealTries <= 0) { this._revealRow = ''; return; }
+    this.updateComplete.then(() => {
+      const el = this.renderRoot?.querySelector(`.window-tab[data-win="${id}"]`);
+      if (!el || this._revealRow !== id) return;
+      this._revealRow = '';
+      try { el.scrollIntoView({ block: 'nearest' }); } catch (e) { /* cosmetic only */ }
+    });
   }
 
   // Point at a window row: PREVIEW it (see hover-preview.js). Pure browsing —

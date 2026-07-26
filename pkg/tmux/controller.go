@@ -12,6 +12,58 @@ import (
 	"time"
 )
 
+// The server-wide `list-windows -a` behind Layout.AllWorking + Layout.AllWindows.
+//
+// TWO fields here are user-arbitrary — session_name and window_name — and only one
+// can go last, so the more dangerous of the two takes that slot: window names are
+// routinely set by tools ("claude Dominion-wq | review"), session names are typed
+// once by hand. window_name last + SplitN means a '|' in a window name lands
+// harmlessly inside the final field. (Session names carry the same small exposure
+// they already do in capture.go's EnumerateWindows, which lists them mid-line too;
+// tmux sanitizes control bytes in -F output, so a non-printable separator is not an
+// option — see enumSep.)
+const allWindowsSep = "|"
+const allWindowsFields = 5
+
+var allWindowsFormat = strings.Join([]string{
+	"#{window_id}", "#{@wt_working}", "#{session_name}", "#{window_index}", "#{window_name}",
+}, allWindowsSep)
+
+// parseAllWindows turns `list-windows -a -F allWindowsFormat` output into the two
+// server-wide views the UI needs: @wt_working keyed by window id, and the placement
+// directory behind Layout.AllWindows.
+func parseAllWindows(out string) (map[string]string, []WindowRef) {
+	working := make(map[string]string)
+	var refs []WindowRef
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		f := strings.SplitN(line, allWindowsSep, allWindowsFields)
+		if len(f) < allWindowsFields {
+			continue
+		}
+		working[f[0]] = f[1]
+		// A split's ephemeral web-* grouped session mirrors its base session's window
+		// list, so its rows are duplicates of placements already listed under the base
+		// — emitting them would double every window for as long as a split is open.
+		// (The status map above is keyed by window id, so the duplicate rows there are
+		// harmless overwrites of an identical value.)
+		if strings.HasPrefix(f[2], "web-") {
+			continue
+		}
+		idx, _ := strconv.Atoi(f[3])
+		refs = append(refs, WindowRef{
+			ID:      f[0],
+			Working: f[1],
+			Session: f[2],
+			Index:   idx,
+			Name:    f[4],
+		})
+	}
+	return working, refs
+}
+
 // Controller manages tmux interactions for a session
 type Controller struct {
 	sessionName string
@@ -394,24 +446,16 @@ func (c *Controller) RefreshLayout() error {
 		layout.Windows = append(layout.Windows, win)
 	}
 
-	// Global @wt_working across ALL sessions, keyed by window_id. The per-session
-	// Windows list above only covers `sess`, so a window in another session (e.g. a
-	// claude-editors window while this region views services) would carry no status
-	// and its recent-tab dot would go blank/stale as the focus roams between
-	// sessions. One `list-windows -a` makes every window's light foreground-
-	// independent. `|` is a safe delimiter here: both fields are tmux-controlled
-	// (window_id is `@<n>`, @wt_working is ""/"0"/"1").
-	if allOut, err := c.runTmux("list-windows", "-a", "-F", "#{window_id}|#{@wt_working}"); err == nil {
-		working := make(map[string]string)
-		for _, line := range strings.Split(strings.TrimSpace(allOut), "\n") {
-			if line == "" {
-				continue
-			}
-			if id, val, ok := strings.Cut(line, "|"); ok {
-				working[id] = val
-			}
-		}
-		layout.AllWorking = working
+	// Global @wt_working across ALL sessions, keyed by window_id, plus the window
+	// DIRECTORY those ids refer to. The per-session Windows list above only covers
+	// `sess`, so a window in another session (e.g. a claude-editors window while this
+	// region views services) would carry no status and its recent-tab dot would go
+	// blank/stale as the focus roams between sessions. One `list-windows -a` makes
+	// every window's light foreground-independent — and, since the fork is already
+	// happening, carries the session/index/name that make such a window NAVIGABLE
+	// (see Layout.AllWindows).
+	if allOut, err := c.runTmux("list-windows", "-a", "-F", allWindowsFormat); err == nil {
+		layout.AllWorking, layout.AllWindows = parseAllWindows(allOut)
 	}
 
 	// Shared UI visual-state blob (@wt_state SERVER-global option). Rides this push
