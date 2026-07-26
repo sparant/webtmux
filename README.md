@@ -103,6 +103,31 @@ The hooks only activate inside tmux and are idempotent. They paint green when a 
 
 An agent lifecycle integration is then just three writes: `1` when work starts, `2` from a "needs your input" hook, `0` when it goes idle or exits.
 
+**Claude Code** — the recommended preferences: add this `hooks` block to `~/.claude/settings.json` (hooks run in the window's own shell, which inherits `$TMUX`, so a plain `tmux set -w` lands on the right window):
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command",
+      "command": "jq -r '.prompt // \"\"' | grep -q '^/' || tmux set -w @wt_working 1" }] }],
+    "PreToolUse":   [{ "hooks": [{ "type": "command", "command": "tmux set -w @wt_working 1" }] }],
+    "PostToolUse":  [{ "hooks": [{ "type": "command", "command": "tmux set -w @wt_working 1" }] }],
+    "Notification": [{ "hooks": [{ "type": "command",
+      "command": "jq -r '.message // \"\"' | grep -qi 'waiting for your input' || tmux set -w @wt_working 2" }] }],
+    "Stop":         [{ "hooks": [{ "type": "command", "command": "tmux set -w @wt_working 0" }] }],
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "tmux set -w @wt_working 0" }] }],
+    "SessionEnd":   [{ "hooks": [{ "type": "command", "command": "tmux set -w @wt_working 0" }] }]
+  }
+}
+```
+
+Two of the entries are guarded, and the guards matter:
+
+- **UserPromptSubmit skips `/`-prefixed prompts.** Local slash commands (`/model`, `/cost`, …) are handled without a model turn, so no `Stop` ever follows — an unconditional green would latch until the next real turn ends, and the window lies "working" while the agent sits idle. Slash-invoked *skills* do run real turns and re-green via `PreToolUse` a moment later. (A `UserPromptSubmit` hook's stdout is injected into the model's context, so whatever you put here must stay silent — every command above prints nothing.)
+- **Notification stays red on the idle-timer message.** Claude Code fires `Notification` both when it genuinely needs a decision (permission prompt, question — that's amber) and as a ~60s "waiting for your input" idle reminder after a turn ends (nothing is blocked — repainting that amber would flip every idle window to "needs me" a minute after `Stop` correctly made it red). Unmatched messages default to amber deliberately: a missed block is worse than a spurious one.
+
+`SessionStart`/`SessionEnd`/`Stop` all paint red — "waiting for work" — so a window is never stranded green by a crash or exit. The bash prompt hooks above already skip `claude` launches (`__wt_delegates_status`), so the shell and agent hooks compose without fighting. If the agent runs inside a container where `tmux` can't be reached, keep the same hook shape but swap the `tmux set` for a small script that relays the value (and a window id, e.g. from a `WT_WINDOW` env var passed at launch) to a listener on the host that runs the `tmux set` there.
+
 ## Quick Start (Sprite)
 
 Deploy webtmux as a service on [Sprite](https://sprites.app):
