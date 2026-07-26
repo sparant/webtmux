@@ -152,6 +152,10 @@ class WebtmuxPip extends LitElement {
       border-radius: 6px;
       overflow: hidden;
       box-sizing: border-box;
+      /* A preview is a picture of a window and the frame is one button; nothing in
+         it is text you drag across (see .screen-host below). */
+      user-select: none;
+      -webkit-user-select: none;
     }
     /* Single mode: the one tile fills the whole box (no border/radius of its own). */
     :host([mode='single']) .ptile {
@@ -184,7 +188,16 @@ class WebtmuxPip extends LitElement {
        nothing new to see), and popping it back to full size is the only way to read it. */
     :host([mode='single'][mini]) .pframe { height: 54px; }
     :host([mode='single'][mini]:hover) .pframe { height: 216px; transition-delay: 0.35s; }
-    .screen-host { position: absolute; inset: 0; }
+    /* THE PREVIEW IS INERT — the same rule the Exposé tiles follow, for the same
+       reason (see .tile-screen there). The xterm inside a preview is read-only but
+       still a live control: it takes mousedown to focus its hidden textarea and
+       runs its own selection service, so pressing a preview started selecting the
+       snapshot — with the highlight in the wrong place, because the screen is
+       CSS-scaled and xterm's hit-testing knows nothing about that — instead of
+       pressing the tile. Transparent to the pointer, the whole frame is the single
+       click-to-activate target it is documented to be, and the × / stoplight that
+       sit on top of it are unaffected (they are siblings, not children). */
+    .screen-host { position: absolute; inset: 0; pointer-events: none; }
     .screen { position: absolute; top: 0; left: 0; transform-origin: top left; }
 
     /* Dim + tag a preview once its window stops producing captures (closed). */
