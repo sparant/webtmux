@@ -722,7 +722,7 @@ export class SplitManager {
     const p = String(path || '').trim();
     if (!p) return;
     if (this.toolbar) this.toolbar.saveStatus = { state: 'saving', text: 'Saving…' };
-    u.sendSavePaneFile(id, p);
+    u.sendSavePaneFile(id, p, this.saveDir());
   }
 
   // Ask the server where a save for the FOCUSED window would land. Called when the
@@ -733,7 +733,23 @@ export class SplitManager {
     const u = this.focusedUnit;
     const id = u?.layout?.activeWindowId;
     if (!id || !u) return;
-    u.sendSaveInfoRequest(id);
+    u.sendSaveInfoRequest(id, this.saveDir());
+  }
+
+  // The save directory the user named when webtmux had none of its own (a
+  // container that shares no directory with the machine tmux runs on — see
+  // save-target.js). Kept in the SHARED @wt_state rather than per browser: it is a
+  // fact about this deployment ("/workspace is the mounted one"), true for every
+  // client on this tmux server, and worth answering once rather than per browser.
+  saveDir() {
+    return String(stateStore.section('toolbar').saveDir || '');
+  }
+
+  // Remember (or clear) that directory and re-probe, so the dropdown immediately
+  // shows the destination it produces — or the reason it was rejected.
+  setSaveDir(dir) {
+    stateStore.patchSection('toolbar', { saveDir: String(dir || '').trim() });
+    this.requestSaveInfo();
   }
 
   // The server's answer. Held on the toolbar, which renders it as the dropdown's

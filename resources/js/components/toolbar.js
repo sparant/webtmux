@@ -437,6 +437,21 @@ class WebtmuxToolbar extends LitElement {
       color: #9aa3b8;
     }
     .save-go[disabled]:hover { background: #2a2f3f; }
+    /* The settled answer to "which directory?", kept in view (and correctable)
+       rather than hidden once given — it is a claim about this deployment, and a
+       wrong one is exactly what makes files land where nobody looks. */
+    .save-dir-note {
+      display: flex; align-items: center; gap: 8px;
+      color: #9fc4ff; font-size: 11.5px;
+    }
+    .save-dir-note b { color: #e8eefc; font-weight: 600; overflow-wrap: anywhere; }
+    .save-dir-change {
+      margin-left: auto; flex: 0 0 auto;
+      background: none; border: none; padding: 2px 4px;
+      color: #6b7690; font-size: 11px; font-family: inherit;
+      text-decoration: underline; cursor: pointer;
+    }
+    .save-dir-change:hover { color: #9fc4ff; }
     .save-hint { color: #6b7690; font-size: 10.5px; line-height: 1.4; white-space: pre-line; overflow-wrap: anywhere; }
     /* The destination is NOT what the label above the input implies (the pane's
        directory isn't visible here, or isn't writable). It has to look different,
@@ -657,6 +672,7 @@ class WebtmuxToolbar extends LitElement {
     this.saveOpen = false;   // save dropdown open?
     this.saveStatus = null;  // transient save result banner (see properties)
     this.saveInfo = null;    // server's "where would this land?" answer
+    this._editingDir = false; // save-directory row open for editing (see _saveDirRow)
     this.previewWindow = ''; // window the shared hover preview is showing
     this.labelMenuOpen = false;
     this.dragKey = '';
@@ -749,6 +765,7 @@ class WebtmuxToolbar extends LitElement {
     // first so a stale answer from another window can't be read as this one's;
     // the hint falls back to the general rule until the reply arrives.
     this.saveInfo = null;
+    this._editingDir = false;
     this.manager?.requestSaveInfo?.();
     const def = this.manager?.suggestedSaveName?.() || 'pane.txt';
     this.updateComplete.then(() => {
@@ -763,6 +780,57 @@ class WebtmuxToolbar extends LitElement {
     this.manager?.savePaneBuffer();
     this.saveOpen = false;
     this.saveStatus = null;
+  }
+
+  // True while webtmux has no directory it can honestly save into and is waiting
+  // for the user to name one (or has rejected the one they named). The filename
+  // row is dead until that's settled — there is no destination for it yet.
+  _askingForDir() {
+    return this.saveInfo?.blocked === true || !!this.saveInfo?.chosenError;
+  }
+
+  // The "which directory?" row. Shown while asking, and — collapsed to a single
+  // line with a "change" link — once an answer is in force, because the answer is
+  // a claim about the deployment that should stay visible and correctable.
+  _saveDirRow() {
+    const info = this.saveInfo;
+    if (!info) return '';
+    const chosen = info.chosen && info.baseDir === info.chosen ? info.chosen : '';
+    if (!this._askingForDir() && !chosen) return '';
+    if (chosen && !this._editingDir) {
+      return html`
+        <div class="save-dir-note">
+          saving into <b>${chosen}</b>
+          <button class="save-dir-change" @click=${() => { this._editingDir = true; this.requestUpdate(); }}>change</button>
+        </div>
+      `;
+    }
+    return html`
+      <div class="save-row">
+        <input
+          class="save-path save-dir"
+          type="text"
+          spellcheck="false"
+          autocomplete="off"
+          placeholder="/workspace"
+          .value=${chosen || ''}
+          @keydown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); this._useSaveDir(); } e.stopPropagation(); }}
+        >
+        <button class="save-go" @click=${() => this._useSaveDir()}>Use</button>
+      </div>
+    `;
+  }
+
+  // Hand the typed directory to the manager, which remembers it in the shared UI
+  // state and re-probes. The server decides whether it's usable — a directory
+  // that doesn't exist inside the container comes back as chosenError, and the
+  // row stays open with the reason.
+  _useSaveDir() {
+    const el = this.renderRoot?.querySelector('.save-dir');
+    const dir = (el?.value || '').trim();
+    if (!dir) return;
+    this._editingDir = false;
+    this.manager?.setSaveDir(dir);
   }
 
   // The line under the path input: where a relative path will ACTUALLY land, per
@@ -1016,17 +1084,18 @@ class WebtmuxToolbar extends LitElement {
             <button class="save-item" @click=${() => this._saveToBrowser()}>⤓&nbsp; Download to browser</button>
             <div class="save-sep"></div>
             <div class="save-label">Save on the machine tmux runs on</div>
+            ${this._saveDirRow()}
             <div class="save-row">
               <input
                 class="save-path"
                 type="text"
                 spellcheck="false"
                 autocomplete="off"
-                ?disabled=${this.saveInfo?.blocked === true}
-                placeholder=${this.saveInfo?.blocked ? 'unavailable here' : '~/out.txt or ./out.txt'}
+                ?disabled=${this._askingForDir()}
+                placeholder=${this._askingForDir() ? 'name a directory first' : '~/out.txt or ./out.txt'}
                 @keydown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); this._saveToPath(); } e.stopPropagation(); }}
               >
-              <button class="save-go" ?disabled=${this.saveInfo?.blocked === true} @click=${() => this._saveToPath()}>Save</button>
+              <button class="save-go" ?disabled=${this._askingForDir()} @click=${() => this._saveToPath()}>Save</button>
             </div>
             ${this._saveHint()}
             ${this.saveStatus ? html`<div class="save-status ${this.saveStatus.state}">${this.saveStatus.text}</div>` : ''}

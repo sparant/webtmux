@@ -151,6 +151,73 @@ func TestTypedPathIntoAnInvisibleDirectoryFailsWithAnExplanation(t *testing.T) {
 	}
 }
 
+// The whole ask-me-where round trip: webtmux has nothing shared, the browser
+// sends the directory the user named, and the file lands there.
+func TestSaveUsesTheDirectoryTheUserNamed(t *testing.T) {
+	cwd := t.TempDir()
+	mounted := t.TempDir()
+	t.Setenv("WEBTMUX_PATH_MAP", cwd+"=/definitely/not/here") // pane dir invisible
+	t.Setenv("WEBTMUX_SAVE_DIR", "")
+	t.Setenv("WEBTMUX_IN_CONTAINER", "1")
+	wt, m := saveHarness(t, cwd)
+
+	// Before an answer, the probe says it is blocked — that is what makes the
+	// dropdown ask instead of offering a path box that can only fail.
+	if err := wt.handleTmuxMessage(TmuxSaveInfoRequest, []byte(`{"windowId":"@0"}`)); err != nil {
+		t.Fatalf("handleTmuxMessage: %v", err)
+	}
+	var probe SaveEnv
+	if err := json.Unmarshal(nextFrame(t, m, TmuxSaveInfo), &probe); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !probe.Blocked {
+		t.Fatalf("expected a blocked probe with nothing shared: %+v", probe)
+	}
+
+	// The user names a directory; the save lands in it.
+	req, _ := json.Marshal(map[string]string{"windowId": "@0", "path": "out.txt", "dir": mounted})
+	if err := wt.handleTmuxMessage(TmuxSavePaneFile, req); err != nil {
+		t.Fatalf("handleTmuxMessage: %v", err)
+	}
+	var res saveResultFrame
+	if err := json.Unmarshal(nextFrame(t, m, TmuxSaveResult), &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !res.OK {
+		t.Fatalf("save failed: %s", res.Error)
+	}
+	if res.Path != filepath.Join(mounted, "out.txt") {
+		t.Fatalf("saved to %q, want it in the chosen dir %q", res.Path, mounted)
+	}
+	if _, err := os.Stat(res.Path); err != nil {
+		t.Fatalf("reported success but no file: %v", err)
+	}
+	if res.Env.Chosen != mounted {
+		t.Errorf("the reply should echo the directory in force: %+v", res.Env)
+	}
+}
+
+// A remembered directory that has since gone away (the mount changed between
+// sessions) must re-open the question, not quietly redirect the file.
+func TestAStaleRememberedDirectoryReopensTheQuestion(t *testing.T) {
+	cwd := t.TempDir()
+	t.Setenv("WEBTMUX_PATH_MAP", cwd+"=/definitely/not/here")
+	t.Setenv("WEBTMUX_SAVE_DIR", "")
+	t.Setenv("WEBTMUX_IN_CONTAINER", "1")
+	wt, m := saveHarness(t, cwd)
+
+	if err := wt.handleTmuxMessage(TmuxSaveInfoRequest, []byte(`{"windowId":"@0","dir":"/gone/away"}`)); err != nil {
+		t.Fatalf("handleTmuxMessage: %v", err)
+	}
+	var probe SaveEnv
+	if err := json.Unmarshal(nextFrame(t, m, TmuxSaveInfo), &probe); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if probe.ChosenError == "" || probe.Chosen != "" || !probe.Blocked {
+		t.Fatalf("a vanished directory should be reported and still blocked: %+v", probe)
+	}
+}
+
 // The pre-save probe: read-only, and it must describe the same destination the
 // save itself would pick (the hint and the write cannot disagree).
 func TestSaveInfoDescribesTheSameDestinationTheSaveWouldUse(t *testing.T) {

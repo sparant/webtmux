@@ -26,22 +26,38 @@ export const DEFAULT_SAVE_HINT =
 // the input implies — the case that has to look different, not just read
 // differently.
 export function saveHint(info) {
+  // A directory the user named was rejected. Say why and keep asking — silently
+  // falling back to somewhere else is how a file ends up nowhere they'll look.
+  if (info && info.chosenError) {
+    return { level: 'warn', text: `⚠ ${info.chosenError}` };
+  }
   // Nothing shared to write into (a container mounting only the tmux socket —
-  // the default deployment here). Saying "off" plainly beats leaving a path box
-  // that can only fail, and the browser download above it needs no mount at all.
+  // the default deployment here). webtmux can't tell a bind mount from its own
+  // filesystem, but the person who started the container can, so ASK rather than
+  // either guessing or shutting the feature off.
   if (info && info.blocked) {
     return {
       level: 'warn',
-      text: 'Saving on the server is off: webtmux runs in a container with no directory shared with '
-        + 'the machine tmux runs on, so a file written here would vanish with it. '
-        + 'Use "Download to browser" above. (To enable it: mount a directory into the container '
-        + 'and start webtmux with WEBTMUX_SAVE_DIR set to it.)',
+      text: 'webtmux runs in a container and does not know a directory it shares with the machine '
+        + 'tmux runs on, so a file saved now could vanish with the container. Name one above — a path '
+        + 'as webtmux sees it (e.g. /workspace), mounted from outside — and it will be remembered. '
+        + '"Download to browser" needs no directory at all.',
     };
   }
   if (!info || !info.baseDir) return { text: DEFAULT_SAVE_HINT, level: 'info' };
 
   const where = info.baseDir;
   const tail = '~ and absolute paths are honored as-is.';
+
+  if (info.chosen && info.baseDir === info.chosen) {
+    // Their own answer is in force, so this is settled — checked BEFORE the
+    // pane-directory warning below, which would otherwise keep warning about a
+    // question they have already answered.
+    return {
+      level: 'info',
+      text: `Relative paths save in ${where}, the directory you chose (remembered). ${tail}`,
+    };
+  }
 
   if (!info.paneVisible) {
     // The container case. Name BOTH directories: the one the user believes they
