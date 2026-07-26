@@ -176,6 +176,10 @@ class WebtmuxExpose extends LitElement {
       flex-direction: column;
       min-height: 0;
       transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s;
+      /* A tile is a PICTURE of a window, and the whole of it is one button. Nothing
+         in it is text you drag across — see the pointer-events rule below. */
+      user-select: none;
+      -webkit-user-select: none;
     }
     /* ONE selector, shared by mouse and keyboard. Hovering a tile MOVES the cursor
        to it (see the mouseenter handler in _buildTile); arrow keys move the same
@@ -196,6 +200,23 @@ class WebtmuxExpose extends LitElement {
     .tile-screen .xterm textarea,
     .tile-screen textarea {
       outline: none !important;
+    }
+    /* THE THUMBNAIL IS INERT. An xterm is a live control even when it can't be
+       typed into: it grabs mousedown to focus its hidden textarea, and it runs its
+       own text-selection service — so pressing on a tile started SELECTING the
+       snapshot instead of pressing the tile. Two things went wrong with that. The
+       highlight lands in the wrong place (the screen is CSS-scaled to letterbox
+       into the frame, which xterm's hit-testing knows nothing about), and the press
+       is spent on a gesture nobody asked for: only the parts of a tile the terminal
+       does NOT cover behaved like the button the whole tile is meant to be.
+       Selecting a window's text is what the window itself (or Save pane buffer) is
+       for; a thumbnail is a picture. Making it transparent to the pointer gives the
+       tile one uniform hit target and removes the phantom selection at the source
+       — the xterm never sees the press at all. Same rule for the overflow tiles'
+       plain-text preview, and the same reason. */
+    .tile-screen,
+    .tile-pre {
+      pointer-events: none;
     }
     .tile-frame {
       position: relative;
