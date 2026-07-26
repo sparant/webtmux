@@ -1,0 +1,81 @@
+// Unit tests for save-target.js — the sentence the save dropdown shows about
+// where a file will land. Run with:
+//
+//     node --test test/
+//
+// The module is import-free, so it loads cleanly under node.
+//
+// The thing under test is not formatting, it's honesty: the hint must never
+// claim the pane's own directory when the server has told us it can't see it,
+// and when it can't, the text must name BOTH directories — the one the user
+// thinks they're in and the one the file will actually appear in.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { saveHint, saveOkText, DEFAULT_SAVE_HINT } from '../resources/js/save-target.js';
+
+test('with no answer yet, the hint states the intended rule', () => {
+  assert.equal(saveHint(null).text, DEFAULT_SAVE_HINT);
+  assert.equal(saveHint({}).text, DEFAULT_SAVE_HINT);
+  assert.equal(saveHint(null).level, 'info');
+});
+
+test('when the pane directory is visible, the hint names it plainly', () => {
+  const h = saveHint({
+    paneDir: '/home/nathan/Projects', baseDir: '/home/nathan/Projects',
+    paneVisible: true, writable: true, mapped: false, container: false,
+  });
+  assert.equal(h.level, 'info');
+  assert.match(h.text, /\/home\/nathan\/Projects/);
+  assert.doesNotMatch(h.text, /⚠/);
+});
+
+test('the container case warns and names both directories', () => {
+  const h = saveHint({
+    paneDir: '/home/nathan/Projects', baseDir: '/saves',
+    paneVisible: false, writable: true, mapped: false, container: true,
+  });
+  assert.equal(h.level, 'warn');
+  assert.match(h.text, /\/home\/nathan\/Projects/);  // where the user thinks they are
+  assert.match(h.text, /\/saves/);                    // where the file will land
+  assert.match(h.text, /container/);                  // why
+  assert.match(h.text, /Download to browser/);        // the escape hatch
+});
+
+test('an invisible pane directory warns even when containerization is unknown', () => {
+  const h = saveHint({
+    paneDir: '/gone', baseDir: '/tmp',
+    paneVisible: false, writable: true, mapped: false, container: false,
+  });
+  assert.equal(h.level, 'warn');
+  assert.match(h.text, /does not exist on the machine webtmux runs on/);
+});
+
+test('a mapped directory is disclosed, so the saved path is not a surprise', () => {
+  const h = saveHint({
+    paneDir: '/home/nathan/Projects', baseDir: '/workspace',
+    paneVisible: true, writable: true, mapped: true, container: true,
+  });
+  assert.equal(h.level, 'info');
+  assert.match(h.text, /\/workspace/);
+  assert.match(h.text, /\/home\/nathan\/Projects/);
+});
+
+test('an unwritable destination warns before anything is typed', () => {
+  const h = saveHint({
+    paneDir: '/x', baseDir: '/x', paneVisible: true, writable: false, mapped: false,
+  });
+  assert.equal(h.level, 'warn');
+  assert.match(h.text, /cannot write/);
+});
+
+test('the success banner explains a destination the user did not choose', () => {
+  const info = { paneDir: '/home/nathan/Projects', baseDir: '/saves', paneVisible: false };
+  assert.match(saveOkText('/saves/out.txt', info), /Saved: \/saves\/out\.txt/);
+  assert.match(saveOkText('/saves/out.txt', info), /\/home\/nathan\/Projects/);
+});
+
+test('the success banner stays terse when nothing surprising happened', () => {
+  const info = { paneDir: '/p', baseDir: '/p', paneVisible: true };
+  assert.equal(saveOkText('/p/out.txt', info), 'Saved: /p/out.txt');
+  assert.equal(saveOkText('/p/out.txt', null), 'Saved: /p/out.txt');
+});

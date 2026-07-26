@@ -42,6 +42,7 @@ export const MSG = {
   TmuxSavePaneFile: 'O',
   TmuxSetState: 'P',
   TmuxRefresh: 'Q',
+  TmuxSaveInfoRequest: 'R',
 
   // Output (server -> client)
   Output: '1',
@@ -54,6 +55,7 @@ export const MSG = {
   TmuxModeUpdate: '9',
   TmuxCaptureData: 'A',
   TmuxSaveResult: 'C',
+  TmuxSaveInfo: 'D',
 };
 
 // Scroll-wheel behavior. Cycled by the sidebar button through all four:
@@ -78,7 +80,7 @@ const TMUX_MSG_TYPES = new Set([
   MSG.TmuxSwitchSession, MSG.TmuxRenameWindow, MSG.TmuxCaptureRequest,
   MSG.TmuxMoveWindow, MSG.TmuxNewSession, MSG.TmuxRenameSession, MSG.TmuxKillWindow,
   MSG.TmuxKillSession, MSG.TmuxLinkWindow, MSG.TmuxUnlinkWindow,
-  MSG.TmuxSavePaneFile, MSG.TmuxSetState, MSG.TmuxRefresh,
+  MSG.TmuxSavePaneFile, MSG.TmuxSaveInfoRequest, MSG.TmuxSetState, MSG.TmuxRefresh,
 ]);
 
 // Map any stored/legacy value onto a valid mode. The old two-state setting used
@@ -771,6 +773,16 @@ export class TerminalUnit {
         }
         break;
 
+      case MSG.TmuxSaveInfo:
+        // Answer to "where would a save land?" — routed to the toolbar's save
+        // dropdown so it can say so before anything is written.
+        try {
+          this.onSaveInfo?.(JSON.parse(payload));
+        } catch (e) {
+          console.warn('Bad save info:', e);
+        }
+        break;
+
       default:
         console.warn('Unknown message type:', type);
     }
@@ -1058,6 +1070,17 @@ export class TerminalUnit {
   sendSavePaneFile(windowId, path) {
     if (!this.isConnected()) return false;
     this.sendMessage(MSG.TmuxSavePaneFile, JSON.stringify({ windowId, path }));
+    return true;
+  }
+
+  // Ask where a save for this window WOULD land — which directory a relative path
+  // resolves against, whether webtmux can see the pane's own directory at all, and
+  // whether it is containerized. Writes nothing; the reply is a TmuxSaveInfo ->
+  // onSaveInfo. Sent when the save dropdown opens, so the answer is on screen
+  // before the user commits to a name (see save-target.js).
+  sendSaveInfoRequest(windowId) {
+    if (!this.isConnected()) return false;
+    this.sendMessage(MSG.TmuxSaveInfoRequest, JSON.stringify({ windowId }));
     return true;
   }
 

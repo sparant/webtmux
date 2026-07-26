@@ -30,6 +30,7 @@ import { HoverPreview } from './hover-preview.js';
 import { WorkAlerts } from './work-alerts.js';
 import { MAX_RECENTS, RecentsPersistence } from './recents-strip.js';
 import { readSplitState } from './split-state.js';
+import { saveOkText } from './save-target.js';
 import { IS_MAC } from './os.js';
 import { stateStore } from './state-store.js';
 import { clientStore } from './client-store.js';
@@ -169,8 +170,10 @@ export class SplitManager {
     // read access for optimistic paint on window switch.
     unit.captureCache = this.captureCache;
     unit.onCaptureData = (payload) => this.captureCache.ingest(payload);
-    // Server-side "save pane buffer to file" outcome -> toolbar dropdown feedback.
+    // Server-side "save pane buffer to file" outcome -> toolbar dropdown feedback,
+    // and the pre-save "where would this land?" answer that goes with it.
     unit.onSaveResult = (res) => this.onSaveResult(res);
+    unit.onSaveInfo = (info) => this.onSaveInfo(info);
     // Clicking the terminal collapses the shared sidebar out of the way (unless pinned).
     unit.onTerminalMousedown = () => {
       const sb = this.sidebar;
@@ -722,13 +725,33 @@ export class SplitManager {
     u.sendSavePaneFile(id, p);
   }
 
+  // Ask the server where a save for the FOCUSED window would land. Called when the
+  // save dropdown opens: the answer (onSaveInfo) replaces the dropdown's hint, so
+  // a container's invisible pane directory is disclosed BEFORE a failed save
+  // rather than as an open(2) error afterwards. See save-target.js.
+  requestSaveInfo() {
+    const u = this.focusedUnit;
+    const id = u?.layout?.activeWindowId;
+    if (!id || !u) return;
+    u.sendSaveInfoRequest(id);
+  }
+
+  // The server's answer. Held on the toolbar, which renders it as the dropdown's
+  // hint line and keeps it for the success banner's wording.
+  onSaveInfo(info) {
+    if (this.toolbar) this.toolbar.saveInfo = info || null;
+  }
+
   // Surface a server-side save outcome in the toolbar's save dropdown. Success
   // shows the absolute path it landed at and auto-dismisses; an error stays up so
   // the user can read it and correct the path.
   onSaveResult(res) {
     if (!this.toolbar) return;
+    // The reply carries the environment it was resolved against; keep it so the
+    // banner and the hint below it can't tell different stories.
+    if (res && res.env && res.env.baseDir) this.toolbar.saveInfo = res.env;
     if (res && res.ok) {
-      this.toolbar.saveStatus = { state: 'ok', text: 'Saved: ' + (res.path || '') };
+      this.toolbar.saveStatus = { state: 'ok', text: saveOkText(res.path, res.env) };
       setTimeout(() => {
         if (this.toolbar && this.toolbar.saveStatus?.state === 'ok') {
           this.toolbar.saveOpen = false;
@@ -1305,23 +1328,40 @@ export class SplitManager {
     // ctrlKey-wheel path is the one signal every engine emits for a trackpad pinch
     // (Chrome/Edge/Firefox/Safari), so there's enough info on the Mac to do this.
     // Gated to Mac so a Ctrl+scroll on a Windows/Linux mouse still zooms as usual.
+    //
+    // HOW MUCH FINGER TRAVEL IT TAKES IS OURS, not the OS's: the browser reports
+    // every increment of the gesture and PINCH_THRESH decides how much of it is
+    // "decisive". It started at 40, which was most of a full spread across the
+    // trackpad before anything happened — the gesture felt broken rather than
+    // deliberate. 12 fires about a third of the way in, still well past the
+    // accidental two-finger jitter of a scroll (which doesn't set ctrlKey anyway).
+    // The cost of over-sensitivity is small and self-correcting: the opposite
+    // gesture is the undo, and _pinchFired keeps ONE gesture from toggling twice.
     if (IS_MAC) {
       this._pinchAccum = 0;
       this._pinchAt = 0;
+      this._pinchFired = false;
+      const PINCH_THRESH = 12;
+      const PINCH_GAP = 250;                   // a pause this long = a fresh gesture
       window.addEventListener('wheel', (ev) => {
         if (!ev.ctrlKey) return;              // only the pinch-zoom gesture sets ctrlKey
         ev.preventDefault();                   // never let the pinch zoom the page
         ev.stopPropagation();                  // and never let it scroll the terminal
         const now = Date.now();
-        if (now - this._pinchAt > 250) this._pinchAccum = 0;   // a pause = a fresh gesture
+        if (now - this._pinchAt > PINCH_GAP) { // fresh gesture: forget the last one
+          this._pinchAccum = 0;
+          this._pinchFired = false;
+        }
         this._pinchAt = now;
+        // Already acted on this gesture — keep swallowing its tail (so it can't
+        // zoom the page) but don't toggle again until the fingers come off.
+        if (this._pinchFired) return;
         this._pinchAccum += -ev.deltaY;        // spread accumulates positive, pinch negative
-        const THRESH = 40;                     // deliberate-gesture threshold
-        if (this._pinchAccum >= THRESH) {
-          this._pinchAccum = 0;
+        if (this._pinchAccum >= PINCH_THRESH) {
+          this._pinchFired = true;
           if (!this.expose?.open) this.expose?.openOverlay(2);
-        } else if (this._pinchAccum <= -THRESH) {
-          this._pinchAccum = 0;
+        } else if (this._pinchAccum <= -PINCH_THRESH) {
+          this._pinchFired = true;
           if (this.expose?.open) this.expose?.closeOverlay();
         }
       }, { passive: false, capture: true });
