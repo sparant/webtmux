@@ -3,12 +3,28 @@
 `plan-webtmux-build-run-split.md` — created 2026-07-26. Spans **two repos**:
 `/workspace/webtmux` (`local-main`) and `/workspace/scripts` (`master`).
 
-**STATUS: COMPLETE except task 5.3 — first host run FAILED, two defects fixed, re-run needed** — executed and merged 2026-07-26
-(`local-main` af969d2, `scripts` master e2a95f9). Both worktrees removed. The
-`plan-webtmux-portable-vendor.md` Stage 1 gate now passes. The one open item is the
-**host deploy verification**: `launch.sh` hard-refuses to run under the secure daemon, so
-`/workspace/claude_run_me_4417.sh` must be run by the user on the host and its results
-read back. Every claim that *can* be checked in-container was (1.5, 3.4) and passed.
+**STATUS: COMPLETE** — executed, merged, and verified on the host 2026-07-26
+(`local-main` af969d2 + bcdbdd5, `scripts` master e2a95f9 + 10c8d09). All worktrees
+removed. The `plan-webtmux-portable-vendor.md` Stage 1 gate passes.
+
+**Host run 2 (2026-07-26T18:24Z) PASSED** — the split is proven end to end on the host:
+
+| Claim | Evidence |
+|---|---|
+| The artifact was built by that run | mtime 1785087873 >= build start 1785087868 |
+| **The image copied it, did not rebuild it** | image sha == disk sha, `6dda1ae2…` |
+| The deploy build pulls no toolchain | only `tmux-build` + `stage-1` ran, both debian; zero `golang`/`nodejs` references in the image-build log |
+| The tmux protocol pin still works | built tmux **3.4**, matching the probed host tmux |
+| It actually serves | HTTP **200** |
+| The uid trap is fixed | `OK  builds/ is writable by nathan` |
+
+The run reported one `FAIL` — "the deploy Dockerfile still references a toolchain" — which
+was a **bug in the verification script, not a finding**: `grep -c` prints its count *and*
+exits 1 when nothing matches, so `|| echo 0` appended a second line and the comparison saw
+`"0\n0"`. The tell is in the output itself (`count: 0` followed by a bare `0`). The
+underlying assertion is true and was confirmed two independent ways — a direct grep of the
+deploy Dockerfile returns nothing, and the image-build log shows only the two debian
+stages. Fixed to `|| true`.
 
 **Host run 1 (2026-07-26T17:32Z) failed and was worth doing** — it caught two things no
 in-container check could:
@@ -495,7 +511,7 @@ Coordination above for why. The remaining task edits plan files in
       actually distinguishes "the unconditional build fired" from "a stale file was
       already there".
 
-- [ ] **P0** 5.3 **BLOCKED — needs the user.** Read the results file. If the two shas
+- [x] **P0** 5.3 Read the results file. If the two shas
       differ, the run image is still building its own binary — stop and fix before marking
       the plan complete. *(20 min)*
 
@@ -512,8 +528,8 @@ Coordination above for why. The remaining task edits plan files in
       `master`, and confirm both worktrees were removed by the wrapper. *(15 min)*
 
       Both worktrees removed by the wrapper (`git worktree list` is clean in both repos;
-      neither directory remains). Plan complete **except 5.3**, which is blocked on the
-      user running the host script — see that task.
+      neither directory remains) — as were the two follow-up fix worktrees. Plan complete:
+      5.3 passed on host run 2.
 
 ---
 
