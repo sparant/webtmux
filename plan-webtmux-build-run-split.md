@@ -3,6 +3,13 @@
 `plan-webtmux-build-run-split.md` — created 2026-07-26. Spans **two repos**:
 `/workspace/webtmux` (`local-main`) and `/workspace/scripts` (`master`).
 
+**STATUS: COMPLETE except task 5.3** — executed and merged 2026-07-26
+(`local-main` af969d2, `scripts` master e2a95f9). Both worktrees removed. The
+`plan-webtmux-portable-vendor.md` Stage 1 gate now passes. The one open item is the
+**host deploy verification**: `launch.sh` hard-refuses to run under the secure daemon, so
+`/workspace/claude_run_me_4417.sh` must be run by the user on the host and its results
+read back. Every claim that *can* be checked in-container was (1.5, 3.4) and passed.
+
 ## Goal
 
 Today `scripts/webtmux-docker/Dockerfile` does everything: builds tmux from source,
@@ -426,10 +433,16 @@ Coordination above for why. The remaining task edits plan files in
 
 ### Phase 5 — Host verification, merge, cleanup
 
-- [ ] **P0** 5.1 Run tests on both sides, then merge **webtmux first**, scripts second, via
+- [x] **P0** 5.1 Run tests on both sides, then merge **webtmux first**, scripts second, via
       the lock wrapper (see Worktree Reference). Do not merge on a red test. *(25 min)*
 
-- [ ] **P0** 5.2 Write `/workspace/claude_run_me_4417.sh` for the user to run **on the
+      Green both sides: webtmux 119 JS store tests + `go test ./...`/`go vet ./...` (run in
+      `golang:1.23-bookworm` — this container has no Go toolchain, which is the very gap
+      `make docker-artifact` closes); scripts 3 + 14 move-pass tests, plus `bash -n` over
+      every changed shell script. Merged `local-main` af969d2, then `scripts` master
+      e2a95f9. Stage 1's gate now passes against `local-main`.
+
+- [x] **P0** 5.2 Write `/workspace/claude_run_me_4417.sh` for the user to run **on the
       host** — the only place `launch.sh` will run (it hard-refuses under the secure
       daemon). The script must: *(35 min)*
 
@@ -444,11 +457,33 @@ Coordination above for why. The remaining task edits plan files in
 
       Each step gets a comment saying **why**, per root `CLAUDE.md`.
 
-- [ ] **P0** 5.3 Read the results file. If the two shas differ, the run image is still
-      building its own binary — stop and fix before marking the plan complete. *(20 min)*
+      Written and syntax-checked. Two checks added beyond the six: a BuildKit
+      precondition (Risk 1 — a host `DOCKER_BUILDKIT=0` would fail `--build-context`
+      confusingly, so it is named up front rather than diagnosed after), and a
+      `docker history` grep proving no Go/Node layer survives in the image. The
+      artifact-freshness test is an mtime-vs-build-start comparison, which is what
+      actually distinguishes "the unconditional build fired" from "a stale file was
+      already there".
 
-- [ ] **P0** 5.4 Mark the plan complete, commit it on both `local-main` and scripts
+- [ ] **P0** 5.3 **BLOCKED — needs the user.** Read the results file. If the two shas
+      differ, the run image is still building its own binary — stop and fix before marking
+      the plan complete. *(20 min)*
+
+      This is the one task that cannot be done from the agent container: `launch.sh`
+      hard-refuses to run under the secure daemon (the host tmux socket must never enter
+      the sandbox), so the deploy check must be user-executed. Everything it verifies has
+      an in-container analogue that already passed — 1.5 (artifact builds, statically
+      linked, right size), 3.4 (image sha == artifact sha, no toolchain layer) — so what
+      5.3 adds is specifically the *host* claims: host BuildKit, host tmux protocol pin,
+      and the service actually serving. Hand `/workspace/claude_run_me_4417.sh` to the
+      user and read back `/workspace/claude_run_me_4417.results.txt`.
+
+- [x] **P0** 5.4 Mark the plan complete, commit it on both `local-main` and scripts
       `master`, and confirm both worktrees were removed by the wrapper. *(15 min)*
+
+      Both worktrees removed by the wrapper (`git worktree list` is clean in both repos;
+      neither directory remains). Plan complete **except 5.3**, which is blocked on the
+      user running the host script — see that task.
 
 ---
 
