@@ -60,13 +60,13 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
 - [ ] **P0** 2.1 Create the worktree per the block above, after both gate checks. *(5 min)*
 
 - [ ] **P0** 2.2 **VERIFY ONLY — `builds/` is already untracked.**
-      `plan-webtmux-build-run-split.md` task 1.4 did this on `local-main`: the artifact
+      The build/run split (`af969d2`) did this on `local-main`: the artifact
       build writes into `builds/`, so it could not leave a tracked output directory
       behind. Confirm, do not redo: *(5 min)*
 
       ```bash
       test -z "$(git ls-files builds/)" && grep -q '^/builds/$' .gitignore \
-        || echo "UNEXPECTED: builds/ still tracked — build-run-split 1.4 did not land"
+        || echo "UNEXPECTED: builds/ still tracked — the build/run split did not land"
       ```
 
       The landed `.gitignore` comment differs in wording (it cites `make docker-artifact`
@@ -101,8 +101,8 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
       Add all new targets to `.PHONY`.
 
 - [ ] **P1** 2.4 **VERIFY ONLY — `.dockerignore` already exists.**
-      `plan-webtmux-build-run-split.md` task 1.3 added it with exactly the list below, so
-      that the two plans could not disagree. The `COPY . /src` it protects now lives in the
+      The build/run split (`af969d2`) added it with exactly the list below, so that the
+      two plans could not disagree. The `COPY . /src` it protects now lives in the
       fork's own `Dockerfile` (the artifact build), not in
       `scripts/webtmux-docker/Dockerfile` — that file stopped building the binary in the
       same change. *(5 min)*
@@ -119,7 +119,7 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
       (No `js/` entry — the legacy webpack tree was deleted in Stage 1.)
       Confirm with `diff <(cat .dockerignore) -` against that list; add a `js/`-adjacent
       entry only if Stage 1 left something behind. No `launch.sh --rebuild` is needed for
-      this task any more — the deploy-path verification was done under build-run-split 5.2.
+      this task any more — the deploy path was verified on the host when the split landed.
 
 ---
 
@@ -220,8 +220,8 @@ a release needs committing after the build. Tag the release commit, build *from 
 1. **Publishing requires the user** — `gh` auth lives outside the agent. Every push and
    `gh release create` is a handoff; the plan marks them explicitly.
 2. ~~**`.dockerignore` touches the deploy path**~~ — retired.
-   `plan-webtmux-build-run-split.md` added `.dockerignore` (1.3) and verified the deploy
-   path under it (5.2), so 2.4 is a verification with nothing left to break.
+   the build/run split (`af969d2`) added `.dockerignore` and verified the deploy path
+   under it on the host, so 2.4 is a verification with nothing left to break.
 3. **Tag on the wrong commit** — 2.7 merges *before* 2.8 tags, so the tag always lands on
    `local-main`.
 4. **Install docs vs repo visibility mismatch** — 2.10 tests the actual documented path
