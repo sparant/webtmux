@@ -4,7 +4,7 @@
 (`/workspace/webtmux`, branch `local-main`), the browser front-end also shipped by
 `scripts/webtmux-docker/`.
 
-**One gate, on Stage 1 only** *(added 2026-07-26)*: `plan-webtmux-build-run-split.md` must
+**One gate, on Stage 1 only** *(added 2026-07-26; satisfied same day)*: the build/run split must
 merge to `local-main` before `plan-webtmux-portable-vendor.md` starts — that plan revives
 the root `Dockerfile` as the artifact builder, which Stage 1 task 1.2 was going to delete.
 The gate command lives in the vendor subplan. Stages 0, 2, and 3 are unaffected.
@@ -36,7 +36,7 @@ history)*, each its own subplan and worktree:
 |---|---|---|---|
 | 1st | 0 | `plan-webtmux-portable-fork.md` | **User-executed.** Migrate to your own GitHub fork — the canonical origin everything else references. |
 | 2nd | 3 | `plan-webtmux-portable-launcher.md` | **The actual deliverable.** Gates only on Stage 0. Its staleness mechanism is the embedded payload's **content sha**, not a version tag, so it does not need Stage 2 first; payloads are dev-stamped until Stage 2 lands. |
-| 3rd | 1 | `plan-webtmux-portable-vendor.md` | Offline UI: the page pulls Tailwind/lit/xterm from CDNs at runtime — no internet means a blank screen. Also drops ~2.6 MB of dead embedded assets. Lands behind the launcher; a payload rebuild picks it up automatically (new sha ⇒ redeploy). **Gated on `plan-webtmux-build-run-split.md`.** |
+| 3rd | 1 | `plan-webtmux-portable-vendor.md` | Offline UI: the page pulls Tailwind/lit/xterm from CDNs at runtime — no internet means a blank screen. Also drops ~2.6 MB of dead embedded assets. Lands behind the launcher; a payload rebuild picks it up automatically (new sha ⇒ redeploy). **Gated on the build/run split — satisfied `af969d2`.** |
 | 4th | 2 | `plan-webtmux-portable-release.md` | Semver tags + **GitHub Releases** publishing. Binaries leave git. Formalizes distribution of webtmux *and* launcher binaries. |
 | — | D | `plan-webtmux-portable-deps.md` | **Optional, gates nothing.** Dependency audit: 16 modules → 4, dropping three unmaintained packages that have one call site each. |
 
@@ -243,7 +243,7 @@ cascade cannot be executed here. Ranked:
 **Process risks:**
 
 4. ~~`make clean` deletes `builds/` — six *tracked* deletions~~ — **resolved**, earlier
-   than planned. `plan-webtmux-build-run-split.md` 1.4 untracked `builds/` ahead of Stage
+   than planned. The build/run split (`af969d2`) untracked `builds/` ahead of Stage
    2 because the artifact build writes there; a tracked output directory would have
    dirtied the tree on every build. Stage 2's task 2.2 is now a verification.
 5. `check-js` does not glob `vendor/`, so a corrupt vendored file ships silently.
@@ -273,7 +273,8 @@ cascade cannot be executed here. Ranked:
 ## Revision history
 
 - **2026-07-25** — initial plan set: order 0→1→2→3, binaries committed in `builds/`.
-- **2026-07-26** — `plan-webtmux-build-run-split.md` created and inserted **ahead of
+- **2026-07-26** — the **build/run split** (plan since retired; landed `af969d2`, host
+  verified, follow-up fix `bcdbdd5`) was created and inserted **ahead of
   Stage 1**, which now hard-gates on it. That plan makes the fork's root `Dockerfile` the
   artifact builder and reduces `scripts/webtmux-docker/Dockerfile` to a run-only image; it
   also lands the `.dockerignore` and the `builds/` untracking that Stage 2 tasks 2.4 and

@@ -14,30 +14,37 @@ In the revised execution order (0 → 3 → 1 → 2) this runs **after** the lau
 merges, a launcher-payload rebuild picks up the offline UI automatically (new content sha
 ⇒ redeploy on next connect).
 
-## Gate — `plan-webtmux-build-run-split.md` must be merged first
+## Gate — the build/run split must be merged first — **SATISFIED 2026-07-26**
 
 *(added 2026-07-26; this stage previously declared "no gate")*
 
-Task **1.2** below lists the root `Dockerfile` as dead weight to delete. That is no longer
-true: `plan-webtmux-build-run-split.md` **revives it** as the artifact builder
-(`make docker-artifact`), and `scripts/webtmux-docker/Dockerfile` then consumes its output
-instead of building the binary itself. Running this stage first would delete a live build
-file and break the deploy path.
+The **build/run split** landed on `local-main` in `af969d2` (plus the follow-up fix
+`bcdbdd5`), was verified on the host, and its plan file has since been retired — the work
+is in git history, not in a plan file. Read `Dockerfile`, `Makefile`, and
+`scripts/webtmux-docker/Dockerfile` for the current shape.
 
-That plan also lands the `.dockerignore` and the `builds/` untracking that Stage 2 had
+Task **1.2** below lists the root `Dockerfile` as dead weight to delete. That is no longer
+true: the split **revived it** as the artifact builder (`make docker-artifact`), and
+`scripts/webtmux-docker/Dockerfile` now consumes its output instead of building the binary
+itself. Running this stage against a tree without the split would delete a live build file
+and break the deploy path.
+
+The split also landed the `.dockerignore` and the `builds/` untracking that Stage 2 had
 claimed, which is why 1.2/1.3 below are already annotated as amended.
 
-**Run before creating the worktree. If it fails, stop — do not start this stage.**
+**Re-run before creating the worktree** — it should pass immediately. It is kept, rather
+than deleted along with the plan, because it is cheap and it is the only thing that would
+catch the split being reverted or half-merged by a bad rebase.
 
 ```bash
 grep -q 'FROM scratch AS artifact' /workspace/webtmux/Dockerfile 2>/dev/null \
   && test -f /workspace/webtmux/.dockerignore \
   && grep -q 'docker-artifact' /workspace/webtmux/Makefile \
-  || { echo "GATE: plan-webtmux-build-run-split.md not merged to local-main — stop"; exit 1; }
+  || { echo "GATE: the build/run split is not on local-main — stop"; exit 1; }
 ```
 
 Content checks rather than a commit-message grep: they stay true if the split is amended
-or re-landed, and they fail loudly if only part of it merged.
+or re-landed, and they fail loudly if only part of it is present.
 
 ---
 
@@ -85,7 +92,7 @@ forever" urgency dissolved when distribution moved to GitHub Releases.)*
 
       **AMENDED 2026-07-26 — do NOT delete the root `Dockerfile`.** It was listed here as
       broken (it called the nonexistent target `make bindata/static/js/gotty.js.map` and
-      copied a binary named `gotty`). `plan-webtmux-build-run-split.md` replaced it with
+      copied a binary named `gotty`). The build/run split (`af969d2`) replaced it with
       the artifact builder, so it is now live and load-bearing. Its `js-build` stage — the
       only part that referenced the `js/` tree being deleted here — is already gone, so
       deleting `js/` remains safe.
@@ -97,7 +104,7 @@ forever" urgency dissolved when distribution moved to GitHub Releases.)*
 - [ ] **P1** 1.3 **AMENDED 2026-07-26 — now a verification, not an edit.** This task fixed
       a stale comment in `/workspace/scripts/webtmux-docker/Dockerfile` claiming the
       embedded assets include "the pre-built gotty.js bundle".
-      `plan-webtmux-build-run-split.md` Phase 3.1 deletes that entire comment block along
+      The build/run split (`af969d2`) deleted that entire comment block along
       with the Go build stage. Just confirm it is gone: *(5 min)*
 
       ```bash
