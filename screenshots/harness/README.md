@@ -1,8 +1,8 @@
-# Screenshot harness
+# Screenshot & gif harness
 
-Regenerates every screenshot in `screenshots/` by launching the real webtmux
-binary against a staged tmux server and driving the UI with Playwright in a
-throwaway container. No host setup beyond Docker.
+Regenerates every screenshot and animated gif in `screenshots/` by launching
+the real webtmux binary against a staged tmux server and driving the UI with
+Playwright in a throwaway container. No host setup beyond Docker.
 
 ```sh
 # 1. Build the binary with the build-id stamped (chip shows the commit)
@@ -13,9 +13,13 @@ docker run --rm -v "$PWD":/src -w /src -e CGO_ENABLED=0 -e HOME=/tmp golang:1.23
       -X webtmux/server.BuildCommit=$C -X webtmux/server.BuildTime=$T" \
       -o webtmux-test .'
 
-# 2. Capture (installs tmux/htop/pygments + playwright npm pkg on first run)
+# 2. Stills (installs tmux/htop/pygments + playwright npm pkg on first run)
 docker run --rm -v "$PWD":/src mcr.microsoft.com/playwright:v1.48.0-jammy \
   bash /src/screenshots/harness/run.sh
+
+# 3. Animated gifs (also needs ffmpeg, installed on first run)
+docker run --rm -v "$PWD":/src mcr.microsoft.com/playwright:v1.48.0-jammy \
+  bash /src/screenshots/harness/run-gifs.sh
 ```
 
 Pieces:
@@ -28,6 +32,15 @@ Pieces:
   Exposé, previews, stoplights, copy mode, save dropdown, …) and writes one jpg
   per README feature section into `screenshots/`.
 - `run.sh` — container entry: deps → tmux → webtmux on :8090 → driver.
+- `driver-gifs.js` — records one video per animated feature, each scene
+  replaying its README section's bullets in order (split → drag divider →
+  close; hover → preview → restore; lights change → tabs flash until viewed;
+  reload → state restores; …). A fake cursor div is injected because Playwright
+  videos don't render the pointer, and janitor navigation runs in separate
+  unrecorded contexts so it never bloats a recording.
+- `run-gifs.sh` — records via `driver-gifs.js`, then ffmpeg (two-pass palette)
+  converts each webm to `screenshots/<scene>.gif`, plus `toolbar-alerts.gif`
+  cropped from the stoplights take.
 
 The driver navigates via Exposé's type-to-filter, so it observes real UI state
 (the filter persists across close/reopen by design — see `exposeState()`).
