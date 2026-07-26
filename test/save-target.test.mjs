@@ -19,14 +19,34 @@ test('with no answer yet, the hint states the intended rule', () => {
   assert.equal(saveHint(null).level, 'info');
 });
 
-test('with nothing shared, the hint says saving is off and names the alternative', () => {
+test('with nothing shared, the hint asks for a directory instead of guessing', () => {
   // The default deployment: a container mounting only the tmux control socket.
+  // webtmux can't tell a bind mount from its own filesystem; the user can.
   const h = saveHint({ paneDir: '/home/nathan/Projects', baseDir: '', blocked: true, container: true });
   assert.equal(h.level, 'warn');
-  assert.match(h.text, /Download to browser/);
-  assert.match(h.text, /WEBTMUX_SAVE_DIR/);
-  // It must not offer a directory — there isn't one.
-  assert.doesNotMatch(h.text, /Relative paths save in/);
+  assert.match(h.text, /Name one above/);
+  assert.match(h.text, /\/workspace/);            // an example they can act on
+  assert.match(h.text, /Download to browser/);    // the no-directory alternative
+  assert.doesNotMatch(h.text, /Relative paths save in/); // there is no directory to name
+});
+
+test('a rejected directory is explained, and the question stays open', () => {
+  const h = saveHint({
+    blocked: true, container: true, baseDir: '', chosen: '',
+    chosenError: 'there is no directory /workspce inside the container webtmux runs in',
+  });
+  assert.equal(h.level, 'warn');
+  assert.match(h.text, /\/workspce/);
+});
+
+test('once chosen, the hint names the directory and says it is remembered', () => {
+  const h = saveHint({
+    paneDir: '/home/nathan/Projects', baseDir: '/workspace', chosen: '/workspace',
+    paneVisible: false, writable: true, container: true,
+  });
+  assert.equal(h.level, 'info');
+  assert.match(h.text, /\/workspace/);
+  assert.match(h.text, /remembered/);
 });
 
 test('when the pane directory is visible, the hint names it plainly', () => {

@@ -73,10 +73,20 @@ type SaveEnv struct {
 	// warns before the user types a name and presses Save.
 	Writable bool `json:"writable"`
 	// Blocked is true when there is nowhere honest to write at all: webtmux is
-	// containerized, the pane's directory isn't reachable, and no WEBTMUX_SAVE_DIR
-	// declares a shared one. Saving is refused in that state — see fallbackSaveDir
-	// for why refusing beats writing into the image's own filesystem.
+	// containerized, the pane's directory isn't reachable, and neither the
+	// operator (WEBTMUX_SAVE_DIR) nor the user (Chosen) has named a shared
+	// directory. Saving is refused in that state — see fallbackSaveDir for why
+	// refusing beats writing into the image's own filesystem.
 	Blocked bool `json:"blocked"`
+	// Chosen is the directory the USER named in the save dropdown, echoed back
+	// when it checks out. webtmux cannot tell a bind mount from an image
+	// directory, but the person who ran the container can — so when there is no
+	// operator declaration, the UI asks, and this is the answer in force.
+	Chosen string `json:"chosen"`
+	// ChosenError explains why a directory the user named was rejected (missing,
+	// not a directory, not writable). The UI keeps asking rather than silently
+	// falling back to somewhere they didn't pick.
+	ChosenError string `json:"chosenError"`
 }
 
 // ---- environment probes -------------------------------------------------------
@@ -206,12 +216,19 @@ func dirWritable(dir string) bool {
 	return true
 }
 
-// serverHome is what `~` expands to. WEBTMUX_HOME wins, because inside a
-// container os.UserHomeDir() is the IMAGE's home (often /root or a service
-// account) and never the home the person typing `~/out.txt` means.
+// serverHome is what `~` expands to, or "" when `~` has no honest meaning here.
+//
+// WEBTMUX_HOME wins. Inside a container with nothing declared it is "": the
+// image's own home (/root, or a service account) is a real, writable directory
+// that is NOT the home of the person typing `~/out.txt`, so expanding to it
+// would quietly write the file into storage that vanishes. Same rule as
+// fallbackSaveDir — refuse rather than resolve to the wrong machine's home.
 func serverHome() string {
 	if h := strings.TrimSpace(os.Getenv("WEBTMUX_HOME")); h != "" {
 		return filepath.Clean(h)
+	}
+	if inContainer() {
+		return ""
 	}
 	if h, err := os.UserHomeDir(); err == nil {
 		return h
@@ -241,15 +258,45 @@ func configuredSaveDir() string {
 	return ""
 }
 
+// checkChosenDir validates a directory the USER named in the save dropdown. It
+// must already exist — the point of the question is "which mounted directory is
+// this?", and a path webtmux would have to CREATE is, by definition, not one that
+// was mounted. Returns (cleanPath, "") or ("", reason).
+func checkChosenDir(dir string) (string, string) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return "", ""
+	}
+	if !filepath.IsAbs(dir) {
+		return "", fmt.Sprintf("%s is not an absolute path — give the directory as webtmux sees it, e.g. /workspace", dir)
+	}
+	dir = filepath.Clean(dir)
+	if !dirExists(dir) {
+		return "", fmt.Sprintf("there is no directory %s inside the container webtmux runs in", dir)
+	}
+	if !dirWritable(dir) {
+		return "", fmt.Sprintf("%s exists but webtmux cannot write to it (it runs as uid %d)", dir, os.Getuid())
+	}
+	return dir, ""
+}
+
 // fallbackSaveDir is where relative saves land when the pane's own directory
-// isn't visible here: WEBTMUX_SAVE_DIR, else $HOME, else the process's cwd.
+// isn't visible here: the user's chosen directory, else WEBTMUX_SAVE_DIR, else
+// $HOME, else the process's cwd.
 //
-// Returns "" INSIDE A CONTAINER with no WEBTMUX_SAVE_DIR — the case where there
-// is no honest answer. The image's own home and cwd are always present and
-// always writable, so falling back to them would report a cheerful "Saved:
-// /home/webtmux/out.txt" for a file nobody can open and that dies with the
-// container. A refusal that names the escape hatch beats a success that lies.
-func fallbackSaveDir() string {
+// The USER's choice outranks WEBTMUX_SAVE_DIR because it is the more specific,
+// more recent statement of intent — the operator's variable is a default for the
+// deployment, not a veto on where this person wants this file.
+//
+// Returns "" INSIDE A CONTAINER when nobody has named a directory — the case
+// where there is no honest answer. The image's own home and cwd are always
+// present and always writable, so falling back to them would report a cheerful
+// "Saved: /home/webtmux/out.txt" for a file nobody can open and that dies with
+// the container. A refusal that names the escape hatch beats a success that lies.
+func fallbackSaveDir(chosen string) string {
+	if chosen != "" {
+		return chosen
+	}
 	if d := configuredSaveDir(); d != "" {
 		return d
 	}
@@ -269,25 +316,33 @@ func fallbackSaveDir() string {
 
 // describeSaveEnv answers "if I saved to this window right now, where would it
 // go?" — for the pre-save hint AND for the save itself, so the hint can never
-// describe a different rule than the one that runs.
-func describeSaveEnv(paneDir string) SaveEnv {
+// describe a different rule than the one that runs. `chosen` is the directory the
+// user picked in the dropdown (persisted client-side and sent with every
+// request); "" when they haven't been asked yet or have nothing to say.
+func describeSaveEnv(paneDir, chosen string) SaveEnv {
 	maps := configuredPathMap()
 	env := SaveEnv{
 		PaneDir:   paneDir,
 		Container: inContainer(),
 		Home:      serverHome(),
 	}
+	// Validate the user's directory first, so a stale one (a mount that went away
+	// between sessions) is REPORTED rather than silently ignored — the dropdown
+	// re-asks with the reason instead of quietly saving somewhere else.
+	ok, why := checkChosenDir(chosen)
+	env.Chosen, env.ChosenError = ok, why
+
 	mapped, didMap := applyPathMap(maps, paneDir)
 	if dirExists(mapped) {
 		env.BaseDir = mapped
 		env.PaneVisible = true
 		env.Mapped = didMap
 	} else {
-		env.BaseDir = fallbackSaveDir()
+		env.BaseDir = fallbackSaveDir(ok)
 	}
 	// No BaseDir at all: containerized with nothing shared to write into. The UI
-	// turns this into "server-side saving is off here, use Download to browser"
-	// rather than offering a path box that can only fail.
+	// turns this into "tell me which mounted directory to use", with the browser
+	// download as the answer that needs no directory at all.
 	env.Blocked = env.BaseDir == ""
 	env.Writable = !env.Blocked && dirWritable(env.BaseDir)
 	return env
@@ -316,8 +371,16 @@ func resolveSavePath(env SaveEnv, path string) (string, error) {
 		return "", fmt.Errorf("%s", blockedMessage())
 	}
 	if path == "~" || strings.HasPrefix(path, "~/") {
-		if env.Blocked || env.Home == "" {
+		// Blocked first: "there is nowhere to save at all" outranks "~ is the wrong
+		// home", because it is the bigger fact and the one with the fix in it.
+		if env.Blocked {
 			return "", fmt.Errorf("%s", blockedMessage())
+		}
+		if env.Home == "" {
+			// `~` on which machine? Not this one's — see serverHome.
+			return "", fmt.Errorf("~ has no meaning here: webtmux's own home is inside its container, "+
+				"not the home you see in your shell. Use a plain file name%s, an absolute path, or set WEBTMUX_HOME",
+				baseDirSuffix(env))
 		}
 		if path == "~" {
 			path = env.Home
@@ -345,9 +408,18 @@ func resolveSavePath(env SaveEnv, path string) (string, error) {
 // whoever deploys webtmux the one switch that turns this on — because the reader
 // of the message is often both people.
 func blockedMessage() string {
-	return "webtmux is running in a container with no directory shared with the machine tmux runs on, " +
-		`so a file saved here would vanish with the container. Use "Download to browser" instead, ` +
-		"or start webtmux with WEBTMUX_SAVE_DIR set to a mounted directory."
+	return "webtmux does not know a directory it shares with the machine tmux runs on, so a file saved " +
+		`here could land inside the container and vanish with it. Name a mounted directory in the ` +
+		`save dropdown (webtmux checks it), use "Download to browser", or set WEBTMUX_SAVE_DIR.`
+}
+
+// baseDirSuffix is " (saves in <dir>)" when there is one, else "" — so a message
+// can offer the working alternative without claiming one that doesn't exist.
+func baseDirSuffix(env SaveEnv) string {
+	if env.BaseDir == "" {
+		return ""
+	}
+	return fmt.Sprintf(" (saves in %s)", env.BaseDir)
 }
 
 // missingDirMessage explains a missing target directory in terms of WHICH

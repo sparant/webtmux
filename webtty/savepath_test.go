@@ -131,7 +131,7 @@ func TestDescribeSaveEnvUsesThePaneDirWhenItIsVisible(t *testing.T) {
 	t.Setenv("WEBTMUX_PATH_MAP", "")
 	t.Setenv("WEBTMUX_SAVE_DIR", t.TempDir())
 
-	env := describeSaveEnv(pane)
+	env := describeSaveEnv(pane, "")
 	if !env.PaneVisible || env.BaseDir != pane {
 		t.Fatalf("visible pane dir should be the base: %+v", env)
 	}
@@ -152,7 +152,7 @@ func TestContainerWithNoSharedDirectoryRefusesToSave(t *testing.T) {
 	t.Setenv("WEBTMUX_SAVE_DIR", "")
 	t.Setenv("WEBTMUX_IN_CONTAINER", "1")
 
-	env := describeSaveEnv("/home/nathan/Projects")
+	env := describeSaveEnv("/home/nathan/Projects", "")
 	if !env.Blocked || env.BaseDir != "" {
 		t.Fatalf("expected a blocked env with no base dir, got %+v", env)
 	}
@@ -172,6 +172,90 @@ func TestContainerWithNoSharedDirectoryRefusesToSave(t *testing.T) {
 	}
 }
 
+// The user can answer the question the operator didn't: they know which paths
+// inside the container are mounted, and webtmux cannot.
+func TestAUserChosenDirectoryUnblocksAContainer(t *testing.T) {
+	mounted := t.TempDir()
+	t.Setenv("WEBTMUX_PATH_MAP", "")
+	t.Setenv("WEBTMUX_SAVE_DIR", "")
+	t.Setenv("WEBTMUX_IN_CONTAINER", "1")
+
+	env := describeSaveEnv("/home/nathan/Projects", mounted)
+	if env.Blocked || env.Chosen != mounted || env.ChosenError != "" {
+		t.Fatalf("a valid chosen dir should unblock saving: %+v", env)
+	}
+	got, err := resolveSavePath(env, "out.txt")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got != filepath.Join(mounted, "out.txt") {
+		t.Fatalf("resolved = %q, want it under %q", got, mounted)
+	}
+}
+
+// The user's answer outranks the operator's default — it is the more specific
+// and more recent statement of where THIS file should go.
+func TestAUserChosenDirectoryOutranksTheConfiguredOne(t *testing.T) {
+	configured, chosen := t.TempDir(), t.TempDir()
+	t.Setenv("WEBTMUX_PATH_MAP", "")
+	t.Setenv("WEBTMUX_SAVE_DIR", configured)
+	t.Setenv("WEBTMUX_IN_CONTAINER", "1")
+
+	env := describeSaveEnv("/nowhere/visible", chosen)
+	if env.BaseDir != chosen {
+		t.Fatalf("BaseDir = %q, want the user's choice %q", env.BaseDir, chosen)
+	}
+}
+
+// A directory that isn't there (a mount that went away, or a typo) must be
+// REPORTED, never silently swapped for something else — that is precisely how a
+// file ends up somewhere nobody thinks to look.
+func TestABadChosenDirectoryIsReportedNotSubstituted(t *testing.T) {
+	t.Setenv("WEBTMUX_PATH_MAP", "")
+	t.Setenv("WEBTMUX_SAVE_DIR", "")
+	t.Setenv("WEBTMUX_IN_CONTAINER", "1")
+
+	for _, bad := range []string{"/definitely/not/mounted", "workspace"} {
+		env := describeSaveEnv("/home/nathan/Projects", bad)
+		if env.ChosenError == "" {
+			t.Fatalf("%q should have been rejected: %+v", bad, env)
+		}
+		if env.Chosen != "" {
+			t.Errorf("%q was rejected but still echoed as in force: %+v", bad, env)
+		}
+		if !env.Blocked {
+			t.Errorf("%q was rejected, so there is still nowhere to save: %+v", bad, env)
+		}
+		if !strings.Contains(env.ChosenError, bad) {
+			t.Errorf("the reason should name the directory: %s", env.ChosenError)
+		}
+	}
+}
+
+// `~` means a home on the machine the USER is thinking of. In a container it is
+// the image's home — real, writable, and wrong — so it must refuse rather than
+// resolve.
+func TestTildeIsRefusedInAContainerWithNoDeclaredHome(t *testing.T) {
+	mounted := t.TempDir()
+	t.Setenv("WEBTMUX_HOME", "")
+	t.Setenv("WEBTMUX_SAVE_DIR", "")
+	t.Setenv("WEBTMUX_PATH_MAP", "")
+	t.Setenv("WEBTMUX_IN_CONTAINER", "1")
+
+	env := describeSaveEnv("/home/nathan/Projects", mounted)
+	if env.Home != "" {
+		t.Fatalf("a container with no WEBTMUX_HOME has no ~: %+v", env)
+	}
+	_, err := resolveSavePath(env, "~/out.txt")
+	if err == nil {
+		t.Fatal("~ should be refused here")
+	}
+	// It must still point at what DOES work — the chosen directory is right there.
+	if !strings.Contains(err.Error(), mounted) {
+		t.Errorf("the refusal should name the directory that works: %s", err)
+	}
+}
+
 // Declaring a shared directory is what unblocks it — that env var is the only
 // signal webtmux has that a directory is reachable from outside the container.
 func TestDeclaringASaveDirUnblocksAContainer(t *testing.T) {
@@ -180,7 +264,7 @@ func TestDeclaringASaveDirUnblocksAContainer(t *testing.T) {
 	t.Setenv("WEBTMUX_SAVE_DIR", saves)
 	t.Setenv("WEBTMUX_IN_CONTAINER", "1")
 
-	env := describeSaveEnv("/home/nathan/Projects")
+	env := describeSaveEnv("/home/nathan/Projects", "")
 	if env.Blocked {
 		t.Fatalf("WEBTMUX_SAVE_DIR should unblock saving: %+v", env)
 	}
@@ -202,7 +286,7 @@ func TestOutsideAContainerAnInvisiblePaneDirStillFallsBack(t *testing.T) {
 	t.Setenv("WEBTMUX_IN_CONTAINER", "0")
 	t.Setenv("WEBTMUX_HOME", home)
 
-	env := describeSaveEnv("/definitely/not/here")
+	env := describeSaveEnv("/definitely/not/here", "")
 	if env.Blocked || env.BaseDir != home {
 		t.Fatalf("expected a fallback to %q, got %+v", home, env)
 	}
@@ -213,7 +297,7 @@ func TestDescribeSaveEnvFallsBackWhenThePaneDirIsInvisible(t *testing.T) {
 	t.Setenv("WEBTMUX_PATH_MAP", "")
 	t.Setenv("WEBTMUX_SAVE_DIR", save)
 
-	env := describeSaveEnv("/definitely/not/here")
+	env := describeSaveEnv("/definitely/not/here", "")
 	if env.PaneVisible {
 		t.Fatal("a nonexistent pane dir must not be reported as visible")
 	}
@@ -230,7 +314,7 @@ func TestDescribeSaveEnvReportsAMappedPaneDir(t *testing.T) {
 	server := t.TempDir()
 	t.Setenv("WEBTMUX_PATH_MAP", "/home/nathan/Projects="+server)
 
-	env := describeSaveEnv("/home/nathan/Projects")
+	env := describeSaveEnv("/home/nathan/Projects", "")
 	if !env.PaneVisible || !env.Mapped || env.BaseDir != server {
 		t.Fatalf("mapping should make the pane dir visible: %+v", env)
 	}

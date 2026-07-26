@@ -371,6 +371,10 @@ func cleanPaneText(ansi []byte) string {
 func (wt *WebTTY) handleSaveInfo(payload []byte) error {
 	var req struct {
 		WindowID string `json:"windowId"`
+		// Dir is the directory the user picked in the dropdown (persisted in the
+		// shared UI state, so it rides along with every request). Validated here,
+		// never trusted blindly: the reply says whether it checked out.
+		Dir string `json:"dir"`
 	}
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil // a malformed probe is not worth an error banner
@@ -379,7 +383,7 @@ func (wt *WebTTY) handleSaveInfo(payload []byte) error {
 	if wt.captureProvider != nil {
 		paneDir, _ = wt.captureProvider.PaneCurrentPath(req.WindowID)
 	}
-	env := describeSaveEnv(paneDir)
+	env := describeSaveEnv(paneDir, req.Dir)
 	data, err := json.Marshal(env)
 	if err != nil {
 		return errors.Wrap(err, "failed to marshal save info")
@@ -396,6 +400,8 @@ func (wt *WebTTY) handleSavePaneFile(payload []byte) error {
 	var req struct {
 		WindowID string `json:"windowId"`
 		Path     string `json:"path"`
+		// Dir: the user-chosen save directory in force (see handleSaveInfo).
+		Dir string `json:"dir"`
 	}
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return wt.sendSaveResult(false, "", "invalid save request", SaveEnv{})
@@ -416,7 +422,7 @@ func (wt *WebTTY) handleSavePaneFile(payload []byte) error {
 	// that exists here and the reply says so rather than the save silently
 	// landing somewhere the user never named. See savepath.go.
 	paneDir, _ := wt.captureProvider.PaneCurrentPath(req.WindowID)
-	env := describeSaveEnv(paneDir)
+	env := describeSaveEnv(paneDir, req.Dir)
 	resolved, err := resolveSavePath(env, req.Path)
 	if err != nil {
 		return wt.sendSaveResult(false, "", err.Error(), env)

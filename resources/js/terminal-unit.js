@@ -1067,9 +1067,11 @@ export class TerminalUnit {
   // runs on. The server re-captures the pane itself (so the file matches the
   // browser download) and resolves a relative path against the pane's own working
   // directory. The outcome comes back as a TmuxSaveResult -> onSaveResult.
-  sendSavePaneFile(windowId, path) {
+  // `dir` is the save directory the user picked in the dropdown (see
+  // save-target.js); the server validates it and may still refuse.
+  sendSavePaneFile(windowId, path, dir = '') {
     if (!this.isConnected()) return false;
-    this.sendMessage(MSG.TmuxSavePaneFile, JSON.stringify({ windowId, path }));
+    this.sendMessage(MSG.TmuxSavePaneFile, JSON.stringify({ windowId, path, dir }));
     return true;
   }
 
@@ -1078,9 +1080,9 @@ export class TerminalUnit {
   // whether it is containerized. Writes nothing; the reply is a TmuxSaveInfo ->
   // onSaveInfo. Sent when the save dropdown opens, so the answer is on screen
   // before the user commits to a name (see save-target.js).
-  sendSaveInfoRequest(windowId) {
+  sendSaveInfoRequest(windowId, dir = '') {
     if (!this.isConnected()) return false;
-    this.sendMessage(MSG.TmuxSaveInfoRequest, JSON.stringify({ windowId }));
+    this.sendMessage(MSG.TmuxSaveInfoRequest, JSON.stringify({ windowId, dir }));
     return true;
   }
 
