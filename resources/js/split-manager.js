@@ -30,6 +30,7 @@ import { HoverPreview } from './hover-preview.js';
 import { WorkAlerts, hiddenAlerts, alertOf } from './work-alerts.js';
 import { MAX_RECENTS, RecentsPersistence } from './recents-strip.js';
 import { readSplitState } from './split-state.js';
+import { resolveRestoreView } from './restore-view.js';
 import { saveOkText } from './save-target.js';
 import { IS_MAC } from './os.js';
 import { stateStore } from './state-store.js';
@@ -209,9 +210,10 @@ export class SplitManager {
   }
 
   // --- split-view persistence --------------------------------------------------
-  // Shared: which window each region shows. `regions` covers the EXTRA regions
-  // only — regions[i] is units[i+1] — and the primary's window is a SEPARATE
-  // `primaryWindowId` field rather than regions[0].
+  // Shared: which VIEW each region shows — (session, window), never a window id
+  // alone. `regions` covers the EXTRA regions only — regions[i] is units[i+1] — and
+  // the primary's view is a SEPARATE `primaryWindowId`/`primarySession` pair rather
+  // than regions[0].
   //
   // That split looks redundant but is deliberate: `regions` already exists in every
   // saved blob with the meaning "extras only". Folding the primary in as regions[0]
@@ -219,7 +221,15 @@ export class SplitManager {
   // would read back as "primary, no splits" — quietly destroying a split on first
   // load. A new key is unambiguous for old and new blobs alike.
   //
-  // The primary's window is real tmux state (its attach is SHARED with the ssh
+  // The SESSION is half the address, not a nice-to-have: a pane's window list only
+  // covers the session it is attached to, and every reload re-attaches the primary to
+  // the shared base (attach-web.sh mode 2), so a window id saved while the pane was
+  // viewing another session cannot be found on load. Without the session the restore
+  // just no-ops and the primary parks on the base session's current window — which is
+  // why a refresh always landed on the same base-session window instead of where you
+  // were. See split-state.js.
+  //
+  // The primary's view is real tmux state (its attach is SHARED with the ssh
   // console — server/handlers.go), not a private browser view, so it belongs in the
   // shared blob rather than ClientStore. Restoring it re-selects the base session's
   // current window, which moves the console too; that is the accepted trade for the
@@ -230,14 +240,36 @@ export class SplitManager {
     // during construction clobbers the saved value, and the restore then reads back
     // its own empty write).
     if (!this._splitRestored || this._restoringSplit) return;
-    const regions = this.units.slice(1).map((u) => ({
-      windowId: u._targetWindowId || u.layout?.activeWindowId || null,
-    }));
-    const primary = this.units[0];
-    const primaryWindowId = primary
-      ? (primary._targetWindowId || primary.layout?.activeWindowId || null)
-      : null;
-    stateStore.patchSection('split', { regions, primaryWindowId });
+    const regions = this.units.slice(1).map((u) => this._viewOf(u));
+    const primary = this._viewOf(this.units[0]);
+    stateStore.patchSection('split', {
+      regions,
+      primaryWindowId: primary.windowId,
+      primarySession: primary.session,
+    });
+  }
+
+  // A region's saveable view: the window it shows (or is on its way to) plus the
+  // LOGICAL session it shows it in — the pair every restore needs. In-flight values
+  // win over the live layout, for two reasons:
+  //   • a save mid-switch should record where the pane is going, not what it is leaving;
+  //   • a cross-session hop emits an intermediate layout that reports the TARGET window
+  //     while still naming the OLD session (the transient _navSuppress guards against).
+  //     Reading the session off that layout would save a pair that cannot be honored,
+  //     so the pending _targetSession — the session we asked for — is used instead.
+  // A region recreated by _restoreSplitState has neither yet, only the view it is
+  // waiting to land on; without that branch the rev-refresh write at the end of
+  // _restoreSplitState would replace every saved region view with the null a
+  // freshly-created region has until its first layout arrives.
+  _viewOf(unit) {
+    if (!unit) return { windowId: null, session: null };
+    if (unit._restoreWindowId) {
+      return { windowId: unit._restoreWindowId, session: unit._restoreSession || null };
+    }
+    return {
+      windowId: unit._targetWindowId || unit.layout?.activeWindowId || null,
+      session: unit._targetSession || this.logicalSession(unit) || null,
+    };
   }
 
   // Per-client: the divider ratios (inline flex-grow) in region DOM order. A reload
@@ -250,19 +282,26 @@ export class SplitManager {
 
   // Recreate the saved extra regions (shared) and re-apply per-client widths + focus.
   // Called once from the constructor after the primary unit + StateStore sender exist.
-  // Defensive: a stale/absent window just leaves that region on its default (handled
-  // in _onUnitLayout via _restoreWindowId); no saved regions => a no-op.
+  // Defensive: a stale/absent view just leaves that region on its default (handled
+  // in _onUnitLayout via _applyRestoreTarget); no saved regions => a no-op.
   _restoreSplitState() {
     // Read BEFORE anything can write (see _persistSplitState's guard). readSplitState
     // also owns the rule that `regions` excludes the primary — see split-state.js.
-    const { regions: list, primaryWindowId: savedPrimary } = readSplitState(stateStore.section('split'));
+    const {
+      regions: list,
+      primaryWindowId: savedPrimary,
+      primarySession: savedPrimarySession,
+    } = readSplitState(stateStore.section('split'));
 
-    // The main region's last window. Claimed first so that if a stale blob names the
+    // The main region's last view. Claimed first so that if a stale blob names the
     // same window for the primary and an extra region, the primary wins deterministically
     // rather than by whichever layout happens to arrive first. Absent on blobs written
     // before this was persisted — the primary then just stays on whatever window the
     // base session is currently showing, i.e. the old console-driven behavior.
-    if (savedPrimary && this.units[0]) this.units[0]._restoreWindowId = savedPrimary;
+    if (savedPrimary && this.units[0]) {
+      this.units[0]._restoreWindowId = savedPrimary;
+      this.units[0]._restoreSession = savedPrimarySession;
+    }
 
     // Every read of the blob is done, so writes are safe from here on. Region
     // creation below is covered separately by _restoringSplit.
@@ -271,10 +310,14 @@ export class SplitManager {
     if (list.length) {
       this._restoringSplit = true;
       try {
-        for (const windowId of list) {
+        for (const view of list) {
           const unit = this.addUnit({});
-          if (windowId) unit._restoreWindowId = windowId;
-          else unit._autoPickPending = true;   // no saved window → MRU auto-pick
+          if (view.windowId) {
+            unit._restoreWindowId = view.windowId;
+            unit._restoreSession = view.session;
+          } else {
+            unit._autoPickPending = true;   // no saved window → MRU auto-pick
+          }
         }
       } finally {
         this._restoringSplit = false;
@@ -388,39 +431,29 @@ export class SplitManager {
         // really viewed, so it must not pollute the recents strip. The landing
         // window is recorded for real when its own layout arrives.
         unit._targetWindowId = target;
+        unit._targetSession = this.logicalSession(unit);   // same session — no hop
         unit._accessSeenId = activeId;
         unit.selectWindow(target);
       }
       unit._autoPickPending = false;
     }
 
-    // Restore-target: a region wants to land on the specific window it showed last
-    // session — an extra region recreated by _restoreSplitState(), or the primary
-    // restored from primaryWindowId. Navigate there once its layout arrives, but only
-    // if that window still exists and isn't already claimed by another region (a tmux
-    // server restart may have changed the window set — then we just stay put).
-    //
-    // For the PRIMARY this issues a select-window on the base session, whose attach is
-    // shared with the ssh console, so the console follows. The `target !== activeWindowId`
-    // check below means that only happens when the window actually differs — a reload
-    // that lands where tmux already is stays silent.
-    if (unit._restoreWindowId && unit.layout) {
-      const target = unit._restoreWindowId;
-      unit._restoreWindowId = null;
-      const used = this.occupiedWindowIds(unit);
-      const exists = (unit.layout.windows || []).some((w) => w.id === target);
-      if (exists && !used.has(target) && target !== unit.layout.activeWindowId) {
-        unit._targetWindowId = target;
-        unit._accessSeenId = unit.layout.activeWindowId;
-        unit.selectWindow(target);
-      }
-    }
+    this._applyRestoreTarget(unit);
 
     // An in-flight goToWindow target that the layout now confirms is no longer
     // "pending" — clear it even when it wasn't a change (e.g. re-selecting the
     // window the pane was already on), so it can't linger as a phantom claim.
     const newId = unit.layout?.activeWindowId;
     if (unit._targetWindowId && unit._targetWindowId === newId) unit._targetWindowId = null;
+    // The session half of the same claim (read by _viewOf while a hop is in flight)
+    // clears only once the pane really is on that session — a cross-session hop's
+    // intermediate layout reports the target window with the OLD session still named,
+    // and dropping the claim there would persist a (session, window) pair that never
+    // existed. A hop that never lands keeps the claim, exactly as the window half
+    // above already does.
+    if (unit._targetSession && unit._targetSession === this.logicalSession(unit)) {
+      unit._targetSession = null;
+    }
 
     // Remember which region each window really lives in, so a later hover preview of
     // it reappears where you're used to seeing it rather than hijacking the focused
@@ -451,10 +484,87 @@ export class SplitManager {
       if (unit._navSuppress && landSession !== unit._navSuppress.session) unit._navSuppress = null;
       if (!suppressed) this.noteAccess(newId, this._metaFor(unit, newId));
       // Any region landing on a new window changes the saved layout — including the
-      // primary, whose window is now restored too (as primaryWindowId).
+      // primary, whose view is now restored too (primaryWindowId + primarySession).
+      this._persistSplitState();
+    }
+
+    // A pane can change SESSION without changing window: a window LINKED into two
+    // sessions, viewed through the other one. The saved view is a pair, so that hop
+    // needs its own trigger — the window-change branch above never fires for it, and
+    // the blob would keep naming the session we left.
+    const nowSession = this.logicalSession(unit);
+    if (unit._seenSession !== nowSession) {
+      unit._seenSession = nowSession;
       this._persistSplitState();
     }
     this._refreshToolbar();
+  }
+
+  // Restore-target: a region wants to land on the VIEW — (session, window) — it showed
+  // last time, either an extra region recreated by _restoreSplitState() or the primary
+  // restored from primaryWindowId/primarySession. Runs once per region, on the first
+  // layout after boot. WHICH view (and why the session half is not optional) is
+  // resolveRestoreView's job — see restore-view.js; this is the part that has to touch
+  // the live pane.
+  //
+  // When the resolved view is in another session we HOP first, exactly as goToWindowIn
+  // does for a live switch: that is what brings a window outside this pane's own
+  // session list within reach of select-window.
+  //
+  // For the PRIMARY a select-window acts on the base session, whose attach is SHARED
+  // with the ssh console, so the console follows. The already-there check below means
+  // that only happens when the view actually differs — a reload that lands where tmux
+  // already is stays silent.
+  _applyRestoreTarget(unit) {
+    if (!unit.layout || !unit._restoreWindowId) return;
+    const saved = { windowId: unit._restoreWindowId, session: unit._restoreSession };
+    unit._restoreWindowId = null;
+    unit._restoreSession = null;
+
+    const cur = this.logicalSession(unit);
+    const view = resolveRestoreView({
+      saved,
+      session: cur,
+      windows: (unit.layout.windows || []).map((w) => w.id),
+      placements: this._windowPlacements(unit),
+      occupied: this.occupiedWindowIds(unit),
+      recents: this.recentWindows,
+      recency: (id) => this.captureCache.accessed.get(id) ?? 0,
+    });
+    if (!view) return;
+
+    const hop = !!view.session && view.session !== cur;
+    const bootId = unit.layout.activeWindowId;
+    if (!hop && view.id === bootId) return;   // already there
+    // The window this pane booted on was only PASSED THROUGH on the way to the saved
+    // view; mark it seen so the access-note below doesn't record it as a visit and put
+    // a tab you never opened at the front of the recents strip. Not when the view IS
+    // that window in another session (a linked window, restored to its other tab):
+    // there is nothing to suppress, and marking it would swallow the real access that
+    // the landing layout should record for the session we are hopping to. The
+    // intermediate layout — target window, old session still named — is covered by
+    // _navSuppress below instead.
+    if (view.id !== bootId) unit._accessSeenId = bootId;
+    unit._targetWindowId = view.id;
+    unit._targetSession = view.session;
+    if (hop) {
+      // Same transient guard the live switcher uses (see _onUnitLayout's _navSuppress).
+      unit._navSuppress = { id: view.id, session: cur };
+      unit.switchSession(view.session);
+    }
+    unit.selectWindow(view.id);
+  }
+
+  // Every (session, window) placement on the tmux server, from the directory that
+  // rides every layout push (layout.allWindows — see pkg/tmux/types.go). Empty when a
+  // server sends no directory; the caller owns what to do then (resolveRestoreView
+  // falls back to the pane's own single-session window list).
+  //
+  // Not to be confused with the `_placements` FIELD, which is the alert-marked
+  // universe the flash registry was last run over — a different question about the
+  // same directory.
+  _windowPlacements(unit) {
+    return (unit.layout?.allWindows || []).map((w) => ({ id: w.id, session: w.session || '' }));
   }
 
   // A pane's LOGICAL session: the group's base for a split's ephemeral web-*
@@ -1023,6 +1133,10 @@ export class SplitManager {
       if (!session || !u.layout || session === curSession) return; // unreachable
       u.switchSession(session);
     }
+    // Claim BOTH halves of the view we're switching to: the window (so no other pane
+    // grabs it mid-flight) and the session (so a save mid-hop records where we're
+    // going — see _viewOf).
+    u._targetSession = session || curSession;
     u._targetWindowId = id;
     u.selectWindow(id);
     u.terminal?.focus();
