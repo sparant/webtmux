@@ -703,15 +703,29 @@ func (c *Controller) ClosePane(paneID string) error {
 	return nil
 }
 
-// EnterCopyMode enters copy mode on the active pane
+// EnterCopyMode enters copy mode on the active pane. Idempotent: tmux accepts
+// `copy-mode` on a pane that is already in it (exit 0, no-op).
 func (c *Controller) EnterCopyMode() error {
 	_, err := c.runTmux("copy-mode", "-t", c.session())
 	return err
 }
 
-// ExitCopyMode exits copy mode
+// ExitCopyMode leaves copy/view mode on the active pane.
+//
+// `copy-mode -q`, NOT `send-keys -X cancel`. Every `-X` command is rejected
+// ("not in a mode", exit 1) unless the pane is in a mode at that instant — and
+// the browser cannot know that it is. Its copy-mode flag comes from a 500ms
+// poll, so the pane may have left copy mode on its own since (a `q`, a `y` that
+// copies-and-cancels, Enter, Escape, a mouse copy, or the ssh console sharing
+// the session) and the next paste still asks for an exit. That spurious exit is
+// the single most common way the old code produced a failed tmux command — and
+// a failed tmux command used to kill the connection (see webtty.afterCmd), which
+// is what the user saw as `[lost tty]` right after a copy/paste.
+//
+// `-q` quits the mode if there is one and exits 0 if there isn't (verified on
+// tmux 3.6), which is the idempotence every caller here actually wants.
 func (c *Controller) ExitCopyMode() error {
-	_, err := c.runTmux("send-keys", "-t", c.session(), "-X", "cancel")
+	_, err := c.runTmux("copy-mode", "-q", "-t", c.session())
 	return err
 }
 
@@ -732,26 +746,37 @@ func (c *Controller) RefreshClient() error {
 	return err
 }
 
-// ScrollUp scrolls up in copy mode
+// ScrollUp scrolls back through the pane's history.
+//
+// It enters copy mode first when the pane isn't already in it, because that IS
+// what scrolling into the scrollback means in tmux — and because the caller's
+// idea of the mode can be stale (see ExitCopyMode). `copy-mode` is idempotent,
+// so this costs nothing when we're already there, and it turns a wheel notch
+// that used to be rejected outright into the scroll the user asked for.
+//
+// One `-N <lines>` send moves the whole notch: the old loop forked tmux once per
+// line, so a fast wheel spin was dozens of processes and dozens of chances for
+// one of them to fail.
 func (c *Controller) ScrollUp(lines int) error {
-	for i := 0; i < lines; i++ {
-		_, err := c.runTmux("send-keys", "-t", c.session(), "-X", "scroll-up")
-		if err != nil {
-			return err
-		}
+	if _, err := c.runTmux("copy-mode", "-t", c.session()); err != nil {
+		return err
 	}
-	return nil
+	_, err := c.runTmux("send-keys", "-t", c.session(), "-N", strconv.Itoa(lines), "-X", "scroll-up")
+	return err
 }
 
-// ScrollDown scrolls down in copy mode
+// ScrollDown scrolls forward again, toward the live screen.
+//
+// Guarded by `#{pane_in_mode}` rather than entering copy mode like ScrollUp
+// does: a pane at the live prompt has nothing below it, so a wheel-down that
+// arrives while the browser thinks we're scrolled up must be a no-op — entering
+// copy mode there would scroll the user INTO the scrollback for a gesture that
+// means the exact opposite. `if -F` evaluates the format and runs the command
+// under the same target in one tmux invocation, exiting 0 either way.
 func (c *Controller) ScrollDown(lines int) error {
-	for i := 0; i < lines; i++ {
-		_, err := c.runTmux("send-keys", "-t", c.session(), "-X", "scroll-down")
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	_, err := c.runTmux("if-shell", "-F", "-t", c.session(), "#{pane_in_mode}",
+		fmt.Sprintf("send-keys -N %d -X scroll-down", lines))
+	return err
 }
 
 // NewWindow creates a new window
@@ -1016,4 +1041,3 @@ func runTmuxOn(socket string, args ...string) (string, error) {
 	}
 	return string(output), nil
 }
-

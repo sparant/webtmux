@@ -27,6 +27,23 @@ export const COPY_MOTION = new Set(['h', 'j', 'k', 'l', 'g', 'G', 'n', 'N', 'H',
 export const COPY_LOOK_KEYS = 3;   // a run this long is deliberate navigation
 export const COPY_LOOK_MS = 300;   // …or a lone motion, once the pause says so
 
+// How long a locally-assumed copy-mode state outranks the layout's. The layout
+// carries tmux's own `#{pane_in_mode}` — the only ground truth there is — but it
+// is a SNAPSHOT from the 500ms poll, so it legitimately lags a change the browser
+// made since (entering copy mode on a wheel notch, leaving it to paste). Past this
+// window the poll must have seen that change, so a layout that still disagrees is
+// reporting something we didn't do: the pane left copy mode by itself (`q`, `y`,
+// Enter, a mouse copy, the ssh console). Believing our own stale `true` there is
+// what made the browser send copy-mode-only commands to a pane in normal mode.
+export const COPY_TRUST_MS = 900;
+
+// Should the layout's copy-mode state overwrite what we assumed locally?
+// assumedAt is when the local assumption was made (0/null = never assumed).
+export function layoutModeWins(assumedAt, now, trustMs = COPY_TRUST_MS) {
+  if (!assumedAt) return true;
+  return now - assumedAt >= trustMs;
+}
+
 export class CopyModeArbiter {
   // sendKeys(str)  — deliver these bytes to the pane (copy-mode commands, or input).
   // exitCopyMode() — leave copy mode; called BEFORE the held keys are delivered so

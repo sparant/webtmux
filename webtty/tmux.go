@@ -93,7 +93,34 @@ func (wt *WebTTY) SendTmuxModeUpdate(inCopyMode bool) error {
 	return wt.masterWrite(append([]byte{TmuxModeUpdate}, data...))
 }
 
-// handleTmuxMessage handles tmux-specific messages from the client
+// afterCmd reports the outcome of ONE client-requested tmux command.
+//
+// A tmux command that fails is an ordinary outcome here, not a protocol fault:
+// the window was killed a moment before the click landed, the pane had already
+// left copy mode, another client renamed the session out from under us. What is
+// NOT ordinary is what returning that error used to do. handleMasterReadEvent
+// passes a handler error out of Run; processWSConn then unwinds and its
+// `defer slave.Close()` signals the pty's process — SIGHUP by default (the
+// close-signal flag) — and the tmux client attached in that pty prints its own
+// goodbye for a hangup before it dies: `[lost tty]`. So one rejected tmux
+// command cost the user the whole pane, and whatever they had just typed or
+// pasted into it.
+//
+// Hence: log it, push the layout so the browser re-syncs to what tmux ACTUALLY
+// did (its optimistic update was wrong, and staying wrong is how the NEXT
+// impossible command gets sent), and keep the connection. Only a genuine I/O
+// failure writing to the master — the connection is already gone — is fatal.
+func (wt *WebTTY) afterCmd(what string, err error) error {
+	if err != nil {
+		log.Printf("tmux %s failed (ignored, pane kept): %v", what, err)
+	}
+	return wt.SendTmuxLayout()
+}
+
+// handleTmuxMessage handles tmux-specific messages from the client.
+//
+// No case here returns a tmux command's error: see afterCmd for why a failed
+// tmux command must never tear the connection down.
 func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 	// Capture requests use the server-global captureProvider, not the
 	// per-connection tmuxCtrl, so handle them before the tmuxCtrl guard.
@@ -116,32 +143,16 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 
 	switch msgType {
 	case TmuxSelectPane:
-		paneID := string(payload)
-		if err := wt.tmuxCtrl.SelectPane(paneID); err != nil {
-			return errors.Wrap(err, "failed to select pane")
-		}
-		return wt.SendTmuxLayout()
+		return wt.afterCmd("select pane", wt.tmuxCtrl.SelectPane(string(payload)))
 
 	case TmuxSelectWindow:
-		windowID := string(payload)
-		if err := wt.tmuxCtrl.SelectWindow(windowID); err != nil {
-			return errors.Wrap(err, "failed to select window")
-		}
-		return wt.SendTmuxLayout()
+		return wt.afterCmd("select window", wt.tmuxCtrl.SelectWindow(string(payload)))
 
 	case TmuxSplitPane:
-		horizontal := string(payload) == "h"
-		if err := wt.tmuxCtrl.SplitPane(horizontal); err != nil {
-			return errors.Wrap(err, "failed to split pane")
-		}
-		return wt.SendTmuxLayout()
+		return wt.afterCmd("split pane", wt.tmuxCtrl.SplitPane(string(payload) == "h"))
 
 	case TmuxClosePane:
-		paneID := string(payload)
-		if err := wt.tmuxCtrl.ClosePane(paneID); err != nil {
-			return errors.Wrap(err, "failed to close pane")
-		}
-		return wt.SendTmuxLayout()
+		return wt.afterCmd("close pane", wt.tmuxCtrl.ClosePane(string(payload)))
 
 	case TmuxCopyMode:
 		enter := string(payload) == "1"
@@ -152,36 +163,43 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 			err = wt.tmuxCtrl.ExitCopyMode()
 		}
 		if err != nil {
-			return errors.Wrap(err, "failed to toggle copy mode")
+			log.Printf("tmux copy mode (enter=%v) failed (ignored, pane kept): %v", enter, err)
 		}
-		return wt.SendTmuxModeUpdate(enter)
+		// Answer with what tmux is ACTUALLY doing, not with what was asked for.
+		// The browser gates copy-mode-only work on this flag — the keystroke
+		// arbiter, the wheel, and every `send-keys -X …` the two of them produce —
+		// so a client that thinks it is in copy mode when the pane is not is
+		// precisely the state that generated impossible commands. The 500ms layout
+		// poll would correct it eventually; re-reading it here closes that window
+		// on the one event that is most likely to have desynced it, for the price
+		// of a couple of forks on a deliberate user gesture.
+		wt.tmuxCtrl.RefreshLayout()
+		if l := wt.tmuxCtrl.GetLayout(); l != nil {
+			return wt.SendTmuxModeUpdate(l.ActivePaneInMode)
+		}
+		return wt.SendTmuxModeUpdate(enter && err == nil)
 
+	// Scrolling is the one high-frequency control message (one per wheel notch),
+	// so a failure is logged but NOT answered with a layout push — a rejected
+	// scroll changes nothing there is to re-sync, and a wheel spin would turn
+	// into a burst of full layout frames.
 	case TmuxScrollUp:
-		lines, _ := strconv.Atoi(string(payload))
-		if lines <= 0 {
-			lines = 1
+		if err := wt.tmuxCtrl.ScrollUp(scrollLines(payload)); err != nil {
+			log.Printf("tmux scroll up failed (ignored, pane kept): %v", err)
 		}
-		return wt.tmuxCtrl.ScrollUp(lines)
+		return nil
 
 	case TmuxScrollDown:
-		lines, _ := strconv.Atoi(string(payload))
-		if lines <= 0 {
-			lines = 1
+		if err := wt.tmuxCtrl.ScrollDown(scrollLines(payload)); err != nil {
+			log.Printf("tmux scroll down failed (ignored, pane kept): %v", err)
 		}
-		return wt.tmuxCtrl.ScrollDown(lines)
+		return nil
 
 	case TmuxNewWindow:
-		if err := wt.tmuxCtrl.NewWindow(); err != nil {
-			return errors.Wrap(err, "failed to create new window")
-		}
-		return wt.SendTmuxLayout()
+		return wt.afterCmd("new window", wt.tmuxCtrl.NewWindow())
 
 	case TmuxSwitchSession:
-		sessionName := string(payload)
-		if err := wt.tmuxCtrl.SwitchSession(sessionName); err != nil {
-			return errors.Wrap(err, "failed to switch session")
-		}
-		return wt.SendTmuxLayout()
+		return wt.afterCmd("switch session", wt.tmuxCtrl.SwitchSession(string(payload)))
 
 	case TmuxRenameWindow:
 		// payload = "<windowID> <new name>"; windowIDs are "@N" (no spaces), so
@@ -192,10 +210,7 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 			return nil
 		}
 		windowID, name := s[:idx], s[idx+1:]
-		if err := wt.tmuxCtrl.RenameWindow(windowID, name); err != nil {
-			return errors.Wrap(err, "failed to rename window")
-		}
-		return wt.SendTmuxLayout()
+		return wt.afterCmd("rename window", wt.tmuxCtrl.RenameWindow(windowID, name))
 
 	case TmuxMoveWindow:
 		// payload = "<windowID> <targetPos>"; windowIDs are "@N" (no spaces).
@@ -209,16 +224,10 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 		if err != nil {
 			return nil
 		}
-		if err := wt.tmuxCtrl.MoveWindow(windowID, targetPos); err != nil {
-			return errors.Wrap(err, "failed to move window")
-		}
-		return wt.SendTmuxLayout()
+		return wt.afterCmd("move window", wt.tmuxCtrl.MoveWindow(windowID, targetPos))
 
 	case TmuxNewSession:
-		if err := wt.tmuxCtrl.NewSession(); err != nil {
-			return errors.Wrap(err, "failed to create new session")
-		}
-		return wt.SendTmuxLayout()
+		return wt.afterCmd("new session", wt.tmuxCtrl.NewSession())
 
 	case TmuxRenameSession:
 		// payload = "<oldName> <new name>"; session names have no spaces, so split
@@ -229,24 +238,13 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 			return nil
 		}
 		oldName, newName := s[:idx], s[idx+1:]
-		if err := wt.tmuxCtrl.RenameSession(oldName, newName); err != nil {
-			return errors.Wrap(err, "failed to rename session")
-		}
-		return wt.SendTmuxLayout()
+		return wt.afterCmd("rename session", wt.tmuxCtrl.RenameSession(oldName, newName))
 
 	case TmuxKillWindow:
-		windowID := string(payload)
-		if err := wt.tmuxCtrl.KillWindow(windowID); err != nil {
-			return errors.Wrap(err, "failed to kill window")
-		}
-		return wt.SendTmuxLayout()
+		return wt.afterCmd("kill window", wt.tmuxCtrl.KillWindow(string(payload)))
 
 	case TmuxKillSession:
-		sessionName := string(payload)
-		if err := wt.tmuxCtrl.KillSession(sessionName); err != nil {
-			return errors.Wrap(err, "failed to kill session")
-		}
-		return wt.SendTmuxLayout()
+		return wt.afterCmd("kill session", wt.tmuxCtrl.KillSession(string(payload)))
 
 	case TmuxLinkWindow:
 		// payload = "<windowID> <targetSession>"; windowIDs are "@N" (no spaces),
@@ -257,17 +255,10 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 			return nil
 		}
 		windowID, targetSession := s[:idx], s[idx+1:]
-		if err := wt.tmuxCtrl.LinkWindow(windowID, targetSession); err != nil {
-			return errors.Wrap(err, "failed to link window")
-		}
-		return wt.SendTmuxLayout()
+		return wt.afterCmd("link window", wt.tmuxCtrl.LinkWindow(windowID, targetSession))
 
 	case TmuxUnlinkWindow:
-		windowID := string(payload)
-		if err := wt.tmuxCtrl.UnlinkWindow(windowID); err != nil {
-			return errors.Wrap(err, "failed to unlink window")
-		}
-		return wt.SendTmuxLayout()
+		return wt.afterCmd("unlink window", wt.tmuxCtrl.UnlinkWindow(string(payload)))
 
 	case TmuxSetState:
 		// Persist the shared UI visual-state blob into the tmux global option
@@ -291,7 +282,7 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 			return nil
 		}
 		if err := wt.tmuxCtrl.SetGlobalOption("@wt_state", string(payload)); err != nil {
-			return errors.Wrap(err, "failed to set tmux state")
+			log.Printf("@wt_state write failed (ignored, pane kept): %v", err)
 		}
 		return nil
 
@@ -306,8 +297,21 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 		return nil
 
 	default:
-		return errors.Errorf("unknown tmux message type: %c", msgType)
+		// A message type this build doesn't know (a newer browser bundle against an
+		// older binary, or a stray frame) is not worth the pane it would cost.
+		log.Printf("ignoring unknown tmux message type: %c", msgType)
+		return nil
 	}
+}
+
+// scrollLines reads a scroll message's line count, defaulting to one notch for
+// anything absent or nonsensical.
+func scrollLines(payload []byte) int {
+	lines, _ := strconv.Atoi(string(payload))
+	if lines <= 0 {
+		return 1
+	}
+	return lines
 }
 
 // handleCaptureRequest parses {windows, force}, refreshes the requested capture
@@ -325,7 +329,10 @@ func (wt *WebTTY) handleCaptureRequest(payload []byte) error {
 	}
 	if len(payload) > 0 {
 		if err := json.Unmarshal(payload, &req); err != nil {
-			return errors.Wrap(err, "invalid tmux capture request")
+			// Drop it: a malformed request costs the user a thumbnail, whereas
+			// returning the error would cost them the pane (see afterCmd).
+			log.Printf("ignoring invalid tmux capture request: %v", err)
+			return nil
 		}
 	}
 

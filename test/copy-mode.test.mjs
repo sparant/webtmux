@@ -7,7 +7,7 @@
 // injected so the "lone motion, then a pause" path is exercised without waiting.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CopyModeArbiter } from '../resources/js/copy-mode.js';
+import { CopyModeArbiter, layoutModeWins, COPY_TRUST_MS } from '../resources/js/copy-mode.js';
 
 // Records what the arbiter did, and lets a test fire the pending pause timer by hand.
 function arb(opts = {}) {
@@ -147,4 +147,34 @@ test('a settled hold leaves no timer behind to fire later', () => {
   type(a, 'x');            // typing verdict
   assert.equal(log.pausePending(), false, 'the pause timer is cancelled');
   assert.equal(a.held, '');
+});
+
+// ---------------------------------------------------------------------------
+// layoutModeWins — who is right about copy mode, us or the layout poll.
+//
+// The browser sets the copy-mode flag optimistically (a wheel notch enters copy
+// mode, a paste leaves it) and tmux reports the truth in every layout push, but
+// that push is a snapshot up to a poll interval old. These decide which one to
+// believe; getting it wrong in either direction is how the flag went stale, and
+// a stale flag is how copy-mode-only commands reached a pane in normal mode.
+// ---------------------------------------------------------------------------
+
+test('the layout is believed when nothing was ever assumed locally', () => {
+  assert.equal(layoutModeWins(0, 10_000), true);
+  assert.equal(layoutModeWins(null, 10_000), true);
+});
+
+test('a fresh local assumption outranks a layout snapshot older than it', () => {
+  const now = 10_000;
+  assert.equal(layoutModeWins(now - 100, now), false, 'the poll cannot have seen it yet');
+});
+
+test('an assumption older than the trust window loses to the layout', () => {
+  const now = 10_000;
+  assert.equal(layoutModeWins(now - COPY_TRUST_MS, now), true);
+  assert.equal(layoutModeWins(now - 5_000, now), true, 'a long-stale flag never wins');
+});
+
+test('the trust window covers the 500ms layout poll with margin', () => {
+  assert.ok(COPY_TRUST_MS > 500, 'a snapshot from the previous poll must not win');
 });

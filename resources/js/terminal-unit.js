@@ -11,7 +11,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { CaptureCache } from './capture-cache.js';
-import { CopyModeArbiter } from './copy-mode.js';
+import { CopyModeArbiter, layoutModeWins } from './copy-mode.js';
 import { copyText } from './clipboard.js';
 import { stateStore } from './state-store.js';
 import { arrowSequence } from './arrow-keys.js';
@@ -118,6 +118,7 @@ export class TerminalUnit {
     this.reconnectInterval = null;
     this.bufferSize = 1024 * 1024;
     this._inCopyMode = false;
+    this._modeSetAt = 0;      // when _inCopyMode was last decided locally
     // Scroll-wheel behavior: 'buffer' (default) = wheel drives tmux copy-mode
     // history scrolling; 'passthrough' = let xterm forward the wheel to the app
     // (so a TUI like Claude, vim, less handles its own scrolling). Persisted +
@@ -186,6 +187,26 @@ export class TerminalUnit {
     const on = !!v;
     if (on && !this._inCopyMode) this._copyArbiter?.reset();
     this._inCopyMode = on;
+    // When this was last decided here. _syncCopyModeFromLayout uses it to tell a
+    // layout that hasn't caught up yet from one that is correcting us.
+    this._modeSetAt = Date.now();
+  }
+
+  // Reconcile the copy-mode flag with tmux's own #{pane_in_mode}, which rides
+  // every layout push. Most of the flag's writers are optimistic (wheel, drag,
+  // touch, the paste path), and tmux can leave copy mode without telling anyone
+  // — `q`, a `y` that copies-and-cancels, Enter, a mouse copy, or the ssh console
+  // sharing the session. Nothing used to close that gap, so the flag could sit
+  // stale-true indefinitely, and every wheel notch or paste while it did aimed a
+  // copy-mode-only command at a pane in normal mode.
+  _syncCopyModeFromLayout() {
+    const truth = !!this.layout?.activePaneInMode;
+    if (truth === this._inCopyMode) return;
+    if (!layoutModeWins(this._modeSetAt, Date.now())) return;
+    this.inCopyMode = truth;
+    // Left copy mode without us asking: keys the arbiter is still holding for a
+    // verdict belong at the prompt now (same rule as the server's mode push).
+    if (!truth && this._copyArbiter?.held) this._copyArbiter.flush('typing');
   }
 
   init() {
@@ -304,13 +325,17 @@ export class TerminalUnit {
         // copy-mode key commands instead of inserted at the prompt. Drop back to
         // normal mode FIRST — this send rides the same serialized ws ahead of the
         // (async, clipboard-gated) paste, so copy mode is already gone when it lands.
+        // The exit is harmless when the pane turns out NOT to be in copy mode: the
+        // server exits the mode idempotently (`copy-mode -q`), which matters because
+        // this flag is only ever as fresh as the last layout push.
         if (this.inCopyMode) this.exitCopyMode();
         navigator.clipboard.readText().then(text => {
-          if (text) {
-            const bytes = this.encoder.encode(text);
-            const binary = String.fromCharCode(...bytes);
-            this.sendMessage(MSG.Input, btoa(binary));
-          }
+          // sendInput, not a hand-rolled frame: it chunks. A paste sent as ONE
+          // Input message overflowed the server's per-message read buffer above
+          // ~96KB of text, which drops the WebSocket and takes the pane's tmux
+          // client with it ([lost tty]), and `String.fromCharCode(...bytes)` blew
+          // the stack on a large paste before it even got that far.
+          if (text) this.sendInput(text);
         }).catch(err => {
           console.warn('Failed to paste:', err);
         });
@@ -744,6 +769,7 @@ export class TerminalUnit {
 
       case MSG.TmuxLayoutUpdate:
         this.layout = JSON.parse(payload);
+        this._syncCopyModeFromLayout();
         this._rememberOrRestore();
         this.dispatchLayoutUpdate();
         break;
