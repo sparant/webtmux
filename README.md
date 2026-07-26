@@ -2,6 +2,107 @@
 
 A web-based terminal with tmux-specific features. Access your tmux sessions from any browser with a visual pane layout, touch-friendly controls, and automatic scroll-to-copy-mode.
 
+## What this fork adds
+
+### Split view & regions
+- Split view: add side-by-side terminal regions (Ctrl+Alt+Enter), each an independent live tmux view backed by its own grouped session — watch two windows of the same server at once.
+- One shared sidebar bound to whichever region is focused; a draggable divider resizes regions.
+- A new region auto-picks the most-recently-used window not already on screen; two regions never show the same window (occupied windows are greyed out in every switcher).
+- Secondary regions switch sessions freely without dragging the primary or the console along; a split that gets synced onto a shared session self-heals.
+- Close the focused region with Ctrl+Alt+X (the primary region can't be closed).
+
+### Sidebar (windows & sessions)
+- Toggle with Ctrl+Alt+W from anywhere; hover-overlay mode with a pin toggle; vertical window list.
+- Preview-before-commit browsing: arrow keys and hovering preview windows/sessions live in the real terminal; Enter or click commits, Esc puts everything back.
+- Type-ahead search to find a window; drag rows to reorder, drag a window onto a session tab to link it there.
+- Hover × kills a window — or just unlinks it when it lives in other sessions too; empty sessions skip the confirmation. Double-click renames windows and sessions inline; "+" creates a session; session order persists.
+- Ephemeral split-view helper sessions (`web-*`) are hidden from the list.
+
+### Toolbar & recents strip
+- Top toolbar with up to five most-recently-used window tabs spanning all sessions; tabs navigate the focused region, each has a hover ×, and the strip persists across reloads.
+- Attention arrow (→) at the end of the strip counts and flashes for windows that need you but are visible nowhere; clicking it opens the most recent one, previewed first.
+- Copy-mode indicator/toggle, scroll-mode toggle, save (⤓) button, Preview add/remove, split-region focus dots, and a hidden build-id chip (Ctrl+Alt+B, copies the build id when revealed).
+
+### Exposé (window mosaic)
+- Ctrl+Alt+E cycles a full-screen mosaic of every window across every session: 2×2 → 3×3 → closed; on a Mac a trackpad pinch opens/closes it.
+- Live thumbnails; click or arrow+Enter switches the focused region; type to filter by name, with an optional toggle to search captured window content too.
+- Linked windows appear once; sort by session or recency; "last accessed" persists across reloads. A tile whose window is already shown elsewhere explains why instead of silently ignoring the click.
+
+### Preview / picture-in-picture
+- "Preview" collects windows to keep an eye on: one window floats as a corner PiP box; two or more dock as a bar along a screen edge that reserves space instead of covering the terminal.
+- Ctrl+Alt+I adds/removes the focused window; Ctrl+Alt+H hides/shows the preview without losing it; tiles are read-only and click-to-switch.
+- The single-window PiP blanks itself while the focused region already shows that window, and reappears when you move away.
+
+### Hover previews (unified)
+- Pointing at any window — recents tab, sidebar row, preview tile, Exposé browse — previews it full-size in a real terminal region, visibly marked temporary; commit with click/Enter, restore with Esc or by moving away.
+- Previews wait for a fresh capture at the right pane geometry before painting, so you never see a stale or mis-sized screen.
+
+### Stoplights & work alerts
+- Windows self-report status via the tmux option `@wt_working`; webtmux renders a stoplight dot everywhere the window appears (recents tabs, sidebar rows, preview tiles, Exposé tiles): green = working, amber = prompting you, red = waiting for work, unfilled = not reporting. Hovering any dot shows the full color key.
+- When a window drops out of green while you're looking elsewhere, everything showing it flashes in the new color until you actually view it — no timeout. Alerts cover every window on the server, not just visible tabs; reduced-motion users get a solid ring instead of blinking.
+- A bash prompt-hook installer ships in the repo so ordinary shells paint their own light automatically (see below).
+
+### Capture & preview infrastructure
+- The server keeps one deduplicated capture buffer per tmux window, shared across all connections, with freshness coalescing so overlapping UI polls never storm tmux.
+- Clients mirror it in a capture cache powering Exposé tiles, preview tiles, hover previews, and optimistic paint — switching windows paints the cached screen instantly while the live feed catches up. Captures of closed windows are pruned.
+
+### State persistence
+- Shared UI state lives in the tmux server itself (global option `@wt_state`), surviving reloads, reconnects, and webtmux restarts, and shared by every browser: sidebar prefs, session order, renderer choice, Exposé/preview/toolbar prefs, split window assignments, the recents strip, access recency, the chosen save directory, and the primary region's window.
+- Per-tab state (focused view, split widths) stays in the browser tab so two browsers don't fight over focus. A reload returns every region to the exact session+window it was on.
+
+### Copy, scroll & clipboard
+- Smart copy-mode typing: in a scrolled-up pane, copy-mode motions keep working but ordinary typing drops back to the prompt — no keystrokes silently swallowed.
+- Cmd/Ctrl+C copies and stays in copy mode (grab several regions); Cmd/Ctrl+V exits copy mode first so the paste lands at the prompt; drag enters copy-mode immediately and auto-scrolls; selection highlight clears after copy.
+- Clipboard copy works on plain-HTTP LAN access (falls back when the secure clipboard API is missing); large pastes no longer drop the connection.
+- Scroll-mode choices including an "auto+" default and adaptive wheel modes; Ctrl+Alt+[ toggles copy/scrollback mode.
+
+### Save pane buffer to a file
+- Toolbar ⤓ saves the focused pane's scrollback: download to the browser, or write a file on the machine webtmux runs on — container-aware, with the save location explained up front and configurable via `WEBTMUX_SAVE_DIR` / `WEBTMUX_PATH_MAP` / `WEBTMUX_HOME` / `WEBTMUX_IN_CONTAINER` (details in the save section below).
+
+### Keyboard navigation & discoverability
+- A shortcuts overlay (Ctrl+Alt+/) lists every hotkey with modifier labels matching your OS (⌃⌥ on Mac).
+- Global Ctrl+Alt chords mirror tmux letters: W sidebar, P/N recents prev/next, ⇧P/⇧N walk the session's window list in index order, L alt-tab-style MRU cycle with deferred commit, comma rename, X close region, [ copy mode, C new window (also ⌘⌥C on Mac), D drop current window from recents, Enter add split, E Exposé, I/H preview.
+- Consistent custom tooltips everywhere; confirmations appear as a small popup next to the control you clicked, and only an explicit "Yes" acts.
+
+### Terminal rendering & session plumbing
+- Glyph fidelity: tmux clients attach UTF-8-clean and the DOM renderer is the default (WebGL opt-in), so box-drawing and pane borders render correctly; pure black terminal background.
+- Honors a custom tmux socket and env-based detection (`WEBTMUX_SOCKET`, `WEBTMUX_SESSION`).
+- Per-connection tmux controller threading: each browser region follows its pane's real tmux client by tty+pid, fixing wrong-client switches (including cross-container pty name collisions, backed by a pts-number reservation, `WEBTMUX_PTS_FLOOR`).
+
+### Build, server & reliability
+- JS syntax gate in the build (`make check-js`) so one bad file can't blank the UI; `make test` runs the node unit-test suites for the pure-JS logic.
+- No-store caching on embedded assets so a rebuild is never masked by a stale browser cache; build id/time stamped into the binary and surfaced in the toolbar.
+- Client-supplied session names are sanitized server-side; window names containing `|` can't corrupt the status protocol.
+
+## Hooking into the stoplights
+
+The stoplight contract is one tmux option, set on the window by whatever runs inside it:
+
+```sh
+tmux set -w @wt_working 1     # green  — working
+tmux set -w @wt_working 2     # amber  — prompting: blocked until you answer
+tmux set -w @wt_working 0     # red    — waiting for work to do
+tmux set -w -u @wt_working    # unset  — unfilled dot, "not reporting"
+```
+
+That is the whole API: any script, agent hook, or build wrapper can write it, and every surface showing that window (recents tab, sidebar row, preview tile, Exposé tile) updates within ~500 ms. A drop out of green flashes everywhere the window appears until you view it.
+
+**Plain bash shells** — source the bundled prompt hooks from `~/.bashrc`:
+
+```sh
+[ -f /path/to/webtmux/install_stoplight_hooks_bash.sh ] && \
+  source /path/to/webtmux/install_stoplight_hooks_bash.sh
+```
+
+The hooks only activate inside tmux and are idempotent. They paint green when a command starts (bash `DEBUG` trap), red when the prompt returns (`PROMPT_COMMAND`), and leave the window red when the shell exits so it is never stranded green. `exit`/`logout` never paint green, and tab-completion doesn't trigger them.
+
+**Tools that own their window's light** (agents, long-running TUIs that report their own status): two escape hatches keep the shell hooks from fighting them —
+
+- `WT_STOPLIGHT_SUPPRESS=1` in the environment disables the shell hooks entirely.
+- `__wt_delegates_status` in the installer script lists launcher commands whose whole lifetime owns the light (by default `claude`, `pi`, and their launch scripts); the shell skips painting green for them so the tool's own writes shine through. Add your launcher's pattern there.
+
+An agent lifecycle integration is then just three writes: `1` when work starts, `2` from a "needs your input" hook, `0` when it goes idle or exits.
+
 ## Quick Start (Sprite)
 
 Deploy webtmux as a service on [Sprite](https://sprites.app):
