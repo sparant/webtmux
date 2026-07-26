@@ -92,7 +92,14 @@ test-js:
 # Build the release artifact in a pinned container — no local Go toolchain needed.
 # Emits builds/webtmux-<os>-<arch>. Cheap to re-run: BuildKit caches everything.
 # VERSION/GIT_COMMIT must be passed in because .dockerignore excludes .git.
+#
+# Create the output dir ourselves rather than letting BuildKit's local exporter
+# do it: the exporter creates it 0700, which on a shared/bind-mounted checkout
+# locks out every other uid (and, where POSIX ACLs are in play, collapses the
+# ACL mask to ---). The next person to build then gets an opaque
+# "lstat builds/webtmux-<os>-<arch>: permission denied" from the exporter.
 docker-artifact:
+	@mkdir -p $(OUTPUT_DIR)
 	docker build --target artifact --platform $(DOCKER_PLATFORM) \
 	  --output type=local,dest=$(OUTPUT_DIR)/ \
 	  --build-arg VERSION=$(VERSION) --build-arg GIT_COMMIT=$(GIT_COMMIT) .
