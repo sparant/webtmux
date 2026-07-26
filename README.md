@@ -5,7 +5,7 @@ A web-based terminal with tmux-specific features. Access your tmux sessions from
 ## What this fork adds
 
 ### Split view & regions
-![Split view: two independent live tmux regions side by side, with the recents strip and stoplight dots above](screenshots/split-view.jpg)
+![Split view replayed: Ctrl+Alt+Enter adds a second live region (auto-picking the most recent unseen window), the divider drags to resize, Ctrl+Alt+X closes it](screenshots/split-view.gif)
 - Split view: add side-by-side terminal regions (Ctrl+Alt+Enter), each an independent live tmux view backed by its own grouped session — watch two windows of the same server at once.
 - One shared sidebar bound to whichever region is focused; a draggable divider resizes regions.
 - A new region auto-picks the most-recently-used window not already on screen; two regions never show the same window (occupied windows are greyed out in every switcher).
@@ -13,7 +13,7 @@ A web-based terminal with tmux-specific features. Access your tmux sessions from
 - Close the focused region with Ctrl+Alt+X (the primary region can't be closed).
 
 ### Sidebar (windows & sessions)
-![The sidebar: session tabs, a vertical window list with stoplight dots, and a flashing window that needs attention](screenshots/sidebar.jpg)
+![Sidebar browse replayed: Ctrl+Alt+W opens the panel, hovering rows previews windows live in the real terminal, Esc puts everything back, click commits](screenshots/sidebar.gif)
 - Toggle with Ctrl+Alt+W from anywhere; hover-overlay mode with a pin toggle; vertical window list.
 - Preview-before-commit browsing: arrow keys and hovering preview windows/sessions live in the real terminal; Enter or click commits, Esc puts everything back.
 - Type-ahead search to find a window; drag rows to reorder, drag a window onto a session tab to link it there.
@@ -22,30 +22,30 @@ A web-based terminal with tmux-specific features. Access your tmux sessions from
 
 ### Toolbar & recents strip
 ![The toolbar: five most-recently-used window tabs with stoplight dots, and the flashing attention arrow counting unseen windows](screenshots/toolbar-recents.jpg)
+![The strip in motion: a tab flashes amber when its window prompts, the attention arrow flashes for a red window with no tab, and viewing the window stops its flash](screenshots/toolbar-alerts.gif)
 - Top toolbar with up to five most-recently-used window tabs spanning all sessions; tabs navigate the focused region, each has a hover ×, and the strip persists across reloads.
 - Attention arrow (→) at the end of the strip counts and flashes for windows that need you but are visible nowhere; clicking it opens the most recent one, previewed first.
 - Copy-mode indicator/toggle, scroll-mode toggle, save (⤓) button, Preview add/remove, split-region focus dots, and a hidden build-id chip (Ctrl+Alt+B, copies the build id when revealed).
 
 ### Exposé (window mosaic)
-![Exposé: a 3×3 mosaic of live thumbnails for every window across every session, with per-tile stoplight dots](screenshots/expose.jpg)
+![Exposé replayed: Ctrl+Alt+E opens the mosaic, pressing again densifies 2×2 to 3×3, typing filters by name, Enter switches the focused region](screenshots/expose.gif)
 - Ctrl+Alt+E cycles a full-screen mosaic of every window across every session: 2×2 → 3×3 → closed; on a Mac a trackpad pinch opens/closes it.
 - Live thumbnails; click or arrow+Enter switches the focused region; type to filter by name, with an optional toggle to search captured window content too.
 - Linked windows appear once; sort by session or recency; "last accessed" persists across reloads. A tile whose window is already shown elsewhere explains why instead of silently ignoring the click.
 
 ### Preview / picture-in-picture
-![A single previewed window floating as a corner picture-in-picture box, live while you work elsewhere](screenshots/preview-pip.jpg)
-![Two or more previewed windows dock as a bar along the bottom edge that reserves space instead of covering the terminal](screenshots/preview-bar.jpg)
+![Preview replayed: Ctrl+Alt+I floats one window as a corner PiP that blanks while you view its window; a second window docks both as an edge bar; Ctrl+Alt+H hides and restores it](screenshots/preview-pip.gif)
 - "Preview" collects windows to keep an eye on: one window floats as a corner PiP box; two or more dock as a bar along a screen edge that reserves space instead of covering the terminal.
 - Ctrl+Alt+I adds/removes the focused window; Ctrl+Alt+H hides/shows the preview without losing it; tiles are read-only and click-to-switch.
 - The single-window PiP blanks itself while the focused region already shows that window, and reappears when you move away.
 
 ### Hover previews (unified)
-![Hovering a recents tab previews that window full-size in the real terminal, visibly marked as a temporary preview](screenshots/hover-preview.jpg)
+![Hover preview replayed: pointing at a recents tab paints that window full-size in the real terminal, marked as temporary; moving away restores the original view](screenshots/hover-preview.gif)
 - Pointing at any window — recents tab, sidebar row, preview tile, Exposé browse — previews it full-size in a real terminal region, visibly marked temporary; commit with click/Enter, restore with Esc or by moving away.
 - Previews wait for a fresh capture at the right pane geometry before painting, so you never see a stale or mis-sized screen.
 
 ### Stoplights & work alerts
-![Stoplight dots on tabs and sidebar rows: green working, amber prompting, red waiting — with a dropped-out-of-green window flashing for attention](screenshots/stoplights.jpg)
+![Stoplights replayed: windows report green, one drops to amber and its tab flashes, another drops to red with no tab so the attention arrow flashes — until the window is actually viewed](screenshots/stoplights.gif)
 - Windows self-report status via the tmux option `@wt_working`; webtmux renders a stoplight dot everywhere the window appears (recents tabs, sidebar rows, preview tiles, Exposé tiles): green = working, amber = prompting you, red = waiting for work, unfilled = not reporting. Hovering any dot shows the full color key.
 - When a window drops out of green while you're looking elsewhere, everything showing it flashes in the new color until you actually view it — no timeout. Alerts cover every window on the server, not just visible tabs; reduced-motion users get a solid ring instead of blinking.
 - A bash prompt-hook installer ships in the repo so ordinary shells paint their own light automatically (see below).
@@ -56,19 +56,19 @@ A web-based terminal with tmux-specific features. Access your tmux sessions from
 - Clients mirror it in a capture cache powering Exposé tiles, preview tiles, hover previews, and optimistic paint — switching windows paints the cached screen instantly while the live feed catches up. Captures of closed windows are pruned.
 
 ### State persistence
-![After a full page reload the recents strip and regions come back, and `tmux show -g @wt_state` shows the shared UI state living in the tmux server itself](screenshots/state-persistence.jpg)
+![Persistence replayed: with a split open, a full browser reload re-assembles every region, the recents strip, and prefs from state stored in the tmux server](screenshots/state-persistence.gif)
 - Shared UI state lives in the tmux server itself (global option `@wt_state`), surviving reloads, reconnects, and webtmux restarts, and shared by every browser: sidebar prefs, session order, renderer choice, Exposé/preview/toolbar prefs, split window assignments, the recents strip, access recency, the chosen save directory, and the primary region's window.
 - Per-tab state (focused view, split widths) stays in the browser tab so two browsers don't fight over focus. A reload returns every region to the exact session+window it was on.
 
 ### Copy, scroll & clipboard
-![Copy mode via scroll-up: amber COPY indicator, scroll position badge, and a drag selection in the scrollback](screenshots/copy-scroll.jpg)
+![Copy mode replayed: scrolling up enters copy mode, drag selects in the scrollback, Ctrl+C copies and stays in copy mode, then ordinary typing drops straight back to the prompt](screenshots/copy-scroll.gif)
 - Smart copy-mode typing: in a scrolled-up pane, copy-mode motions keep working but ordinary typing drops back to the prompt — no keystrokes silently swallowed.
 - Cmd/Ctrl+C copies and stays in copy mode (grab several regions); Cmd/Ctrl+V exits copy mode first so the paste lands at the prompt; drag enters copy-mode immediately and auto-scrolls; selection highlight clears after copy.
 - Clipboard copy works on plain-HTTP LAN access (falls back when the secure clipboard API is missing); large pastes no longer drop the connection.
 - Scroll-mode choices including an "auto+" default and adaptive wheel modes; Ctrl+Alt+[ toggles copy/scrollback mode.
 
 ### Save pane buffer to a file
-![The save dropdown: download to the browser, or write a file on the machine tmux runs on, with the destination explained up front](screenshots/save-file.jpg)
+![Save replayed: the ⤓ dropdown explains where a save lands up front, and Save confirms the exact path the file was written to](screenshots/save-file.gif)
 - Toolbar ⤓ saves the focused pane's scrollback: download to the browser, or write a file on the machine webtmux runs on — container-aware, with the save location explained up front and configurable via `WEBTMUX_SAVE_DIR` / `WEBTMUX_PATH_MAP` / `WEBTMUX_HOME` / `WEBTMUX_IN_CONTAINER` (details in the save section below).
 
 ### Keyboard navigation & discoverability
