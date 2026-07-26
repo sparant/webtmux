@@ -7,10 +7,12 @@
 // HoverPreview to show that window in a real terminal region (see hover-preview.js),
 // which is bigger, in place, and the same behavior every other switcher now has.
 import { LitElement, html, css } from 'lit';
-import { chord } from '../os.js';
+import { chord, IS_MAC } from '../os.js';
 import { stateStore } from '../state-store.js';
 import { workClass, workLabel, workTip } from '../stoplight.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
+import { saveHint } from '../save-target.js';
+import { copyText } from '../clipboard.js';
 
 // Recent-tab label shape. Two INDEPENDENT toggles rather than one four-way cycle,
 // because they answer unrelated questions: "which session is this in" and "how much
@@ -58,6 +60,40 @@ function scrollTooltip(current) {
   return `Scroll-wheel mode — click to cycle:\n${lines.join('\n')}`;
 }
 
+// The Exposé button's icon. It used to be ▦ — a grid glyph that, next to the
+// split button's ⊞, read as "another box" and said nothing about windows. Four
+// UNEVEN tiles, each with a title bar, are the picture of "every window, spread
+// out": uneven because a grid of identical cells is a table, and title bars
+// because that is what makes a rectangle a window. Drawn rather than typed so it
+// doesn't depend on a font having a usable glyph — the same lesson as the
+// renderer's system-font fallback.
+function exposeIcon() {
+  return html`
+    <svg viewBox="0 0 20 20" width="17" height="17" aria-hidden="true" focusable="false">
+      <g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round">
+        <rect x="1.4" y="2.6" width="7.6" height="6.2" rx="1.2"></rect>
+        <rect x="11" y="1.4" width="7.6" height="7.4" rx="1.2"></rect>
+        <rect x="1.4" y="10.6" width="7.6" height="7.4" rx="1.2"></rect>
+        <rect x="11" y="11.2" width="7.6" height="6.2" rx="1.2"></rect>
+      </g>
+      <g stroke="currentColor" stroke-width="1.1" stroke-linecap="round" opacity="0.75">
+        <line x1="1.4" y1="4.6" x2="9" y2="4.6"></line>
+        <line x1="11" y1="3.4" x2="18.6" y2="3.4"></line>
+        <line x1="1.4" y1="12.6" x2="9" y2="12.6"></line>
+        <line x1="11" y1="13.2" x2="18.6" y2="13.2"></line>
+      </g>
+    </svg>
+  `;
+}
+
+// Exposé's hover text. The trackpad gesture is listed HERE, on the button that
+// does the same thing, because that is where someone looking for "how do I get
+// all my windows" is already pointing — the shortcuts overlay only helps people
+// who already knew to open it. Mac-only, matching the gesture's own gating in
+// SplitManager (a ctrl+wheel on other platforms is still page zoom).
+const EXPOSE_TIP = `Exposé — a thumbnail of every window across all sessions. Shortcut: ${chord('E')}`
+  + (IS_MAC ? '\nTrackpad: spread two fingers to open it, pinch them together to close it.' : '');
+
 class WebtmuxToolbar extends LitElement {
   static properties = {
     recent: { type: Array },
@@ -82,6 +118,11 @@ class WebtmuxToolbar extends LitElement {
     // for saveStatus, by the SplitManager when a server-side save resolves.
     saveOpen: { type: Boolean },
     saveStatus: { type: Object },
+    // Where a save would land, as the server describes it (a SaveEnv; see
+    // webtty/savepath.go). Requested when the dropdown opens and rendered as its
+    // hint line, so an invisible pane directory is disclosed before a failed save
+    // rather than after one. Null until the answer arrives.
+    saveInfo: { type: Object },
     // The window the shared HoverPreview is currently showing ('' = none). Marks
     // which tab the preview on screen belongs to. Set by the SplitManager.
     previewWindow: { type: String },
@@ -295,6 +336,10 @@ class WebtmuxToolbar extends LitElement {
       white-space: nowrap;
     }
     .tbtn:hover { border-color: #4a9eff; color: #fff; }
+    /* Drawn (SVG) icon rather than a glyph: strokes inherit the button's colour,
+       so hover/pressed states keep working without per-icon rules. */
+    .tbtn.icon { padding: 0 8px; }
+    .tbtn.icon svg { display: block; }
     /* Stateful button (scroll mode): show a small text label beside the glyph. */
     .tbtn.text {
       font-size: 12px;
@@ -380,7 +425,18 @@ class WebtmuxToolbar extends LitElement {
       cursor: pointer;
     }
     .save-go:hover { background: #ff5c78; }
-    .save-hint { color: #6b7690; font-size: 10.5px; line-height: 1.4; }
+    .save-hint { color: #6b7690; font-size: 10.5px; line-height: 1.4; white-space: pre-line; overflow-wrap: anywhere; }
+    /* The destination is NOT what the label above the input implies (the pane's
+       directory isn't visible here, or isn't writable). It has to look different,
+       not merely read differently — this is the line that stops a save from
+       failing in a way that looks like the user's mistake. */
+    .save-hint.warn {
+      color: #ffc9a3;
+      background: #3a2a14;
+      border: 1px solid #7a5a24;
+      border-radius: 5px;
+      padding: 6px 8px;
+    }
     .save-status {
       font-size: 11.5px;
       padding: 6px 8px;
@@ -495,7 +551,9 @@ class WebtmuxToolbar extends LitElement {
       transition: transform 0.18s ease-out;
     }
 
-    /* Build id on the far left — read it aloud to identify the running build. */
+    /* Build id on the far left — read it aloud, or click it to copy (revealing it
+       copies it too; see toggleBuild). A button, not a label, because it does
+       something. */
     .build {
       flex: 0 0 auto;
       color: #5a7;
@@ -507,8 +565,9 @@ class WebtmuxToolbar extends LitElement {
       padding: 3px 7px;
       margin-right: 4px;
       white-space: nowrap;
-      cursor: default;
+      cursor: pointer;
     }
+    .build:hover { border-color: #4a9eff; color: #8fe3b5; }
 
     /* The hover hint itself lives in tooltip.js (TIP_CSS, spliced in below the
        component's own rules) — the sidebar shows the same hint for the same
@@ -585,6 +644,7 @@ class WebtmuxToolbar extends LitElement {
     this._tip = new Tip(this);  // shared hover hint — see tooltip.js
     this.saveOpen = false;   // save dropdown open?
     this.saveStatus = null;  // transient save result banner (see properties)
+    this.saveInfo = null;    // server's "where would this land?" answer
     this.previewWindow = ''; // window the shared hover preview is showing
     this.labelMenuOpen = false;
     this.dragKey = '';
@@ -624,9 +684,33 @@ class WebtmuxToolbar extends LitElement {
 
   // Show/hide the build-id chip (Ctrl+Alt+B, wired by the SplitManager). Persisted
   // so the choice survives a reload.
+  //
+  // Revealing it also COPIES the build id: the only reason to show this chip is to
+  // report which build is running — into a bug report, a chat message, a commit
+  // note — and every one of those ends in a paste. Reading seven characters off a
+  // screen and retyping them is the one step a computer should be doing.
   toggleBuild() {
     this.showBuild = !this.showBuild;
     stateStore.patchSection('toolbar', { showBuild: this.showBuild });
+    if (this.showBuild) this._copyBuild();
+  }
+
+  // Copy the build id and say so ON the chip. The confirmation matters more than
+  // usual here: a clipboard write is invisible, and "did that work?" is exactly
+  // the doubt that sends you back to reading the characters by hand. Uses the
+  // shared hint (shown immediately, not after the hover delay) so the message
+  // appears where the pointer already is, then clears itself.
+  _copyBuild() {
+    this.updateComplete.then(async () => {
+      const el = this.renderRoot?.querySelector('.build');
+      if (!el) return;
+      const ok = await copyText(this.build);
+      this._tip.show(el, ok
+        ? `Copied build id "${this.build}" to the clipboard`
+        : `Could not reach the clipboard — the build id is ${this.build}`);
+      clearTimeout(this._buildTipTimer);
+      this._buildTipTimer = setTimeout(() => this._tipLeave(), 1600);
+    });
   }
 
   // Cycle the scroll-wheel mode (app -> buffer -> auto -> auto+) and apply it live
@@ -649,6 +733,11 @@ class WebtmuxToolbar extends LitElement {
     this.saveOpen = !this.saveOpen;
     if (!this.saveOpen) return;
     this.saveStatus = null;
+    // Ask where a relative path would actually land for THIS window. Dropped
+    // first so a stale answer from another window can't be read as this one's;
+    // the hint falls back to the general rule until the reply arrives.
+    this.saveInfo = null;
+    this.manager?.requestSaveInfo?.();
     const def = this.manager?.suggestedSaveName?.() || 'pane.txt';
     this.updateComplete.then(() => {
       const el = this.renderRoot?.querySelector('.save-path');
@@ -664,6 +753,15 @@ class WebtmuxToolbar extends LitElement {
     this.saveStatus = null;
   }
 
+  // The line under the path input: where a relative path will ACTUALLY land, per
+  // the server's answer (save-target.js turns a SaveEnv into English). It is a
+  // warning, styled as one, whenever that isn't the pane's own directory — the
+  // whole point is that the mismatch is visible before the save, not after it.
+  _saveHint() {
+    const hint = saveHint(this.saveInfo);
+    return html`<div class="save-hint ${hint.level}">${hint.text}</div>`;
+  }
+
   // "Save on the machine tmux runs on" — send the typed path to the server. Keep
   // the menu open so the SplitManager's onSaveResult can show success/error here.
   _saveToPath() {
@@ -675,6 +773,7 @@ class WebtmuxToolbar extends LitElement {
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    clearTimeout(this._buildTipTimer);
     this._tip.dispose();
     this.manager?.hover?.cancel();
   }
@@ -802,25 +901,40 @@ class WebtmuxToolbar extends LitElement {
         @mouseenter=${(e) => this._tipEnter(e, 'tmux activity — advances one notch each time webtmux sends tmux a command (window switches, renames, captures, saved state).')}
         @mouseleave=${() => this._tipLeave()}
       >✳</span>
-      ${this.showBuild ? html`<span class="build" title="webtmux build ${this.build}${this.built ? ' — built ' + this.built : ''} — hide with ${chord('B')}">⬢ ${this.build}</span>` : ''}
+      ${this.showBuild ? html`
+        <button
+          class="build"
+          aria-label="webtmux build ${this.build} — click to copy"
+          @mouseenter=${(e) => this._tipEnter(e, `webtmux build ${this.build}${this.built ? ' — built ' + this.built : ''}\nClick to copy it (it is also copied whenever you reveal this chip). Hide with ${chord('B')}.`)}
+          @mouseleave=${() => this._tipLeave()}
+          @click=${() => this._copyBuild()}
+        >⬢ ${this.build}</button>
+      ` : ''}
+      <button
+        class="tbtn"
+        aria-label="Keyboard shortcuts"
+        @mouseenter=${(e) => this._tipEnter(e, `Keyboard shortcuts. Shortcut: ${chord('/')}`)}
+        @mouseleave=${() => this._tipLeave()}
+        @click=${() => { this._tipLeave(); this.manager?.shortcuts?.toggle(); }}
+      >⌨</button>
+      ${this.recent.length ? html`
+        <span class="label-wrap">
+          <button
+            class="label"
+            aria-label="Recent tab label options"
+            @mouseenter=${(e) => this._tipEnter(e, 'Recent windows — click for label options (show the session, trim the window name). Drag tabs to reorder them.')}
+            @mouseleave=${() => this._tipLeave()}
+            @click=${() => { this._tipLeave(); this.labelMenuOpen = !this.labelMenuOpen; }}
+          >Recent ▾</button>
+          ${this.labelMenuOpen ? this._labelMenu() : ''}
+        </span>
+      ` : ''}
       <div
         class="tabs"
         @dragover=${(e) => this._onStripDragOver(e)}
         @dragleave=${(e) => this._onStripDragLeave(e)}
         @drop=${(e) => this._onStripDrop(e)}
       >
-        ${this.recent.length ? html`
-          <span class="label-wrap">
-            <button
-              class="label"
-              aria-label="Recent tab label options"
-              @mouseenter=${(e) => this._tipEnter(e, 'Recent windows — click for label options (show the session, trim the window name). Drag tabs to reorder them.')}
-              @mouseleave=${() => this._tipLeave()}
-              @click=${() => { this._tipLeave(); this.labelMenuOpen = !this.labelMenuOpen; }}
-            >Recent ▾</button>
-            ${this.labelMenuOpen ? this._labelMenu() : ''}
-          </span>
-        ` : ''}
         ${this.recent.map((w, i) => {
           const key = this._key(w);
           const full = `${w.session} — window ${w.index}: ${w.name}`;
@@ -870,12 +984,12 @@ class WebtmuxToolbar extends LitElement {
         @click=${() => { this._tipLeave(); this.manager?.splitAdd(); }}
       >⊞</button>
       <button
-        class="tbtn"
+        class="tbtn icon"
         aria-label="Exposé — all windows"
-        @mouseenter=${(e) => this._tipEnter(e, `Exposé — a thumbnail of every window across all sessions. Shortcut: ${chord('E')}`)}
+        @mouseenter=${(e) => this._tipEnter(e, EXPOSE_TIP)}
         @mouseleave=${() => this._tipLeave()}
         @click=${() => { this._tipLeave(); this.manager?.expose?.toggle(); }}
-      >▦</button>
+      >${exposeIcon()}</button>
       <div class="save-wrap">
         <button
           class="tbtn ${this.saveOpen ? 'on' : ''}"
@@ -901,7 +1015,7 @@ class WebtmuxToolbar extends LitElement {
               >
               <button class="save-go" @click=${() => this._saveToPath()}>Save</button>
             </div>
-            <div class="save-hint">Relative paths save in the focused pane's current directory; ~ and absolute paths are honored as-is.</div>
+            ${this._saveHint()}
             ${this.saveStatus ? html`<div class="save-status ${this.saveStatus.state}">${this.saveStatus.text}</div>` : ''}
           </div>
         ` : ''}
@@ -913,13 +1027,6 @@ class WebtmuxToolbar extends LitElement {
         @mouseleave=${() => this._tipLeave()}
         @click=${() => { this._tipLeave(); this.cycleScroll(); }}
       >${(SCROLL_META[normalizeScroll(this.scrollMode)] || SCROLL_META['adaptive-probe']).label}</button>
-      <button
-        class="tbtn"
-        aria-label="Keyboard shortcuts"
-        @mouseenter=${(e) => this._tipEnter(e, `Keyboard shortcuts. Shortcut: ${chord('/')}`)}
-        @mouseleave=${() => this._tipLeave()}
-        @click=${() => { this._tipLeave(); this.manager?.shortcuts?.toggle(); }}
-      >⌨</button>
       ${this.panes.length > 1 ? html`
         <div
           class="dots"

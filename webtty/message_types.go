@@ -45,8 +45,15 @@ const (
 	// Tmux error
 	TmuxError = 'B'
 	// Result of a TmuxSavePaneFile request (JSON payload: {"ok":bool,"path":"…",
-	// "error":"…"}). Lets the browser report where the file landed, or why not.
+	// "error":"…","env":{…}}). Lets the browser report where the file landed, or
+	// why not — the env is the SaveEnv the write was resolved against.
 	TmuxSaveResult = 'C'
+	// Answer to a TmuxSaveInfoRequest: the SaveEnv for one window (JSON) — which
+	// directory a relative save resolves against, whether the pane's own directory
+	// is visible to webtmux at all, and whether webtmux is containerized. Shown in
+	// the save dropdown BEFORE a save, so a surprising destination is never a
+	// surprise. See webtty/savepath.go.
+	TmuxSaveInfo = 'D'
 )
 
 // Tmux input message types (client -> server)
@@ -111,4 +118,7 @@ const (
 	// only tmux knows it. `refresh-client` repaints it authoritatively. See
 	// hover-preview.js on the client.
 	TmuxRefresh = 'Q'
+	// Ask where a save for this window would land (payload JSON: {"windowId":"@N"}).
+	// Read-only — writes nothing; the reply is a TmuxSaveInfo.
+	TmuxSaveInfoRequest = 'R'
 )

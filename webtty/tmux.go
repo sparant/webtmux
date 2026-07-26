@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"log"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -105,6 +104,10 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 	// captureProvider (it re-captures the pane), so handle it before the guard too.
 	if msgType == TmuxSavePaneFile {
 		return wt.handleSavePaneFile(payload)
+	}
+	// Same for the read-only "where would a save land?" probe.
+	if msgType == TmuxSaveInfoRequest {
+		return wt.handleSaveInfo(payload)
 	}
 
 	if wt.tmuxCtrl == nil {
@@ -361,38 +364,27 @@ func cleanPaneText(ansi []byte) string {
 	return strings.ReplaceAll(s, "\r\n", "\n")
 }
 
-// resolveSavePath turns a user-typed path into an absolute one on the machine
-// webtmux (and tmux) runs on. `~`/`~/…` expand to the server user's home;
-// absolute paths pass through; a RELATIVE path resolves against `base` — the
-// pane's current working directory ("where tmux is running") when known, else
-// the webtmux process's own working directory.
-func resolveSavePath(base, path string) (string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return "", errors.New("empty path")
+// handleSaveInfo answers "where would a save go?" for one window, WITHOUT
+// writing anything — the save dropdown asks as it opens so it can name the
+// directory a relative path will land in, and flag the container case, before
+// the user commits to a name. See savepath.go for why that matters.
+func (wt *WebTTY) handleSaveInfo(payload []byte) error {
+	var req struct {
+		WindowID string `json:"windowId"`
 	}
-	if path == "~" || strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", errors.New("cannot resolve ~ (no home directory)")
-		}
-		if path == "~" {
-			path = home
-		} else {
-			path = filepath.Join(home, path[2:])
-		}
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil // a malformed probe is not worth an error banner
 	}
-	if filepath.IsAbs(path) {
-		return filepath.Clean(path), nil
+	paneDir := ""
+	if wt.captureProvider != nil {
+		paneDir, _ = wt.captureProvider.PaneCurrentPath(req.WindowID)
 	}
-	if base == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", errors.Wrap(err, "cannot resolve relative path")
-		}
-		base = cwd
+	env := describeSaveEnv(paneDir)
+	data, err := json.Marshal(env)
+	if err != nil {
+		return errors.Wrap(err, "failed to marshal save info")
 	}
-	return filepath.Clean(filepath.Join(base, path)), nil
+	return wt.masterWrite(append([]byte{TmuxSaveInfo}, data...))
 }
 
 // handleSavePaneFile writes a window's pane buffer to a file on the server (the
@@ -406,40 +398,47 @@ func (wt *WebTTY) handleSavePaneFile(payload []byte) error {
 		Path     string `json:"path"`
 	}
 	if err := json.Unmarshal(payload, &req); err != nil {
-		return wt.sendSaveResult(false, "", "invalid save request")
+		return wt.sendSaveResult(false, "", "invalid save request", SaveEnv{})
 	}
 	if strings.TrimSpace(req.Path) == "" {
-		return wt.sendSaveResult(false, "", "no path given")
+		return wt.sendSaveResult(false, "", "no path given", SaveEnv{})
 	}
 	if wt.captureProvider == nil {
-		return wt.sendSaveResult(false, "", "saving is unavailable (not a tmux session)")
+		return wt.sendSaveResult(false, "", "saving is unavailable (not a tmux session)", SaveEnv{})
 	}
 	entries, err := wt.captureProvider.CaptureWindows([]string{req.WindowID}, true)
 	if err != nil || len(entries) == 0 {
-		return wt.sendSaveResult(false, "", "could not capture the pane buffer")
+		return wt.sendSaveResult(false, "", "could not capture the pane buffer", SaveEnv{})
 	}
 	text := cleanPaneText(entries[0].ANSI)
-	// Relative paths land in the pane's own working directory; a failed lookup just
-	// falls back to the server's cwd inside resolveSavePath.
-	base, _ := wt.captureProvider.PaneCurrentPath(req.WindowID)
-	resolved, err := resolveSavePath(base, req.Path)
+	// Relative paths land in the pane's own working directory when webtmux can SEE
+	// it; when it can't (the container case), describeSaveEnv picks a directory
+	// that exists here and the reply says so rather than the save silently
+	// landing somewhere the user never named. See savepath.go.
+	paneDir, _ := wt.captureProvider.PaneCurrentPath(req.WindowID)
+	env := describeSaveEnv(paneDir)
+	resolved, err := resolveSavePath(env, req.Path)
 	if err != nil {
-		return wt.sendSaveResult(false, "", err.Error())
+		return wt.sendSaveResult(false, "", err.Error(), env)
 	}
 	if err := os.WriteFile(resolved, []byte(text), 0o644); err != nil {
-		return wt.sendSaveResult(false, resolved, err.Error())
+		return wt.sendSaveResult(false, resolved, writeErrorMessage(resolved, err), env)
 	}
 	log.Printf("saved pane %s buffer -> %s (%d bytes)", req.WindowID, resolved, len(text))
-	return wt.sendSaveResult(true, resolved, "")
+	return wt.sendSaveResult(true, resolved, "", env)
 }
 
-// sendSaveResult reports a TmuxSavePaneFile outcome to the browser.
-func (wt *WebTTY) sendSaveResult(ok bool, path, errMsg string) error {
+// sendSaveResult reports a TmuxSavePaneFile outcome to the browser. The SaveEnv
+// rides along so the browser can explain a surprising destination in the same
+// breath as reporting success ("saved HERE, because your pane's directory isn't
+// visible to webtmux") instead of leaving the user to wonder.
+func (wt *WebTTY) sendSaveResult(ok bool, path, errMsg string, env SaveEnv) error {
 	data, err := json.Marshal(struct {
-		OK    bool   `json:"ok"`
-		Path  string `json:"path"`
-		Error string `json:"error"`
-	}{OK: ok, Path: path, Error: errMsg})
+		OK    bool    `json:"ok"`
+		Path  string  `json:"path"`
+		Error string  `json:"error"`
+		Env   SaveEnv `json:"env"`
+	}{OK: ok, Path: path, Error: errMsg, Env: env})
 	if err != nil {
 		return errors.Wrap(err, "failed to marshal save result")
 	}
@@ -453,8 +452,8 @@ func isTmuxMessage(msgType byte) bool {
 		TmuxCopyMode, TmuxSendCommand, TmuxScrollUp, TmuxScrollDown, TmuxNewWindow,
 		TmuxSwitchSession, TmuxRenameWindow, TmuxMoveWindow, TmuxNewSession,
 		TmuxRenameSession, TmuxKillWindow, TmuxKillSession, TmuxLinkWindow,
-		TmuxUnlinkWindow, TmuxCaptureRequest, TmuxSavePaneFile, TmuxSetState,
-		TmuxRefresh:
+		TmuxUnlinkWindow, TmuxCaptureRequest, TmuxSavePaneFile, TmuxSaveInfoRequest,
+		TmuxSetState, TmuxRefresh:
 		return true
 	default:
 		return false

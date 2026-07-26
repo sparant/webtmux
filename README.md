@@ -115,6 +115,31 @@ webtmux -w --no-auth tmux new-session -A -s main
 
 Run `webtmux --help` for all available options.
 
+### Saving a pane buffer to a file (and running in a container)
+
+The toolbar's ⤓ button either downloads the focused pane's buffer to your
+browser, or writes it to a file **on the machine tmux runs on** — which is the
+machine running `webtmux`, and those are not always the same filesystem.
+
+The common trap is running webtmux in a container that mounts only the tmux
+control socket. tmux then reports pane directories as *host* paths
+(`/home/you/Projects`) that the writing process cannot see, and a relative save
+fails on a directory you can see perfectly well in your own shell. webtmux now
+detects this: the save dropdown asks the server where a save would land and says
+so up front (naming both directories), and a failed save explains which machine
+is missing the directory rather than surfacing a raw `open` error.
+
+The cleanest fix is to mount the host directory at the **same path** inside the
+container, so every path in the UI reads exactly as it does in your shell. Where
+that isn't possible, three environment variables adjust the resolution:
+
+| Variable | Effect |
+|----------|--------|
+| `WEBTMUX_PATH_MAP` | `host=server[,host2=server2]` prefix rewrites, applied to the pane's directory and to absolute paths you type — e.g. `/home/you/Projects=/workspace` |
+| `WEBTMUX_SAVE_DIR` | Where a relative save lands when the pane's own directory isn't visible. Created if missing. Defaults to `$HOME`, then the process's working directory |
+| `WEBTMUX_HOME` | What `~` expands to (a container's own `$HOME` is rarely the home you mean) |
+| `WEBTMUX_IN_CONTAINER` | `1`/`0` to override container auto-detection, which only affects the *wording* of the explanation |
+
 ## Architecture
 
 ```
