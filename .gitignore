@@ -16,4 +16,7 @@ Thumbs.db
 # Local build (not cross-compiled)
 /webtmux
 
-# Don't ignore builds/ - we want prebuilt binaries in repo
+# builds/ is NOT committed — it holds build artifacts (make docker-artifact,
+# make cross-compile) and, from v0.1.0, GitHub Release assets. History still
+# carries pre-v0.1.0 blobs — sunk cost; no rewrite (it would break live worktrees).
+/builds/

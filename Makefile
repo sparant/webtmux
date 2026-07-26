@@ -4,10 +4,14 @@
 VERSION ?= $(shell git describe --tags 2>/dev/null || echo "dev")
 GIT_COMMIT = $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME = $(shell date -u '+%Y-%m-%d_%H:%M:%S')
-BUILD_OPTIONS = -ldflags "-s -w -X main.Version=$(VERSION) -X main.GitCommit=$(GIT_COMMIT) -X webtmux/server.BuildCommit=$(GIT_COMMIT) -X webtmux/server.BuildTime=$(BUILD_TIME)"
+# No -X main.GitCommit: package main has only Version (version.go), so that flag
+# named a symbol that does not exist and the linker silently dropped it. The live
+# commit stamp is -X webtmux/server.BuildCommit, which the UI reads.
+BUILD_OPTIONS = -ldflags "-s -w -X main.Version=$(VERSION) -X webtmux/server.BuildCommit=$(GIT_COMMIT) -X webtmux/server.BuildTime=$(BUILD_TIME)"
 
 OUTPUT_DIR = ./builds
 BINARY_NAME = webtmux
+DOCKER_PLATFORM ?= linux/amd64
 
 # Platforms to build for (PTY not supported on Windows)
 PLATFORMS = \
@@ -20,7 +24,7 @@ PLATFORMS = \
 
 export CGO_ENABLED=0
 
-.PHONY: all build clean test test-js install cross-compile release help check-js
+.PHONY: all build clean test test-js install cross-compile release help check-js docker-artifact
 
 # Default target
 all: build
@@ -85,6 +89,14 @@ test-js:
 		"$$node_bin" --test test/; \
 	fi
 
+# Build the release artifact in a pinned container — no local Go toolchain needed.
+# Emits builds/webtmux-<os>-<arch>. Cheap to re-run: BuildKit caches everything.
+# VERSION/GIT_COMMIT must be passed in because .dockerignore excludes .git.
+docker-artifact:
+	docker build --target artifact --platform $(DOCKER_PLATFORM) \
+	  --output type=local,dest=$(OUTPUT_DIR)/ \
+	  --build-arg VERSION=$(VERSION) --build-arg GIT_COMMIT=$(GIT_COMMIT) .
+
 # Clean build artifacts
 clean:
 	rm -rf $(BINARY_NAME) $(OUTPUT_DIR)
@@ -135,6 +147,7 @@ help:
 	@echo "  make test         Run tests"
 	@echo "  make clean        Remove build artifacts"
 	@echo "  make cross-compile Build for all platforms"
+	@echo "  make docker-artifact Build builds/webtmux-<os>-<arch> in a container (no local Go)"
 	@echo "  make release      Create release archives"
 	@echo "  make assets       Copy JS assets to bindata"
 	@echo "  make check-js     Parse-check all JS (runs automatically before a build)"

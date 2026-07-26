@@ -185,7 +185,7 @@ keep it in the main context. Phase 5 needs host handoff and must not be delegate
 
 ### Phase 0 — Preflight and worktrees
 
-- [ ] **P0** 0.1 Confirm no `webtmux-portable-*` worktree exists (this plan must land
+- [x] **P0** 0.1 Confirm no `webtmux-portable-*` worktree exists (this plan must land
       first) and both repos are clean. Create both worktrees per the Worktree Reference.
       *(15 min)*
 
@@ -195,7 +195,7 @@ keep it in the main context. Phase 5 needs host handoff and must not be delegate
       git -C /workspace/scripts status --short
       ```
 
-- [ ] **P0** 0.2 Record the baseline so the split can be proven equivalent: build the
+- [x] **P0** 0.2 Record the baseline so the split can be proven equivalent: build the
       current run image and capture the binary's sha256 and size from inside it.
       *(20 min)*
 
@@ -205,9 +205,12 @@ keep it in the main context. Phase 5 needs host handoff and must not be delegate
       docker run --rm --entrypoint sha256sum webtmux:baseline /usr/local/bin/webtmux
       ```
 
+      **Baseline recorded:** sha256 `0ea012de7223ac638b556261315b867678aae11b88c7c6d4197016d18fc3d66f`,
+      size **11731096**, `--version` → `webtmux version local`.
+
 ### Phase 1 — Artifact build in the fork · worktree `/workspace/webtmux-build-split`
 
-- [ ] **P0** 1.1 **Replace `webtmux/Dockerfile`** with a two-target artifact builder.
+- [x] **P0** 1.1 **Replace `webtmux/Dockerfile`** with a two-target artifact builder.
       `--platform=$BUILDPLATFORM` + `TARGETOS`/`TARGETARCH` so it also serves
       cross-compilation later (launcher payloads, release assets). *(35 min)*
 
@@ -240,7 +243,7 @@ keep it in the main context. Phase 5 needs host handoff and must not be delegate
       COPY --from=build /src/webtmux-* /
       ```
 
-- [ ] **P0** 1.2 Add the `docker-artifact` Makefile target + `.PHONY` entry, and document
+- [x] **P0** 1.2 Add the `docker-artifact` Makefile target + `.PHONY` entry, and document
       it in `make help`. *(20 min)*
 
       ```make
@@ -254,7 +257,7 @@ keep it in the main context. Phase 5 needs host handoff and must not be delegate
       	  --build-arg VERSION=$(VERSION) --build-arg GIT_COMMIT=$(GIT_COMMIT) .
       ```
 
-- [ ] **P0** 1.3 Add `.dockerignore` (none exists; the artifact build is what does
+- [x] **P0** 1.3 Add `.dockerignore` (none exists; the artifact build is what does
       `COPY . /src`). Use the exact list `plan-webtmux-portable-release.md` 2.4 specifies,
       so that task degrades to a verification. *(15 min)*
 
@@ -270,7 +273,7 @@ keep it in the main context. Phase 5 needs host handoff and must not be delegate
       The `js/` tree is intentionally absent — `plan-webtmux-portable-vendor.md` 1.2
       deletes it outright.
 
-- [ ] **P0** 1.4 **Untrack `builds/`** — required, since the artifact build writes there
+- [x] **P0** 1.4 **Untrack `builds/`** — required, since the artifact build writes there
       and a tracked output dir dirties the tree on every build. Use the gitignore comment
       from release 2.2 verbatim so the two plans agree. *(20 min)*
 
@@ -288,7 +291,7 @@ keep it in the main context. Phase 5 needs host handoff and must not be delegate
       /builds/
       ```
 
-- [ ] **P0** 1.5 Verify the artifact build in-container and prove equivalence against the
+- [x] **P0** 1.5 Verify the artifact build in-container and prove equivalence against the
       Phase 0.2 baseline. *(30 min)*
 
       ```bash
@@ -303,12 +306,24 @@ keep it in the main context. Phase 5 needs host handoff and must not be delegate
       instead that size is within a few KB and the binary runs: `builds/webtmux-linux-amd64
       --version`.
 
-- [ ] **P2** 1.6 Fix the dead ldflag: `-X main.GitCommit=…` targets a symbol that does not
+      **Result:** sha256 `066b35e375ae0c908cd59bec3e92b468fe50baf55b7de4308407f1286cf02e18`,
+      size **11731096** — byte-for-byte the *same size* as the 0.2 baseline (differing
+      content is the ldflag stamp alone: `dev`/`unknown` vs `local`). ELF, statically
+      linked; `--version` → `webtmux version dev`. Risk 6 discharged: appending an
+      unterminated template literal to `resources/js/stoplight.js` made
+      `make docker-artifact` exit 1 in the `make build` layer, so the Node parse-guard
+      survived the move out of the deploy path. `make test` runs its JS half locally
+      (119 pass) but has no local Go toolchain — `go test ./... && go vet ./...` were run
+      in `golang:1.23-bookworm` instead: all green.
+
+- [x] **P2** 1.6 Fix the dead ldflag: `-X main.GitCommit=…` targets a symbol that does not
       exist (`main` has only `Version`, in `version.go`) and is silently ignored. The live
       one is `-X webtmux/server.BuildCommit`. Either drop the dead flag or add
       `var GitCommit` to `version.go` — prefer dropping. *(15 min)*
 
-- [ ] **P0** 1.7 Commit: `build: make the root Dockerfile the artifact builder`. *(10 min)*
+      Dropped, as preferred. Confirmed `version.go` declares only `Version`.
+
+- [x] **P0** 1.7 Commit: `build: make the root Dockerfile the artifact builder`. *(10 min)*
 
 ### Phase 2 — Amend the in-flight plans
 
