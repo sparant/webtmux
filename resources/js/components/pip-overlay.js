@@ -390,12 +390,6 @@ class WebtmuxPip extends LitElement {
   windowIds() { return this._hidden ? [] : this._wins.map((w) => w.windowId); }
   _has(id) { return this._wins.some((w) => w.windowId === id); }
 
-  // Is this window CURRENTLY drawn on screen in the preview (corner box or bar)?
-  // True only when the preview is live (not empty, not tucked away) and holds it —
-  // the mini self-preview counts, since it's still visibly on screen. The toolbar
-  // uses this to suppress its recent-tab hover preview for windows already shown.
-  isShowing(id) { return this.mode !== 'off' && !this._hidden && this._has(id); }
-
   // The window the FOCUSED terminal is currently showing. When the preview holds
   // exactly this one window, the single-window PiP self-suppresses (see willUpdate)
   // — no point floating a live copy of what you're already looking at. Reactive
@@ -863,10 +857,12 @@ class WebtmuxPip extends LitElement {
     for (const id of [...this._terms.keys()]) this._teardownTerm(id);
   }
 
-  // Any change to the set or hidden flag: re-render, stop polling when empty, tell
-  // the toolbar (via onChange) to refresh its preview buttons.
+  // Any change to the set or hidden flag: re-render, stop polling when empty or
+  // tucked away (a hidden preview has no tiles to feed — force-polling captures
+  // for it would fork tmux every 1.5s indefinitely for nothing), tell the toolbar
+  // (via onChange) to refresh its preview buttons. setHidden(false) re-primes.
   _changed() {
-    if (this._wins.length === 0) {
+    if (this._wins.length === 0 || this._hidden) {
       if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null; }
       this.cache?.removeEventListener('update', this._onCacheUpdate);
     } else {

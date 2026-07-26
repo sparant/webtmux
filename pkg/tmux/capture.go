@@ -2,8 +2,6 @@ package tmux
 
 import (
 	"encoding/base64"
-	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -99,14 +97,7 @@ type CaptureStore struct {
 // (empty => tmux default socket), mirroring Controller.runTmux.
 func NewCaptureStore(socket string) *CaptureStore {
 	run := func(args ...string) (string, error) {
-		if socket != "" {
-			args = append([]string{"-S", socket}, args...)
-		}
-		out, err := exec.Command("tmux", args...).Output()
-		if err != nil {
-			return "", fmt.Errorf("tmux command failed: %w", err)
-		}
-		return string(out), nil
+		return runTmuxOn(socket, args...)
 	}
 	return newCaptureStoreWithRunner(run, time.Now)
 }
@@ -183,7 +174,7 @@ func (s *CaptureStore) EnumerateWindows() ([]WindowInfo, error) {
 			Cols:        cols,
 			Rows:        rowsN,
 		}
-		isWeb := strings.HasPrefix(f[1], "web-")
+		isWeb := isWebShadowName(f[1])
 		if !isWeb {
 			hasReal[f[0]] = true
 		}

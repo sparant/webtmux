@@ -274,6 +274,22 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 		// @wt_state. The payload is the raw JSON blob; it round-trips back to every
 		// client on the next layout push (argv, so no shell escaping). No layout
 		// resend here — the 500ms poll picks up the change and pushes it.
+		//
+		// Validate BEFORE writing: the read side silently drops a non-JSON value
+		// (controller RefreshLayout json.Valid check), so accepting one here would
+		// quietly void shared state for every client while each keeps its own
+		// cache — a fork with no error anywhere. The size cap keeps the blob
+		// exec-able (Linux MAX_ARG_STRLEN) and below the ws frame ceiling. Log and
+		// DROP rather than error: a returned error tears the whole connection down
+		// (handleMasterReadEvent), turning one oversized flush into a reconnect loop.
+		if len(payload) > 64*1024 {
+			log.Printf("dropping @wt_state write: %d bytes (cap 64K)", len(payload))
+			return nil
+		}
+		if !json.Valid(payload) {
+			log.Printf("dropping @wt_state write: payload is not valid JSON")
+			return nil
+		}
 		if err := wt.tmuxCtrl.SetGlobalOption("@wt_state", string(payload)); err != nil {
 			return errors.Wrap(err, "failed to set tmux state")
 		}

@@ -253,7 +253,13 @@ func (server *Server) processWSConn(ctx context.Context, conn *websocket.Conn, h
 			// single deduped capture per window.
 			tty.SetCaptureProvider(server.captureStore)
 			// Poll for layout changes and broadcast updates for THIS session.
-			go server.handleTmuxEvents(ctx, tty, ctrl)
+			// The poller gets a PER-CONNECTION context, not ctx (server lifetime):
+			// on the server ctx every disconnect would leave the goroutine polling
+			// — and, via selfHeal/regroupOnto, MUTATING tmux — forever, forking
+			// half a dozen tmux commands per tick on behalf of a dead connection.
+			connCtx, cancelConn := context.WithCancel(ctx)
+			defer cancelConn()
+			go server.handleTmuxEvents(connCtx, tty, ctrl)
 		}
 	}
 

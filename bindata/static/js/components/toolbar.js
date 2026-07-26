@@ -20,6 +20,7 @@ import { ALERT_CSS, alertClass, alertTip } from '../alert-flash.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
 import { saveHint } from '../save-target.js';
 import { copyText } from '../clipboard.js';
+import { SCROLL_MODES as SCROLL_ORDER, normalizeScrollMode as normalizeScroll } from '../terminal-unit.js';
 
 // Recent-tab label shape. Two INDEPENDENT toggles rather than one four-way cycle,
 // because they answer unrelated questions: "which session is this in" and "how much
@@ -40,20 +41,15 @@ function trimWindowName(name) {
   return tail || s;
 }
 
-// Scroll-wheel modes, in the order the toolbar button cycles them. Kept in sync
-// with SCROLL_MODES in terminal-unit.js. `label` is the compact toolbar text;
-// `hint` is the tooltip. (This control moved here from the sidebar.)
-const SCROLL_ORDER = ['app', 'buffer', 'adaptive-mode', 'adaptive-probe'];
+// Scroll-wheel modes, in the order the toolbar button cycles them — the one list
+// terminal-unit.js owns. `label` is the compact toolbar text; `hint` is the
+// tooltip. (This control moved here from the sidebar.)
 const SCROLL_META = {
   'app':            { label: '🖱 app',   name: 'app',   hint: 'wheel always goes to the program (Claude/vim/less scroll themselves)' },
   'buffer':         { label: '🖱 buf',   name: 'buf',   hint: 'wheel always scrolls tmux history (copy-mode)' },
   'adaptive-mode':  { label: '🖱 auto',  name: 'auto',  hint: 'mouse-tracking / full-screen apps get the wheel; a plain shell scrolls history' },
   'adaptive-probe': { label: '🖱 auto+', name: 'auto+', hint: 'like auto, but probes the ambiguous case — tries the app, then scrolls history if it did not react' },
 };
-function normalizeScroll(m) {
-  if (m === 'passthrough') return 'app';
-  return SCROLL_ORDER.includes(m) ? m : 'adaptive-probe';
-}
 
 // The scroll button cycles four modes and its label only shows the current one, so
 // the tooltip lists ALL four (current marked ▸) — the mode names alone don't say

@@ -33,7 +33,10 @@ func (wsw *wsWrapper) Read(p []byte) (n int, err error) {
 
 		b, err := io.ReadAll(reader)
 		if len(b) > len(p) {
-			return 0, errors.Wrapf(err, "Client message exceeded buffer size")
+			// err is usually nil here, and errors.Wrapf(nil, …) returns nil — the
+			// caller would then see a (0, nil) read and fail with a misleading
+			// "unexpected zero length read" instead of the real reason.
+			return 0, errors.Errorf("client message (%d bytes) exceeded buffer size (%d)", len(b), len(p))
 		}
 		n = copy(p, b)
 		return n, err

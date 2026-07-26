@@ -1384,8 +1384,9 @@ class WebtmuxSidebar extends LitElement {
 }
 
 // The persisted webtmux-local session order (array of session names), or [] if
-// absent/corrupt. tmux itself has no session order, so this is a per-browser
-// preference for how the sidebar lists sessions.
+// absent/corrupt. tmux itself has no session order, so this is a webtmux
+// preference for how the sidebar lists sessions — shared via @wt_state, so every
+// browser on this server sees the same order.
 function readSessionOrder() {
   const v = stateStore.get('sessionOrder', []);
   return Array.isArray(v) ? v.filter((n) => typeof n === 'string') : [];

@@ -8,7 +8,7 @@
 // ?=list-keys. Split-add has no unmodified tmux letter (% / " need Shift) so it
 // keeps Enter; Exposé is webtmux-only so it keeps E.
 import { LitElement, html, css } from 'lit';
-import { MOD_LABEL, MOD_CHIPS } from '../os.js';
+import { MOD_LABEL, MOD_CHIPS, IS_MAC } from '../os.js';
 
 // The two modifier keycaps, labelled for the CONNECTING client's OS (⌃⌥ on a Mac,
 // Ctrl/Alt on Windows/Linux) — the page may be viewed from any of them even though
@@ -21,19 +21,19 @@ const GROUPS = [
     title: `Global — ${MOD_LABEL}`,
     rows: [
       { keys: [...M, 'W'], desc: 'Toggle the sidebar (windows & sessions) — tmux ⌃b w' },
-      { keys: [...M, 'E'], desc: 'Exposé — every window across all sessions' },
+      { keys: [...M, 'E'], desc: 'Exposé — every window across all sessions (press again: 2×2 → 3×3 → close)' },
       { keys: [...M, 'I'], desc: 'Preview — add/remove the focused window (1 = corner box, 2+ = docked edge bar)' },
       { keys: [...M, 'H'], desc: 'Preview — hide / show it (keeps its windows)' },
       { keys: [...M, 'D'], desc: 'Recents — remove the current window from the strip & view (same as its tab ×)' },
       { keys: [...M, 'C'], desc: 'New window in the focused pane’s session (also ⌘⌥C on a Mac)' },
       { keys: [...M, '⏎'], desc: 'Split view — add another terminal region' },
-      { keys: [...M, 'X'], desc: 'Close the focused region — tmux ⌃b x' },
+      { keys: [...M, 'X'], desc: 'Close the focused region (⌫ works too) — tmux ⌃b x' },
       { keys: [...M, '['], desc: 'Toggle copy / normal (scrollback) mode — tmux ⌃b [' },
       { keys: [...M, 'P'], desc: 'Recents — previous window (left) — tmux ⌃b p' },
       { keys: [...M, 'N'], desc: 'Recents — next window (right) — tmux ⌃b n' },
       { keys: [...M, '⇧', 'P'], desc: 'This session’s window list — previous window, in tmux index order (also ⌘⌥⇧P on a Mac)' },
       { keys: [...M, '⇧', 'N'], desc: 'This session’s window list — next window, in tmux index order (also ⌘⌥⇧N on a Mac)' },
-      { keys: [...M, 'L'], desc: 'Cycle most-recently-used windows — hold the chord and tap L to walk back through history (⇧L reverses); like alt-tab' },
+      { keys: [...M, 'L'], desc: 'Cycle most-recently-used windows — hold the chord and tap L to walk back through history (⇧L reverses); releasing the chord commits where you landed, like alt-tab' },
       { keys: [...M, ','], desc: 'Rename the current window (caret at the end, ready to add to the name) — tmux ⌃b ,' },
       { keys: [...M, 'B'], desc: 'Show / hide the build-id chip (top-left)' },
       { keys: [...M, '/'], desc: 'Show this shortcuts list — tmux ⌃b ?' },
@@ -51,23 +51,39 @@ const GROUPS = [
       { keys: ['a–z'], desc: 'Type to find & preview a window (space = new word; a short pause resets)' },
       { keys: ['drag'], desc: 'Drag a window between rows to reorder, or onto a session to link it' },
       { keys: ['hover'], desc: 'Point at a window to preview it in a terminal region; click to switch to it' },
-      { keys: ['dbl-click'], desc: 'Rename a window (name selected, ready to replace)' },
+      { keys: ['dbl-click'], desc: 'Rename a window (name selected, ready to replace; ⏎ commits and refocuses the terminal, Esc cancels)' },
+    ],
+  },
+  {
+    title: 'Exposé (while open)',
+    rows: [
+      { keys: ['←', '→', '↑', '↓'], desc: 'Move the tile cursor' },
+      { keys: ['⏎'], desc: 'Switch the focused region to the selected window' },
+      { keys: ['a–z'], desc: 'Type to filter tiles by name (the toggle also searches captured window content); ⌫ deletes' },
+      { keys: ['Esc'], desc: 'Clear the filter first; pressed again, close Exposé' },
     ],
   },
   {
     title: 'Terminal',
     rows: [
-      { keys: ['⌘/⌃', 'C'], desc: 'Copy the selection (or interrupt if nothing is selected); stays in copy mode so you can copy several regions in a row' },
+      { keys: ['⌘/⌃', 'C'], desc: 'Copy the selection; stays in copy mode so you can copy several regions in a row. With nothing selected, ⌃C passes through as an interrupt' },
       { keys: ['⌘/⌃', 'V'], desc: 'Paste (auto-exits copy mode first so the text lands at the prompt)' },
       { keys: ['a–z'], desc: 'Typing at a pane that is scrolled up in copy mode leaves copy mode and goes to the prompt — copy-mode motions (hjkl, g/G, q, arrows, ␣, y, /) still work' },
     ],
   },
   {
+    title: 'Confirmations (the small popup next to a ×)',
+    rows: [
+      { keys: ['Esc'], desc: 'Dismiss the question without acting' },
+      { keys: ['←', '→', 'Tab'], desc: 'Walk to a button; ⏎/␣ presses it — a stray ⏎ can’t confirm, reaching Yes takes a deliberate step' },
+    ],
+  },
+  ...(IS_MAC ? [{
     title: 'Trackpad (Mac)',
     rows: [
       { keys: ['pinch'], desc: 'Spread two fingers apart to open Exposé; pinch them together to close it' },
     ],
-  },
+  }] : []),
 ];
 
 class WebtmuxShortcuts extends LitElement {
@@ -236,7 +252,7 @@ class WebtmuxShortcuts extends LitElement {
             </div>
           `)}
         `)}
-        <div class="foot">${MOD_LABEL} chords sit above tmux's own ⌃b prefix, so both keymaps coexist.</div>
+        <div class="foot">${MOD_LABEL} chords sit above tmux's own ⌃b prefix, so both keymaps coexist. Esc closes this list.</div>
       </div>
     `;
   }

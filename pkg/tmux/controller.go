@@ -49,7 +49,7 @@ func parseAllWindows(out string) (map[string]string, []WindowRef) {
 		// — emitting them would double every window for as long as a split is open.
 		// (The status map above is keyed by window id, so the duplicate rows there are
 		// harmless overwrites of an identical value.)
-		if strings.HasPrefix(f[2], "web-") {
+		if isWebShadowName(f[2]) {
 			continue
 		}
 		idx, _ := strconv.Atoi(f[3])
@@ -1000,11 +1000,17 @@ func (c *Controller) SetGlobalOption(key, val string) error {
 // `-S <socket>` flag when a socket path is configured so every layout query and
 // action targets the mounted host server.
 func (c *Controller) runTmux(args ...string) (string, error) {
-	if c.socket != "" {
-		args = append([]string{"-S", c.socket}, args...)
+	return runTmuxOn(c.socket, args...)
+}
+
+// runTmuxOn is the one place a tmux command is exec'd (argv, never a shell):
+// against the given socket path, or tmux's default when empty. Shared with the
+// CaptureStore so the two can't drift on socket/exec/error handling.
+func runTmuxOn(socket string, args ...string) (string, error) {
+	if socket != "" {
+		args = append([]string{"-S", socket}, args...)
 	}
-	cmd := exec.Command("tmux", args...)
-	output, err := cmd.Output()
+	output, err := exec.Command("tmux", args...).Output()
 	if err != nil {
 		return "", fmt.Errorf("tmux command failed: %w", err)
 	}

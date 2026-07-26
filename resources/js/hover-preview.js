@@ -423,8 +423,11 @@ export class HoverPreview {
   // (A region we've targeted but not yet drawn into is still showing its own window,
   // so it does count.)
   _visibleUnit(windowId) {
+    // Answered via the manager's one accessor (see _shownWindowId's comment): a
+    // separate expression here ignored _restoreWindowId, so during boot-restore a
+    // hover could open a preview of a window a restoring region was about to show.
     return this.manager.units.find((u) =>
-      u !== this._held?.unit && (u._targetWindowId || u.layout?.activeWindowId) === windowId) || null;
+      u !== this._held?.unit && this.manager._shownWindowId(u) === windowId) || null;
   }
 
   // Let the switchers repaint their "this row is being previewed" highlight.
