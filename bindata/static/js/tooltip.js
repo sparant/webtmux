@@ -11,6 +11,7 @@
 // difference that reads as "the sidebar is being slow" rather than as two
 // mechanisms. One controller, one delay, one look.
 import { css } from 'lit';
+import { placePopup } from './popup-place.js';
 
 // How long the pointer has to rest before the hint appears. Long enough that
 // crossing a strip of tabs doesn't strobe hints at you, short enough that
@@ -84,30 +85,22 @@ export class Tip {
     }, TIP_DELAY);
   }
 
-  // Position + reveal the hint under `target`, clamped into the viewport. Flips
-  // ABOVE the target when there isn't room below — a sidebar list runs to the
-  // bottom of the screen, so "always below" would put its last few hints offscreen.
+  // Position + reveal the hint under `target` by the shared placement rule — see
+  // popup-place.js, which the confirm popup follows too so the two can't end up
+  // with different ideas of where "next to this control" is.
   show(target, text) {
     const tip = this._el();
     if (!tip || !target?.isConnected) return;
     tip.textContent = text;
     // Show first (still transparent) so it has real dimensions to measure against.
     tip.classList.add('show');
-    const r = target.getBoundingClientRect();
-    const margin = 6;
-
-    const tw = tip.offsetWidth;
-    let left = r.left;
-    if (left + tw > window.innerWidth - margin) left = window.innerWidth - tw - margin;
-    if (left < margin) left = margin;
-
-    const th = tip.offsetHeight;
-    let top = r.bottom + margin;
-    if (top + th > window.innerHeight - margin) top = r.top - th - margin;
-    if (top < margin) top = margin;
-
-    tip.style.left = `${Math.round(left)}px`;
-    tip.style.top = `${Math.round(top)}px`;
+    const { left, top } = placePopup(
+      target.getBoundingClientRect(),
+      { width: tip.offsetWidth, height: tip.offsetHeight },
+      { viewport: { width: window.innerWidth, height: window.innerHeight } },
+    );
+    tip.style.left = `${left}px`;
+    tip.style.top = `${top}px`;
   }
 
   leave() {

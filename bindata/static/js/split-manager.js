@@ -582,13 +582,26 @@ export class SplitManager {
     return new Set(
       this.units
         .filter(u => u !== exclude)
-        // A pending _restoreWindowId counts as a claim too: during boot several
-        // regions hold a restore target and none has navigated yet, so without this
-        // two of them could resolve onto the same window depending on which layout
-        // arrived first.
-        .map(u => u._targetWindowId || u._restoreWindowId || u.layout?.activeWindowId)
+        .map(u => this._shownWindowId(u))
         .filter(Boolean)
     );
+  }
+
+  // The window a region shows, or is on its way to showing. A pending
+  // _restoreWindowId counts as a claim too: during boot several regions hold a
+  // restore target and none has navigated yet, so without this two of them could
+  // resolve onto the same window depending on which layout arrived first.
+  //
+  // One accessor because "is this window taken" and "which region has it" are the
+  // same question asked twice (occupiedWindowIds / _unitShowing) — answering them
+  // from different expressions is how they end up disagreeing.
+  _shownWindowId(u) {
+    return u._targetWindowId || u._restoreWindowId || u.layout?.activeWindowId;
+  }
+
+  // The region OTHER than `exclude` that is showing (or claiming) `id`, if any.
+  _unitShowing(id, exclude) {
+    return this.units.find(u => u !== exclude && this._shownWindowId(u) === id) || null;
   }
 
   // Snapshot a window's display metadata (index/name/session) from the accessing
@@ -1086,7 +1099,7 @@ export class SplitManager {
 
   // Navigate to a window from ANY switcher (toolbar recent-strip, Exposé tile):
   // change what the FOCUSED pane shows — the model's single navigation rule.
-  //   1) Occupied by another pane -> no-op (its tab is disabled anyway).
+  //   1) Already shown by another pane -> go to THAT pane (see goToWindowIn).
   //   2) In the focused pane's own window list -> select it.
   //   3) In another session -> hop the pane there, then select. Safe for every
   //      pane: the backend switches only this pane's own tmux client and
@@ -1113,8 +1126,27 @@ export class SplitManager {
     // the switchers that navigate outright — Exposé, ⌃⌥P/N, the MRU walk — which
     // must not leave a region stuck holding someone else's screen.
     this.hover.cancel();
+    // The window is already on screen in ANOTHER region: go there. A window is
+    // visible in at most one pane (mirroring it into two would just cost you a
+    // region), so "show me this window" can only mean the region that has it.
+    //
+    // This used to `return` — the tab for such a window is greyed out in the
+    // toolbar and the sidebar, and the keyboard walkers skip it, so the branch was
+    // only ever reached by something that had no way to know. Exposé is exactly
+    // that: its tiles are plain thumbnails with no disabled state, so clicking one
+    // whose window happened to live in the other pane did nothing at all, with
+    // nothing on screen to say why. Doing what was asked — putting you on that
+    // window — is both the honest answer and what every caller here already
+    // documents itself as doing.
+    //
+    // Deliberately keyed on the window ALONE, not the (session, window) placement:
+    // a linked window's two tiles are the same screen, so honouring the session
+    // half here would put identical content in two regions — the exact thing the
+    // one-pane-per-window rule exists to prevent. You land on the region that has
+    // it, whichever session it is attached through.
+    const holder = this._unitShowing(id, u);
+    if (holder) { this.focus(holder); return; }   // focus() focuses its terminal too
     if (u !== this.focusedUnit) this.focus(u);
-    if (this.occupiedWindowIds(u).has(id)) return;
     const curSession = this.logicalSession(u);
     // A target session that differs from the pane's current one means HOP there —
     // even if the pane is already on this window id (a window linked into two

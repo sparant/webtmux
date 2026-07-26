@@ -8,6 +8,7 @@ import { workClass, workLabel, workTip } from '../stoplight.js';
 import { ALERT_CSS, alertClass, alertTip } from '../alert-flash.js';
 import { alertOf } from '../work-alerts.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
+import { ConfirmPopup, CONFIRM_CSS } from '../confirm-popup.js';
 
 // How many renders revealWindow's "scroll this row into view" waits for its row to
 // appear. A cross-session reveal needs the new session's window list to arrive, which
@@ -60,6 +61,8 @@ class WebtmuxSidebar extends LitElement {
 
   // TIP_CSS is appended so the stoplight hint here is the same hint, after the
   // same delay, as the one the recents strip shows for the very same dot.
+  // CONFIRM_CSS does the same for the kill confirmations: the question opens at
+  // the × you clicked, in the app's own colours — see confirm-popup.js.
   static styles = [css`
     :host {
       display: block;
@@ -386,7 +389,7 @@ class WebtmuxSidebar extends LitElement {
     }
     .session-tab.sdrop-before::before { left: -3px; }
     .session-tab.sdrop-after::after { right: -3px; }
-  `, ALERT_CSS, TIP_CSS];
+  `, ALERT_CSS, TIP_CSS, CONFIRM_CSS];
 
   constructor() {
     super();
@@ -394,6 +397,7 @@ class WebtmuxSidebar extends LitElement {
     this.activePane = '';
     this.activeWindow = '';
     this._tip = new Tip(this);  // shared hover hint — see tooltip.js
+    this._confirm = new ConfirmPopup(this);  // kill confirmations — see confirm-popup.js
     // Collapsed is per-client viewport state (a reload restores YOUR collapse, it
     // must not leak to other browsers) → ClientStore, not the shared blob.
     this.collapsed = !!clientStore.section('sidebar').collapsed;
@@ -454,6 +458,10 @@ class WebtmuxSidebar extends LitElement {
         // The panel is going away; any browse it was driving goes with it. A no-op
         // when the collapse came from dismissAccept/dismissDiscard (already settled).
         this.unit?.manager?.hover.cancel();
+        // …and so does any unanswered kill question. The popup lives INSIDE this
+        // panel, so a collapse would hide it mid-question while it still held the
+        // keyboard and swallowed the next click somewhere off screen.
+        this._confirm.close();
       } else {
         this.classList.remove('collapsed');
         // Remember the view we're on BEFORE any browsing, so Escape can restore it.
@@ -510,6 +518,7 @@ class WebtmuxSidebar extends LitElement {
     super.disconnectedCallback();
     this._stopCapturePoll();
     this._tip.dispose();
+    this._confirm.dispose();
   }
 
   // While the panel is open, keep this focused region's capture buffers warm so
@@ -641,7 +650,7 @@ class WebtmuxSidebar extends LitElement {
               class="kill"
               aria-label="Kill session ${sess.name}"
               title="Kill session ${sess.name} and all its windows — ends their processes"
-              @click=${(e) => { e.stopPropagation(); this.killSession(sess.name); }}
+              @click=${(e) => { e.stopPropagation(); this.killSession(sess.name, e.currentTarget); }}
             >×</span>
           </button>
         `)}
@@ -691,7 +700,7 @@ class WebtmuxSidebar extends LitElement {
                 class="kill"
                 aria-label=${this._windowKillLabel(win)}
                 title=${this._windowKillLabel(win)}
-                @click=${(e) => { e.stopPropagation(); this.killWindow(win.id); }}
+                @click=${(e) => { e.stopPropagation(); this.killWindow(win.id, e.currentTarget); }}
               >×</span>
             </button>`}
           </div>`
@@ -714,6 +723,10 @@ class WebtmuxSidebar extends LitElement {
       <!-- The shared hover hint. position:fixed, so it can sit last and still land
            anywhere on screen; it escapes the panel's own overflow-y clip. -->
       <div class="wt-tip"></div>
+      <!-- The kill confirmation, positioned at whichever × asked. Same reason it
+           sits last and is position:fixed; its contents are built imperatively so
+           this element is stable across re-renders. -->
+      <div class="wt-confirm"></div>
     `;
   }
 
@@ -1310,15 +1323,21 @@ class WebtmuxSidebar extends LitElement {
   //   • last session it's in -> KILL it (ends its processes). Destructive, so it
   //     confirms first — the × is small and hover-only, but a stray click still
   //     shouldn't tear down live work.
-  killWindow(windowId) {
+  //
+  // The confirmation opens AT the × (`anchor`), not in the middle of the screen —
+  // see confirm-popup.js for why. Anything but its Yes dismisses it untouched.
+  killWindow(windowId, anchor) {
     const win = (this.layout?.windows || []).find(w => w.id === windowId);
     if (this._windowLinkedElsewhere(win)) {
       this.unit?.unlinkWindow(windowId);   // just remove it from this session
       return;
     }
     const label = win ? `window ${win.index}: ${win.name || 'bash'}` : 'this window';
-    if (!confirm(`Kill ${label}? This ends its processes.`)) return;
-    this.unit?.killWindow(windowId);
+    this._confirm.ask(anchor, {
+      message: `Kill ${label}?\nThis ends its processes.`,
+      yes: 'Kill',
+      onConfirm: () => this.unit?.killWindow(windowId),
+    });
   }
 
   // A window is "linked elsewhere" when it belongs to more than one logical
@@ -1340,11 +1359,17 @@ class WebtmuxSidebar extends LitElement {
   // Killing a session confirms first UNLESS it's empty (a single idle-shell window
   // with nothing running — the backend flags it), where there's no live work to
   // protect and the confirm is just friction.
-  killSession(sessionName) {
+  killSession(sessionName, anchor) {
     const sess = (this.layout?.sessions || []).find(s => s.name === sessionName);
-    if (!sess?.empty &&
-        !confirm(`Kill session "${sessionName}" and all its windows? This ends their processes.`)) return;
-    this.unit?.killSession(sessionName);
+    if (sess?.empty) {
+      this.unit?.killSession(sessionName);
+      return;
+    }
+    this._confirm.ask(anchor, {
+      message: `Kill session “${sessionName}” and all its windows?\nThis ends their processes.`,
+      yes: 'Kill',
+      onConfirm: () => this.unit?.killSession(sessionName),
+    });
   }
 
   newWindow() {
