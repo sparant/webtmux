@@ -84,6 +84,9 @@ function fakeManager(units, focused = units[0], cache = fakeCache()) {
     focusedUnit: focused,
     captureCache: cache,
     navigations: [],
+    // Mirrors SplitManager._shownWindowId — the one accessor for "what does this
+    // region show (or is on its way to showing)", which HoverPreview now calls.
+    _shownWindowId(u) { return u._targetWindowId || u._restoreWindowId || u.layout?.activeWindowId; },
     goToWindowIn(unit, id, session) { this.navigations.push({ unit, id, session }); },
     onHoverPreviewChange() {},
   };

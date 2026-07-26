@@ -50,11 +50,18 @@ func parseSessionRows(out string) []sessionRow {
 	return rows
 }
 
-// isWebShadow reports whether a session is one of the ephemeral per-pane
-// grouped sessions the split view creates (web-<rand>, web-h<n>, legacy
-// web-<pid>). They are an implementation detail, never user-selectable.
+// isWebShadowName matches the names of the ephemeral per-pane grouped sessions
+// the split view creates (web-<rand>, web-h<n>, legacy web-<pid>). They are an
+// implementation detail, never user-selectable. The one name-shape rule, shared
+// by every enumerator that must skip them (sessions, parseAllWindows, captures).
+func isWebShadowName(name string) bool {
+	return strings.HasPrefix(name, "web-")
+}
+
+// isWebShadow is the strict form for contexts that also know the session is
+// grouped (a user session someone named web-foo is NOT a shadow).
 func isWebShadow(r sessionRow) bool {
-	return r.grouped && strings.HasPrefix(r.name, "web-")
+	return r.grouped && isWebShadowName(r.name)
 }
 
 // logicalBase resolves the session a pane is REALLY viewing: for a web-*

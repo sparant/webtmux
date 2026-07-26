@@ -12,6 +12,7 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { CaptureCache } from './capture-cache.js';
 import { CopyModeArbiter } from './copy-mode.js';
+import { copyText } from './clipboard.js';
 import { stateStore } from './state-store.js';
 import { arrowSequence } from './arrow-keys.js';
 import { IS_MAC } from './os.js';
@@ -283,9 +284,7 @@ export class TerminalUnit {
       if ((ev.metaKey || ev.ctrlKey) && !ev.altKey && ev.key === 'c') {
         const selection = this.terminal.getSelection();
         if (selection) {
-          navigator.clipboard.writeText(selection).catch(err => {
-            console.warn('Failed to copy:', err);
-          });
+          copyText(selection);   // execCommand fallback covers plain-HTTP LAN access
           // Clear the highlight once copied.
           this.terminal.clearSelection();
           // Deliberately STAY in copy-mode after copying: you often want to copy
@@ -350,6 +349,11 @@ export class TerminalUnit {
     });
 
     this.terminal.onData((data) => {
+      // While a hover preview borrows this terminal, the screen shows ANOTHER
+      // window but keyboard focus (and this handler) still belong to the region's
+      // real, hidden one. Sending would type into a window the user can't see —
+      // the preview badge marks the screen as borrowed, so honor it for input too.
+      if (this._previewHold) return;
       // In copy mode a keystroke is ambiguous: a command, or someone typing at a
       // pane they forgot was scrolled up. The arbiter decides (see copy-mode.js) and
       // owns the send when it takes the keys.
@@ -638,14 +642,17 @@ export class TerminalUnit {
   }
 
   connect() {
+    // A reconnect timer scheduled before this unit was destroyed must not
+    // resurrect it: a fresh ws would make the server recreate the region's
+    // grouped web-* session and stream output into a disposed xterm.
+    if (this.destroyed) return;
+    this._reconnectTimer = null;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}${window.location.pathname}ws`;
 
     this.ws = new WebSocket(wsUrl, ['webtty']);
 
     this.ws.onopen = () => {
-      console.log('WebSocket connected', this.sessionName || '(primary)');
-
       // Send auth token + this unit's chosen tmux session (grouped split region,
       // or '' for the shared base). The server threads Session into the pty env
       // and its per-connection layout controller.
@@ -669,7 +676,6 @@ export class TerminalUnit {
     };
 
     this.ws.onclose = () => {
-      console.log('WebSocket closed', this.sessionName || '(primary)');
       if (this.destroyed) return;
 
       // Reconnect to the SAME session (a grouped region's session is recreated by
@@ -678,7 +684,7 @@ export class TerminalUnit {
       // longer hop to a different session on reconnect (that reset the view).
       if (this.reconnectInterval) {
         this.restorePending = true;
-        setTimeout(() => this.connect(), this.reconnectInterval * 1000);
+        this._reconnectTimer = setTimeout(() => this.connect(), this.reconnectInterval * 1000);
       }
     };
 
@@ -941,6 +947,7 @@ export class TerminalUnit {
   // observers. Used by the split manager when a region is closed.
   destroy() {
     this.destroyed = true;
+    if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
     if (this._unsubState) { try { this._unsubState(); } catch (e) {} this._unsubState = null; }
     if (this.resizeObserver) { try { this.resizeObserver.disconnect(); } catch (e) {} }
     if (this.ws) { try { this.ws.onclose = null; this.ws.close(); } catch (e) {} }
@@ -983,10 +990,6 @@ export class TerminalUnit {
 
   splitPane(horizontal) {
     this.sendMessage(MSG.TmuxSplitPane, horizontal ? 'h' : 'v');
-  }
-
-  closePane(paneId) {
-    this.sendMessage(MSG.TmuxClosePane, paneId);
   }
 
   newWindow() {
@@ -1146,7 +1149,7 @@ export class TerminalUnit {
             const binaryStr = atob(base64Data);
             const bytes = Uint8Array.from(binaryStr, c => c.charCodeAt(0));
             const text = new TextDecoder('utf-8').decode(bytes);
-            navigator.clipboard.writeText(text);
+            copyText(text);   // execCommand fallback covers plain-HTTP LAN access
           } catch (e) {
             // Silently ignore decode errors
           }

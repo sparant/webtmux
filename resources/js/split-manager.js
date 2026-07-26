@@ -394,8 +394,13 @@ export class SplitManager {
     else this._refreshToolbar();
     unit.terminal?.focus();
     // Which region is focused is per-client viewport state → ClientStore (a reload
-    // restores your own focus without leaking to other browsers).
-    if (!this._restoringSplit) clientStore.patch({ focusedIndex: this.units.indexOf(unit) });
+    // restores your own focus without leaking to other browsers). Gated on
+    // _splitRestored like _persistSplitState: the constructor's addUnit() focuses
+    // the primary before _restoreSplitState has read the saved index, and that
+    // write would clobber it with 0 (ClientStore writes synchronously).
+    if (this._splitRestored && !this._restoringSplit) {
+      clientStore.patch({ focusedIndex: this.units.indexOf(unit) });
+    }
   }
 
   // Forward a unit's layout to the shared sidebar ONLY when it is the focused
@@ -808,11 +813,7 @@ export class SplitManager {
     const id = u?.layout?.activeWindowId;
     if (!id) return;
     const cache = this.captureCache;
-    const win = (u.layout?.windows || []).find((w) => w.id === id);
-    const sess = this.logicalSession(u) || 'session';
-    const idx = win?.index ?? 0;
-    const name = win?.name || 'bash';
-    const fname = sanitizeFilename(`${sess}-${idx}-${name}`) + '.txt';
+    const fname = this.suggestedSaveName();
 
     let done = false;
     const finish = () => {
@@ -823,7 +824,13 @@ export class SplitManager {
       if (!entry) return; // nothing captured yet — nothing to write
       downloadText(fname, paneBufferText(entry));
     };
-    const onUpdate = () => finish();
+    // Only OUR window's frame finishes the save: 'update' also fires for every
+    // other surface's poll (PiP 1.5s, sidebar 5s) and for the empty recency-only
+    // events, any of which would download whatever stale snapshot the cache held
+    // while the forced capture was still in flight.
+    const onUpdate = (e) => {
+      if ((e.detail?.captures || []).some((c) => c.windowId === id)) finish();
+    };
     // Write on the next capture frame (our forced one), with a grace-period fallback
     // so a slow/missing reply still saves the best snapshot already cached.
     cache.addEventListener('update', onUpdate);
@@ -1288,6 +1295,12 @@ export class SplitManager {
     const unit = c.unit || this.focusedUnit;
     if (!unit) return;
     const t = c.last;
+    // Drop the walk's per-hop suppressions: rapid taps are coalesced by the 500ms
+    // layout poll, so skipped intermediate hops never land and their entries would
+    // otherwise sit in the set forever — silently swallowing the access note the
+    // next time one of those windows is genuinely visited. The landed window is
+    // covered by _accessSeenId below, not by its (now removed) suppress entry.
+    for (const e of c.order) unit._suppressAccessIds.delete(e.id);
     unit._accessSeenId = t.id;   // it's the shown window now; keep the layout path from re-noting
     const meta = this._metaFor(unit, t.id);
     const cap = this.captureCache.get(t.id);
@@ -1491,6 +1504,19 @@ export class SplitManager {
     // are webtmux-only, so they keep their own mnemonic letters.
     // stopPropagation keeps xterm from seeing them.
     window.addEventListener('keydown', (ev) => {
+      // AltGr on Windows (and some Linux layouts) reports as Ctrl+Alt, so without
+      // this guard every AltGr+letter — € on German, ę/ń/ć on Polish — would fire
+      // a chord (KeyX closes a region, KeyC opens a window) and never reach the
+      // terminal. AltGraph is never part of our chords.
+      if (ev.getModifierState && ev.getModifierState('AltGraph')) return;
+      // An open modal layer owns the keyboard. Its own capture listener can't
+      // shield us — stopPropagation doesn't reach other listeners on the same
+      // target, and this one was registered first — so the refusal lives here:
+      // while a confirm question, the shortcuts overlay, or Exposé is up, the only
+      // chord that still acts is the one that toggles that layer itself.
+      if (this.sidebar?._confirm?.open) return;
+      if (this.shortcuts?.open && ev.code !== 'Slash') return;
+      if (this.expose?.open && ev.code !== 'KeyE') return;
       // New window in the focused pane's session: Command+Option+C (Mac) OR
       // Ctrl+Option+C. Handled BEFORE the ⌃⌥-only guard below so the Cmd variant
       // (metaKey, no ctrlKey) is caught too, and swallowed so xterm never sees it
@@ -1623,12 +1649,8 @@ export class SplitManager {
       }, { passive: false, capture: true });
     }
 
-    // Buttons in the sidebar dispatch these (composed, cross shadow DOM).
-    window.addEventListener('webtmux-split-add', () => this.splitAdd());
+    // The sidebar's close-region × dispatches this (composed, cross shadow DOM).
     window.addEventListener('webtmux-split-close', (e) => this.removeUnit(e.detail?.unit || this.focusedUnit));
-    window.addEventListener('webtmux-expose-open', () => this.expose?.openOverlay());
-    window.addEventListener('webtmux-shortcuts-open', () => this.shortcuts?.toggle());
-    window.addEventListener('webtmux-pip-toggle', () => this.toggleFocusedInPreview());
   }
 }
 
