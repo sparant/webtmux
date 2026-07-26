@@ -10,10 +10,34 @@ Tailwind from `cdn.tailwindcss.com` and lit + xterm + three addons from `cdn.jsd
 via an importmap, so an air-gapped machine gets a blank page. Vendor them all, and drop
 ~2.6 MB of dead assets that are currently embedded in every binary.
 
-**No gate.** Independently valuable even if the other stages never happen. In the revised
-execution order (0 → 3 → 1 → 2) this runs **after** the launcher — once it merges, a
-launcher-payload rebuild picks up the offline UI automatically (new content sha ⇒
-redeploy on next connect).
+In the revised execution order (0 → 3 → 1 → 2) this runs **after** the launcher — once it
+merges, a launcher-payload rebuild picks up the offline UI automatically (new content sha
+⇒ redeploy on next connect).
+
+## Gate — `plan-webtmux-build-run-split.md` must be merged first
+
+*(added 2026-07-26; this stage previously declared "no gate")*
+
+Task **1.2** below lists the root `Dockerfile` as dead weight to delete. That is no longer
+true: `plan-webtmux-build-run-split.md` **revives it** as the artifact builder
+(`make docker-artifact`), and `scripts/webtmux-docker/Dockerfile` then consumes its output
+instead of building the binary itself. Running this stage first would delete a live build
+file and break the deploy path.
+
+That plan also lands the `.dockerignore` and the `builds/` untracking that Stage 2 had
+claimed, which is why 1.2/1.3 below are already annotated as amended.
+
+**Run before creating the worktree. If it fails, stop — do not start this stage.**
+
+```bash
+grep -q 'FROM scratch AS artifact' /workspace/webtmux/Dockerfile 2>/dev/null \
+  && test -f /workspace/webtmux/.dockerignore \
+  && grep -q 'docker-artifact' /workspace/webtmux/Makefile \
+  || { echo "GATE: plan-webtmux-build-run-split.md not merged to local-main — stop"; exit 1; }
+```
+
+Content checks rather than a commit-message grep: they stay true if the split is amended
+or re-landed, and they fail loudly if only part of it merged.
 
 ---
 
@@ -58,17 +82,27 @@ forever" urgency dissolved when distribution moved to GitHub Releases.)*
       resources/index.css                        (unreferenced, never synced)
       resources/xterm_customize.css              (unreferenced, never synced)
       js/                                        entire legacy webpack/React/preact tree
-      Dockerfile                                 (root) — broken: calls the removed target
-                                                 `make bindata/static/js/gotty.js.map`
+
+      **AMENDED 2026-07-26 — do NOT delete the root `Dockerfile`.** It was listed here as
+      broken (it called the nonexistent target `make bindata/static/js/gotty.js.map` and
+      copied a binary named `gotty`). `plan-webtmux-build-run-split.md` replaced it with
+      the artifact builder, so it is now live and load-bearing. Its `js-build` stage — the
+      only part that referenced the `js/` tree being deleted here — is already gone, so
+      deleting `js/` remains safe.
 
       **Leave `server/server.go:303` (the `css/` route) alone** — removing it is a Go
       change with no benefit, and it stays correctly wired if a real `resources/css/` is
       ever added.
 
-- [ ] **P0** 1.3 Fix the now-stale comment in
-      `/workspace/scripts/webtmux-docker/Dockerfile` claiming embedded assets include
-      "the pre-built gotty.js bundle". That container does `COPY . /src` + `make build`
-      and never touched it. *(5 min)*
+- [ ] **P1** 1.3 **AMENDED 2026-07-26 — now a verification, not an edit.** This task fixed
+      a stale comment in `/workspace/scripts/webtmux-docker/Dockerfile` claiming the
+      embedded assets include "the pre-built gotty.js bundle".
+      `plan-webtmux-build-run-split.md` Phase 3.1 deletes that entire comment block along
+      with the Go build stage. Just confirm it is gone: *(5 min)*
+
+      ```bash
+      grep -n 'gotty' /workspace/scripts/webtmux-docker/Dockerfile && echo "STALE COMMENT REMAINS"
+      ```
 
 - [ ] **P0** 1.4 Verify + commit: `make build && make test`, confirm the binary shrank by
       ~2.6 MB, then commit as `chore: drop 2.6MB of unreferenced embedded assets`. *(15 min)*

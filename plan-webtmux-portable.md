@@ -4,7 +4,12 @@
 (`/workspace/webtmux`, branch `local-main`), the browser front-end also shipped by
 `scripts/webtmux-docker/`.
 
-**No gate.** The two pre-existing plans in this repo — `plan-webtmux-split.md` (19/19) and
+**One gate, on Stage 1 only** *(added 2026-07-26)*: `plan-webtmux-build-run-split.md` must
+merge to `local-main` before `plan-webtmux-portable-vendor.md` starts — that plan revives
+the root `Dockerfile` as the artifact builder, which Stage 1 task 1.2 was going to delete.
+The gate command lives in the vendor subplan. Stages 0, 2, and 3 are unaffected.
+
+The two pre-existing plans in this repo — `plan-webtmux-split.md` (19/19) and
 `plan-webtmux-capture-expose.md` (22/22) — are both fully complete and merged. This plan
 touches none of their surface (it changes asset loading, the build, and adds a new
 binary; it does not touch `SplitManager`, `TerminalUnit`, or the capture store). Both are
@@ -31,7 +36,7 @@ history)*, each its own subplan and worktree:
 |---|---|---|---|
 | 1st | 0 | `plan-webtmux-portable-fork.md` | **User-executed.** Migrate to your own GitHub fork — the canonical origin everything else references. |
 | 2nd | 3 | `plan-webtmux-portable-launcher.md` | **The actual deliverable.** Gates only on Stage 0. Its staleness mechanism is the embedded payload's **content sha**, not a version tag, so it does not need Stage 2 first; payloads are dev-stamped until Stage 2 lands. |
-| 3rd | 1 | `plan-webtmux-portable-vendor.md` | Offline UI: the page pulls Tailwind/lit/xterm from CDNs at runtime — no internet means a blank screen. Also drops ~2.6 MB of dead embedded assets. Lands behind the launcher; a payload rebuild picks it up automatically (new sha ⇒ redeploy). |
+| 3rd | 1 | `plan-webtmux-portable-vendor.md` | Offline UI: the page pulls Tailwind/lit/xterm from CDNs at runtime — no internet means a blank screen. Also drops ~2.6 MB of dead embedded assets. Lands behind the launcher; a payload rebuild picks it up automatically (new sha ⇒ redeploy). **Gated on `plan-webtmux-build-run-split.md`.** |
 | 4th | 2 | `plan-webtmux-portable-release.md` | Semver tags + **GitHub Releases** publishing. Binaries leave git. Formalizes distribution of webtmux *and* launcher binaries. |
 | — | D | `plan-webtmux-portable-deps.md` | **Optional, gates nothing.** Dependency audit: 16 modules → 4, dropping three unmaintained packages that have one call site each. |
 
@@ -267,6 +272,12 @@ cascade cannot be executed here. Ranked:
 ## Revision history
 
 - **2026-07-25** — initial plan set: order 0→1→2→3, binaries committed in `builds/`.
+- **2026-07-26** — `plan-webtmux-build-run-split.md` created and inserted **ahead of
+  Stage 1**, which now hard-gates on it. That plan makes the fork's root `Dockerfile` the
+  artifact builder and reduces `scripts/webtmux-docker/Dockerfile` to a run-only image; it
+  also lands the `.dockerignore` and the `builds/` untracking that Stage 2 tasks 2.4 and
+  2.2 had claimed (both downgraded to verifications there). Stage 1 tasks 1.2 and 1.3 are
+  amended in place.
 - **2026-07-26** — review pass. Distribution → **GitHub Releases** (committed-binary
   growth was underestimated ~6× once launcher payloads exist — embedded gzip doesn't
   delta-compress); execution order → **0→3→1→2** (the sha, not the tag, is the launcher's
