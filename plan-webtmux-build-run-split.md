@@ -3,12 +3,42 @@
 `plan-webtmux-build-run-split.md` — created 2026-07-26. Spans **two repos**:
 `/workspace/webtmux` (`local-main`) and `/workspace/scripts` (`master`).
 
-**STATUS: COMPLETE except task 5.3** — executed and merged 2026-07-26
+**STATUS: COMPLETE except task 5.3 — first host run FAILED, two defects fixed, re-run needed** — executed and merged 2026-07-26
 (`local-main` af969d2, `scripts` master e2a95f9). Both worktrees removed. The
 `plan-webtmux-portable-vendor.md` Stage 1 gate now passes. The one open item is the
 **host deploy verification**: `launch.sh` hard-refuses to run under the secure daemon, so
 `/workspace/claude_run_me_4417.sh` must be run by the user on the host and its results
 read back. Every claim that *can* be checked in-container was (1.5, 3.4) and passed.
+
+**Host run 1 (2026-07-26T17:32Z) failed and was worth doing** — it caught two things no
+in-container check could:
+
+1. **A real deployment defect.** `make docker-artifact` died at the export step with
+   `lstat builds/webtmux-linux-amd64: permission denied`. BuildKit's local exporter
+   creates its output directory `0700`; on this bind-mounted `/workspace` the agent
+   container's uid is remapped on the host, so an in-container build (ironically, the
+   final sanity check at the end of the first session) left a `builds/` the host user
+   could not traverse — and the `0700` also collapsed the POSIX ACL mask to `---`,
+   voiding the `user:1001:rwx` entry that every sibling directory has. Fixed in two
+   places: the fork's Makefile now creates the directory itself (`mkdir -p`) so it is
+   never born `0700`, and `launch.sh` preflights it — relaxing what it can, removing an
+   artifact owned by another uid so the export can replace it, and otherwise aborting
+   with the owner, our uid, and the fix, instead of an exporter error. Merged
+   `local-main` bcdbdd5 / `scripts` master 10c8d09.
+2. **Two defects in the verification script itself.** Its HTTP check read credentials
+   from `webtmux.env` and got a 401, because `launch.sh` hard-codes `WEBTMUX_PASSWORD`
+   and exports `WEBTMUX_AUTH` over the file's (possibly stale, generate-once) value — it
+   now reads the live container's `--credential` argument, the only ground truth for
+   what the server accepts. And its "no toolchain layer" check grepped `docker history`,
+   which **never shows multi-stage builder layers**: verified worthless by running it
+   against the *old* three-stage image, where it also comes back empty. Replaced with a
+   check that the deploy Dockerfile references no Go/Node base at all.
+
+**The failure-loud design (task 3.3) worked exactly as intended:** the artifact build
+failed, `launch.sh` aborted before touching the container, and the before/after binary
+shas are identical with the old container still `Up 2 hours`. No broken build was ever
+served. Step 4's "MISMATCH — the run image is still building its own binary" was a
+cascade of the abort (nothing on disk to compare), *not* an independent finding.
 
 ## Goal
 
