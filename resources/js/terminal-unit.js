@@ -13,6 +13,8 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { CaptureCache } from './capture-cache.js';
 import { CopyModeArbiter } from './copy-mode.js';
 import { stateStore } from './state-store.js';
+import { arrowSequence } from './arrow-keys.js';
+import { IS_MAC } from './os.js';
 
 // Protocol message types (must match Go constants)
 export const MSG = {
@@ -317,17 +319,12 @@ export class TerminalUnit {
       }
 
       // Map arrow keys to CSI sequences (ESC [ A/B/C/D)
-      // Using CSI instead of SS3 for better compatibility
-      const arrowMap = {
-        'ArrowUp': '\x1b[A',
-        'ArrowDown': '\x1b[B',
-        'ArrowRight': '\x1b[C',
-        'ArrowLeft': '\x1b[D',
-      };
-
-      if (arrowMap[ev.key]) {
+      // Using CSI instead of SS3 for better compatibility.
+      // Modifiers are part of the mapping, not dropped: an earlier version keyed
+      // on ev.key alone, which turned Option+→ (word jump) into a plain →.
+      const seq = arrowSequence(ev, IS_MAC);
+      if (seq) {
         // Send raw CSI sequence
-        const seq = arrowMap[ev.key];
         const binary = String.fromCharCode(...[...seq].map(c => c.charCodeAt(0)));
         this.sendMessage(MSG.Input, btoa(binary));
         return false; // Prevent xterm.js default handling
