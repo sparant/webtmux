@@ -337,7 +337,7 @@ Coordination above for why. The remaining task edits plan files in
       `plan-webtmux-portable.md`: "No gate" claim corrected, Stage 1 table row marked
       gated, Revision history entry added.
 
-- [ ] **P0** 2.1 `plan-webtmux-portable-release.md`: downgrade 2.2 (untrack `builds/`) and
+- [x] **P0** 2.1 `plan-webtmux-portable-release.md`: downgrade 2.2 (untrack `builds/`) and
       2.4 (`.dockerignore`) to verifications, each citing the task here that did it. Update
       master-plan Risk 4 (`make clean` tracked-deletion footgun) to resolved. *(20 min)*
 
