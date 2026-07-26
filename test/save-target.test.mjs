@@ -19,6 +19,16 @@ test('with no answer yet, the hint states the intended rule', () => {
   assert.equal(saveHint(null).level, 'info');
 });
 
+test('with nothing shared, the hint says saving is off and names the alternative', () => {
+  // The default deployment: a container mounting only the tmux control socket.
+  const h = saveHint({ paneDir: '/home/nathan/Projects', baseDir: '', blocked: true, container: true });
+  assert.equal(h.level, 'warn');
+  assert.match(h.text, /Download to browser/);
+  assert.match(h.text, /WEBTMUX_SAVE_DIR/);
+  // It must not offer a directory — there isn't one.
+  assert.doesNotMatch(h.text, /Relative paths save in/);
+});
+
 test('when the pane directory is visible, the hint names it plainly', () => {
   const h = saveHint({
     paneDir: '/home/nathan/Projects', baseDir: '/home/nathan/Projects',

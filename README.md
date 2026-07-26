@@ -129,14 +129,23 @@ detects this: the save dropdown asks the server where a save would land and says
 so up front (naming both directories), and a failed save explains which machine
 is missing the directory rather than surfacing a raw `open` error.
 
-The cleanest fix is to mount the host directory at the **same path** inside the
-container, so every path in the UI reads exactly as it does in your shell. Where
-that isn't possible, three environment variables adjust the resolution:
+When webtmux is containerized and no shared directory is configured, server-side
+saving is **switched off** rather than left to fail one save at a time: the
+dropdown greys the path box and points at "Download to browser", which needs no
+mount at all. That is the honest answer, because a container's own filesystem is
+always writable — saving there would report success for a file that dies with the
+container.
+
+To turn server-side saving on, mount **one dedicated directory** at the same path
+on both sides and name it in `WEBTMUX_SAVE_DIR`; that variable is how webtmux
+knows a directory is shared. Mounting the host home would also work and is
+deliberately not the advice — it is far more of the filesystem than saving a text
+file needs. Four environment variables adjust the resolution:
 
 | Variable | Effect |
 |----------|--------|
 | `WEBTMUX_PATH_MAP` | `host=server[,host2=server2]` prefix rewrites, applied to the pane's directory and to absolute paths you type — e.g. `/home/you/Projects=/workspace` |
-| `WEBTMUX_SAVE_DIR` | Where a relative save lands when the pane's own directory isn't visible. Created if missing. Defaults to `$HOME`, then the process's working directory |
+| `WEBTMUX_SAVE_DIR` | Declares a **shared** directory and enables server-side saving in a container; relative saves land here when the pane's own directory isn't visible. Created if missing. Outside a container this defaults to `$HOME`, then the process's working directory |
 | `WEBTMUX_HOME` | What `~` expands to (a container's own `$HOME` is rarely the home you mean) |
 | `WEBTMUX_IN_CONTAINER` | `1`/`0` to override container auto-detection, which only affects the *wording* of the explanation |
 

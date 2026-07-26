@@ -26,6 +26,18 @@ export const DEFAULT_SAVE_HINT =
 // the input implies — the case that has to look different, not just read
 // differently.
 export function saveHint(info) {
+  // Nothing shared to write into (a container mounting only the tmux socket —
+  // the default deployment here). Saying "off" plainly beats leaving a path box
+  // that can only fail, and the browser download above it needs no mount at all.
+  if (info && info.blocked) {
+    return {
+      level: 'warn',
+      text: 'Saving on the server is off: webtmux runs in a container with no directory shared with '
+        + 'the machine tmux runs on, so a file written here would vanish with it. '
+        + 'Use "Download to browser" above. (To enable it: mount a directory into the container '
+        + 'and start webtmux with WEBTMUX_SAVE_DIR set to it.)',
+    };
+  }
   if (!info || !info.baseDir) return { text: DEFAULT_SAVE_HINT, level: 'info' };
 
   const where = info.baseDir;
