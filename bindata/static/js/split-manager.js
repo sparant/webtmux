@@ -1126,24 +1126,17 @@ export class SplitManager {
     // the switchers that navigate outright — Exposé, ⌃⌥P/N, the MRU walk — which
     // must not leave a region stuck holding someone else's screen.
     this.hover.cancel();
-    // The window is already on screen in ANOTHER region: go there. A window is
-    // visible in at most one pane (mirroring it into two would just cost you a
-    // region), so "show me this window" can only mean the region that has it.
+    // Already on screen in ANOTHER region: go there. A window is visible in at
+    // most one pane, so "show me this window" can only mean the pane that has it.
     //
-    // This used to `return` — the tab for such a window is greyed out in the
-    // toolbar and the sidebar, and the keyboard walkers skip it, so the branch was
-    // only ever reached by something that had no way to know. Exposé is exactly
-    // that: its tiles are plain thumbnails with no disabled state, so clicking one
-    // whose window happened to live in the other pane did nothing at all, with
-    // nothing on screen to say why. Doing what was asked — putting you on that
-    // window — is both the honest answer and what every caller here already
-    // documents itself as doing.
-    //
-    // Deliberately keyed on the window ALONE, not the (session, window) placement:
-    // a linked window's two tiles are the same screen, so honouring the session
-    // half here would put identical content in two regions — the exact thing the
-    // one-pane-per-window rule exists to prevent. You land on the region that has
-    // it, whichever session it is attached through.
+    // This used to `return`. Every switcher that can SEE the rule handles it
+    // first — the toolbar and sidebar grey those tabs out, the keyboard walkers
+    // skip them — so the branch was only ever reached by one that can't: Exposé,
+    // whose tiles are plain thumbnails with no disabled state. Clicking one whose
+    // window happened to live in the other pane did nothing at all, with nothing
+    // on screen to say why. Keyed on the window ALONE, not the (session, window)
+    // placement: a linked window's two tiles are the same screen, so honouring the
+    // session half would put identical content in two regions.
     const holder = this._unitShowing(id, u);
     if (holder) { this.focus(holder); return; }   // focus() focuses its terminal too
     if (u !== this.focusedUnit) this.focus(u);
