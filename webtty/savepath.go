@@ -29,9 +29,17 @@ package webtty
 //	WEBTMUX_HOME      what `~` expands to (the container's own $HOME is rarely
 //	                  the home the user means).
 //
-// The best deployment answer is still to mount the host home at the SAME path
-// inside the container: then no mapping is needed and every path in the UI reads
-// exactly as it does in the user's shell.
+// WEBTMUX_SAVE_DIR carries more weight than "a default directory": it is the only
+// way webtmux can know that a directory is SHARED. A container's own filesystem
+// is always there and always writable, so without that declaration a save would
+// succeed into storage that dies with the container. So when webtmux is
+// containerized and nothing is declared, saving is refused (SaveEnv.Blocked) and
+// the UI points at "Download to browser", which needs no mount at all.
+//
+// That is the DEFAULT state of the webtmux container in this repo's deployment:
+// it mounts only the tmux control socket, on purpose — no host filesystem is
+// exposed to it. Enabling server-side saves means mounting ONE DEDICATED
+// directory at the same path on both sides and naming it in WEBTMUX_SAVE_DIR.
 
 import (
 	"fmt"
@@ -64,33 +72,43 @@ type SaveEnv struct {
 	// Writable is false when BaseDir can't be written by this process; the UI
 	// warns before the user types a name and presses Save.
 	Writable bool `json:"writable"`
+	// Blocked is true when there is nowhere honest to write at all: webtmux is
+	// containerized, the pane's directory isn't reachable, and no WEBTMUX_SAVE_DIR
+	// declares a shared one. Saving is refused in that state — see fallbackSaveDir
+	// for why refusing beats writing into the image's own filesystem.
+	Blocked bool `json:"blocked"`
 }
 
 // ---- environment probes -------------------------------------------------------
 
 var (
-	containerOnce sync.Once
-	containerVal  bool
+	probeOnce sync.Once
+	probeVal  bool
 )
 
-// inContainer reports whether webtmux is running inside a container. Cached: the
-// answer cannot change during a process's life, and it is asked per save.
+// inContainer reports whether webtmux is running inside a container.
 //
-// WEBTMUX_IN_CONTAINER=1/0 forces the answer for deployments the probes miss
-// (or wrongly flag) — the probes are heuristics, and this is only ever used to
-// choose the WORDING of an explanation, never to gate a write.
+// WEBTMUX_IN_CONTAINER=1/0 forces the answer for deployments the probes miss (or
+// wrongly flag), and is re-read every call so it stays a live switch; only the
+// filesystem PROBE is memoized (it cannot change during a process's life, and it
+// is asked on every save).
+//
+// This no longer only picks wording: with no shared directory, containerization
+// is what makes a save refuse rather than write into storage that disappears —
+// see fallbackSaveDir.
 func inContainer() bool {
-	containerOnce.Do(func() { containerVal = detectContainer() })
-	return containerVal
-}
-
-func detectContainer() bool {
 	switch strings.TrimSpace(os.Getenv("WEBTMUX_IN_CONTAINER")) {
 	case "1", "true", "yes":
 		return true
 	case "0", "false", "no":
 		return false
 	}
+	probeOnce.Do(func() { probeVal = probeContainer() })
+	return probeVal
+}
+
+// probeContainer is the heuristic half of inContainer, without the override.
+func probeContainer() bool {
 	// Docker writes /.dockerenv; podman/CRI-O write /run/.containerenv.
 	for _, marker := range []string{"/.dockerenv", "/run/.containerenv"} {
 		if _, err := os.Stat(marker); err == nil {
@@ -201,18 +219,42 @@ func serverHome() string {
 	return ""
 }
 
+// configuredSaveDir is WEBTMUX_SAVE_DIR, created if missing — naming it is an
+// instruction, not a question. "" when unset or unusable.
+//
+// Setting it is also a DECLARATION, and the only one webtmux gets: a container
+// cannot tell a bind-mounted directory from one that exists solely inside the
+// image. WEBTMUX_SAVE_DIR is the operator saying "this directory is shared and a
+// file written here is a file you can reach". See fallbackSaveDir.
+func configuredSaveDir() string {
+	d := strings.TrimSpace(os.Getenv("WEBTMUX_SAVE_DIR"))
+	if d == "" {
+		return ""
+	}
+	d = filepath.Clean(d)
+	if !dirExists(d) {
+		_ = os.MkdirAll(d, 0o755)
+	}
+	if dirExists(d) {
+		return d
+	}
+	return ""
+}
+
 // fallbackSaveDir is where relative saves land when the pane's own directory
-// isn't visible here: WEBTMUX_SAVE_DIR (created if missing — naming it is an
-// instruction, not a question), else $HOME, else the process's cwd.
+// isn't visible here: WEBTMUX_SAVE_DIR, else $HOME, else the process's cwd.
+//
+// Returns "" INSIDE A CONTAINER with no WEBTMUX_SAVE_DIR — the case where there
+// is no honest answer. The image's own home and cwd are always present and
+// always writable, so falling back to them would report a cheerful "Saved:
+// /home/webtmux/out.txt" for a file nobody can open and that dies with the
+// container. A refusal that names the escape hatch beats a success that lies.
 func fallbackSaveDir() string {
-	if d := strings.TrimSpace(os.Getenv("WEBTMUX_SAVE_DIR")); d != "" {
-		d = filepath.Clean(d)
-		if !dirExists(d) {
-			_ = os.MkdirAll(d, 0o755)
-		}
-		if dirExists(d) {
-			return d
-		}
+	if d := configuredSaveDir(); d != "" {
+		return d
+	}
+	if inContainer() {
+		return ""
 	}
 	if h := serverHome(); dirExists(h) {
 		return h
@@ -243,7 +285,11 @@ func describeSaveEnv(paneDir string) SaveEnv {
 	} else {
 		env.BaseDir = fallbackSaveDir()
 	}
-	env.Writable = dirWritable(env.BaseDir)
+	// No BaseDir at all: containerized with nothing shared to write into. The UI
+	// turns this into "server-side saving is off here, use Download to browser"
+	// rather than offering a path box that can only fail.
+	env.Blocked = env.BaseDir == ""
+	env.Writable = !env.Blocked && dirWritable(env.BaseDir)
 	return env
 }
 
@@ -262,9 +308,16 @@ func resolveSavePath(env SaveEnv, path string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("enter a file name")
 	}
+	// Nowhere shared to write: a bare name (or ~) has no honest destination, so
+	// refuse instead of inventing one inside the image. An ABSOLUTE path is still
+	// allowed through — someone who mounted a directory and typed its path knows
+	// something webtmux can't infer, and the dir-exists check below still guards it.
+	if env.Blocked && !filepath.IsAbs(path) && !strings.HasPrefix(path, "~") {
+		return "", fmt.Errorf("%s", blockedMessage())
+	}
 	if path == "~" || strings.HasPrefix(path, "~/") {
-		if env.Home == "" {
-			return "", fmt.Errorf("cannot expand ~ — webtmux has no home directory (set WEBTMUX_HOME)")
+		if env.Blocked || env.Home == "" {
+			return "", fmt.Errorf("%s", blockedMessage())
 		}
 		if path == "~" {
 			path = env.Home
@@ -273,11 +326,7 @@ func resolveSavePath(env SaveEnv, path string) (string, error) {
 		}
 	}
 	if !filepath.IsAbs(path) {
-		base := env.BaseDir
-		if base == "" {
-			base = fallbackSaveDir()
-		}
-		path = filepath.Join(base, path)
+		path = filepath.Join(env.BaseDir, path)
 	}
 	resolved, _ := applyPathMap(configuredPathMap(), filepath.Clean(path))
 	if strings.HasSuffix(resolved, string(filepath.Separator)) || dirExists(resolved) {
@@ -288,6 +337,17 @@ func resolveSavePath(env SaveEnv, path string) (string, error) {
 		return "", fmt.Errorf("%s", missingDirMessage(env, dir))
 	}
 	return resolved, nil
+}
+
+// blockedMessage is what a save gets when webtmux has no directory it shares
+// with the machine tmux runs on. It has to do two jobs at once: tell the user the
+// thing that always works (the browser download needs no mount at all), and tell
+// whoever deploys webtmux the one switch that turns this on — because the reader
+// of the message is often both people.
+func blockedMessage() string {
+	return "webtmux is running in a container with no directory shared with the machine tmux runs on, " +
+		`so a file saved here would vanish with the container. Use "Download to browser" instead, ` +
+		"or start webtmux with WEBTMUX_SAVE_DIR set to a mounted directory."
 }
 
 // missingDirMessage explains a missing target directory in terms of WHICH

@@ -143,6 +143,71 @@ func TestDescribeSaveEnvUsesThePaneDirWhenItIsVisible(t *testing.T) {
 	}
 }
 
+// The deployment default here: a container that mounts only the tmux socket. The
+// image's own home is present and writable, so the tempting fallback is to write
+// there — and report success for a file that dies with the container. It must
+// refuse instead, and say what does work.
+func TestContainerWithNoSharedDirectoryRefusesToSave(t *testing.T) {
+	t.Setenv("WEBTMUX_PATH_MAP", "")
+	t.Setenv("WEBTMUX_SAVE_DIR", "")
+	t.Setenv("WEBTMUX_IN_CONTAINER", "1")
+
+	env := describeSaveEnv("/home/nathan/Projects")
+	if !env.Blocked || env.BaseDir != "" {
+		t.Fatalf("expected a blocked env with no base dir, got %+v", env)
+	}
+	if env.Writable {
+		t.Errorf("a blocked env cannot be writable: %+v", env)
+	}
+	for _, path := range []string{"out.txt", "~/out.txt", "./sub/out.txt"} {
+		_, err := resolveSavePath(env, path)
+		if err == nil {
+			t.Fatalf("%q should be refused when nothing is shared", path)
+		}
+		for _, want := range []string{"Download to browser", "WEBTMUX_SAVE_DIR", "container"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("refusal for %q is missing %q:\n  %s", path, want, err)
+			}
+		}
+	}
+}
+
+// Declaring a shared directory is what unblocks it — that env var is the only
+// signal webtmux has that a directory is reachable from outside the container.
+func TestDeclaringASaveDirUnblocksAContainer(t *testing.T) {
+	saves := filepath.Join(t.TempDir(), "saves")
+	t.Setenv("WEBTMUX_PATH_MAP", "")
+	t.Setenv("WEBTMUX_SAVE_DIR", saves)
+	t.Setenv("WEBTMUX_IN_CONTAINER", "1")
+
+	env := describeSaveEnv("/home/nathan/Projects")
+	if env.Blocked {
+		t.Fatalf("WEBTMUX_SAVE_DIR should unblock saving: %+v", env)
+	}
+	got, err := resolveSavePath(env, "out.txt")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got != filepath.Join(saves, "out.txt") {
+		t.Fatalf("resolved = %q, want it under %q", got, saves)
+	}
+}
+
+// Outside a container, webtmux and tmux share a filesystem, so the old fallback
+// (the server's own home) is a real place and must survive.
+func TestOutsideAContainerAnInvisiblePaneDirStillFallsBack(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("WEBTMUX_PATH_MAP", "")
+	t.Setenv("WEBTMUX_SAVE_DIR", "")
+	t.Setenv("WEBTMUX_IN_CONTAINER", "0")
+	t.Setenv("WEBTMUX_HOME", home)
+
+	env := describeSaveEnv("/definitely/not/here")
+	if env.Blocked || env.BaseDir != home {
+		t.Fatalf("expected a fallback to %q, got %+v", home, env)
+	}
+}
+
 func TestDescribeSaveEnvFallsBackWhenThePaneDirIsInvisible(t *testing.T) {
 	save := filepath.Join(t.TempDir(), "saves")
 	t.Setenv("WEBTMUX_PATH_MAP", "")
@@ -171,13 +236,20 @@ func TestDescribeSaveEnvReportsAMappedPaneDir(t *testing.T) {
 	}
 }
 
-func TestContainerDetectionCanBeForced(t *testing.T) {
+// The override has to stay LIVE (re-read, not baked into a sync.Once) — it now
+// decides whether saving is refused, not just how a sentence reads, and the
+// tests above depend on being able to flip it either way.
+func TestContainerDetectionCanBeForcedEitherWay(t *testing.T) {
 	t.Setenv("WEBTMUX_IN_CONTAINER", "1")
-	if !detectContainer() {
+	if !inContainer() {
 		t.Fatal("WEBTMUX_IN_CONTAINER=1 should force true")
 	}
 	t.Setenv("WEBTMUX_IN_CONTAINER", "0")
-	if detectContainer() {
+	if inContainer() {
 		t.Fatal("WEBTMUX_IN_CONTAINER=0 should force false")
+	}
+	t.Setenv("WEBTMUX_IN_CONTAINER", "1")
+	if !inContainer() {
+		t.Fatal("the override must be re-read, not cached from the first call")
 	}
 }

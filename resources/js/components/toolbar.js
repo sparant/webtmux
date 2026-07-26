@@ -425,6 +425,18 @@ class WebtmuxToolbar extends LitElement {
       cursor: pointer;
     }
     .save-go:hover { background: #ff5c78; }
+    /* Server-side saving has nowhere to write (see save-target.js's blocked
+       case). The controls stay VISIBLE but dead: hiding them would leave the
+       "Save on the machine tmux runs on" heading describing nothing, and the
+       warning below explains why they're greyed. */
+    .save-go[disabled], .save-path[disabled] {
+      opacity: 0.4;
+      cursor: not-allowed;
+      background: #2a2f3f;
+      border-color: #2a2f3f;
+      color: #9aa3b8;
+    }
+    .save-go[disabled]:hover { background: #2a2f3f; }
     .save-hint { color: #6b7690; font-size: 10.5px; line-height: 1.4; white-space: pre-line; overflow-wrap: anywhere; }
     /* The destination is NOT what the label above the input implies (the pane's
        directory isn't visible here, or isn't writable). It has to look different,
@@ -1010,10 +1022,11 @@ class WebtmuxToolbar extends LitElement {
                 type="text"
                 spellcheck="false"
                 autocomplete="off"
-                placeholder="~/out.txt or ./out.txt"
+                ?disabled=${this.saveInfo?.blocked === true}
+                placeholder=${this.saveInfo?.blocked ? 'unavailable here' : '~/out.txt or ./out.txt'}
                 @keydown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); this._saveToPath(); } e.stopPropagation(); }}
               >
-              <button class="save-go" @click=${() => this._saveToPath()}>Save</button>
+              <button class="save-go" ?disabled=${this.saveInfo?.blocked === true} @click=${() => this._saveToPath()}>Save</button>
             </div>
             ${this._saveHint()}
             ${this.saveStatus ? html`<div class="save-status ${this.saveStatus.state}">${this.saveStatus.text}</div>` : ''}
