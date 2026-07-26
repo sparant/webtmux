@@ -194,6 +194,20 @@ make build
 make cross-compile
 ```
 
+**No Go toolchain?** `make docker-artifact` builds in a pinned container instead
+and writes `builds/webtmux-<os>-<arch>`:
+
+```bash
+make docker-artifact                             # -> builds/webtmux-linux-amd64
+make docker-artifact DOCKER_PLATFORM=linux/arm64 # -> builds/webtmux-linux-arm64
+```
+
+The repo's `Dockerfile` is that build (`--target artifact`); it exports the binary
+as a file rather than an image, so there is nothing to tag or clean up. It is also
+the supported way to consume webtmux from another repo's image build: build the
+artifact, then `COPY` it in — the binary is `CGO_ENABLED=0` static with embedded
+assets, so it needs nothing from the builder image at runtime.
+
 ## Usage
 
 ### Basic Usage

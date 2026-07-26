@@ -59,23 +59,21 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
 
 - [ ] **P0** 2.1 Create the worktree per the block above, after both gate checks. *(5 min)*
 
-- [ ] **P0** 2.2 **Untrack `builds/`.** *(20 min)*
+- [ ] **P0** 2.2 **VERIFY ONLY — `builds/` is already untracked.**
+      `plan-webtmux-build-run-split.md` task 1.4 did this on `local-main`: the artifact
+      build writes into `builds/`, so it could not leave a tracked output directory
+      behind. Confirm, do not redo: *(5 min)*
 
       ```bash
-      git rm -r --cached builds/
+      test -z "$(git ls-files builds/)" && grep -q '^/builds/$' .gitignore \
+        || echo "UNEXPECTED: builds/ still tracked — build-run-split 1.4 did not land"
       ```
 
-      Replace the `.gitignore` comment ("Don't ignore builds/ - we want prebuilt binaries
-      in repo") with:
+      The landed `.gitignore` comment differs in wording (it cites `make docker-artifact`
+      as a writer, which did not exist when this subplan was written) but is the same
+      decision. Do not rewrite it.
 
-      ```gitignore
-      # builds/ is NOT committed. Binaries ship as GitHub Release assets (see
-      # release-binaries). History still carries pre-v0.1.0 blobs — sunk cost;
-      # no history rewrite (it would break the seven live worktrees).
-      /builds/
-      ```
-
-      This also **dissolves the old `clean` footgun**: with `builds/` untracked,
+      That change also **dissolved the old `clean` footgun**: with `builds/` untracked,
       `clean`/`cross-compile` deleting it is harmless again, and no Makefile surgery for
       tracked-deletion safety is needed. Keep `cross-compile`'s
       `@rm -f $(OUTPUT_DIR)/$(BINARY_NAME)-*` line (catches a dropped platform).
@@ -102,10 +100,12 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
 
       Add all new targets to `.PHONY`.
 
-- [ ] **P1** 2.4 Add a `.dockerignore` (none exists). Still worthwhile with `builds/`
-      untracked — local builds land there and `scripts/webtmux-docker/Dockerfile` does
-      `COPY . /src`. Safe because `VERSION`/`GIT_COMMIT` arrive as build args, so `.git`
-      isn't needed either: *(15 min)*
+- [ ] **P1** 2.4 **VERIFY ONLY — `.dockerignore` already exists.**
+      `plan-webtmux-build-run-split.md` task 1.3 added it with exactly the list below, so
+      that the two plans could not disagree. The `COPY . /src` it protects now lives in the
+      fork's own `Dockerfile` (the artifact build), not in
+      `scripts/webtmux-docker/Dockerfile` — that file stopped building the binary in the
+      same change. *(5 min)*
 
       ```
       .git
@@ -117,8 +117,9 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
       ```
 
       (No `js/` entry — the legacy webpack tree was deleted in Stage 1.)
-      **Verify with `bash /workspace/scripts/webtmux-docker/launch.sh --rebuild` before
-      merging** — this touches the deploy path.
+      Confirm with `diff <(cat .dockerignore) -` against that list; add a `js/`-adjacent
+      entry only if Stage 1 left something behind. No `launch.sh --rebuild` is needed for
+      this task any more — the deploy-path verification was done under build-run-split 5.2.
 
 ---
 
@@ -218,8 +219,9 @@ a release needs committing after the build. Tag the release commit, build *from 
 
 1. **Publishing requires the user** — `gh` auth lives outside the agent. Every push and
    `gh release create` is a handoff; the plan marks them explicitly.
-2. **`.dockerignore` touches the deploy path** — 2.4 requires a `launch.sh --rebuild`
-   verification before merge.
+2. ~~**`.dockerignore` touches the deploy path**~~ — retired.
+   `plan-webtmux-build-run-split.md` added `.dockerignore` (1.3) and verified the deploy
+   path under it (5.2), so 2.4 is a verification with nothing left to break.
 3. **Tag on the wrong commit** — 2.7 merges *before* 2.8 tags, so the tag always lands on
    `local-main`.
 4. **Install docs vs repo visibility mismatch** — 2.10 tests the actual documented path

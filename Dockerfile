@@ -1,20 +1,31 @@
-FROM node:22 as js-build
-WORKDIR /gotty
-COPY js /gotty/js
-COPY Makefile /gotty/
-RUN make bindata/static/js/gotty.js.map
+# webtmux/Dockerfile — how the webtmux ARTIFACT is built. Owned by THIS repo.
+# Deployment concerns (host tmux version pin, tmux socket, uid/gid, stoplight
+# wiring) live in the consuming infra repo — see scripts/webtmux-docker/.
+#
+#   make docker-artifact          -> builds/webtmux-linux-amd64
+#
+# The binary is CGO_ENABLED=0 static with go:embed assets, so the artifact is
+# exactly one file with no ABI coupling to whatever runtime image consumes it.
+# That is what lets the builder and the runtime disagree about their base image.
+#
+FROM --platform=$BUILDPLATFORM golang:1.23-bookworm AS build
+# node is required by `make check-js`, which parse-guards the embedded JS so a
+# stray backtick in a css`` template cannot ship and blank the page. Before the
+# COPY so it stays a cached layer that does NOT rerun on source changes.
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+ARG VERSION=dev
+ARG GIT_COMMIT=unknown
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+COPY . /src
+# .git is excluded by .dockerignore, so VERSION/GIT_COMMIT MUST arrive as build
+# args — command-line make vars override the Makefile's git-describe defaults.
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+      make build VERSION="$VERSION" GIT_COMMIT="$GIT_COMMIT" \
+ && mv webtmux "webtmux-$TARGETOS-$TARGETARCH"
 
-FROM golang:1.23 as go-build
-WORKDIR /gotty
-COPY . /gotty
-COPY --from=js-build /gotty/js/node_modules /gotty/js/node_modules
-COPY --from=js-build /gotty/bindata/static/js /gotty/bindata/static/js
-RUN CGO_ENABLED=0 make
-
-FROM alpine:latest
-RUN apk update && \
-    apk upgrade && \
-    apk --no-cache add ca-certificates bash
-WORKDIR /root
-COPY --from=go-build /gotty/gotty /usr/bin/
-CMD ["gotty",  "-w", "bash"]
+# Export-only stage: the build product is a file, so emit a file, not an image.
+FROM scratch AS artifact
+COPY --from=build /src/webtmux-* /

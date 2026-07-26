@@ -1,0 +1,6 @@
+.git
+builds/
+*.gif
+*.ai
+plan-*.md
+cmd/webtmux-launch/payload/*.gz

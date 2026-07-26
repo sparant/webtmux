@@ -242,9 +242,10 @@ cascade cannot be executed here. Ranked:
 
 **Process risks:**
 
-4. `make clean` deletes `builds/` — six *tracked* deletions until Stage 2 untracks the
-   directory (which resolves this permanently). Until then, check `git status` after any
-   `make clean`/`cross-compile` on a tree with committed binaries.
+4. ~~`make clean` deletes `builds/` — six *tracked* deletions~~ — **resolved**, earlier
+   than planned. `plan-webtmux-build-run-split.md` 1.4 untracked `builds/` ahead of Stage
+   2 because the artifact build writes there; a tracked output directory would have
+   dirtied the tree on every build. Stage 2's task 2.2 is now a verification.
 5. `check-js` does not glob `vendor/`, so a corrupt vendored file ships silently.
    Mitigated by the guard in `vendor-assets.sh` and a size assertion on `lit.js`.
 6. `local-main` churn — always `--no-ff`, always re-verify after merge.
