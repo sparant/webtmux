@@ -13,7 +13,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildTree, filterTree, flattenTree, stepRow, moveTargetPos, sessionCountOf, rowKey, rowText,
+  buildTree, filterTree, flattenTree, stepRow, moveTargetPos, translateGap, sessionCountOf, rowKey, rowText,
 } from '../resources/js/window-tree.js';
 
 const sess = (name, extra = {}) => ({ name, active: false, ...extra });
@@ -190,4 +190,34 @@ test('sessionCountOf counts the sessions a window is linked into', () => {
 test('rowText is the session + index + name haystack', () => {
   assert.equal(rowText({ session: 'services', index: 3, name: 'logs' }), 'services 3: logs');
   assert.equal(rowText({ session: 's', index: 0, name: '' }), 's 0: bash');
+});
+
+test('translateGap re-anchors a drop measured against a filtered list', () => {
+  const full = ['@a', '@b', '@c', '@d'].map((id, i) => ({ id, session: 's', index: i }));
+  const shown = [full[1], full[3]];              // a filter left only @b and @d visible
+  // "above the first visible row" is above @b, i.e. gap 1 of the full list — NOT 0.
+  assert.equal(translateGap(shown, full, 0), 1);
+  // "between the two visible rows" is above @d = gap 3, not 1.
+  assert.equal(translateGap(shown, full, 1), 3);
+  // Past every visible row means the end of the WHOLE list, not the end of the two.
+  assert.equal(translateGap(shown, full, 2), 4);
+  // Unfiltered: the identity, so the default view's arithmetic is untouched.
+  for (let g = 0; g <= full.length; g++) assert.equal(translateGap(full, full, g), g);
+});
+
+test('translateGap + moveTargetPos land a filtered drag on the right ordinal', () => {
+  const full = ['@a', '@b', '@c', '@d'].map((id, i) => ({ id, session: 's', index: i }));
+  const shown = [full[1], full[3]];
+  // Drag @d (visible row 2) above @b (visible gap 0) => final ordinal 1 in the full list.
+  assert.equal(moveTargetPos(full, '@d', translateGap(shown, full, 0)), 1);
+  // Drag @b to the end => ordinal 3 (removing it first shifts the rest down one).
+  assert.equal(moveTargetPos(full, '@b', translateGap(shown, full, 2)), 3);
+});
+
+test('translateGap falls back to the end when the anchor row is gone', () => {
+  // The list changed under the drag (the anchor's window was killed mid-drop).
+  // Appending is the safe answer: it is a move the user can see and undo, where a
+  // silent 0 would teleport the window to the top of the list.
+  const full = [{ id: '@a', session: 's' }, { id: '@b', session: 's' }];
+  assert.equal(translateGap([{ id: '@gone', session: 's' }], full, 0), 2);
 });
