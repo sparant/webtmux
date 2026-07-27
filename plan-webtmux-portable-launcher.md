@@ -862,7 +862,7 @@ abstraction has leaked — fix that rather than deferring the test.
       should fill it in. Because launcher and webtmux are independent, the launcher can be
       released on its own cadence whenever a release exists to attach it to.
 
-- [ ] **P0** 3.20 Merge + cleanup. *(15 min)*
+- [x] **P0** 3.20 Merge + cleanup. *(15 min)*
 
       ```bash
       /workspace/scripts/git-merge-worktree.sh /workspace/webtmux-portable-launcher \
@@ -877,6 +877,9 @@ abstraction has leaked — fix that rather than deferring the test.
       # DEFERRED until Stage 0:
       git -C /workspace/webtmux push origin local-main
       ```
+
+      *Merged 2026-07-27 as `7acd979` (`--no-ff`), worktree removed. The push
+      stays deferred: `origin` is not yet the GitHub fork.*
 
 - [ ] **P0** 3.21 **Real-world check (needs the user + a Mac):** run
       `webtmux-launch <linuxbox>` from an actual Mac against an actual Linux box. Confirm
