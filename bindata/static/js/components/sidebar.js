@@ -3,7 +3,8 @@ import { LitElement, html, css } from 'lit';
 import { MOD_KEYS, chord } from '../os.js';
 import { matchesWords, appendChar, backspace, phraseText } from '../search.js';
 import {
-  buildTree, filterTree, flattenTree, stepRow, moveTargetPos, sessionCountOf, rowKey, rowText,
+  buildTree, filterTree, flattenTree, stepRow, moveTargetPos, translateGap, sessionCountOf,
+  rowKey, rowText,
 } from '../window-tree.js';
 import { stateStore } from '../state-store.js';
 import { clientStore } from '../client-store.js';
@@ -514,6 +515,18 @@ class WebtmuxSidebar extends LitElement {
     .fc-label { color: #6f7fa5; text-transform: uppercase; letter-spacing: 1px; font-size: 11px; }
     .fc-text { color: #fff; font-family: monospace; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     .fc-hint { color: #6f7fa5; font-size: 11px; }
+    .fc-clear {
+      flex: 0 0 auto;
+      background: transparent;
+      border: none;
+      color: #f3a7b4;
+      font-size: 13px;
+      line-height: 1;
+      padding: 2px 3px;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    .fc-clear:hover { background: #e94560; color: #fff; }
   `, ALERT_CSS, TIP_CSS, CONFIRM_CSS];
 
   constructor() {
@@ -555,9 +568,10 @@ class WebtmuxSidebar extends LitElement {
     // blob) changes them. Read-only apply — the StateStore `_applying` guard stops
     // these property writes from looping back into a patch.
     stateStore.subscribe(() => this._applySharedState());
-    // Type-ahead search state (typing in the focused panel selects a window).
+    // Type-ahead search state: the live filter phrase (typing in the focused panel
+    // narrows the list and previews the first match). It has no expiry — see
+    // _typeahead — so this is emptied only by an explicit clear or a panel close.
     this._searchWords = [];
-    this._searchTimer = null;
     // The view (window + logical session) that was active when the panel last took
     // keyboard focus — the "baseline" to restore if the browse is DISCARDED (Escape).
     // Arrow/type-ahead browsing switches the live view as a PREVIEW; Enter (or a
@@ -594,6 +608,10 @@ class WebtmuxSidebar extends LitElement {
         // panel, so a collapse would hide it mid-question while it still held the
         // keyboard and swallowed the next click somewhere off screen.
         this._confirm.close();
+        // …and the filter. It no longer expires on its own, so without this a phrase
+        // typed now would still be hiding rows when you reopened the panel later —
+        // and the ✕ that clears it would be hidden along with everything else.
+        this._resetSearch();
       } else {
         this.classList.remove('collapsed');
         // Remember the view we're on BEFORE any browsing, so Escape can restore it.
@@ -833,8 +851,9 @@ class WebtmuxSidebar extends LitElement {
     const sessions = this._sessionList();
     const own = this._ownSession();
     // One node, so the window list below is rendered by exactly the same code the
-    // tree uses — same rows, same drag semantics, same ×.
-    const node = { name: own, windows: (this.layout.windows || []).map((w) => ({ ...w, session: own })) };
+    // tree uses — same rows, same drag semantics, same ×. Its windows are the
+    // FILTERED ones: typing narrows this list exactly as it narrows the tree.
+    const node = { name: own, windows: this._rows() };
 
     return html`
       <h3>Sessions</h3>
@@ -874,6 +893,8 @@ class WebtmuxSidebar extends LitElement {
       </div>
 
       <h3>Windows</h3>
+      ${this._filterChip()}
+      ${node.windows.length ? '' : html`<div class="tree-empty">No window matches that.</div>`}
       ${this.renderWindowList(node, { plus: true })}
 
       <div class="session-info">
@@ -1041,16 +1062,24 @@ class WebtmuxSidebar extends LitElement {
     `;
   }
 
-  // What the user has typed, shown while it is narrowing the tree. The default view
-  // has nothing to show here — a phrase there SELECTS a row rather than hiding any,
-  // so the selection itself is the feedback.
+  // What the user has typed, shown for as long as it is narrowing the list — in
+  // both views, because in both views it now hides rows, and a list that is hiding
+  // things has to say so. Cleared with Escape, by backspacing it away, or with the ✕
+  // (the mouse's version of the same thing — you should not have to reach for the
+  // keyboard to undo something you can see).
   _filterChip() {
     if (!this._searchWords.length) return '';
     return html`
       <div class="filter-chip">
         <span class="fc-label">filter</span>
         <span class="fc-text">${phraseText(this._searchWords)}</span>
-        <span class="fc-hint">⌫ · Esc clears</span>
+        <span class="fc-hint">⌫ · Esc</span>
+        <button
+          class="fc-clear"
+          aria-label="Clear the filter"
+          title="Clear the filter"
+          @click=${() => this.clearFilter()}
+        >✕</button>
       </div>
     `;
   }
@@ -1170,9 +1199,15 @@ class WebtmuxSidebar extends LitElement {
     this.onDragEnd();
     if (!srcId) return;
     if (foreign) { this.unit?.linkWindow(srcId, node.name); return; }
+    // The gap was measured against the rows ON SCREEN, which a filter may have
+    // thinned; re-anchor it to the session's full list before turning it into an
+    // ordinal, or a drop while filtered would land at the wrong index (tmux counts
+    // the windows the filter is hiding).
+    const full = this._fullWindowsOf(node.name);
+    const gap = translateGap(node.windows, full, insert);
     // Translate the insertion GAP (0..N) into MoveWindow's FINAL ordinal (0..N-1);
     // -1 means the gap is the row's own slot (nothing to do).
-    const finalPos = moveTargetPos(node.windows, srcId, insert);
+    const finalPos = moveTargetPos(full, srcId, gap);
     if (finalPos < 0) return;
     // Name the session: in the tree the list being reordered can belong to a session
     // no region is attached to, which the server can't infer from this connection.
@@ -1343,9 +1378,8 @@ class WebtmuxSidebar extends LitElement {
       // the same key would throw away the browse you were in the middle of. A second
       // Escape (nothing left to clear) dismisses as always.
       e.preventDefault();
-      if (this.treeView && this._searchWords.length) {
-        this._resetSearch();
-        this.requestUpdate();
+      if (this._searchWords.length) {
+        this.clearFilter();
         return;
       }
       // Escape DISCARDS the browse: restore the window/session we were on before
@@ -1369,22 +1403,18 @@ class WebtmuxSidebar extends LitElement {
   }
 
   // Type-ahead. The phrase is split into space-separated WORDS; a window matches
-  // when EVERY word is a substring of its label, and we select the FIRST such window
-  // — so "cla" lands on claude-1 while "cla 2" lands on claude-2. A printable char
-  // grows the current word; if the grown phrase would match nothing we DISCARD the
-  // char (pretend it wasn't typed), so the selection never jumps to nowhere. Space
-  // starts a new word. A ~2s pause resets the phrase.
+  // when EVERY word is a substring of its label. It does two things at once: the
+  // list FILTERS down to the matches, and the first of them is previewed, so one
+  // phrase both narrows the list and points at an answer — "cla" lands on claude-1
+  // while "cla 2" lands on claude-2. A printable char grows the current word; if the
+  // grown phrase would match nothing we DISCARD the char (pretend it wasn't typed),
+  // so the list can never filter itself down to nothing. Space starts a new word.
   //
-  // In the TREE the same phrase also FILTERS: rows that don't match are hidden and
-  // sessions left with none drop out, so what you typed is visible as a narrowing
-  // list rather than only as a moved selection. Same words, same matcher — the only
-  // difference is that the tree has room to show you the answer, and a haystack that
-  // includes the session name (typing a session's name narrows to that session).
+  // The phrase LASTS until you clear it — Escape, backspacing it away, the chip's ✕,
+  // or closing the panel. It used to expire on a ~2s pause, which meant the filter
+  // you were reading vanished while you looked at it; a filter you can see is a
+  // filter you have to be able to keep.
   _typeahead(ch) {
-    // Any keystroke restarts the idle-reset timer.
-    if (this._searchTimer) clearTimeout(this._searchTimer);
-    this._searchTimer = setTimeout(() => { this._resetSearch(); this.requestUpdate(); }, 2000);
-
     const words = appendChar(this._searchWords, ch);
     if (ch === ' ') {
       // Separator: an empty trailing word doesn't narrow the match — selection holds.
@@ -1396,7 +1426,7 @@ class WebtmuxSidebar extends LitElement {
     const match = this._findWindowByWords(words);
     if (!match) return;                         // no match → reject this character
     this._searchWords = words;
-    this.requestUpdate();                       // the tree narrows to what's left
+    this.requestUpdate();                       // the list narrows to what's left
     // Preview it in the pane exactly like arrow-key nav — Enter commits.
     this.previewWindowRow(match.id, match.session);
     this.focusPanel();
@@ -1404,12 +1434,20 @@ class WebtmuxSidebar extends LitElement {
 
   // Rub out the last character. Unlike typing, this never rejects: shortening a
   // phrase can only ever widen the match set, so the row you were on stays matched
-  // and the tree simply shows more around it.
+  // and the list simply shows more around it.
   _backspaceSearch() {
-    if (this._searchTimer) clearTimeout(this._searchTimer);
-    this._searchTimer = setTimeout(() => { this._resetSearch(); this.requestUpdate(); }, 2000);
     this._searchWords = backspace(this._searchWords);
     this.requestUpdate();
+  }
+
+  // Drop the filter and show everything again (Escape, the chip's ✕). Keyboard focus
+  // stays on the panel so the next keystroke starts a new phrase rather than falling
+  // through to the terminal.
+  clearFilter() {
+    if (!this._searchWords.length) return;
+    this._resetSearch();
+    this.requestUpdate();
+    this.focusPanel();
   }
 
   // First selectable row whose label contains every non-empty search word, or null
@@ -1426,20 +1464,21 @@ class WebtmuxSidebar extends LitElement {
   }
 
   _resetSearch() {
-    if (this._searchTimer) { clearTimeout(this._searchTimer); this._searchTimer = null; }
     this._searchWords = [];
   }
 
   // The rows the keyboard walks, top to bottom, exactly as rendered: this session's
   // windows in the default view; every visible window in the tree (collapsed
   // sessions contribute none — they aren't on screen). `filtered` narrows by the
-  // live type-ahead phrase, which is what ↑/↓ should walk; the type-ahead's own
-  // search deliberately looks at the UNFILTERED set, or growing a phrase could never
-  // move the selection off the rows that phrase already matched.
+  // live phrase, which is what ↑/↓ should walk and what the list should show; the
+  // type-ahead's own search deliberately looks at the UNFILTERED set, or growing a
+  // phrase could never move the selection off the rows that phrase already matched.
   _rows({ filtered = true } = {}) {
     if (!this.treeView) {
       const own = this._ownSession();
-      return (this.layout?.windows || []).map((w) => ({ ...w, session: own }));
+      const rows = (this.layout?.windows || []).map((w) => ({ ...w, session: own }));
+      if (!filtered) return rows;
+      return this._narrow(rows);
     }
     const tree = filtered ? this._tree() : buildTree({
       sessions: this._sessionList(),
@@ -1449,6 +1488,34 @@ class WebtmuxSidebar extends LitElement {
       working: this.layout?.allWorking || null,
     });
     return flattenTree(tree, this.treeCollapsed);
+  }
+
+  // Narrow a default-view row list by the live phrase. The haystack is "index: name"
+  // here (the tree adds the session, which is on screen there and worth filtering by;
+  // in this view every row is from the same session, so it would only ever match all
+  // of them or none).
+  _narrow(rows) {
+    const terms = this._searchWords.filter((w) => w !== '');
+    if (!terms.length) return rows;
+    return rows.filter((w) => matchesWords(`${w.index}: ${w.name || 'bash'}`, terms));
+  }
+
+  // A session's FULL window list, whatever the filter is showing — the list a drag's
+  // insertion gap has to be expressed against, because tmux ordinals count hidden
+  // windows too (see translateGap).
+  _fullWindowsOf(sessionName) {
+    if (!this.treeView) {
+      const own = this._ownSession();
+      return (this.layout?.windows || []).map((w) => ({ ...w, session: own }));
+    }
+    const node = buildTree({
+      sessions: this._sessionList(),
+      allWindows: this.layout?.allWindows || [],
+      windows: this.layout?.windows || [],
+      ownSession: this._ownSession(),
+      working: this.layout?.allWorking || null,
+    }).find((n) => n.name === sessionName);
+    return node ? node.windows : [];
   }
 
   // ACCEPT the browse: keep whatever window is currently previewed and — unless the
@@ -1706,6 +1773,9 @@ class WebtmuxSidebar extends LitElement {
     // it has to capture where you actually were, not where the session hop below has
     // already taken us. (Already open = the baseline from when you opened it stands.)
     if (this.collapsed) this.collapsed = false;
+    // A live filter could be hiding the very row we are about to point at, and the
+    // arrow's whole promise is that it takes you to the window it was flashing about.
+    this._resetSearch();
     const target = session || this._ownSession();
     // The TREE already lists the target's row, whatever session it is in, so there is
     // nothing to point at it — and hopping the pane's session to reveal a window you
