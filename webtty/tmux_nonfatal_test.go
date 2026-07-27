@@ -51,7 +51,7 @@ func (c *failCtrl) ExitCopyMode() error                  { return errNope }
 func (c *failCtrl) RefreshClient() error                 { return errNope }
 func (c *failCtrl) ScrollUp(int) error                   { return errNope }
 func (c *failCtrl) ScrollDown(int) error                 { return errNope }
-func (c *failCtrl) NewWindow() error                     { return errNope }
+func (c *failCtrl) NewWindow(string) error               { return errNope }
 func (c *failCtrl) Events() <-chan tmux.Event            { return nil }
 
 // recordMaster is a PTY master that accepts and keeps every frame.
@@ -93,6 +93,7 @@ func TestTmuxCommandFailureNeverEndsTheConnection(t *testing.T) {
 		{"scroll up", TmuxScrollUp, "3"},
 		{"scroll down", TmuxScrollDown, "3"},
 		{"new window", TmuxNewWindow, ""},
+		{"new window in another session", TmuxNewWindow, "editors"},
 		{"switch session", TmuxSwitchSession, "services"},
 		{"rename window", TmuxRenameWindow, "@3 build"},
 		{"move window", TmuxMoveWindow, "@3 2"},

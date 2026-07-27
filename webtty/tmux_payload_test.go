@@ -13,16 +13,23 @@ import "testing"
 // failCtrl (see tmux_nonfatal_test.go).
 type recCtrl struct {
 	failCtrl
-	moveID     string
-	movePos    int
-	moveSess   string
-	unlinkID   string
-	unlinkSess string
-	calls      int
+	moveID        string
+	movePos       int
+	moveSess      string
+	unlinkID      string
+	unlinkSess    string
+	newWindowSess string
+	calls         int
 }
 
 func (c *recCtrl) MoveWindow(id string, pos int, session string) error {
 	c.moveID, c.movePos, c.moveSess = id, pos, session
+	c.calls++
+	return nil
+}
+
+func (c *recCtrl) NewWindow(session string) error {
+	c.newWindowSess = session
 	c.calls++
 	return nil
 }
@@ -80,6 +87,24 @@ func TestMoveWindowPayloadRejectsANonNumericPosition(t *testing.T) {
 	}
 	if ctrl.calls != 0 {
 		t.Errorf("malformed move was executed: (%q, %d, %q)", ctrl.moveID, ctrl.movePos, ctrl.moveSess)
+	}
+}
+
+func TestNewWindowPayloadCarriesTheSession(t *testing.T) {
+	// Each session in the tree view has its own "+", so the target rides the payload;
+	// the toolbar chord and the default view send nothing, meaning "this pane's".
+	for _, tc := range []struct{ payload, session string }{
+		{"", ""},
+		{"editors", "editors"},
+		{"  editors  ", "editors"},
+	} {
+		wt, ctrl := newRecordingWebTTY(t)
+		if err := wt.handleTmuxMessage(TmuxNewWindow, []byte(tc.payload)); err != nil {
+			t.Fatalf("%q: %v", tc.payload, err)
+		}
+		if ctrl.newWindowSess != tc.session || ctrl.calls != 1 {
+			t.Errorf("%q created in %q (calls=%d); want %q", tc.payload, ctrl.newWindowSess, ctrl.calls, tc.session)
+		}
 	}
 }
 

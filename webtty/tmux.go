@@ -38,7 +38,9 @@ type TmuxController interface {
 	RefreshClient() error
 	ScrollUp(lines int) error
 	ScrollDown(lines int) error
-	NewWindow() error
+	// NewWindow takes the session to create the window in ("" = the pane's own):
+	// the sidebar's tree view gives every session its own "+".
+	NewWindow(session string) error
 	Events() <-chan tmux.Event
 }
 
@@ -199,7 +201,8 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 		return nil
 
 	case TmuxNewWindow:
-		return wt.afterCmd("new window", wt.tmuxCtrl.NewWindow())
+		// payload = the target session, or empty for the pane's own.
+		return wt.afterCmd("new window", wt.tmuxCtrl.NewWindow(strings.TrimSpace(string(payload))))
 
 	case TmuxSwitchSession:
 		return wt.afterCmd("switch session", wt.tmuxCtrl.SwitchSession(string(payload)))
