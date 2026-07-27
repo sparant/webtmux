@@ -208,14 +208,18 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
       control's move. **34/34 passed** (driver updated to drive the dropdown). Also re-ran
       `verify-ux5.js` because it asserted the old sidebar label text: **22/22 passed**.
 
-### Phase 8 — Land
+### Phase 8 ✅ — Land
 
 - [x] **P0** 8.1 Mark every phase complete in this plan; commit in the worktree.
-- [ ] **P0** 8.2 `scripts/git-merge-worktree.sh /workspace/webtmux-ux6 --no-ff` (retry on a
+- [x] **P0** 8.2 `scripts/git-merge-worktree.sh /workspace/webtmux-ux6 --no-ff` (retry on a
       moved target; never force).
-- [ ] **P0** 8.3 Confirm `git merge-base --is-ancestor <sha> local-main`.
-- [ ] **P1** 8.4 Report what still needs the HOST (container rebuild + live verify) — this
-      change cannot be deployed from the container.
+- [x] **P0** 8.3 Confirm `git merge-base --is-ancestor <sha> local-main`.
+- [x] **P1** 8.4 Report what still needs the HOST (container rebuild + live verify) — this
+      change cannot be deployed from the container. **Merged to `local-main` @ 64fa619.**
+      Everything that can be checked without the host tmux socket has been (Go suite, boot,
+      served bindata, three Playwright drivers); deploying it needs
+      `scripts/webtmux-docker/launch.sh --rebuild` on the HOST, which `launch.sh` hard-refuses
+      to run under the secure daemon.
 
 ---
 
@@ -231,7 +235,7 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
 | Phase 5 mouse dropdown | ✅ |
 | Phase 6 sidebar row | ✅ |
 | Phase 7 verify | ✅ |
-| Phase 8 land | 🔄 |
+| Phase 8 land | ✅ |
 
 ## Next Steps
 
