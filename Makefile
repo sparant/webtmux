@@ -24,7 +24,7 @@ PLATFORMS = \
 
 export CGO_ENABLED=0
 
-.PHONY: all build clean test test-js install cross-compile release help check-js docker-artifact launcher launcher-dev
+.PHONY: all build clean test test-js test-hooks install cross-compile release help check-js docker-artifact launcher launcher-dev
 
 # webtmux-launch: the SSH launcher. It carries no webtmux payload — it resolves
 # the target's platform over SSH and gets the matching binary from whichever
@@ -90,10 +90,11 @@ build: sync-assets
 install:
 	go install $(BUILD_OPTIONS) .
 
-# Run tests (Go + the node store tests). The JS tests exercise the bug-prone
-# StateStore debounce/rev-conflict logic; skipped with a note if node is absent
-# (same policy as check-js), since state-store.js/client-store.js have no imports.
-test: test-js
+# Run tests (Go + the node store tests + the shell stoplight hooks). The JS tests
+# exercise the bug-prone StateStore debounce/rev-conflict logic; skipped with a note
+# if node is absent (same policy as check-js), since state-store.js/client-store.js
+# have no imports.
+test: test-js test-hooks
 	go test ./...
 	go vet ./...
 
@@ -105,6 +106,13 @@ test-js:
 		echo "Running JS store tests..."; \
 		"$$node_bin" --test test/; \
 	fi
+
+# The bash stoplight installer, driven against a real tmux server: the hooks are
+# shell + tmux all the way down, so nothing above this layer can tell whether they
+# address the right window. Skips itself where tmux is absent, like test-js does
+# for node.
+test-hooks:
+	@bash test/stoplight-hooks.sh
 
 # Build the release artifact in a pinned container — no local Go toolchain needed.
 # Emits builds/webtmux-<os>-<arch>. Cheap to re-run: BuildKit caches everything.

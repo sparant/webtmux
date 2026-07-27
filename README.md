@@ -164,11 +164,18 @@ Discover what build you are running on.
 The stoplight contract is one tmux option, set on the window by whatever runs inside it:
 
 ```sh
-tmux set -w @wt_working 1     # green  — working
-tmux set -w @wt_working 2     # amber  — prompting: blocked until you answer
-tmux set -w @wt_working 0     # red    — waiting for work to do
-tmux set -w -u @wt_working    # unset  — unfilled dot, "not reporting"
+tmux set -w -t "$TMUX_PANE" @wt_working 1     # green  — working
+tmux set -w -t "$TMUX_PANE" @wt_working 2     # amber  — prompting: blocked until you answer
+tmux set -w -t "$TMUX_PANE" @wt_working 0     # red    — waiting for work to do
+tmux set -w -t "$TMUX_PANE" -u @wt_working    # unset  — unfilled dot, "not reporting"
 ```
+
+**Always name the pane.** A bare `tmux set -w @wt_working …` is not "my window": with no `-t`,
+tmux resolves the target from the CURRENT window of the session it picks — the window you are
+LOOKING at. The two are the same window only while you are watching, so the writes look correct
+right up until they matter: switch away from a long command and its finishing red lands on the
+window you switched to, while the window that actually finished stays green. `$TMUX_PANE` is
+exported by tmux into every pane and resolves to that pane's window, wherever you are looking.
 
 That is the whole API: any script, agent hook, or build wrapper can write it, and every surface showing that window (recents tab, sidebar row, preview tile, Exposé tile) updates within ~500 ms. A drop out of green flashes everywhere the window appears until you view it — viewing it once is enough, even for a window linked into several sessions.
 
@@ -181,11 +188,11 @@ Source the bundled prompt hooks from `~/.bashrc`:
   source /path/to/webtmux/install_stoplight_hooks_bash.sh
 ```
 
-The hooks only activate inside tmux and are idempotent. They paint green when a command starts (bash `DEBUG` trap), red when the prompt returns (`PROMPT_COMMAND`), and leave the window red when the shell exits so it is never stranded green. `exit`/`logout` never paint green, and tab-completion doesn't trigger them.
+The hooks only activate inside tmux and are idempotent. They paint green when a command starts (bash `DEBUG` trap), red when the prompt returns (`PROMPT_COMMAND`), and leave the window red when the shell exits so it is never stranded green. `exit`/`logout` never paint green, and tab-completion doesn't trigger them. Every write is addressed to `$TMUX_PANE`, so a command that finishes while you are looking at another window reddens (and flashes) the window it actually ran in.
 
 ### Claude Code Integration
 
-The recommended preferences: add this `hooks` block to `~/.claude/settings.json` (hooks run in the window's own shell, which inherits `$TMUX`, so a plain `tmux set -w` lands on the right window):
+The recommended preferences: add this `hooks` block to `~/.claude/settings.json` (hooks run as children of the agent process in the window's own pane, so they inherit both `$TMUX` and `$TMUX_PANE` — keep the `-t "$TMUX_PANE"`, or the write follows whichever window you are looking at):
 
 ```json
 {
@@ -195,19 +202,19 @@ The recommended preferences: add this `hooks` block to `~/.claude/settings.json`
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r '.prompt // \"\"' | grep -q '^/' || tmux set -w @wt_working 1"
+            "command": "jq -r '.prompt // \"\"' | grep -q '^/' || tmux set -w -t \"$TMUX_PANE\" @wt_working 1"
           }
         ]
       }
     ],
     "PreToolUse": [
       {
-        "hooks": [{ "type": "command", "command": "tmux set -w @wt_working 1" }]
+        "hooks": [{ "type": "command", "command": "tmux set -w -t \"$TMUX_PANE\" @wt_working 1" }]
       }
     ],
     "PostToolUse": [
       {
-        "hooks": [{ "type": "command", "command": "tmux set -w @wt_working 1" }]
+        "hooks": [{ "type": "command", "command": "tmux set -w -t \"$TMUX_PANE\" @wt_working 1" }]
       }
     ],
     "Notification": [
@@ -215,24 +222,24 @@ The recommended preferences: add this `hooks` block to `~/.claude/settings.json`
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r '.message // \"\"' | grep -qi 'waiting for your input' || tmux set -w @wt_working 2"
+            "command": "jq -r '.message // \"\"' | grep -qi 'waiting for your input' || tmux set -w -t \"$TMUX_PANE\" @wt_working 2"
           }
         ]
       }
     ],
     "Stop": [
       {
-        "hooks": [{ "type": "command", "command": "tmux set -w @wt_working 0" }]
+        "hooks": [{ "type": "command", "command": "tmux set -w -t \"$TMUX_PANE\" @wt_working 0" }]
       }
     ],
     "SessionStart": [
       {
-        "hooks": [{ "type": "command", "command": "tmux set -w @wt_working 0" }]
+        "hooks": [{ "type": "command", "command": "tmux set -w -t \"$TMUX_PANE\" @wt_working 0" }]
       }
     ],
     "SessionEnd": [
       {
-        "hooks": [{ "type": "command", "command": "tmux set -w @wt_working 0" }]
+        "hooks": [{ "type": "command", "command": "tmux set -w -t \"$TMUX_PANE\" @wt_working 0" }]
       }
     ]
   }
@@ -533,16 +540,20 @@ saving a text file needs. Four environment variables adjust the resolution:
 A window can report what it is doing by setting a tmux option on itself:
 
 ```sh
-tmux set -w @wt_working 1     # green  — working
-tmux set -w @wt_working 2     # amber  — prompting: blocked until you answer
-tmux set -w @wt_working 0     # red    — waiting for work to do
-tmux set -w -u @wt_working    # unfilled — not reporting
+tmux set -w -t "$TMUX_PANE" @wt_working 1     # green  — working
+tmux set -w -t "$TMUX_PANE" @wt_working 2     # amber  — prompting: blocked until you answer
+tmux set -w -t "$TMUX_PANE" @wt_working 0     # red    — waiting for work to do
+tmux set -w -t "$TMUX_PANE" -u @wt_working    # unfilled — not reporting
 ```
 
 Anything running in the window can do this — a shell prompt hook, an agent's
 start/stop hooks, a script wrapping a long build. webtmux shows it as a stoplight
 dot everywhere a window appears: the recent tabs, the sidebar's window list, the
 preview thumbnails, Exposé.
+
+The `-t "$TMUX_PANE"` is not optional. Without it tmux writes to whichever window
+is CURRENT — the one you are looking at — so the light is correct only while you
+are watching it, which is the one time you don't need it.
 
 The dot tells you the state; the **flash** tells you it _changed_. When a window
 drops out of green while you are looking somewhere else, everything showing that

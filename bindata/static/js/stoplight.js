@@ -8,7 +8,10 @@
 // imports them.
 //
 // The values are set by whatever runs IN the window (agent hooks, a shell prompt
-// hook, a script) with:  tmux set -w @wt_working 1|0|2  (set -u to clear).
+// hook, a script) with:  tmux set -w -t "$TMUX_PANE" @wt_working 1|0|2  (-u to clear).
+// The pane target is part of the contract, not a flourish: a bare `set -w` writes to
+// whatever window is CURRENT, i.e. the one being watched, so an unaddressed write is
+// right only while nobody needs it and lands on the wrong window the moment they do.
 //
 // This module has no imports on purpose: the components, the SplitManager and the
 // node test runner can all load it.
