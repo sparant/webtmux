@@ -4,7 +4,9 @@
 2026-07-25.
 
 **This stage is executed by the user, not by Claude** — it needs GitHub credentials Claude
-does not have. Stages 1-3 are gated on it.
+does not have. Stage 2 is gated on it. *(Revised 2026-07-27: **Stage 3 is not.** The
+launcher can source binaries from a local build directory, so it is buildable and testable
+before this stage runs; only its fetch-path tests and asset publishing wait.)*
 
 ## Goal
 
@@ -23,8 +25,9 @@ exists. Stage 2 also pushes tags and release binaries, which need a canonical ho
 platform over SSH and fetches the matching binary from this repo's Releases — so the fork
 is not just a home for the code, it is the distribution host.
 
-**Scoping:** Stages 2 and 3 both hard-depend on this. Stage D (deps) and Stage 1 (vendor)
-touch only local code and could run before or during the migration.
+**Scoping:** Stage 2 hard-depends on this. Stage D (deps), Stage 1 (vendor), and — since
+2026-07-27 — Stage 3 (launcher, via its local build-directory source) touch only local
+code and can run before or during the migration.
 
 ---
 

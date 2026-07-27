@@ -36,20 +36,32 @@ pass — see Revision history)*, each its own subplan and worktree:
 |---|---|---|---|
 | 1st | D | `plan-webtmux-portable-deps.md` | **Minimize dependencies first**, so every later stage is working against a smaller surface. 16 modules → 4; three unmaintained packages with one call site each. Cheapest here: D2.2 (urfave/cli v2→v3) costs far less *before* the launcher is written against v2's API. |
 | 2nd | 0 | `plan-webtmux-portable-fork.md` | **User-executed.** Fork `chrismccord/webtmux` on GitHub — the canonical origin, and the host the launcher downloads from. |
-| 3rd | 2 | `plan-webtmux-portable-release.md` | Semver tags + **GitHub Releases** publishing. **Unblocks Stage 3** — the launcher fetches these assets, so a release must exist before it can work end-to-end. |
-| 4th | 3 | `plan-webtmux-portable-launcher.md` | **The actual deliverable.** Fetches the right webtmux for the target platform from GitHub Releases and installs it over SSH. |
+| 3rd | 2 | `plan-webtmux-portable-release.md` | Semver tags + **GitHub Releases** publishing — the distribution channel for people who aren't you. *(No longer blocks Stage 3; see the local-source note below.)* |
+| 4th | 3 | `plan-webtmux-portable-launcher.md` | **The actual deliverable.** Gets the right webtmux for the target platform — from a GitHub Release, or from a local build directory — and installs it over SSH. |
 | 5th | 1 | `plan-webtmux-portable-vendor.md` | **Optional.** Removes the runtime CDN dependency and drops ~2.6 MB of dead assets. No longer required — air-gap support is a nice-to-have, not a goal. **Gated on the build/run split — satisfied `af969d2`.** |
 
 Each stage merges to `local-main` before the next begins.
 
 **Independent builds — the change that shapes everything else.** The launcher does **not**
-embed webtmux. It resolves the target's platform over SSH, downloads the matching binary
-from a GitHub Release to the Mac, and pushes it over the connection it already has open.
+embed webtmux. It resolves the target's platform over SSH, obtains the matching binary on
+the Mac, and pushes it over the connection it already has open.
 
 That kills a combinatorial coupling: with embedding, every webtmux change forced a rebuild
 *and republish* of every launcher binary, and each launcher carried the sum of all target
 payloads (~15 MB). Now the two ship on **independent cadences** — a webtmux fix reaches
 every existing launcher with no launcher release at all — and the launcher stays ~5 MB.
+
+**Two binary sources, one interface** *(added 2026-07-27)*. "Obtains" means a GitHub
+Release asset **or** a local build directory (`WEBTMUX_LAUNCH_SOURCE=./builds`), selected
+by config and differing only in how the bytes and their sha are read. `make cross-compile`
+already writes the *same* filenames the release publishes, so a checkout is a drop-in
+substitute for a release.
+
+**Consequence for ordering: Stage 3 no longer gates on Stage 0 or Stage 2.** The launcher
+can be built and tested end-to-end today, against local builds, with no fork and no
+published release. D → 0 → 2 → 3 remains the recommended order — it is the shortest path
+to something a stranger can use — but it is now a preference. Only the fetch-path tests
+and launcher-asset publishing are deferred until the GitHub migration lands.
 
 **Why targets never need internet:** the Mac fetches and pushes over SSH, so the target
 needs neither github.com reachability nor `curl`/`wget`. The Mac is the user's laptop; it
@@ -109,11 +121,12 @@ embedded FS — so this requires **zero Makefile and zero Go changes**. A top-le
   (user-executed — the agent has no GitHub access). Target machines are unaffected either
   way, since the Mac does the downloading. History keeps the old pre-split blobs (sunk
   cost, no rewrite: it would break the live worktrees).
-- **The launcher fetches instead of embedding** *(added 2026-07-26, second pass)*. Costs a
-  network round-trip on first deploy to a given platform (cached thereafter) and a
-  bootstrapping constraint — a release must exist before the launcher works, mitigated by
-  a `--webtmux-binary <path>` escape hatch. Buys decoupled release cadences, a launcher
-  that stays ~5 MB, and no rebuild-everything-on-every-webtmux-change.
+- **The launcher fetches instead of embedding** *(added 2026-07-26, second pass; revised
+  2026-07-27)*. Costs a network round-trip on first deploy to a given platform (cached
+  thereafter). Buys decoupled release cadences, a launcher that stays ~5 MB, and no
+  rebuild-everything-on-every-webtmux-change. The bootstrapping constraint this originally
+  carried — "a release must exist before the launcher works" — is **gone**: a local build
+  directory is a first-class source, not just an escape hatch.
 - **`--no-auth` + a 32-char secret path** for launcher sessions, instead of basic auth.
   Chrome dropped `http://user:pass@host` URLs, so keeping basic auth means typing a
   password every launch, which defeats the purpose. Both ends bind `127.0.0.1`, so reaching
@@ -247,13 +260,13 @@ Detail lives in the subplans. This is the roll-up.
 - [ ] **P0** 3.2 Scaffold `cmd/webtmux-launch/` + Makefile target (**no embedded payload**)
 - [ ] **P0** 3.3 SSH layer: one option set on **every** invocation (`ControlMaster=auto` + keepalives, so whichever call becomes master carries them); one-round-trip probe
 - [ ] **P0** 3.4 **Adopt** an already-running webtmux when present (skips fetch/deploy/create/launch)
-- [ ] **P0** 3.5 **Fetch from GitHub Releases** for the target's platform → Mac cache → push over SSH; content-addressed install (sidesteps `ETXTBSY`) + attach script + **detached** base session
+- [ ] **P0** 3.5 **Resolve from the configured source** (GitHub Release **or** local build dir via `WEBTMUX_LAUNCH_SOURCE`) for the target's platform → push over SSH; content-addressed install (sidesteps `ETXTBSY`) + attach script + **detached** base session
 - [ ] **P0** 3.6 Port allocation + secret path, **persisted per-target** (`~/.config/webtmux-launch/`) so the URL survives launcher restarts; the supervised `ssh -L` command
 - [ ] **P0** 3.7 Readiness poll + browser launch (once, never on reconnect)
 - [ ] **P0** 3.8 Supervisor: backoff, restart, clean teardown — **setup stays out of the restart loop**
 - [ ] **P1** 3.9 Flags, error messages, `--version`
-- [ ] **P0** 3.10 End-to-end tests: attach-vs-create, durability, split-view, reconnect cost
-- [ ] **P1** 3.11 README section; launcher binaries publish alongside webtmux on the next Release
+- [ ] **P0** 3.10 End-to-end tests: attach-vs-create, durability, split-view, reconnect cost — all runnable against a local source, no release needed
+- [ ] **P1** 3.11 README section (incl. a **Developing** note on `WEBTMUX_LAUNCH_SOURCE`); launcher binaries publish alongside webtmux on the next Release *(publishing deferred to post-Stage 0)*
 - [ ] **P0** 3.12 Merge + cleanup
 
 ---
@@ -287,11 +300,16 @@ exists in this container, so the CSS cascade cannot be executed here. Ranked:
 **Launcher risks:**
 
 7. Remote port collision on a busy shared box (mitigated by `ExitOnForwardFailure` + retry).
-8. **Bootstrapping** — the launcher fetches from a Release, so it cannot work end-to-end
-   until Stage 2 publishes one. Hence the order change (2 before 3) and the
-   `--webtmux-binary <path>` escape hatch for development.
-9. **Network required on the Mac at first deploy** to a given platform+version. Cached
-   afterwards. A launcher with a warm cache works offline; a cold one does not.
+8. **Bootstrapping — resolved** *(2026-07-27)*. Local sources mean the launcher works
+   end-to-end with no release at all. What remains is that the **release path ships
+   untested** until Stage 2 lands: mitigate by keeping the two backends behind one
+   interface so only `Digest`/`Open` differ, never a branch through the launcher.
+9. **Network required on the Mac at first deploy** to a given platform+version, on the
+   release path only. Cached afterwards. A launcher with a warm cache works offline; a
+   cold one does not. A local source needs no network ever.
+9a. **A misconfigured local source silently falling back to a download** — looks like
+   success while testing nothing you meant to test. Configured-but-invalid must be a hard
+   error, and every run prints which source it used.
 10. **Version resolution / sha mismatch** — a deleted release, a renamed asset, or a
     corrupted download must fail loudly with the URL it tried, never install a partial
     binary. Verify the sha before pushing anything over SSH.
@@ -306,6 +324,11 @@ exists in this container, so the CSS cascade cannot be executed here. Ranked:
 3. Execute Stage 2 (`plan-webtmux-portable-release.md`) — publishes `v0.1.0`, which is
    what the launcher will fetch.
 4. Execute Stage 3 (`plan-webtmux-portable-launcher.md`) — the deliverable.
+
+   **Stage 3 may be pulled forward** ahead of 0 and 2 and run against local builds; only
+   its fetch-path tests and asset publishing then wait for them. Do that if the launcher
+   is the thing you actually want working, rather than blocking on a migration you have to
+   run by hand.
 5. Optionally Stage 1 (vendor; finish with the 20-second browser check).
 
 **Files:** `plan-webtmux-portable.md` (this) plus the `-fork`, `-launcher`, `-vendor`,
@@ -342,3 +365,18 @@ exists in this container, so the CSS cascade cannot be executed here. Ranked:
   4. **Stage D goes first** — minimize dependencies before building on them.
   Execution order → **D→0→2→3→1**; Stage 2 moves ahead of Stage 3 because the launcher
   cannot fetch a release that does not exist.
+- **2026-07-27** — **local development source; Stage 3's GitHub gate removed.** The
+  launcher gains a `Source` interface with two backends — a GitHub Release asset, and a
+  local build directory selected by `WEBTMUX_LAUNCH_SOURCE` / `--webtmux-source` / a
+  `make launcher-dev` ldflag default. They differ only in how bytes and shas are read;
+  platform resolution, content-addressed install, adopt-mode build comparison, and the
+  digest-before-transfer ordering are shared. This works because `make cross-compile`
+  already writes the release asset names into `builds/`, making a checkout a drop-in
+  substitute for a release.
+
+  Consequently **Stage 3 no longer gates on Stage 0 or Stage 2** — it is built and tested
+  now, with only the fetch-path tests (3.15e), launcher-asset publishing (3.19), and the
+  `git push` in 3.20 deferred until the migration lands. Execution order **D→0→2→3→1**
+  stands as a recommendation, not a constraint. New risks: a stale local build deployed
+  confidently, target-cache growth per rebuild, and the release backend rotting untested —
+  all addressed in the subplan's risk list.

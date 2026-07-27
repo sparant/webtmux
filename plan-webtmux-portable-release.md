@@ -14,15 +14,20 @@ always fallen back to `dev` — every binary ever shipped is stamped identically
 adds semver tags, moves binaries out of git and onto GitHub Releases, and publishes
 `v0.1.0`.
 
-**This stage unblocks Stage 3.** The launcher does not embed webtmux — it downloads the
-release asset matching the target machine's platform. So a published release with
-per-platform assets and a `SHA256SUMS` file is a hard prerequisite for the launcher
-working end-to-end. Two things follow:
+**This stage completes Stage 3's distribution story.** *(Revised 2026-07-27: it used to
+**block** Stage 3. It no longer does — the launcher now also accepts a local build
+directory as a binary source, so it can be built and tested end-to-end before any release
+exists. What still requires this stage is the launcher working for someone who is **not**
+you, plus its own fetch-path tests.)* The launcher does not embed webtmux — it downloads
+the release asset matching the target machine's platform. Two things follow, and they are
+the reason asset naming is load-bearing:
 
 - **Asset names are an interface, not a detail.** The launcher constructs URLs from
   `uname` output, so `webtmux-linux-amd64`, `webtmux-linux-arm64`, `webtmux-darwin-arm64`
   etc. must be exactly what `make cross-compile` already produces. Renaming an asset
-  breaks every launcher in the field.
+  breaks every launcher in the field — **and** breaks the launcher's local-source mode,
+  which reads those same names straight out of `builds/`. Upload what `cross-compile`
+  emits, unrenamed.
 - **`SHA256SUMS` must be published as its own asset.** The launcher fetches it *first*
   (a few hundred bytes) to decide whether a 12 MB download is needed at all.
 

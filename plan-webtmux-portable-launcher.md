@@ -5,9 +5,9 @@
 
 ## Goal
 
-One command on a Mac that: works out which webtmux the target machine needs, fetches it
-from GitHub, installs it over SSH, starts it, tunnels the port back, keeps both alive, and
-opens the browser.
+One command on a Mac that: works out which webtmux the target machine needs, gets it from
+the configured **binary source** (a GitHub release, or a local build directory), installs
+it over SSH, starts it, tunnels the port back, keeps both alive, and opens the browser.
 
 ```bash
 webtmux-launch linuxbox          # that's it
@@ -19,30 +19,46 @@ keep *that* alive → paste a URL.
 **The launcher and webtmux are built and released independently.** *(Revised 2026-07-26:
 an earlier design embedded gzipped webtmux binaries in the launcher via `//go:embed`.)*
 The launcher carries no webtmux at all — it resolves the target's platform over SSH and
-downloads the matching release asset.
+gets the matching binary from whichever source is configured.
 
 That removes a combinatorial coupling: with embedding, every webtmux change forced a
 rebuild *and republish* of every launcher binary, and each launcher carried the sum of all
 target payloads (~15 MB). Now a webtmux fix reaches every launcher already in the field
 with **no launcher release at all**, and the launcher stays ~5 MB.
 
-The Mac does the downloading and pushes over the SSH connection it already has open, so
-**target machines need no internet, no `curl`/`wget`, and no pre-installed webtmux.**
+The Mac resolves the binary — downloading it, or reading it out of a local `builds/`
+directory — and pushes it over the SSH connection it already has open, so **target
+machines need no internet, no `curl`/`wget`, and no pre-installed webtmux.** With a local
+source, neither machine needs internet.
 
 ## Gate
 
-**Do not execute until Stage 0 (`plan-webtmux-portable-fork.md`) is done** — origin must
-be the user's public GitHub fork, which is where release assets are fetched from.
+**None.** *(Revised 2026-07-27: this stage previously refused to start until Stage 0 —
+the GitHub fork — was done, because the release URL was the launcher's only way to obtain
+a binary. The **local source** (task 3.7b) removes that dependency: `make cross-compile`
+already writes `builds/webtmux-<os>-<arch>`, which are the **same asset names** the
+release publishes, so a local build directory is a drop-in substitute for a release.)*
 
-```bash
-git -C /workspace/webtmux remote get-url origin | grep -q 'github.com' \
-  || { echo "GATE: Stage 0 not done — origin is $(git -C /workspace/webtmux remote get-url origin)"; exit 1; }
-```
+Every task here is executable now, against a local build directory, with **no GitHub
+account, no fork, no tag, and no published release**. The full end-to-end suite —
+probe, deploy, session, tunnel, adopt, split-view, durability, resilience — runs in local
+mode inside the throwaway container.
 
-**Stage 2 should also have published `v0.1.0`** before end-to-end testing — the launcher
-fetches a release, so there must be one. That is why the execution order is D → 0 → 2 → 3.
-Development can proceed without it via `--webtmux-binary <path>` (task 3.7a); only the
-fetch-path tests (3.15e) genuinely require a published release.
+**Deferred, not gated.** Two things genuinely need Stages 0 and 2 to have landed, and
+they are the *only* two. Build the code for both now; run them later:
+
+| Deferred item | Needs | Why it cannot run yet |
+|---|---|---|
+| 3.15e fetch-path tests | Stage 0 + a published `v0.1.0` | Nothing to download until a release object exists |
+| 3.19 publish launcher binaries | Stage 0 + Stage 2 | No release to attach assets to |
+
+Both are marked **DEFERRED** inline. 3.20 merges to `local-main` regardless; only its
+`git push` waits on Stage 0. Do **not** hold the other 30-odd tasks behind them, and do
+not treat a missing release as a failure in any other task — if a task fails without a
+release, the source abstraction (3.7) has leaked and that is the bug.
+
+The recommended execution order remains D → 0 → 2 → 3, because it is the shortest path to
+a launcher a *stranger* can use. It is now a preference, not a constraint.
 
 ---
 
@@ -85,7 +101,7 @@ split cleanly, and the implementation must preserve this split:
 | Step | Cold start | Reconnect |
 |---|---|---|
 | Probe (arch, tmux, session list) | yes | **no** — cached in memory for the process lifetime |
-| Fetch from GitHub + deploy + attach script | yes, if the sha is missing | **no** — content-addressed `test -x` already satisfied |
+| Resolve from source + deploy + attach script | yes, if the sha is missing | **no** — content-addressed `test -x` already satisfied |
 | Create base session (`new-session -d`) | yes | **no** — the session is durable; it outlived the drop |
 | Readiness poll + open browser | yes | **no** — first success only |
 | `ssh -L … exec webtmux … attach` | yes | **yes — this is the entire reconnect** |
@@ -115,6 +131,81 @@ retry on its own; tmux holds all state.
 **The one case where this genuinely hurts:** if SSH auth requires interaction — YubiKey
 touch, TOTP — then *every* reconnect prompts. `ControlPersist` does not help, because
 network death kills the master connection too. See risk 12 for mitigations.
+
+### Binary source — one interface, three backends
+
+*(Added 2026-07-27.)* The launcher needs exactly two things from wherever webtmux comes
+from, and neither is GitHub-specific:
+
+```go
+type Source interface {
+    // sha256 of the asset for a platform, WITHOUT transferring it.
+    Digest(platform string) (string, error)
+    // the bytes, only once Digest has decided a transfer is needed.
+    Open(platform string) (io.ReadCloser, error)
+}
+```
+
+That split is the whole design. `Digest` is what makes the common case free — it answers
+"is a copy needed?" for a few hundred bytes, before the 12 MB question is ever asked
+(see 3.7's ordering). Three backends satisfy it:
+
+| Source | Selected by | `Digest` | `Open` |
+|---|---|---|---|
+| **release** (default) | nothing set | GET the `SHA256SUMS` asset | GET `webtmux-<platform>` |
+| **local dir** | `WEBTMUX_LAUNCH_SOURCE=<dir>` | `sha256` of `<dir>/webtmux-<platform>` | read that file |
+| **single file** | `--webtmux-binary <path>` | `sha256` of the file | read it |
+
+**The local dir is a drop-in release, not a special case.** `make cross-compile` writes
+`builds/webtmux-linux-amd64`, `builds/webtmux-darwin-arm64`, … — the *identical* names
+Stage 2 publishes as release assets, because Stage 2 uploads exactly those files. So
+platform resolution, asset naming, digest-before-transfer, content-addressed install,
+`ETXTBSY` impossibility, and the adopt-mode build comparison are **all unchanged** between
+the two. Only `Digest`/`Open` differ. Keep it that way: any behaviour that exists in one
+mode and not the other is a bug in the abstraction, and it is what makes the deferred
+fetch-path tests (3.15e) a thin last mile rather than a leap of faith.
+
+Note the local dir does **not** need a `SHA256SUMS` file — computing the digest from the
+file itself is one `sha256.Sum256` and cannot go stale. If `<dir>/SHA256SUMS` happens to
+exist (because `make checksums` ran), **ignore it**; trusting it would reintroduce exactly
+the staleness the direct hash avoids.
+
+**Why an env var and not just a flag.** The local dir is a property of *this machine's
+working setup*, not of a particular invocation — during development every launch wants it,
+and typing `--webtmux-source` on each one is how you eventually forget it and silently
+test the wrong path. Export it once in the dev shell:
+
+```bash
+export WEBTMUX_LAUNCH_SOURCE=/workspace/webtmux/builds
+webtmux-launch testbox          # deploys what you just compiled
+```
+
+Precedence, highest first — an explicit flag always beats ambient config:
+
+```
+--webtmux-binary <file>   >   --webtmux-source <dir>   >   $WEBTMUX_LAUNCH_SOURCE
+  >   -X main.DefaultSource (make launcher-dev)   >   GitHub release
+```
+
+**No auto-detection.** Do not sniff for a nearby `builds/` and use it implicitly. Silently
+preferring a local directory means an ordinary user with a checkout gets a stale
+hand-built binary instead of the release they asked for, and the failure is invisible.
+The source must always be either explicitly configured or the release.
+
+**Say which source is in play, every run**, on one line — path or URL, the resolved sha,
+and where it landed. Local mode deliberately trades the release's provenance for
+iteration speed, so the run must never leave you *guessing* what got deployed:
+
+```
+source: local /workspace/webtmux/builds/webtmux-linux-amd64 (sha 4f3a…, built 6m ago)
+```
+
+**Staleness is the one real hazard local mode adds**, and content-addressing bounds it
+rather than fixing it: a rebuild changes the sha, so a *changed* binary is always
+redeployed and you can never get a mismatch between the sha reported and the bytes
+running. What content-addressing cannot tell you is that you **forgot to rebuild** — the
+deploy then succeeds, quietly, with yesterday's code. Hence the `built 6m ago` stamp, and
+the newer-source warning in 3.7b.
 
 ### Why shell out to `ssh`
 
@@ -210,11 +301,15 @@ Parse `-p/--port`, `-a/--address`, `-m/--path`, and `-c/--credential` straight o
 for your own processes. Read `/proc/<pid>/environ` for `GOTTY_CREDENTIAL` and
 `WEBTMUX_SESSION` too (same-user readable).
 
-**Is it the same build?** `sha256sum /proc/<pid>/exe` and compare against the expected sha
-for the resolved version — which comes from the release's `SHA256SUMS` asset (task 3.7).
+**Is it the same build?** `sha256sum /proc/<pid>/exe` and compare against
+`Source.Digest(platform)` — the release's `SHA256SUMS` entry, or the hash of the local
+build, whichever source is configured (task 3.7).
 On mismatch, adopt anyway but warn: an older build may predate a feature you rely on.
-`--fresh` overrides. Note this comparison is **free of a binary download** — only the tiny
-`SHA256SUMS` asset is fetched, so adopt mode never pulls 12 MB.
+In local mode that mismatch is the everyday case and the message should read as
+informational, not alarming — "adopting a webtmux that is not the build in `builds/`".
+`--fresh` overrides. Note this comparison is **free of a binary transfer** — it needs only
+`Source.Digest`, so adopt mode never pulls 12 MB over the network and never reads the local
+binary either.
 
 **Credential recovery has hard limits — be precise about them.** Recovery works in
 exactly two cases: `-c user:pass` on the command line (readable from
@@ -285,22 +380,45 @@ install — empty means tmux's default socket, handled correctly at
 
 ## Phase 3A — Scaffold
 
-- [ ] **P0** 3.1 Create the worktree per the block above, after the gate check. *(5 min)*
+- [ ] **P0** 3.1 Create the worktree per the block above. No gate check — see Gate. *(5 min)*
 
 - [ ] **P0** 3.2 Scaffold `cmd/webtmux-launch/`. The repo root stays `package main`
       (`main.go`, `version.go`), so `go build .` still builds webtmux and
       `go build ./cmd/webtmux-launch` builds the launcher — no restructuring needed.
       *(30 min)*
 
-- [ ] **P0** 3.3 **Release-fetch configuration — no embedded payload.** *(35 min)*
+- [ ] **P0** 3.3 **Binary-source configuration — no embedded payload.** *(45 min)*
       *(Revised 2026-07-26: this task previously embedded gzipped webtmux binaries via
-      `//go:embed payload`. See "Independent builds" above for why that is gone.)*
+      `//go:embed payload`. See "Independent builds" above for why that is gone. Revised
+      2026-07-27: adds the local-source config alongside the release config.)*
 
-      Bake three values at build time with ldflags, so the launcher is self-describing and
+      Bake four values at build time with ldflags, so the launcher is self-describing and
       needs no config file to work:
 
       ```
       -X main.RepoOwner=<you> -X main.RepoName=webtmux -X main.DefaultWebtmuxVersion=v0.1.0
+      -X main.DefaultSource=            # empty in a release build
+      ```
+
+      **`main.DefaultSource` is the local-development seam.** Empty (the release build)
+      means "fetch from GitHub". `make launcher-dev` (3.4) bakes a local build directory
+      into it, producing a launcher that needs no env var and no network at all — the
+      shortest possible inner loop. `$WEBTMUX_LAUNCH_SOURCE` overrides it, and
+      `--webtmux-source` overrides that; full precedence chain in the Design section.
+
+      **Resolve the source once, at startup, into the `Source` interface** — before the
+      probe, before any SSH. Everything downstream (3.7 deploy, 3.6a adopt comparison,
+      3.7a) then talks only to that interface and contains no `if localMode` branches.
+      That is what keeps the deferred fetch-path tests honest: the release backend is a
+      different `Digest`/`Open` pair, not a different code path through the launcher.
+
+      Validate eagerly and fail with the *configured* value quoted — a typo'd directory
+      must not silently fall back to downloading from GitHub, which is the one failure
+      mode that would waste an afternoon:
+
+      ```
+      WEBTMUX_LAUNCH_SOURCE=/workspace/webtmux/build: not a directory
+      (unset it to fetch from the GitHub release instead)
       ```
 
       A **pinned default** rather than always-latest: reproducible, no surprise upgrade
@@ -318,11 +436,25 @@ install — empty means tmux's default socket, handled correctly at
       Use `net/http` from the standard library — this adds **zero** dependencies, which
       matters given Stage D runs first specifically to shrink that surface.
 
-- [ ] **P0** 3.4 Makefile target — just one now. *(15 min)*
+- [ ] **P0** 3.4 Makefile targets — a release build and a dev build. *(20 min)*
 
       ```make
-      launcher:    # build launcher for darwin/arm64, darwin/amd64, linux/amd64
+      launcher:      # build launcher for darwin/arm64, darwin/amd64, linux/amd64
+      launcher-dev:  # host-platform only, -X main.DefaultSource=$(abspath $(OUTPUT_DIR))
       ```
+
+      `launcher-dev` builds for the host alone (a cross-compile matrix in an inner loop is
+      wasted seconds) and points `DefaultSource` at `./builds`, so the full local workflow
+      is two commands with nothing to export and nothing to remember:
+
+      ```bash
+      make cross-compile      # builds/webtmux-<os>-<arch>, the release asset names
+      make launcher-dev && ./builds/webtmux-launch testbox
+      ```
+
+      `make launcher` must leave `DefaultSource` **empty** — a released launcher that
+      defaults to some directory on the builder's machine would look for a path that does
+      not exist on the user's. Assert it in 3.18.
 
       No `launcher-payload`, no cross-compiling webtmux as a prerequisite: the launcher
       builds from its own source alone. Consequently `make launcher` is fast and cannot
@@ -378,8 +510,11 @@ install — empty means tmux's default socket, handled correctly at
 - [ ] **P0** 3.6a **Detect an already-running webtmux** in the same round-trip, and make
       adopt the default when one is found. Parse `/proc/<pid>/cmdline` for port, bind
       address, `--path`, and `-c`; read `/proc/<pid>/environ` for `GOTTY_CREDENTIAL` and
-      `WEBTMUX_SESSION`; `sha256sum /proc/<pid>/exe` to compare against the expected sha
-      from the release's `SHA256SUMS`. *(45 min)*
+      `WEBTMUX_SESSION`; `sha256sum /proc/<pid>/exe` to compare against
+      `Source.Digest(platform)` — the release's `SHA256SUMS` entry or the local file's
+      hash, whichever source is configured. Adopt mode is identical either way, and in
+      local mode a mismatch is the *useful* signal: the box is running something other
+      than what you just built. *(45 min)*
 
       Adopt mode **skips tasks 3.7 (fetch + deploy), 3.8a (attach script), 3.8b (session create),
       and the remote-command half of 3.9** — the launcher only builds the tunnel and opens
@@ -392,27 +527,39 @@ install — empty means tmux's default socket, handled correctly at
       Handle multiple instances: if more than one is found, list them and require
       `--remote-port` to disambiguate rather than guessing.
 
-- [ ] **P0** 3.7 **Fetch from GitHub, then deploy content-addressed** to
+- [ ] **P0** 3.7 **Resolve from the configured source, then deploy content-addressed** to
       `~/.cache/webtmux/webtmux-<sha256[:12]>` on the target. *(75 min)*
       *(Revised 2026-07-26: the source is a GitHub Release rather than an embedded blob.
-      The content-addressing and the atomic install are unchanged.)*
+      Revised 2026-07-27: written against the `Source` interface so a local build
+      directory works identically. The content-addressing and the atomic install are
+      unchanged throughout.)*
 
-      **Order matters — check before you download.** The `SHA256SUMS` asset is a few
-      hundred bytes; the binary is ~12 MB. So:
+      **Order matters — digest before transfer.** `Source.Digest` is a few hundred bytes
+      over HTTP or one local `sha256`; the binary is ~12 MB. So:
 
-      1. GET `SHA256SUMS` for the resolved version (cache it on the Mac).
-      2. Look up the expected sha for the target's platform → gives the install path.
-      3. `test -x ~/.cache/webtmux/webtmux-<sha12>` on the target.
-      4. **Already there → stop.** No download, no transfer. This is the common case on a
-         repeat launch, and it costs one tiny HTTP GET plus one `test`.
-      5. Otherwise fetch the binary to the Mac cache, **verify its sha**, then push.
+      1. `Source.Digest(platform)` for the resolved platform (release: GET `SHA256SUMS`,
+         cached on the Mac; local: hash the file).
+      2. The digest **is** the install path — `~/.cache/webtmux/webtmux-<sha12>`.
+      3. `test -x` that path on the target.
+      4. **Already there → stop.** No transfer at all. This is the common case on a repeat
+         launch *and* on a rebuild-free dev iteration, and it costs one tiny GET (or one
+         local hash) plus one `test`.
+      5. Otherwise `Source.Open`, **verify the bytes against the digest**, then push.
 
-      **Mac-side cache:** `~/.cache/webtmux-launch/<version>/webtmux-<platform>`, so a
-      second target on the same platform needs no second download, and a warm cache works
-      offline entirely.
+      Steps 2-5 contain no knowledge of where the bytes came from. Only step 1 does.
 
-      **Verify before transfer, never after.** A corrupted or truncated download must fail
-      on the Mac — never push an unverified binary and discover the problem remotely.
+      **Mac-side cache (release source only):**
+      `~/.cache/webtmux-launch/<version>/webtmux-<platform>`, so a second target on the
+      same platform needs no second download, and a warm cache works offline entirely. A
+      local source is **not** cached — the file is already local, and caching it would
+      reintroduce staleness the direct read cannot have.
+
+      **Verify before transfer, never after.** For the release source that catches a
+      corrupt or truncated download on the Mac rather than remotely. For a local source it
+      is cheap and still worth doing: it catches the file being rewritten by a concurrent
+      `make cross-compile` **between** the digest and the read — a genuinely likely race in
+      a dev loop, and one that would otherwise install a binary under the wrong sha and
+      poison the content-addressed cache for every later run.
 
       **Transfer** streams over the existing SSH connection to a temp path, then
       `chmod +x` and atomic `mv`. Content-addressed naming means the destination never
@@ -425,11 +572,50 @@ install — empty means tmux's default socket, handled correctly at
       - `ETXTBSY` is structurally impossible.
       - Multiple versions coexist. Prune older entries on success.
 
-- [ ] **P1** 3.7a **`--webtmux-binary <path>` escape hatch.** Skips fetching entirely and
-      pushes a local file. Three reasons it earns its keep: the launcher is testable
-      **before any release exists** (which matters because Stage 2 must otherwise land
-      first), a developer can deploy an unreleased build, and a fully-offline Mac can still
-      deploy. Compute the sha locally so the install path stays content-addressed. *(20 min)*
+      **Pruning must not be per-source.** A dev loop produces a new sha per build and the
+      target's cache would otherwise grow ~12 MB per rebuild. Keep the N most recent
+      (N=3), by mtime, regardless of which source deployed them — never delete the entry
+      being used this run, and never assume the running binary is one of the newest
+      (adopt mode can be attached to something much older).
+
+- [ ] **P1** 3.7a **`--webtmux-binary <path>` escape hatch.** A single-file `Source`:
+      hash that exact file, push that exact file, ignore platform naming entirely. Distinct
+      from 3.7b's directory — this is for a one-off ("deploy *this* binary, right now"),
+      typically the output of a plain `go build` for a single target, where inventing a
+      `webtmux-<platform>` name would be pure ceremony. Compute the sha locally so the
+      install path stays content-addressed. *(20 min)*
+
+      It cannot check that the file matches the target's platform, so a mismatch surfaces
+      as `Exec format error` on the remote. Catch it: read the ELF/Mach-O header locally
+      and refuse up front, naming both the file's architecture and the probed one.
+
+- [ ] **P0** 3.7b **Local source directory — the development path.** *(35 min)*
+      *(Added 2026-07-27: the reason this stage no longer gates on GitHub.)*
+
+      Implement the `dirSource` backend: `Digest` hashes `<dir>/webtmux-<platform>`,
+      `Open` reads it. Selected by `--webtmux-source <dir>`, `$WEBTMUX_LAUNCH_SOURCE`, or
+      the `main.DefaultSource` ldflag, in that precedence order.
+
+      Because `make cross-compile` already emits the release asset names, a checkout needs
+      no extra build step and no manifest — point at `builds/` and every platform the
+      release would offer is present. **This is the entire mechanism**; resist adding a
+      config file, a naming convention of its own, or a copy step.
+
+      Error messages must name the file and the platform, because the failure mode here is
+      "you cross-compiled for one platform and the target is another":
+
+      ```
+      no webtmux-linux-arm64 in /workspace/webtmux/builds
+      (have: webtmux-linux-amd64, webtmux-darwin-arm64 — run `make cross-compile`)
+      ```
+
+      **P1 staleness warning:** if the source dir sits inside a git checkout and any
+      tracked `*.go` file is newer than the selected binary, warn once —
+      `webtmux-linux-amd64 is older than 7 changed .go files; run make cross-compile?` —
+      then carry on. Advisory, never blocking: deploying a deliberately older build is a
+      legitimate thing to do (it is how you bisect a regression). Content-addressing
+      guarantees the sha reported matches the bytes deployed, so this warning is about the
+      one thing it cannot catch — forgetting to rebuild.
 
 - [ ] **P0** 3.8 **Allocate ports and secret once per target — and persist them.** Local:
       bind `127.0.0.1:0`, read the port, close. Remote: pick a random high port, retry on
@@ -524,7 +710,13 @@ install — empty means tmux's default socket, handled correctly at
       `--auth`, `--force-copy`, `--arch` (override probe), `--verbose` (echo ssh command
       lines), `--version`; the adopt controls `--fresh` (ignore a running instance) and
       `--adopt-only` (fail rather than start one); and the fetch controls
-      `--webtmux-version vX.Y.Z|latest` and `--webtmux-binary <path>`.
+      `--webtmux-version vX.Y.Z|latest`, `--webtmux-source <dir>`, and
+      `--webtmux-binary <path>`.
+
+      **Env:** `WEBTMUX_LAUNCH_SOURCE=<dir>` — the ambient form of `--webtmux-source`, for
+      a dev shell that wants it on every launch. Flags beat env; see the precedence chain
+      in the Design section. `--verbose` must print which source won and why, since a
+      leftover export in a shell is otherwise invisible.
 
       Positional: `webtmux-launch [flags] <ssh-target> [-- tmux args…]`, with
       `<ssh-target>` passed **verbatim** to `ssh` so config aliases and bastions work.
@@ -533,7 +725,16 @@ install — empty means tmux's default socket, handled correctly at
 
 ## Phase 3D — Verify
 
-The launcher can be exercised **fully without a Mac**, inside this container.
+The launcher can be exercised **fully without a Mac**, inside this container — and, since
+2026-07-27, **fully without GitHub**. Run everything below against a local source:
+
+```bash
+make cross-compile
+export WEBTMUX_LAUNCH_SOURCE=$PWD/builds
+```
+
+Only 3.15e is deferred. If any *other* task cannot run in local mode, the `Source`
+abstraction has leaked — fix that rather than deferring the test.
 
 - [ ] **P0** 3.13 Stand up a throwaway target: a container running `sshd` + `tmux`, with a
       key-based login. *(35 min)*
@@ -542,10 +743,33 @@ The launcher can be exercised **fully without a Mac**, inside this container.
       and assert 200 on `/<secret>/`. Covers probe → deploy → tunnel → readiness. *(30 min)*
 
 - [ ] **P0** 3.15 **Idempotence:** run twice; the second run must skip the copy
-      (content-addressed `test -x` hit) **and skip the binary download** — only the tiny
-      `SHA256SUMS` GET should occur. Verify with `--verbose`. *(15 min)*
+      (content-addressed `test -x` hit) **and skip reading the binary at all** — only the
+      digest step should occur (`SHA256SUMS` GET, or one local hash). Verify with
+      `--verbose`. *(15 min)*
 
-- [ ] **P0** 3.15e **Fetch-path tests.** *(40 min)*
+- [ ] **P0** 3.15f **Local-source tests** — the ones that make the deferral safe.
+      *(40 min)*
+      - **`WEBTMUX_LAUNCH_SOURCE=<builds>`** → deploys, installs content-addressed, no
+        network syscall at any point (run with the container offline to prove it).
+      - **Rebuild → redeploy.** `touch` a source file, `make cross-compile`, re-run →
+        new sha, new install path, old path still present, no `ETXTBSY`.
+      - **No rebuild → no transfer.** Re-run unchanged → `test -x` hit, nothing pushed.
+      - **Missing platform** → names the file it wanted and lists what the dir has;
+        installs nothing.
+      - **Bad dir** (typo) → fails naming the configured value; **does not** silently fall
+        back to fetching from GitHub. This is the important one.
+      - **Precedence** → with `$WEBTMUX_LAUNCH_SOURCE` set, `--webtmux-binary` still wins;
+        `--webtmux-source` beats the env; the env beats `main.DefaultSource`.
+      - **`make launcher-dev`** → works with no env var set at all.
+      - **`make launcher`** → `DefaultSource` empty; with no env and no flags it attempts
+        the release URL (assert the *attempt*, not its success — there is no release yet).
+      - **Wrong-arch `--webtmux-binary`** → refused locally on the ELF header, before any
+        transfer.
+
+- [ ] **P0** 3.15e **Fetch-path tests. — DEFERRED until Stage 0 + a published `v0.1.0`.**
+      Write them now, skip them at run time with a clear message when no release is
+      configured; do not let them fail the suite. Everything they cover *except* the HTTP
+      transport is already exercised by 3.15f through the same code path. *(40 min)*
       - **Cold cache** → downloads, verifies sha, pushes, installs.
       - **Warm Mac cache, empty target** → no download, pushes from cache.
       - **`--webtmux-version latest`** → resolves via the `releases/latest/download`
@@ -554,6 +778,7 @@ The launcher can be exercised **fully without a Mac**, inside this container.
       - **Corrupted download** (truncate the cached file, force re-verify) → fails on the
         Mac, pushes nothing.
       - **`--webtmux-binary <path>`** → deploys a local file with no network at all.
+        *(Not deferred — this one runs today; it is listed here only for continuity.)*
 
 - [ ] **P0** 3.14a **Adopt mode.** Start webtmux by hand on the test container, then run
       the launcher. Confirm it: reports the adoption with port/session/build-match, does
@@ -618,21 +843,39 @@ The launcher can be exercised **fully without a Mac**, inside this container.
 
 - [ ] **P0** 3.18 `make test`, `go vet ./...`, commit. *(15 min)*
 
+      Add one assertion that cannot be checked by eye: `make launcher` produces a binary
+      whose `main.DefaultSource` is **empty**. A dev default leaking into a release build
+      would send every user's launcher looking for a path on the builder's machine.
+
 - [ ] **P1** 3.19 Add the README section for the launcher, leading with it as the primary
-      cross-machine story (manual install is the fallback). Publish launcher binaries as
-      assets on the **next** release — Stage 2 already established the mechanism, and
-      because the two are now independent, the launcher can be released on its own cadence
-      whenever it is ready. *(20 min)*
+      cross-machine story (manual install is the fallback). *(25 min)*
 
       Document `--webtmux-version` and note the pinned default, so a user can tell which
-      webtmux a given launcher will install without reading source.
+      webtmux a given launcher will install without reading source. Document
+      `WEBTMUX_LAUNCH_SOURCE` / `--webtmux-source` in a short **Developing** subsection —
+      keep it separate from the user-facing flow, since pointing at a local build dir is
+      not something an ordinary user should be doing.
 
-- [ ] **P0** 3.20 Merge + cleanup, then push. *(15 min)*
+      **DEFERRED until Stage 0 + Stage 2:** publishing launcher binaries as release
+      assets, and any README line quoting the fork's URL. Write the prose now with the
+      URL as an obvious placeholder; Stage 2 already rewrites those README lines and
+      should fill it in. Because launcher and webtmux are independent, the launcher can be
+      released on its own cadence whenever a release exists to attach it to.
+
+- [ ] **P0** 3.20 Merge + cleanup. *(15 min)*
 
       ```bash
       /workspace/scripts/git-merge-worktree.sh /workspace/webtmux-portable-launcher \
           --target local-main --no-ff --remove
-      git -C /workspace/webtmux push origin local-main   # origin = GitHub fork after Stage 0
+      ```
+
+      **The merge does not wait on anything.** The push does — `origin` only becomes the
+      GitHub fork after Stage 0, and per the repo convention `master`/`local-main` stays
+      local until then:
+
+      ```bash
+      # DEFERRED until Stage 0:
+      git -C /workspace/webtmux push origin local-main
       ```
 
 - [ ] **P0** 3.21 **Real-world check (needs the user + a Mac):** run
@@ -640,19 +883,36 @@ The launcher can be exercised **fully without a Mac**, inside this container.
       one auth prompt, browser opens automatically, terminal works, and closing the laptop
       lid then reopening it reconnects without losing panes. *(10 min)*
 
+      **Runnable before Stage 0** with `WEBTMUX_LAUNCH_SOURCE` pointing at a `builds/` dir
+      on the Mac — which is the honest way to get the real-world signal (sleep/wake, real
+      SSH auth, a real browser) without waiting on the migration. Re-run it once after the
+      release exists to cover the fetch path end to end; that second run is the deferred
+      half.
+
 ---
 
 ## Risks
 
 1. **Remote port collision** on a busy shared box. Mitigated by `ExitOnForwardFailure` +
    retry, but may need several attempts.
-2. **Bootstrapping: no release, no fetch.** The launcher cannot work end-to-end until
-   Stage 2 publishes `v0.1.0` — which is exactly why Stage 2 now runs before Stage 3.
-   `--webtmux-binary` (3.7a) unblocks development before then.
+2. **Bootstrapping — resolved, no longer a blocker.** *(Revised 2026-07-27.)* The
+   release path cannot be exercised until Stage 2 publishes `v0.1.0`, but the local source
+   (3.7b) makes every other task runnable now. The residual risk is not "blocked", it is
+   **"the deferred path rots"** — the release backend gets written, never run, and breaks
+   quietly before its first real use. Mitigated structurally: it differs from the tested
+   path only in `Digest`/`Open` (see Design), and 3.15f asserts the release attempt still
+   *happens* when nothing is configured. Do not let a `localMode` branch spread beyond the
+   `Source` constructor, or this risk grows teeth.
 3. **Network required on the Mac at first deploy** for a given platform+version; cached
-   afterwards, and a warm cache is fully offline. Errors must distinguish "no network"
-   from "404 — that version or asset does not exist"; they need different fixes, and both
-   should name the URL attempted.
+   afterwards, and a warm cache is fully offline. A local source needs no network ever.
+   Errors must distinguish "no network" from "404 — that version or asset does not exist";
+   they need different fixes, and both should name the URL attempted.
+3a. **Silent fallback to the release path** when a local source is misconfigured — a
+   typo'd `WEBTMUX_LAUNCH_SOURCE` that "works" by quietly downloading instead is the
+   nastiest bug in this design, because it looks like success while testing nothing you
+   intended. Configured-but-invalid must be a hard error (3.3), never a fallback. The
+   inverse — a stale `export` in a shell silently *preventing* a fetch — is why every run
+   prints its source line.
 4. **Platform-mapping mistakes** (`x86_64`→`amd64`, `aarch64`→`arm64`, `armv7l`→`arm`)
    surface as a 404 rather than a wrong binary — the safe failure mode, *provided* the
    message names the asset it looked for.
@@ -706,6 +966,22 @@ The launcher can be exercised **fully without a Mac**, inside this container.
     the restart loop re-probes or re-checks the deploy, every blip costs several extra
     round trips instead of one handshake. 3.11 pins the split; a `--verbose` run during
     3.16 should show exactly one `ssh` invocation per reconnect.
+14. **Stale local build deployed with confidence.** Content-addressing guarantees the sha
+    reported equals the bytes running, so local mode can never *misreport* what it
+    deployed — but it cannot know you forgot to run `make cross-compile`, and the run will
+    look completely clean. Guarded by the `built Nm ago` stamp on the source line and the
+    P1 newer-`.go`-files warning in 3.7b. Suspect this first whenever a fix "doesn't take"
+    during development.
+15. **Target cache growth in a dev loop.** Every rebuild is a new sha and a new ~12 MB
+    entry under `~/.cache/webtmux/`. Retention in 3.7 must be source-agnostic, and must
+    never prune the entry in use or assume the running binary is among the newest (adopt
+    mode may be attached to a much older one).
+16. **Local mode has no provenance.** The release path verifies a published `SHA256SUMS`;
+    a local dir verifies only that the bytes match a hash computed from those same bytes —
+    an integrity check against a truncated or racing read, **not** an authenticity check.
+    That is the correct trade for your own build output, and it is exactly why the source
+    must be explicitly configured and never auto-detected. Worth one line in the README's
+    Developing subsection.
 
 ## Next steps
 
