@@ -463,8 +463,65 @@ fi
 # ---------------------------------------------------------------------------
 step "3.15e fetch-path tests"
 # ---------------------------------------------------------------------------
-skip "DEFERRED until Stage 0 + a published v0.1.0 — nothing to download yet"
-skip "  (the Digest/Open pair itself is covered by TestReleaseDigestAndOpenAgainstStubServer)"
+# Written now, skipped until there is a release to fetch. Set WTL_RELEASE_REPO
+# to "<owner>/<repo>" (and optionally WTL_RELEASE_VERSION) once Stage 0 + Stage 2
+# have landed, and every check below runs for real. Everything they cover EXCEPT
+# the HTTP transport is already exercised by 3.15f through the same code path,
+# because the backends differ only in Digest/Open.
+if [ -z "${WTL_RELEASE_REPO:-}" ]; then
+  skip "DEFERRED until Stage 0 + a published v0.1.0 — set WTL_RELEASE_REPO=<owner>/<repo> to run"
+  skip "  (the Digest/Open pair itself is covered by TestReleaseDigestAndOpenAgainstStubServer)"
+else
+  OWNER=${WTL_RELEASE_REPO%%/*}; NAME=${WTL_RELEASE_REPO##*/}
+  VER=${WTL_RELEASE_VERSION:-v0.1.0}
+  ( cd "$REPO" && make launcher LAUNCHER_REPO_OWNER="$OWNER" LAUNCHER_REPO_NAME="$NAME" \
+      LAUNCHER_WEBTMUX_VERSION="$VER" >/tmp/mkrel.log 2>&1 ) || no "make launcher failed"
+  REL="$BUILDS/webtmux-launch-linux-amd64"
+  rel() { timeout 60 env -u WEBTMUX_LAUNCH_SOURCE "$REL" --no-browser --verbose "$@" "$TARGET" 2>&1; }
+
+  # Cold cache → downloads, verifies the sha, pushes, installs.
+  reset_target; rm -rf ~/.cache/webtmux-launch
+  out=$(rel)
+  echo "$out" | grep -q '^deployed:' && ok "cold cache: downloaded, verified and installed" \
+                                     || no "cold cache: $out"
+  # Warm Mac cache, empty target → no download, pushes from cache.
+  reset_target
+  out=$( (unset HTTPS_PROXY; HTTPS_PROXY=http://127.0.0.1:1 HTTP_PROXY=http://127.0.0.1:1 rel) )
+  echo "$out" | grep -q '^deployed:' && ok "warm cache: installed with HTTP egress broken" \
+                                     || no "warm cache did not work offline: $out"
+  # --webtmux-version latest resolves via the redirect, with no API call.
+  out=$(rel --webtmux-version latest)
+  echo "$out" | grep -q 'releases/latest/download' && ok "--webtmux-version latest uses the redirect URL" \
+                                                   || no "latest: $out"
+  # A bad version fails naming the URL it tried, and installs nothing.
+  reset_target
+  out=$(rel --webtmux-version v9.9.9)
+  if echo "$out" | grep -q 'v9.9.9' && echo "$out" | grep -qi '404\|cannot reach'; then
+    ok "a bad version fails naming the URL it tried"
+  else
+    no "bad version: $out"
+  fi
+  rsh 'ls ~/.cache/webtmux 2>/dev/null | wc -l' | grep -q '^0$' && ok "nothing installed after a bad version" \
+                                                                || no "a failed fetch installed something"
+  # A corrupted cached download must fail on THIS machine, pushing nothing.
+  reset_target
+  CACHED=$(ls ~/.cache/webtmux-launch/"$VER"/webtmux-linux-amd64 2>/dev/null | head -1)
+  if [ -n "$CACHED" ]; then
+    truncate -s 1024 "$CACHED"
+    out=$(rel)
+    if echo "$out" | grep -qi 'sha\|changed under us'; then
+      ok "a corrupted download is caught locally, before any transfer"
+    else
+      no "corrupted download not caught: $out"
+    fi
+    rsh 'ls ~/.cache/webtmux 2>/dev/null | wc -l' | grep -q '^0$' && ok "nothing pushed after a sha mismatch" \
+                                                                  || no "a corrupt binary reached the target"
+  else
+    no "no cached download to corrupt"
+  fi
+fi
+# --webtmux-binary deploys a local file with no network at all. Not deferred —
+# listed here only for continuity; it runs in 3.15f above.
 
 # ---------------------------------------------------------------------------
 if [ -d /keys ]; then mkdir -p /keys/logs && cp /tmp/*.log /keys/logs/ 2>/dev/null; fi

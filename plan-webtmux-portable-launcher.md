@@ -1016,6 +1016,20 @@ version-pinning, no socket mount, and no uid/gid matching.
   set; the flag gates only *client-supplied* request headers
   (`server/handlers.go:96`). 3.15c verifies this live.
 
+### Residuals — deliberately not done
+
+- **Risk 12's cold-start detection of interactive auth** (warn once that every
+  reconnect will prompt when a YubiKey/TOTP is in play) is **not implemented**.
+  It appears in the Risks section, not in the task list, and the only cheap
+  signal available — "the probe took more than a couple of seconds" — is also
+  what a slow WAN link looks like, so it would warn on ordinary use. The
+  mitigations themselves (a non-touch key, a `Match host` block pinning an
+  agent-cached identity) are documentation, and are unaffected.
+- **`make launcher` still bakes an empty `RepoOwner`**, so a release build with
+  nothing configured fails with "this launcher was built without a release repo
+  baked in" rather than a 404. That is Stage 0's variable to fill in
+  (`LAUNCHER_REPO_OWNER`), and 3.15f asserts the release *attempt* happens.
+
 ### What the end-to-end suite caught (Phase 3D)
 
 Three bugs that unit tests could not have found, all of which looked like
