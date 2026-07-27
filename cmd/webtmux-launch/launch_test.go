@@ -16,15 +16,27 @@ func TestRemoteCommandShape(t *testing.T) {
 	// WEBTMUX_SESSION is not optional: detectTmuxSession() parses -s/-t out of
 	// argv only when the command IS tmux, and a wrapper script hides them, so
 	// without it the sidebar controller targets the literal session "0".
-	if !strings.HasPrefix(cmd, "WEBTMUX_SESSION='main' ") {
-		t.Errorf("command must export WEBTMUX_SESSION first: %s", cmd)
+	if !strings.Contains(cmd, "WEBTMUX_SESSION='main' ") {
+		t.Errorf("command must export WEBTMUX_SESSION: %s", cmd)
 	}
 	// The command must be the attach script, never tmux directly — split-view
 	// depends on the wrapper reading HTTP_WEBTMUX_SESSION.
-	if !strings.HasSuffix(cmd, "'"+dep.AttachPath+"'") {
-		t.Errorf("command must end with the attach script: %s", cmd)
+	if !strings.Contains(cmd, "'"+dep.AttachPath+"' &") {
+		t.Errorf("webtmux's command must be the attach script: %s", cmd)
 	}
-	for _, want := range []string{"exec '" + dep.BinaryPath + "'", "-a 127.0.0.1", "-p 9999", "--path '/s3cr3t/'", "--no-auth", "--reconnect", "-w"} {
+	// And the whole thing must be tied to the connection: without the stdin
+	// watcher the remote webtmux outlives every launcher exit (sshd does not
+	// SIGHUP a tty-less remote command), holds the remote port, and the FIRST
+	// RECONNECT fails — a failure that looks like success on the first launch.
+	// exec 3<&0 is the load-bearing part: a non-interactive shell reassigns a
+	// background list's stdin to /dev/null, so a reader that did not save the
+	// channel first would EOF instantly and kill webtmux at startup.
+	for _, want := range []string{"exec 3<&0", "cat <&3 >/dev/null", "kill -TERM $p", "wait $p"} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("remote command is not tied to the connection (%q missing): %s", want, cmd)
+		}
+	}
+	for _, want := range []string{"'" + dep.BinaryPath + "'", "-a 127.0.0.1", "-p 9999", "--path '/s3cr3t/'", "--no-auth", "--reconnect", "-w"} {
 		if !strings.Contains(cmd, want) {
 			t.Errorf("command lacks %q: %s", want, cmd)
 		}
@@ -58,7 +70,7 @@ func TestTrailingArgsReachTheAttachScript(t *testing.T) {
 	dep := planDeploy(&probe{Home: "/h"}, strings.Repeat("c", 64))
 	cfg := &targetConfig{Secret: "x"}
 	cmd := remoteCommand(dep, cfg, "main", &options{tmuxArgs: []string{"htop", "-d", "5"}})
-	if !strings.HasSuffix(cmd, "'htop' '-d' '5'") {
+	if !strings.Contains(cmd, "'htop' '-d' '5' &") {
 		t.Errorf("trailing args lost: %s", cmd)
 	}
 }

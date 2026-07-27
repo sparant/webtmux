@@ -130,23 +130,37 @@ func (r *sshRunner) TunnelCommand(ctx context.Context, localPort, remotePort int
 		args = append(args, r.target, remote)
 	}
 	r.logArgs(args)
-	return exec.CommandContext(ctx, "ssh", args...)
+	cmd := exec.CommandContext(ctx, "ssh", args...)
+	tieToParent(cmd)
+	return cmd
+}
+
+// Shutdown tears the mux master down on exit.
+//
+// This is not tidiness: the master owns the -L forward, so with
+// ControlPersist=60s it keeps the LOCAL port bound for a minute after the
+// launcher exits. The next run would then find its stored port taken and
+// allocate a different one — silently breaking the URL stability that the
+// per-target config exists to provide. Our tunnel must not outlive us.
+func (r *sshRunner) Shutdown(ctx context.Context) {
+	args := append(r.baseArgs(), "-O", "exit", r.target)
+	_ = exec.CommandContext(ctx, "ssh", args...).Run()
+	_ = os.Remove(r.controlPath)
 }
 
 // ClearStaleMaster drops a dead mux master between reconnect attempts. Without
 // this a reconnect hangs on a socket whose connection is gone instead of
-// establishing a fresh one.
+// establishing a fresh one. Unlike Shutdown it leaves a LIVE master alone —
+// that master is what makes the reconnect a single handshake.
 func (r *sshRunner) ClearStaleMaster(ctx context.Context) {
 	args := append(r.baseArgs(), "-O", "check", r.target)
 	if err := exec.CommandContext(ctx, "ssh", args...).Run(); err == nil {
 		return // master alive — leave it
 	}
-	exit := append(r.baseArgs(), "-O", "exit", r.target)
-	_ = exec.CommandContext(ctx, "ssh", exit...).Run()
 	// -O exit fails too when the master is already gone; the socket file can
 	// survive that, and ssh will try to use it. Remove it ourselves — the
 	// reason this type owns an explicit ControlPath.
-	_ = os.Remove(r.controlPath)
+	r.Shutdown(ctx)
 }
 
 // shellQuote wraps a string for safe interpolation into a remote sh command.

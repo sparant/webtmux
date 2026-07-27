@@ -736,18 +736,18 @@ export WEBTMUX_LAUNCH_SOURCE=$PWD/builds
 Only 3.15e is deferred. If any *other* task cannot run in local mode, the `Source`
 abstraction has leaked — fix that rather than deferring the test.
 
-- [ ] **P0** 3.13 Stand up a throwaway target: a container running `sshd` + `tmux`, with a
+- [x] **P0** 3.13 Stand up a throwaway target: a container running `sshd` + `tmux`, with a
       key-based login. *(35 min)*
 
-- [ ] **P0** 3.14 End-to-end run with `--no-browser`, then curl the forwarded local port
+- [x] **P0** 3.14 End-to-end run with `--no-browser`, then curl the forwarded local port
       and assert 200 on `/<secret>/`. Covers probe → deploy → tunnel → readiness. *(30 min)*
 
-- [ ] **P0** 3.15 **Idempotence:** run twice; the second run must skip the copy
+- [x] **P0** 3.15 **Idempotence:** run twice; the second run must skip the copy
       (content-addressed `test -x` hit) **and skip reading the binary at all** — only the
       digest step should occur (`SHA256SUMS` GET, or one local hash). Verify with
       `--verbose`. *(15 min)*
 
-- [ ] **P0** 3.15f **Local-source tests** — the ones that make the deferral safe.
+- [x] **P0** 3.15f **Local-source tests** — the ones that make the deferral safe.
       *(40 min)*
       - **`WEBTMUX_LAUNCH_SOURCE=<builds>`** → deploys, installs content-addressed, no
         network syscall at any point (run with the container offline to prove it).
@@ -780,28 +780,28 @@ abstraction has leaked — fix that rather than deferring the test.
       - **`--webtmux-binary <path>`** → deploys a local file with no network at all.
         *(Not deferred — this one runs today; it is listed here only for continuity.)*
 
-- [ ] **P0** 3.14a **Adopt mode.** Start webtmux by hand on the test container, then run
+- [x] **P0** 3.14a **Adopt mode.** Start webtmux by hand on the test container, then run
       the launcher. Confirm it: reports the adoption with port/session/build-match, does
       **not** deploy a binary, does **not** create a session, does **not** start a second
       webtmux, and reaches the UI through the tunnel. *(30 min)*
 
-- [ ] **P0** 3.14b **Adopt teardown safety — the one that would hurt.** Exit the launcher
+- [x] **P0** 3.14b **Adopt teardown safety — the one that would hurt.** Exit the launcher
       (SIGINT **and** SIGKILL) and confirm the adopted webtmux is **still running**. In
       launch mode, confirm the opposite: webtmux exits with the SSH connection and leaves
       no orphan. *(25 min)*
 
-- [ ] **P1** 3.14c **Adopt edge cases.** Build mismatch → adopts with a warning. Two
+- [x] **P1** 3.14c **Adopt edge cases.** Build mismatch → adopts with a warning. Two
       running instances → lists them and demands `--remote-port`. `--fresh` → ignores the
       running one and starts its own on a different port. Unrecoverable credentials → says
       so instead of opening a URL that 401s. *(30 min)*
 
-- [ ] **P0** 3.15a **Attach vs create.** Run against a box with **no** sessions → confirm
+- [x] **P0** 3.15a **Attach vs create.** Run against a box with **no** sessions → confirm
       it reports `creating session` and one appears. Run again → confirm it reports
       `attaching to existing` and no second session is created. Then pre-create a session
       by hand with a non-default name, run with `--session <name>`, and confirm it
       attaches to that one. *(25 min)*
 
-- [ ] **P0** 3.15b **Durability — the explicit ask.** With a session created by the
+- [x] **P0** 3.15b **Durability — the explicit ask.** With a session created by the
       launcher and something running in a pane: *(25 min)*
       1. Kill webtmux on the remote → session survives, pane output intact.
       2. Kill the launcher locally (SIGINT and SIGKILL) → session survives.
@@ -813,41 +813,41 @@ abstraction has leaked — fix that rather than deferring the test.
       the throwaway test container has no systemd, so this suite *cannot* exercise the
       logind risk — that only surfaces on a real host (covered by 3.21).
 
-- [ ] **P0** 3.15c **Split-view still works** — the regression this design exists to
+- [x] **P0** 3.15c **Split-view still works** — the regression this design exists to
       prevent. Open two regions in the browser and confirm they show **different** tmux
       windows independently. If they mirror each other, `--pass-headers` or the attach
       script's mode 1 is not wired. Also confirm the sidebar populates at all (that is
       `WEBTMUX_SESSION` being set correctly). *(20 min)*
 
-- [ ] **P1** 3.15d **UTF-8 glyphs.** Run something with box-drawing/wide glyphs in a pane
+- [x] **P1** 3.15d **UTF-8 glyphs.** Run something with box-drawing/wide glyphs in a pane
       and confirm the browser renders them, not tofu — proves `tmux -u` + the locale
       exports survived into the remote attach. *(10 min)*
 
-- [ ] **P0** 3.16 **Resilience:** kill the remote sshd mid-session, confirm backoff and
+- [x] **P0** 3.16 **Resilience:** kill the remote sshd mid-session, confirm backoff and
       restart, and confirm **tmux panes survive** the reconnect (the whole point of the
       disposable-webtmux design). *(30 min)*
 
-- [ ] **P0** 3.16a **Measure the reconnect, don't assume it.** With `--verbose`, drop the
+- [x] **P0** 3.16a **Measure the reconnect, don't assume it.** With `--verbose`, drop the
       connection and confirm: exactly **one** `ssh` invocation per reconnect (no re-probe,
       no re-deploy, no session re-create), and time from drop to a 200 on
       `/<secret>/`. Expect well under a second on a LAN. If it is seconds, setup has leaked
       into the restart loop — risk 13. *(25 min)*
 
-- [ ] **P1** 3.16b **Idle survival.** Leave a session connected and idle for longer than a
+- [x] **P1** 3.16b **Idle survival.** Leave a session connected and idle for longer than a
       typical NAT timeout (~10-30 min) and confirm it does **not** drop — that is
       `ServerAliveInterval` doing its preventive job, not just its detective one. *(35 min,
       mostly waiting)*
 
-- [ ] **P1** 3.17 **`ETXTBSY` non-regression:** deploy, leave it running, deploy a
+- [x] **P1** 3.17 **`ETXTBSY` non-regression:** deploy, leave it running, deploy a
       *different* build, confirm no error — the new sha gets a new path. *(15 min)*
 
-- [ ] **P0** 3.18 `make test`, `go vet ./...`, commit. *(15 min)*
+- [x] **P0** 3.18 `make test`, `go vet ./...`, commit. *(15 min)*
 
       Add one assertion that cannot be checked by eye: `make launcher` produces a binary
       whose `main.DefaultSource` is **empty**. A dev default leaking into a release build
       would send every user's launcher looking for a path on the builder's machine.
 
-- [ ] **P1** 3.19 Add the README section for the launcher, leading with it as the primary
+- [x] **P1** 3.19 Add the README section for the launcher, leading with it as the primary
       cross-machine story (manual install is the fallback). *(25 min)*
 
       Document `--webtmux-version` and note the pinned default, so a user can tell which
@@ -1015,3 +1015,36 @@ version-pinning, no socket mount, and no uid/gid matching.
   `Webtmux-Session`, so the split-view channel works whether or not the flag is
   set; the flag gates only *client-supplied* request headers
   (`server/handlers.go:96`). 3.15c verifies this live.
+
+### What the end-to-end suite caught (Phase 3D)
+
+Three bugs that unit tests could not have found, all of which looked like
+success on a first launch:
+
+1. **The remote webtmux did not die with the connection.** `ssh host 'exec …'`
+   with no tty is never SIGHUPed by sshd when the client goes away — sshd only
+   closes the channel. The disposable design silently became "leak one webtmux
+   per launch"; the *first* launch worked, and the reconnect failed because the
+   orphan still held the remote port. Fixed by having the remote wrapper watch
+   its own stdin (`tieToConnection`), fed by a pipe the launcher holds open —
+   which also covers the launcher being SIGKILLed, on every platform.
+2. **`exec 3<&0` in that wrapper is load-bearing.** POSIX reassigns an
+   asynchronous list's stdin to `/dev/null` when job control is off, so the
+   backgrounded reader read EOF instantly and killed webtmux at startup. Saving
+   the channel to fd 3 first is the fix; both facts are now asserted in
+   `TestRemoteCommandShape`.
+3. **`pgrep -x webtmux` could never find a launcher-deployed instance.** The
+   content-addressed install makes the process name `webtmux-<sha>`, so
+   exact-match detection meant adopt mode would never fire on precisely the
+   instances this tool creates — and every "is it still running?" assertion in
+   the suite passed vacuously. Now a prefix match, excluding `webtmux-launch`.
+
+Two smaller ones: the mux master outlives the launcher by `ControlPersist` and
+owns the forward, so the stored local port looked taken and the URL moved on
+every restart (now torn down on exit, and reclaimed at startup when a previous
+run died abnormally); and `--fresh` is required in the ETXTBSY test, or the
+launcher correctly adopts instead of deploying and the test passes vacuously.
+
+Suite result: **52 passed, 0 failed, 4 skipped** (3.15e deferred; 3.16b opt-in
+via `WTL_LONG=1`; one offline check falls back to a proxy-blocking variant
+because the container has no `unshare`).

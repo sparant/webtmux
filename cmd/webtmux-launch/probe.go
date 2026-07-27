@@ -50,12 +50,19 @@ p LINGER "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || true
 p KILLUSER "$(grep -hs '^[[:space:]]*KillUserProcesses' /etc/systemd/logind.conf /etc/systemd/logind.conf.d/*.conf 2>/dev/null | tail -1)"
 p SELFPIDNS "$(readlink /proc/self/ns/pid 2>/dev/null || true)"
 if command -v pgrep >/dev/null 2>&1; then
-  pids=$(pgrep -x webtmux -u "$(id -u)" 2>/dev/null || true)
+  pids=$(pgrep -u "$(id -u)" '^webtmux' 2>/dev/null || true)
 else
-  pids=$(ps -eo pid=,comm= 2>/dev/null | awk '$2=="webtmux"{print $1}')
+  pids=$(ps -eo pid=,comm= 2>/dev/null | awk '$2 ~ /^webtmux/{print $1}')
 fi
 for pid in $pids; do
   [ -r "/proc/$pid/cmdline" ] || continue
+  # The launcher installs webtmux content-addressed, so a deployed instance's
+  # process name is webtmux-<sha>, NOT "webtmux" — an exact-match pgrep would
+  # miss precisely the instances this tool created. Matching the prefix instead
+  # means excluding our own launcher if someone runs it on the target too.
+  case "$(basename "$(tr '\0' '\n' < /proc/$pid/cmdline 2>/dev/null | head -1)")" in
+    webtmux-launch*) continue ;;
+  esac
   p PID "$pid"
   p CMDLINE "$pid $(tr '\0' ' ' < /proc/$pid/cmdline 2>/dev/null)"
   p ENVIRON "$pid $(tr '\0' '\n' < /proc/$pid/environ 2>/dev/null | grep -E '^(GOTTY_CREDENTIAL|WEBTMUX_SESSION|WEBTMUX_SOCKET)=' | tr '\n' ' ')"

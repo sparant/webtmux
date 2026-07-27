@@ -1,0 +1,28 @@
+# A throwaway target for the launcher's end-to-end suite: sshd + tmux and
+# nothing else. Deliberately minimal — it is the "machine that has never seen
+# webtmux" the launcher is supposed to work against, so it must not have a Go
+# toolchain, curl, gzip-dependent tooling, or webtmux pre-installed.
+#
+# Honesty note: this container has no systemd, so the suite CANNOT exercise the
+# logind KillUserProcesses risk. That only surfaces on a real host (task 3.21).
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssh-server tmux procps \
+ && rm -rf /var/lib/apt/lists/* \
+ && mkdir -p /run/sshd \
+ && useradd -m -s /bin/bash dev
+
+# Key-based login only.
+COPY authorized_keys /home/dev/.ssh/authorized_keys
+RUN chown -R dev:dev /home/dev/.ssh \
+ && chmod 700 /home/dev/.ssh \
+ && chmod 600 /home/dev/.ssh/authorized_keys \
+ && sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+
+# The POSIX locale is deliberate: it is what makes the UTF-8 downgrade (risk 11)
+# reproducible here, so the attach script's `tmux -u` + locale exports are
+# actually being tested rather than assumed.
+ENV LANG=C
+
+CMD ["/usr/sbin/sshd", "-D", "-e"]

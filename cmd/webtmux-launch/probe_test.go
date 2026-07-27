@@ -140,3 +140,24 @@ func TestContainerizedInstanceSoftensReporting(t *testing.T) {
 		t.Errorf("report should explain the softening:\n%s", report)
 	}
 }
+
+// The launcher installs webtmux content-addressed, so a deployed instance's
+// process name is webtmux-<sha> — an exact-match pgrep finds nothing and adopt
+// mode silently never fires. Locked down because the failure is invisible: it
+// looks exactly like "no instance is running".
+func TestProbeMatchesContentAddressedProcessNames(t *testing.T) {
+	if strings.Contains(probeScript, "pgrep -x webtmux") {
+		t.Error("probe uses an exact-match pgrep; it would miss every webtmux-<sha> it deployed")
+	}
+	if !strings.Contains(probeScript, "'^webtmux'") {
+		t.Error("probe should match the webtmux prefix")
+	}
+	// Matching the prefix means our own launcher would match too, on a box
+	// where someone runs it.
+	if !strings.Contains(probeScript, "webtmux-launch*") {
+		t.Error("probe must exclude webtmux-launch from adoption candidates")
+	}
+	if !strings.Contains(probeScript, `awk '$2 ~ /^webtmux/`) {
+		t.Error("the pgrep-less fallback must use the same prefix rule")
+	}
+}

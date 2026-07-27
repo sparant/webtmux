@@ -145,7 +145,20 @@ func run(ctx context.Context, o *options) error {
 	}
 
 	ssh := newSSHRunner(o.target, o.verbose)
-	defer ssh.ClearStaleMaster(context.Background())
+	// Shutdown, not ClearStaleMaster: the mux master owns the forward, and
+	// leaving it persisting would hold the local port past our exit.
+	defer ssh.Shutdown(context.Background())
+
+	cfg := loadTargetConfig(o.target)
+	// A launcher that died abnormally (SIGKILL, a crash) leaves its mux master
+	// running for ControlPersist, and the master owns the forward — so our own
+	// stored port looks taken and we would silently move to a new URL. Clearing
+	// it is only correct when it is ours, which is exactly the case where the
+	// stored port is busy. Done before the probe so we never tear down the
+	// master this run is riding.
+	if cfg.LocalPort != 0 && !localPortFree(cfg.LocalPort) {
+		ssh.Shutdown(ctx)
+	}
 
 	p, err := runProbe(ctx, ssh, o.arch)
 	if err != nil {
@@ -156,7 +169,6 @@ func run(ctx context.Context, o *options) error {
 			strings.TrimPrefix(p.TmuxVer, "tmux "), p.Home)
 	}
 
-	cfg := loadTargetConfig(o.target)
 	if err := cfg.ensure(o.localPort, o.remotePort); err != nil {
 		return err
 	}
@@ -281,7 +293,7 @@ func remoteCommand(dep *deployment, cfg *targetConfig, session string, o *option
 		// -c user:pass, which is visible in ps to every user on that machine.
 		fmt.Fprintf(&b, "GOTTY_CREDENTIAL=%s ", shellQuote("webtmux:"+cfg.Secret))
 	}
-	fmt.Fprintf(&b, "exec %s -w -a 127.0.0.1 -p %d --path %s --reconnect ",
+	fmt.Fprintf(&b, "%s -w -a 127.0.0.1 -p %d --path %s --reconnect ",
 		shellQuote(dep.BinaryPath), cfg.RemotePort, shellQuote(cfg.urlPath()))
 	if !o.auth {
 		b.WriteString("--no-auth ")
@@ -290,7 +302,36 @@ func remoteCommand(dep *deployment, cfg *targetConfig, session string, o *option
 	for _, a := range o.tmuxArgs {
 		b.WriteString(" " + shellQuote(a))
 	}
-	return b.String()
+	return tieToConnection(b.String())
+}
+
+// tieToConnection is what actually makes webtmux disposable.
+//
+// The obvious `ssh host 'exec webtmux …'` does NOT die with the connection: for
+// a session with no tty, sshd does not SIGHUP the remote command when the
+// client goes away — it only closes the channel. The remote webtmux would then
+// outlive every launcher exit, hold the remote port (so the next connection
+// cannot bind it), and defeat the entire disposable design. The symptom is
+// nasty precisely because it looks fine: the first launch works, and only the
+// reconnect fails.
+//
+// So the remote side watches its own stdin instead. The launcher hands ssh a
+// pipe it holds open and never writes to (see supervisor.run); stdin EOF
+// therefore means "the launcher is gone" — including when it was SIGKILLed and
+// could run no cleanup — and the wrapper kills webtmux. The reverse direction
+// matters too: if webtmux exits on its own (a port collision, say), `wait`
+// returns and the whole command exits with its status rather than blocking on
+// the reader forever.
+// The `exec 3<&0` is load-bearing and non-obvious: POSIX says a shell with job
+// control disabled — which is every non-interactive remote shell — reassigns an
+// asynchronous list's stdin to /dev/null. Without saving the channel to fd 3
+// first, the backgrounded reader would read EOF from /dev/null instantly and
+// kill webtmux the moment it started. Backgrounding webtmux itself gets the same
+// /dev/null treatment, which is what we want for it.
+func tieToConnection(cmd string) string {
+	return "exec 3<&0; { " + cmd + " & } ; p=$!; " +
+		"{ cat <&3 >/dev/null; kill -TERM $p 2>/dev/null; } & r=$!; " +
+		"wait $p; ec=$?; kill $r 2>/dev/null; exit $ec"
 }
 
 // adopt connects to the webtmux that is already running. It skips deploy,

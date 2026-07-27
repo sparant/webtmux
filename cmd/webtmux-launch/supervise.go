@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -52,6 +53,27 @@ const (
 func (s *supervisor) run(ctx context.Context) error {
 	delay := backoffMin
 	attempt := 0
+
+	// The remote wrapper waits for stdin EOF to learn that we are gone (see
+	// tieToConnection). Hand ssh the read end of a pipe we hold open and never
+	// write to: it stays open exactly as long as this process lives, signal or
+	// no signal, and closes even on SIGKILL. Passing the terminal instead would
+	// let a stray keystroke reach it, and /dev/null would read EOF immediately
+	// and kill webtmux the moment it started.
+	//
+	// One pipe for the whole supervisor, not one per attempt: os/exec passes an
+	// *os.File straight through without closing it, so reusing it costs nothing
+	// and avoids leaking a descriptor pair per reconnect.
+	var livePipe *os.File
+	if s.remoteCmd != nil {
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			return fmt.Errorf("creating the liveness pipe: %v", err)
+		}
+		livePipe = pr
+		defer pr.Close()
+		defer pw.Close() // held open until run returns — that IS the liveness signal
+	}
 	for {
 		started := time.Now()
 		remote := ""
@@ -59,6 +81,9 @@ func (s *supervisor) run(ctx context.Context) error {
 			remote = s.remoteCmd()
 		}
 		cmd := s.ssh.TunnelCommand(ctx, s.local, s.remote, remote)
+		if livePipe != nil {
+			cmd.Stdin = livePipe
+		}
 		// Surface ssh's own stderr rather than swallowing it — its messages are
 		// better than anything we would invent — but keep a copy so a port
 		// collision can be recognised.
