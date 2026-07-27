@@ -10,9 +10,69 @@ before this stage runs; only its fetch-path tests and asset publishing wait.)*
 
 ## Goal
 
-Stop pointing at `chrismccord/webtmux`. Host the fork under your own GitHub account, make
-it the canonical origin for all fork work, and make it structurally impossible to
-accidentally push or PR back upstream.
+Stop pointing at `chrismccord/webtmux`. Host the fork under your own GitHub account, and
+make it structurally impossible to accidentally push or PR back upstream.
+
+*(Revised 2026-07-27: **topology changed from hub-and-spoke to a chain.** An earlier
+revision made the GitHub fork `origin` of the working repo, pushing to it directly and
+demoting the Mac bare to an optional mirror. That is reversed. The Mac bare is now the
+hub, and GitHub is a publishing mirror downstream of it. **The steps were renumbered** —
+old 0.2/0.4/0.5 and the old gate in 0.8 were rewritten or removed, and three new steps
+(0.2 backup, 0.3 Mac credentials, 0.7 hook) were added; the stage now runs 0.1–0.10. The
+reasoning is in "Topology" below, recorded because the shape changed, not just the
+commands.)*
+
+---
+
+## Topology: the chain
+
+```
+  /workspace/webtmux  ──[leg 1: sync-all-repos.sh]──>  Mac bare  ──[leg 2: this plan]──>  GitHub fork
+   (working repo)          automatic, host loop         (hub)          manual or hook       (publication)
+```
+
+**Every push travels one direction along that line.** The working repo never talks to
+GitHub, and GitHub is never a source — only a destination.
+
+**Why the Mac is the hub, not GitHub.** Leg 1 already exists and runs unattended on the
+host; it is the backup that protects you if the container dies. Making GitHub `origin` of
+the working repo (the earlier design) would have pointed the *automatic* leg at the
+*public* destination and left the backup as the manual one — exactly backwards for the
+thing you most want to be reliable. In the chain, the automatic leg feeds the private
+backup and the manual leg feeds publication, so forgetting to do the manual step costs you
+publicity, not safety.
+
+**What each leg carries:**
+
+| Leg | Tool | Scope | Trigger |
+|---|---|---|---|
+| 1. container → Mac | `sync-all-repos.sh` | **current branch only**, no tags — see Risk 8 | automatic, continuous loop on the host |
+| 2. Mac → GitHub | `git push` from the bare, or a `post-receive` hook | `local-main` only, by choice — see 0.4 | manual (or automatic if you install the hook in 0.7) |
+
+**The two legs deliberately carry different scope.** The Mac is a *full backup* — all 13
+branches, including WIP. GitHub is a *publication* — `local-main` only. Do not let the WIP
+branches leak onto a public fork just because they exist on the Mac.
+
+### How the current state arose
+
+The Mac bare was **not** made by `make-bare-repo.sh`. On 2026-07-22 at 18:59:15Z,
+`move-unbacked-repos.sh` classified this repo `web-local-work` (a GitHub clone with a
+local-only branch — `local-main`, then still at `6852248`) and ran
+`handle_web_local_work()`, which:
+
+1. backed the repo up to `backup/webtmux.20260722T185915Z`,
+2. created the Mac bare with `git init --bare`,
+3. **`git push --mirror`** to it,
+4. renamed the clone's `origin` (chrismccord) → `upstream`,
+5. added a new `origin` pointing at the Mac.
+
+Two consequences matter downstream:
+
+- **The bare carries junk `refs/remotes/*`** from step 3 — `--mirror` pushes everything
+  under `refs/`, including the old GitHub tracking refs. **Never `git push --mirror` from
+  the bare to GitHub**, or that junk gets published. Explicit refspecs only. Checked in 0.10.
+- **`upstream` in your working repo is the clone's original `origin`**, which is why
+  `branch.main.remote` says `upstream`. Nothing to fix; just don't be surprised by it.
 
 ## Why this gates the rest
 
@@ -48,7 +108,7 @@ Fork `chrismccord/webtmux` normally. The earlier objections were real but no lon
 **Git history is identical either way** — a fork is a server-side clone. What differs is
 only GitHub's fork *relationship*, which is now wanted rather than avoided.
 
-**One fork-specific gotcha, handled in 0.3:** a fork copies upstream's git **tags**.
+**One fork-specific gotcha, handled in 0.5:** a fork copies upstream's git **tags**.
 Inherited tags would poison `git describe --tags`, which is where `VERSION` comes from — a
 stray upstream `v1.x` would make our `v0.1.0` describe strangely. GitHub *Release objects*
 are **not** inherited, so `releases/latest` on the fork resolves to our own first release.
@@ -57,9 +117,13 @@ are **not** inherited, so `releases/latest` on the fork resolves to our own firs
 
 ## Worktree
 
-**None.** This stage changes remotes and pushes history; the only tracked-file touch is
-the optional README note in step 0.7, which lands directly on `local-main`. Creating a
-worktree for a remote reconfiguration would be pure ceremony.
+**None for execution.** This stage changes remotes and pushes history; the only
+tracked-file touch is the optional README note in step 0.9, which lands directly on
+`local-main`. Creating a worktree for a remote reconfiguration would be pure ceremony.
+
+*(Edits to **this plan document** are a different matter — `local-main` is churned by
+concurrent agents, so doc revisions go through a worktree and
+`scripts/git-merge-worktree.sh`. The 2026-07-27 chain revision did.)*
 
 ---
 
@@ -70,15 +134,80 @@ worktree for a remote reconfiguration would be pure ceremony.
       branches are harmless and you may want upstream's history intact. *(3 min)*
 
       **It must be public** — that is what lets the launcher download Release assets
-      without a token (see 0.6).
+      without a token (see 0.8).
 
-- [ ] **P0** 0.2 **Push `local-main` and make it the default.** *(10 min)*
+- [ ] **P0** 0.2 **Complete the Mac backup before restructuring anything.** *(10 min)*
+
+      **Why first:** the chain makes the Mac the hub, and the hub is currently incomplete.
+      Only `local-main` and `main` are on it; the other **11 branches exist nowhere but
+      this container**. Their commits are safe (every one is an ancestor of `local-main`,
+      which is on the Mac), but the branch *labels* — and with them the identity of the 8
+      live worktrees — are not. Promote a hub to load-bearing only once it is whole.
 
       ```bash
-      cd /workspace/webtmux
-      git remote add github git@github.com:<you>/webtmux.git
-      git push github local-main
+      bash ~/Projects/claude_run_me_4471.sh            # dry run — shows the plan
+      bash ~/Projects/claude_run_me_4471.sh --apply
       ```
+
+      Additive only: no `--mirror`, no `--force`, no re-clone, worktrees untouched. It also
+      sets upstream tracking on each branch, so future drift becomes visible in
+      `git branch -vv` instead of silent.
+
+      **Run it before 0.6**, not after. It addresses the Mac as `origin`, which is true now
+      and stays true under the chain — but would have been wrong under the old
+      hub-and-spoke design, and the habit is worth keeping.
+
+- [ ] **P0** 0.3 **Give the *Mac* GitHub credentials.** *(15 min)*
+
+      **Why this is its own step:** leg 2 originates on the Mac, so the *Mac* must
+      authenticate to GitHub. Your host's key and your container's key are both irrelevant
+      here — this is the single most likely thing to block the whole stage, and it is
+      invisible until you try to push.
+
+      On the Mac:
+
+      ```bash
+      ssh -T git@github.com          # want: "Hi <you>! You've successfully authenticated"
+      ```
+
+      If that fails:
+
+      ```bash
+      ssh-keygen -t ed25519 -C 'mac-webtmux'
+      cat ~/.ssh/id_ed25519.pub      # add at github.com/settings/keys
+      ```
+
+      Prefer a **passphrase-free** key, or one loaded into the Mac's keychain-backed agent.
+      A passphrase-prompting key works interactively but will silently break the optional
+      hook in 0.7, which runs with no terminal.
+
+- [ ] **P0** 0.4 **Add the `github` remote *on the Mac bare* and push.** *(10 min)*
+
+      This is leg 2. Note the working directory: the bare repo on the Mac, **not**
+      `/workspace/webtmux`.
+
+      ```bash
+      cd /Users/nathanteeuwen/Dropbox/nathant/Repositories/webtmux.git
+      git remote add github git@github.com:<you>/webtmux.git
+      git push github refs/heads/local-main:refs/heads/local-main
+      ```
+
+      Or drive it from the host, which preflights auth, fork reachability and the junk-ref
+      check before touching anything:
+
+      ```bash
+      # edit GITHUB_URL at the top first
+      bash ~/Projects/claude_run_me_4471_github.sh            # dry run
+      bash ~/Projects/claude_run_me_4471_github.sh --apply
+      ```
+
+      **Explicit refspec, never `--mirror`** — see "How the current state arose". A bare
+      repo pushes exactly like a non-bare one; there is nothing special to configure.
+
+      **The remote name is safe here.** `github` sorts before `origin`, and both sync
+      scripts select a remote with `git remote | head -1` — but they only ever scan repos
+      under the host workspace root. The Mac bare is never scanned. (This is *not* true of
+      the working repo — see 0.6.)
 
       Then GitHub → Settings → General → **Default branch** → `local-main`. A fresh fork
       defaults to upstream's `main`, so this must be set explicitly — otherwise anyone
@@ -86,54 +215,89 @@ worktree for a remote reconfiguration would be pure ceremony.
 
       Keep the branch **name** `local-main`. Renaming to `main` would be tidier, but the
       live worktrees (`/workspace/webtmux-*`) and the deploy path all reference it, and
-      the container builds from it. Not worth the disruption.
+      the container builds from it. Not worth the disruption. (`local-main` *is* a
+      fast-forward of `main`, so `local-main:main` would be a clean push if you ever change
+      your mind — but do not, for the reasons above.)
 
-      The local `main` branch tracks `upstream/main` at `6852248` and is far behind; the
-      fork already has upstream's `main` server-side, so there is nothing to push.
-
-- [ ] **P0** 0.3 **Delete inherited tags — fork-specific, easy to miss.** A fork copies
+- [ ] **P0** 0.5 **Delete inherited tags — fork-specific, easy to miss.** A fork copies
       upstream's git tags, and `VERSION` comes from `git describe --tags`. A stray
       upstream tag would make `v0.1.0` describe oddly and could confuse a human reading
       `webtmux --version`. *(10 min)*
 
+      From the Mac bare (where the `github` remote now lives):
+
       ```bash
       git ls-remote --tags github            # what the fork inherited
-      git tag                                # what the local clone has (was empty)
+      git tag                                # the local clone had none
       # For each unwanted tag:
       git push github :refs/tags/<tag>       # delete server-side
-      git tag -d <tag>                       # delete locally, if present
       ```
 
       GitHub **Release objects are not inherited**, so `releases/latest` on the fork will
       resolve to your own first release regardless. Only the tags need cleaning.
 
-- [ ] **P0** 0.4 **Repoint `origin` and neuter `upstream`.** *(10 min)*
+- [ ] **P0** 0.6 **Leave the working repo's `origin` pointing at the Mac — and do *not*
+      add a GitHub remote to it.** *(5 min)*
 
       ```bash
-      # Your GitHub repo becomes origin
-      git remote rename origin mac-bare          # the Dropbox SSH bare repo — see 0.5
-      git remote rename github origin
-      git branch --set-upstream-to=origin/local-main local-main
-
+      cd /workspace/webtmux
       # Make pushing to chrismccord's repo structurally impossible
       git remote set-url --push upstream DISABLED
       ```
 
-      That last line is the important one: `upstream` stays fetchable for cherry-picking,
-      but any `git push upstream` fails immediately instead of prompting for credentials
-      you might absent-mindedly supply.
+      That is the *only* remote change the working repo needs. Final state:
 
-- [ ] **P1** 0.5 **Decide the fate of the Mac bare repo**
-      (`ssh://nathanteeuwen@192.168.68.67/…/Dropbox/…/webtmux.git`). Two sane options:
-      *(10 min)*
-      - **Keep as an offline mirror** — useful when GitHub is unreachable or you're on the
-        LAN. Push to it explicitly after releases: `git push mac-bare local-main --tags`.
-      - **Retire it** — `git remote remove mac-bare`. One less thing to keep in sync, and
-        Dropbox syncing a git repo has its own hazards (concurrent `.git` writes).
+      ```
+      origin    → ssh://…192.168.68.67//…/webtmux.git    (the Mac — leg 1's target)
+      upstream  → https://github.com/chrismccord/webtmux  (fetch-only, push DISABLED)
+      ```
 
-      Whichever you choose, tell Claude — it changes what Stage 2's README documents.
+      **Why no GitHub remote here — this is the trap.** Both `sync-all-repos.sh:134` and
+      `move-unbacked-repos.sh:125` choose their remote with `git remote | head -1`, which
+      is **alphabetical**. Adding a remote named `github` makes it sort ahead of `origin`,
+      and the host's sync loop silently switches to pushing your work to **GitHub instead
+      of the Mac** — the backup stops, with no error. Verified empirically:
 
-- [ ] **P0** 0.6 **Confirm the fork is public.** *(Revised 2026-07-26: with the launcher
+      | Remotes present | `git remote \| head -1` | Sync pushes to |
+      |---|---|---|
+      | `origin`, `upstream` (this plan) | `origin` | ✅ Mac |
+      | `github`, `origin`, `upstream` | `github` | ⚠️ GitHub — **backup stops** |
+
+      In the chain this problem simply does not arise, because the working repo has no
+      reason to know GitHub exists. That is a feature of the topology, not a coincidence.
+
+      `upstream` stays fetchable for cherry-picking, but any `git push upstream` now fails
+      immediately instead of prompting for credentials you might absent-mindedly supply.
+
+- [ ] **P1** 0.7 **Optionally automate leg 2 with a `post-receive` hook.** *(15 min)*
+
+      Legs 1 and 2 are otherwise auto-then-manual. This closes the gap: when sync pushes to
+      the Mac, the Mac pushes onward to GitHub.
+
+      ```sh
+      # /Users/nathanteeuwen/Dropbox/nathant/Repositories/webtmux.git/hooks/post-receive
+      #!/bin/sh
+      git push --quiet github refs/heads/local-main:refs/heads/local-main || true
+      ```
+
+      ```bash
+      chmod +x hooks/post-receive
+      ```
+
+      **`|| true` is deliberate** — a GitHub failure must never reject the incoming push
+      from the container. Leg 1 is the backup and must not be held hostage to leg 2.
+
+      Two ways this fails silently, both worth a periodic check:
+      - **Non-interactive auth.** The hook has no terminal and no agent forwarding. A
+        passphrase-protected key just fails (see 0.3).
+      - **Dropbox renaming the hook.** The bare lives in Dropbox, which renames files it
+        believes are conflicted — `post-receive (conflicted copy)` is not executable by
+        git, so the hook stops running with no error anywhere. Re-check the filename and
+        the `+x` bit if the fork stops updating.
+
+      Defer this until the manual push in 0.4 is confirmed working.
+
+- [ ] **P0** 0.8 **Confirm the fork is public.** *(Revised 2026-07-26: with the launcher
       fetching Release assets, this is no longer a free choice.)* *(5 min)*
 
       A **public** fork lets the launcher download with a plain unauthenticated HTTPS GET
@@ -151,7 +315,7 @@ worktree for a remote reconfiguration would be pure ceremony.
       Publishing still needs an authenticated `gh` **on your side** — all pushes and
       `gh release create` runs are yours; the agent has no GitHub access.
 
-- [ ] **P1** 0.7 **Licence hygiene.** Confirm `LICENSE` is intact and unmodified. The
+- [ ] **P1** 0.9 **Licence hygiene.** Confirm `LICENSE` is intact and unmodified. The
       lineage is gotty (yudai) → webtmux (chrismccord) → yours; the licence and its
       copyright lines must be preserved however far the fork diverges. *(5 min)*
 
@@ -161,26 +325,53 @@ worktree for a remote reconfiguration would be pure ceremony.
       substantially diverged and is not intended to be merged back is still worth adding
       for anyone who finds it.
 
-- [ ] **P0** 0.8 **Verify the gate passes.** *(5 min)*
+- [ ] **P0** 0.10 **Verify the chain end to end.** *(10 min)*
+
+      Each check names the leg it protects.
 
       ```bash
+      # Leg 1 — the working repo still points at the Mac, and ONLY at the Mac.
       cd /workspace/webtmux
-      git remote get-url origin | grep -q 'github.com' && echo "origin OK"
+      git remote get-url origin | grep -q '192\.168\.68\.67' && echo "origin=Mac OK"
+      [ "$(git remote | head -1)" = origin ] && echo "sync picks origin OK"
+      git remote | grep -qi 'github' && echo "WARNING: a github remote exists — see 0.6" \
+                                     || echo "no github remote OK"
       git remote get-url --push upstream | grep -q '^DISABLED$' && echo "upstream neutered OK"
-      git ls-remote origin local-main | grep -q . && echo "reachable OK"
-      test -z "$(git ls-remote --tags origin)" && echo "no inherited tags OK"
+
+      # Leg 2 — the Mac reaches the fork, and the fork is current and clean.
+      MACBARE=/Users/nathanteeuwen/Dropbox/nathant/Repositories/webtmux.git
+      ssh nathanteeuwen@192.168.68.67 "
+        git -C $MACBARE ls-remote github local-main | grep -q . && echo 'fork reachable OK'
+        test -z \"\$(git -C $MACBARE ls-remote --tags github)\" && echo 'no inherited tags OK'
+        test \"\$(git -C $MACBARE rev-parse refs/heads/local-main)\" \
+           = \"\$(git -C $MACBARE ls-remote github local-main | cut -f1)\" \
+           && echo 'fork up to date OK'
+      "
       ```
+
+      The `no github remote OK` line is the one that catches the 0.6 trap. It is a
+      *warning*, not a failure, because a deliberate future change might add one — but if
+      you did not add it on purpose, your backup has stopped.
 
 ---
 
 ## Gate check for downstream stages
 
-Stages 2 and 3 must not begin until this passes:
+Stages 2 and 3 must not begin until this passes. **Note this is the inverse of the
+pre-2026-07-27 gate**, which required `origin` to be GitHub; under the chain, `origin`
+being GitHub means the topology is broken.
 
 ```bash
-git -C /workspace/webtmux remote get-url origin | grep -q 'github.com' \
-  || { echo "GATE: Stage 0 not done — origin still points at $(git -C /workspace/webtmux remote get-url origin)"; exit 1; }
+git -C /workspace/webtmux remote get-url origin | grep -q '192\.168\.68\.67' \
+  || { echo "GATE: chain broken — working-repo origin should be the Mac, is $(git -C /workspace/webtmux remote get-url origin)"; exit 1; }
+
+ssh nathanteeuwen@192.168.68.67 \
+  "git -C /Users/nathanteeuwen/Dropbox/nathant/Repositories/webtmux.git ls-remote github local-main" \
+  | grep -q . \
+  || { echo "GATE: Stage 0 not done — Mac bare cannot reach the GitHub fork"; exit 1; }
 ```
+
+Two assertions because the chain has two legs, and either can be broken independently.
 
 ---
 
@@ -205,24 +396,74 @@ produce conflicts across most of the frontend for very little gain.
 
 1. **Forgetting to change the default branch** → a fresh fork defaults to upstream's
    `main`, so anyone cloning (and every `releases/latest` reader looking for source) gets
-   upstream's code with none of your work. Fixed in 0.2 and worth double-checking.
+   upstream's code with none of your work. Fixed in 0.4 and worth double-checking.
 2. **Inherited tags poisoning `git describe --tags`** → `VERSION` is derived from it, so a
-   stray upstream tag shows up in `webtmux --version`. Cleaned in 0.3; verified in 0.8.
+   stray upstream tag shows up in `webtmux --version`. Cleaned in 0.5; verified in 0.10.
 3. **Accidental PR against `chrismccord/webtmux`** → the one real cost of forking. The
-   GitHub PR UI defaults the base repo to upstream. `--push upstream DISABLED` (0.4) stops
+   GitHub PR UI defaults the base repo to upstream. `--push upstream DISABLED` (0.6) stops
    command-line pushes but *cannot* stop a web-UI PR; check the base repo dropdown.
 4. **Renaming `local-main` to `main`** would break the live worktrees and the deploy path.
-   Explicitly declined in 0.2.
+   Explicitly declined in 0.4.
 5. **Repo size:** history carries ~48 MB of packed binary blobs from the committed-`builds/`
    era, so clones start heavy. `builds/` is already untracked (the build/run split), so it
    no longer grows. No history rewrite — it would break the live worktrees.
 6. **A private fork would break the launcher** — every launcher would need a GitHub token.
-   Confirmed public in 0.6.
-7. **Dropbox-hosted bare repo** (if kept) can corrupt under concurrent `.git` writes if two
-   machines push while Dropbox is mid-sync. Another reason to consider retiring it (0.5).
+   Confirmed public in 0.8.
+7. **Dropbox-hosted bare repo is now load-bearing.** Under the chain the Mac bare is the
+   hub, not an optional mirror, so its hazards are no longer avoidable by retiring it.
+   Concurrent `.git` writes while Dropbox is mid-sync can corrupt it, and Dropbox's
+   conflicted-copy renaming can silently disable the 0.7 hook. *(Under the old
+   hub-and-spoke design this risk had an escape hatch — "retire the bare". The chain
+   removes that option, so the risk is upgraded, not merely inherited.)* Mitigation: the
+   permanent `backup/webtmux.<ts>/` copies, plus the container itself, mean the bare is
+   never the only copy.
+8. **Leg 1 pushes the current branch only, and no tags.** `sync-all-repos.sh:199` runs
+   `git push --no-verify "$remote" "$branch"` — one branch, no `--tags`, no
+   `--follow-tags`. Two consequences:
+   - Any branch you are not standing on drifts unbacked. This is how the 11 branches in
+     0.2 accumulated; `-u` tracking now makes the drift *visible* but does not push it.
+   - **Tags never traverse leg 1 automatically** — which Stage 2 depends on, since a
+     release needs its tag on GitHub. See "Publishing a release along the chain".
+9. **Mac-side GitHub credentials are a single point of failure for leg 2** and are
+   invisible until a push is attempted. Checked explicitly in 0.3.
+10. **Adding a `github` remote to the working repo silently stops the Mac backup** via the
+    alphabetical `git remote | head -1` selection. This is the highest-consequence,
+    lowest-visibility failure in the whole plan: no error, no output, the backup just
+    stops. Guarded in 0.6 and re-checked in 0.10.
+
+---
+
+## Publishing a release along the chain
+
+Stage 2 tags `v0.1.0` and publishes binaries. Because tags do not traverse leg 1 (Risk 8),
+the tag must be walked along the chain by hand:
+
+```bash
+# 1. tag in the working repo
+cd /workspace/webtmux
+git tag -a v0.1.0 -m 'webtmux fork v0.1.0'
+
+# 2. leg 1 — push the tag to the Mac explicitly; sync will NOT do this for you
+git push origin v0.1.0
+
+# 3. leg 2 — the Mac forwards it to GitHub
+ssh nathanteeuwen@192.168.68.67 \
+  "git -C /Users/nathanteeuwen/Dropbox/nathant/Repositories/webtmux.git push github v0.1.0"
+```
+
+`gh release create` then runs against the fork from whichever machine has an authenticated
+`gh` — release *objects* are a GitHub-side concept and do not travel through the chain at
+all. Only the tag does.
+
+Note the 0.7 hook does not cover this either: it forwards `refs/heads/local-main` only.
+Widening it to tags is possible but makes an accidental local tag instantly public;
+walking releases by hand is the safer default.
 
 ## Next steps
 
-Once 0.8 passes, tell Claude whether the Mac bare repo was kept, then run **Stage 2
-(`plan-webtmux-portable-release.md`)** to publish `v0.1.0` — which is what the launcher
-will fetch. Execution order is D → 0 → 2 → 3 → 1.
+Once 0.10 passes, run **Stage 2 (`plan-webtmux-portable-release.md`)** to publish `v0.1.0`
+— which is what the launcher will fetch — following "Publishing a release along the chain"
+above for the tag. Execution order is D → 0 → 2 → 3 → 1.
+
+*(The old step 0.5, "decide the fate of the Mac bare", is gone: under the chain the bare is
+the hub and retiring it is no longer an option. Nothing to report back to Claude.)*
