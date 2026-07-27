@@ -97,6 +97,14 @@ T new-session -d -s dev -n editor -x 220 -y 50
 T set -g automatic-rename off
 T set -g allow-rename off
 T set -g history-limit 5000
+# tmux's own `mouse` option, which most people turn ON and tmux ships OFF. It is
+# not cosmetic for the mouse-mode driver: with it on, tmux keeps mouse reporting
+# active toward the client at ALL times and switches protocol when a pane enters
+# copy mode — and xterm CLEARS the selection on any protocol change
+# (SelectionService.disable). A harness left at the default therefore cannot see
+# the class of bug that only bites people with `mouse on`. Default off so the
+# screenshot/gif drivers are unaffected; the verify driver asks for on.
+T set -g mouse "${WT_TMUX_MOUSE:-off}"
 
 T send-keys -t dev:editor "clear; pygmentize -g /src/pkg/tmux/capture.go 2>/dev/null | head -44 || head -44 /src/pkg/tmux/capture.go" Enter
 T new-window -t dev -n build   /tmp/build-loop.sh

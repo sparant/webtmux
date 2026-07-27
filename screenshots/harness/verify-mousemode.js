@@ -51,7 +51,14 @@ const screenText = () => unit((u) => {
   return out.join('\n');
 });
 
-const reportCount = async () => (await screenText()).split('^[[<').length - 1;
+// The TUI keeps running counts on a fixed row (see fake-tui.sh). BUTTON events are
+// the observable that matters — mouse mode 1003 reports pointer motion with no
+// button down, so merely moving to the target would otherwise read as "the program
+// got the click".
+const reportCount = async () => {
+  const m = (await screenText()).match(/PRESSES:\s*(\d+)/);
+  return m ? Number(m[1]) : -1;
+};
 
 async function typeLine(s) {
   await unit((u) => { u.terminal.focus(); });
@@ -180,7 +187,11 @@ async function main() {
   await sleep(500);
 
   // ---- 1. plain shell: nothing grabs the mouse, xterm selects natively --------
-  check('a plain shell reports no mouse tracking', await tracking() === 'none', `got ${await tracking()}`);
+  // tmux's own `mouse on` reports the mouse even at a bare shell prompt, so what
+  // counts as "nothing is grabbing it" depends on that option, not on the shell.
+  const TMUX_MOUSE = process.env.WT_TMUX_MOUSE === 'on';
+  check('a bare shell tracks the mouse only if tmux itself does',
+    (await tracking() === 'none') !== TMUX_MOUSE, `mouse=${TMUX_MOUSE ? 'on' : 'off'}, got ${await tracking()}`);
   await clearSel();
   let row = await rowOf('SELECTME-CCCC');
   await dragAcross(row, 0.02, 0.30);
@@ -201,8 +212,17 @@ async function main() {
 
   // ---- 2. make the pane grab the mouse, like Claude/vim do -------------------
   await clearSel();
-  await typeLine('printf "\\033[?1000h\\033[?1006h"; cat -v');
-  await sleep(900);
+  // A REAL target: alternate screen + mouse tracking + a repainting status line.
+  // The old stand-in (mouse tracking on the normal screen, static output) grabbed
+  // the mouse but never repainted, and so never exercised the repaint tmux does on
+  // the way into copy mode — which is exactly what was wiping the first drag.
+  // Mouse mode 1003 (any-event) on purpose: it is what hover-aware TUIs like Claude
+  // Code ask for, and the ONLY mode in which entering copy mode changes the mouse
+  // PROTOCOL rather than just switching it off — which is what made xterm clear the
+  // selection mid-drag. 1000/1002 never reproduced the bug. Repaint by scrolling for
+  // the same reason: be the hard case, not the convenient one.
+  await typeLine('bash /src/screenshots/harness/fake-tui.sh 1003 inplace');
+  await sleep(1600);
   const grabbed = await tracking();
   check('the pane now holds the mouse', grabbed !== 'none', `mouseTrackingMode=${grabbed}`);
   if (grabbed === 'none') { await finish(browser); return; }
@@ -231,6 +251,10 @@ async function main() {
   // The point of this change: selecting puts the pane in copy mode by itself, and
   // the highlight has to survive the redraw that tmux does on the way in.
   check('auto+ : the drag entered copy mode on its own', await inCopy() === true);
+  // The regression this driver exists for: it used to take one drag to enter copy
+  // mode and a SECOND to actually select, because entering the mode wiped the
+  // first. So this must hold on a pane that started in normal mode, first try.
+  check('auto+ : the FIRST drag selects — no drag-twice', /CTME-CCCC/.test(sel), JSON.stringify(sel));
   await sleep(800);
   check('auto+ : and the selection survived the copy-mode redraw',
     /CTME-CCCC/.test(await selection()), JSON.stringify(await selection()));

@@ -769,6 +769,8 @@ export class TerminalUnit {
           // against the mouse-reporting state the press was judged under.
           this._startSelection(press);
           beginSelection();
+          // ...and put it back if entering copy mode wipes it — see _guardSelection.
+          this._guardSelection(press);
           return;
         }
         // Going to the program instead. If a previous selection left the pane in
@@ -830,6 +832,7 @@ export class TerminalUnit {
         x: e.clientX, y: e.clientY,       // the ANCHOR: where the selection starts
         lastX: e.clientX, lastY: e.clientY,
         detail: e.detail, verdict, live, dragging: false, selecting: false,
+        done: false, reasserts: 0,
       };
       document.addEventListener('mousemove', onDocMove, true);
       document.addEventListener('mouseup', onDocUp, true);
@@ -867,6 +870,10 @@ export class TerminalUnit {
         // the paths that never touch a synthetic event at all ('buf', and 'auto' in
         // a plain shell, where xterm was already selecting natively).
         beginSelection();
+        // These paths enter copy mode too, so they can be wiped by the same
+        // protocol change; the repair works whether or not xterm's own selection
+        // was the one that started it.
+        this._guardSelection(press);
       }
       // Auto-scroll only when dragging near/past the top or bottom edge. Measured
       // at the document, so it keeps scrolling once the pointer leaves the pane —
@@ -885,6 +892,10 @@ export class TerminalUnit {
       // reaches xterm in time to register the release listener for this very
       // mouseup, so the program gets a press/release pair rather than a lone press.
       if (arbiter.pending) arbiter.up();
+      // Noted BEFORE release() drops the gesture: the selection guard outlives the
+      // button, and a repair made after the release has to close itself with a
+      // mouseup or xterm is left mid-drag.
+      if (press) press.done = true;
       release();
     };
   }
@@ -937,6 +948,63 @@ export class TerminalUnit {
     if (press.lastX !== press.x || press.lastY !== press.y) {
       this._dispatchPress(press, { buttons: 1 },
         { x: press.lastX, y: press.lastY, type: 'mousemove' });
+    }
+  }
+
+  // Entering copy mode can WIPE the selection that started the gesture, roughly
+  // 20ms after the press — and then the drag looks like it did nothing, so you
+  // drag once to "enter copy mode" and again to actually select.
+  //
+  // The cause is xterm's, not tmux's. Any change of mouse-reporting PROTOCOL runs
+  //     onProtocolChange -> selectionService.disable() -> clearSelection()
+  // and a pane entering copy mode is exactly such a change: with tmux's own
+  // `mouse on`, tmux stops forwarding the program's mode and starts using its own,
+  // so a program tracking ANY-event motion (1003 — what Claude Code and other
+  // hover-aware TUIs ask for) flips 'any' -> 'drag'. Non-zero to non-zero, which
+  // takes the disable() branch. Programs using 1000/1002 happen to match what tmux
+  // switches to, which is why this only bites on some TUIs.
+  //
+  // Nothing can be done about the clear (it is inside xterm, and the mode change is
+  // legitimate), so the selection is re-asserted after it: for a short window, if
+  // the highlight has gone while a drag is or was under way, it is re-created from
+  // the remembered ANCHOR to wherever the pointer has reached. Repairing rather
+  // than delaying the first anchor keeps the highlight immediate in the common
+  // case, and the window bounds it to the transition rather than leaving a
+  // permanent watcher on the selection.
+  SELECTION_GUARD_MS = 800;
+  SELECTION_REASSERT_MAX = 6;
+
+  _guardSelection(press) {
+    if (this._selGuard) { clearTimeout(this._selGuard); this._selGuard = null; }
+    const deadline = Date.now() + this.SELECTION_GUARD_MS;
+    const tick = () => {
+      this._selGuard = null;
+      if (this.destroyed || !press.selecting) return;
+      // A drag with nowhere to go has nothing to restore, and re-anchoring on it
+      // would loop until the deadline for no reason.
+      const moved = press.lastX !== press.x || press.lastY !== press.y;
+      if (moved && !this.terminal?.getSelection() && press.reasserts < this.SELECTION_REASSERT_MAX) {
+        press.reasserts++;
+        this._reassertSelection(press);
+      }
+      if (Date.now() < deadline) this._selGuard = setTimeout(tick, 40);
+    };
+    this._selGuard = setTimeout(tick, 40);
+  }
+
+  // Re-create the selection from the anchor to the pointer's latest position.
+  // `live` is read FRESH rather than reused from the press: the protocol change is
+  // the whole reason we are here, so whether the modifier is needed may have
+  // flipped since. If the button has already been released, the synthetic gesture
+  // has to be closed with a mouseup or xterm stays mid-drag.
+  _reassertSelection(press) {
+    const mods = this._mouseTracking() ? forceSelectionModifier(IS_MAC) : {};
+    this._dispatchPress(press, mods);
+    this._dispatchPress(press, { buttons: 1 },
+      { x: press.lastX, y: press.lastY, type: 'mousemove' });
+    if (press.done) {
+      this._dispatchPress(press, { buttons: 0 },
+        { x: press.lastX, y: press.lastY, type: 'mouseup' });
     }
   }
 
@@ -1268,6 +1336,7 @@ export class TerminalUnit {
     // A gesture in flight holds document-level listeners; the container going away
     // does not take those with it.
     try { this._releaseGesture?.(); } catch (e) {}
+    if (this._selGuard) { clearTimeout(this._selGuard); this._selGuard = null; }
     if (this.resizeObserver) { try { this.resizeObserver.disconnect(); } catch (e) {} }
     if (this.ws) { try { this.ws.onclose = null; this.ws.close(); } catch (e) {} }
     if (this.terminal) { try { this.terminal.dispose(); } catch (e) {} }
