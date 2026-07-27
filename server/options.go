@@ -1,7 +1,7 @@
 package server
 
 import (
-	"github.com/pkg/errors"
+	"errors"
 )
 
 type Options struct {

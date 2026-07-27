@@ -175,7 +175,7 @@ byte-identical apart from the one intentionally removed `--config` row.*
 
 ## Phase D2 — Larger, optional
 
-- [ ] **P2** D2.1 **Drop `pkg/errors`** (archived 2021) in favour of stdlib. 58 call sites:
+- [x] **P2** D2.1 **Drop `pkg/errors`** (archived 2021) in favour of stdlib. 58 call sites:
       26 `Wrapf`, 21 `Wrap`, 9 `New`, 2 `Errorf`, across 8 files. Mechanical but wide.
       *(90 min)*
 
@@ -186,6 +186,15 @@ byte-identical apart from the one intentionally removed `--config` row.*
 
       The only real loss is `pkg/errors` stack traces, which nothing in this codebase
       prints. Do it as one commit, no behaviour changes mixed in.
+
+      *Done. Actual counts: **29 `Wrap`/`Wrapf` + 2 `Errorf` + 10 `New`** across 8 files
+      (the plan's 58 double-counted). Only **5** wraps carry format arguments, so the
+      argument-order risk was narrower than feared; `go vet`'s printf checker independently
+      confirms every rewritten call, and `%w` appears exactly 29 times.
+      **The nil trap never applied:** every call site was read first and all 29 sit inside
+      an `if err != nil` block, so `Wrap(nil, …) == nil` versus a non-nil `fmt.Errorf`
+      cannot fire. The sentinel comparisons at `server/handlers.go:105` still work — those
+      errors are returned unwrapped.*
 
 - [ ] **P2** D2.2 **Migrate `urfave/cli/v2` → `v3`** to shed `go-md2man`, `blackfriday`,
       and `sanitized_anchor_name`. Breaking API change across `main.go` and

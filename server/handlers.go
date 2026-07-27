@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -13,7 +14,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/pkg/errors"
 
 	"webtmux/pkg/tmux"
 	"webtmux/webtty"
@@ -115,7 +115,7 @@ func (server *Server) generateHandleWS(ctx context.Context, cancel context.Cance
 func (server *Server) processWSConn(ctx context.Context, conn *websocket.Conn, headers map[string][]string) error {
 	typ, initLine, err := conn.ReadMessage()
 	if err != nil {
-		return errors.Wrapf(err, "failed to authenticate websocket connection")
+		return fmt.Errorf("failed to authenticate websocket connection: %w", err)
 	}
 	if typ != websocket.TextMessage {
 		return errors.New("failed to authenticate websocket connection: invalid message type")
@@ -124,7 +124,7 @@ func (server *Server) processWSConn(ctx context.Context, conn *websocket.Conn, h
 	var init InitMessage
 	err = json.Unmarshal(initLine, &init)
 	if err != nil {
-		return errors.Wrapf(err, "failed to authenticate websocket connection")
+		return fmt.Errorf("failed to authenticate websocket connection: %w", err)
 	}
 	if init.AuthToken != server.options.Credential {
 		return errors.New("failed to authenticate websocket connection")
@@ -137,7 +137,7 @@ func (server *Server) processWSConn(ctx context.Context, conn *websocket.Conn, h
 
 	query, err := url.Parse(queryPath)
 	if err != nil {
-		return errors.Wrapf(err, "failed to parse arguments")
+		return fmt.Errorf("failed to parse arguments: %w", err)
 	}
 	params := query.Query()
 
@@ -168,7 +168,7 @@ func (server *Server) processWSConn(ctx context.Context, conn *websocket.Conn, h
 	var slave Slave
 	slave, err = server.factory.New(params, headers)
 	if err != nil {
-		return errors.Wrapf(err, "failed to create backend")
+		return fmt.Errorf("failed to create backend: %w", err)
 	}
 	defer slave.Close()
 
@@ -186,7 +186,7 @@ func (server *Server) processWSConn(ctx context.Context, conn *websocket.Conn, h
 	titleBuf := new(bytes.Buffer)
 	err = server.titleTemplate.Execute(titleBuf, titleVars)
 	if err != nil {
-		return errors.Wrapf(err, "failed to fill window title template")
+		return fmt.Errorf("failed to fill window title template: %w", err)
 	}
 
 	opts := []webtty.Option{
@@ -206,7 +206,7 @@ func (server *Server) processWSConn(ctx context.Context, conn *websocket.Conn, h
 	}
 	tty, err := webtty.New(&wsWrapper{conn}, slave, opts...)
 	if err != nil {
-		return errors.Wrapf(err, "failed to create webtty")
+		return fmt.Errorf("failed to create webtty: %w", err)
 	}
 
 	// Set up a PER-CONNECTION tmux controller targeting this connection's session

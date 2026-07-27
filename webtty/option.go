@@ -2,8 +2,7 @@ package webtty
 
 import (
 	"encoding/json"
-
-	"github.com/pkg/errors"
+	"fmt"
 )
 
 // Option is an option for WebTTY.
@@ -54,7 +53,7 @@ func WithMasterPreferences(preferences interface{}) Option {
 	return func(wt *WebTTY) error {
 		prefs, err := json.Marshal(preferences)
 		if err != nil {
-			return errors.Wrapf(err, "failed to marshal preferences as JSON")
+			return fmt.Errorf("failed to marshal preferences as JSON: %w", err)
 		}
 		wt.masterPrefs = prefs
 		return nil
