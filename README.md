@@ -2,95 +2,164 @@
 
 A web-based terminal with tmux-specific features. Access your tmux sessions from any browser with a visual pane layout, touch-friendly controls, and automatic scroll-to-copy-mode.
 
-## What this fork adds
+- Multtiple ways (Exposé, Pip, Preview Bar) for quick monitoring and status of your tmux windows.
+- Take advantage of modern UI - Use Drag and Drop, Previews on hover etc to manage your tmux state.
+- Controls mimick familiar tmux shortcuts - just with control+Option instead of the usual prefix.
+- Discoverability of all features - no more searching for shortcuts or remembering commands
+- Get notified with visuals when your tmux windows are done working and idle waiting for more work (perfect for working with AI coding agents - know exactly when they are done/need input) **setup required for feature to work**
+- Quickly access your most recent windows. Monitor any window keeping it always in your view
 
-### Split view & regions
-![Split view replayed: Ctrl+Alt+Enter adds a second live region (auto-picking the most recent unseen window), the divider drags to resize, Ctrl+Alt+X closes it](screenshots/split-view.gif)
-- Split view: add side-by-side terminal regions (Ctrl+Alt+Enter), each an independent live tmux view backed by its own grouped session — watch two windows of the same server at once.
-- One shared sidebar bound to whichever region is focused; a draggable divider resizes regions.
-- A new region auto-picks the most-recently-used window not already on screen; two regions never show the same window (occupied windows are greyed out in every switcher).
-- Secondary regions switch sessions freely without dragging the primary or the console along; a split that gets synced onto a shared session self-heals.
-- Close the focused region with Ctrl+Alt+X (the primary region can't be closed).
+## Unique Features
 
-### Sidebar (windows & sessions)
+### Windows View in Sidebar
+
+A UI replacement for tmux Prefix+W. Lets you manage windows/sessions - create/delete, move between, reorder, link windows to sessions. All without having to remember complicated tmux commands.
+
 ![Sidebar browse replayed: Ctrl+Alt+W opens the panel, hovering rows previews windows live in the real terminal, Esc puts everything back, click commits](screenshots/sidebar.gif)
-- Toggle with Ctrl+Alt+W from anywhere; hover-overlay mode with a pin toggle; vertical window list.
-- Preview-before-commit browsing: arrow keys and hovering preview windows/sessions live in the real terminal; Enter or click commits, Esc puts everything back.
-- Type-ahead search to find a window; drag rows to reorder, drag a window onto a session tab to link it there.
-- A view toggle switches the panel between the default (sessions, then this session's windows) and a flat tree of **every** window on the server — sessions in your own order, their windows beneath them, like tmux's `prefix + w`. Typing filters the whole tree (session name included), ↑/↓ walk straight across session boundaries, ←/→ fold a session away, and rows drag to reorder within any session or onto another to link. The chosen view and the folds persist with the rest of the shared state.
-- Hover × kills a window — or just unlinks it when it lives in other sessions too; empty sessions skip the confirmation. Double-click renames windows and sessions inline; "+" creates a session; session order persists.
-- Ephemeral split-view helper sessions (`web-*`) are hidden from the list.
 
-### Toolbar & recents strip
+- Toggle with Ctrl+Alt+W from anywhere
+- Hover-overlay to have it come up when you need it or pin to have it always stay open
+- Preview-before-commit browsing: arrow keys and hovering preview windows/sessions live in the real terminal
+  - Enter or click commits
+  - Esc puts everything back
+- A view toggle switches what the panel lists:
+  - **this session** — the session list, with the current session's windows below it (the default)
+  - **all windows** — every session on the server in your own order, its windows beneath it: tmux's Prefix+W tree, without the modal keybindings
+- Type-ahead search to find a window; in the tree it filters the whole thing, session names included
+- Drag windows to reorder — in any session, not only the one you are attached to
+- Drag a window onto a session (its tab, or its branch of the tree) to link it there
+- In the tree: ↑/↓ walk straight across session boundaries, ←/→ fold a session away, and clicking a window in another session takes you there
+- Hover × kills a window — or just unlinks it when it lives in other sessions too
+- Double-click renames windows and sessions inline; pasting a path into the rename box trims it to the basename without its extension (`webtmux/plan-webtmux-portable-deps.md` → `plan-webtmux-portable-deps`)
+- "+" creates a session or a window
+- session and window order persists
+
+### Toolbar and Recent Tabs
+
+Manage your fleet of windows and keep your attention on the widnows that matter. The most recents you accessed are immediately avaialble in recent tabs - for preview or bringing into focus.
+
 ![The toolbar: five most-recently-used window tabs with stoplight dots, and the flashing attention arrow counting unseen windows](screenshots/toolbar-recents.jpg)
+
+A tab flashes amber when its window has stopped working and an arrow flashes when a window not currently visible need addtion. Viewing the window stops its flash.
+
 ![The strip in motion: a tab flashes amber when its window prompts, the attention arrow flashes for a red window with no tab, and viewing the window stops its flash](screenshots/toolbar-alerts.gif)
-- Top toolbar with up to five most-recently-used window tabs spanning all sessions; tabs navigate the focused region, each has a hover ×, and the strip persists across reloads.
-- Attention arrow (→) at the end of the strip counts and flashes for windows that need you but are visible nowhere; clicking it opens the most recent one, previewed first.
-- Copy-mode indicator/toggle, scroll-mode toggle, save (⤓) button, Preview add/remove, split-region focus dots, and a hidden build-id chip (Ctrl+Alt+B, copies the build id when revealed).
+
+- The Toolbar has up to 5(configurable) most-recently-used window tabs for quick access.
+  - control+Option+N/P - used to Navigate to next previous in your most recent list.
+  - Move from your most recents by a hover revealing close button ×
+  - Most recents persist across reloads
+- Attention arrow (→) at the end of the strip counts and flashes for windows that need you but are visible nowhere; clicking it opens the most recent one for preview.
+- App wide toggles:
+  - Copy-mode indicator/toggle
+  - a single **mouse capture** dropdown holding both gesture questions — `click+drag:` (who gets a mouse press, the program or a text selection) and `copymode on scroll:` (who gets the wheel).
+  - save (⤓) button to download your buffer locally or remotely
+  - focus dots tell you what region you are in.
+  - a hidden build-id chip (Ctrl+Alt+B, copies the build id when revealed).
 
 ### Exposé (window mosaic)
+
+Bring up a mac style Exposé view to see 4 or 9 windows at once. Syllable substring search for filtering. scroll to others. Ordering by most recent lets you quickly find what you were working on, and see status of multiple windows at once. A **Show** filter narrows the mosaic to one work status — working / needs you / idle — which turns it into a triage board when a dozen agents are running.
+
 ![Exposé replayed: Ctrl+Alt+E opens the mosaic, pressing again densifies 2×2 to 3×3, typing filters by name, Enter switches the focused region](screenshots/expose.gif)
-- Ctrl+Alt+E cycles a full-screen mosaic of every window across every session: 2×2 → 3×3 → closed; on a Mac a trackpad pinch opens/closes it.
-- Live thumbnails; click or arrow+Enter switches the focused region; type to filter by name, with an optional toggle to search captured window content too.
-- Linked windows appear once; sort by session or recency; "last accessed" persists across reloads. A tile whose window is already shown elsewhere explains why instead of silently ignoring the click.
+
+- Ctrl+Alt+E cycles a full-screen mosaic of every window across every session: 2×2 → 3×3 → closed
+- Ln a Mac a trackpad pinch opens/closes it
+- Live thumbnails and left click or arrow+Enter to start working on it
+- Type to filter by name, with an optional toggle to search captured window content too
+- Linked windows appear once; sort by session or recency
 
 ### Preview / picture-in-picture
+
 ![Preview replayed: Ctrl+Alt+I floats one window as a corner PiP that blanks while you view its window; a second window docks both as an edge bar; Ctrl+Alt+H hides and restores it](screenshots/preview-pip.gif)
+
+Keep an eye on specific windows, even while you focus on others.
+
 - "Preview" collects windows to keep an eye on: one window floats as a corner PiP box; two or more dock as a bar along a screen edge that reserves space instead of covering the terminal.
 - Ctrl+Alt+I adds/removes the focused window; Ctrl+Alt+H hides/shows the preview without losing it; tiles are read-only and click-to-switch.
 - The single-window PiP blanks itself while the focused region already shows that window, and reappears when you move away.
 
-### Hover previews (unified)
+### Hover previews
+
+- Pointing at any window — recents tab, sidebar row, preview tile, — previews it full-size in a real terminal region instantly for quick status check.
+
 ![Hover preview replayed: pointing at a recents tab paints that window full-size in the real terminal, marked as temporary; moving away restores the original view](screenshots/hover-preview.gif)
-- Pointing at any window — recents tab, sidebar row, preview tile, Exposé browse — previews it full-size in a real terminal region, visibly marked temporary; commit with click/Enter, restore with Esc or by moving away.
+
+- The visible preview is temporary, move the mouse away or press Escape to go back to what you were doing.
+- or commit to the new window with click/Enter
 - Previews wait for a fresh capture at the right pane geometry before painting, so you never see a stale or mis-sized screen.
 
 ### Stoplights & work alerts
+
 ![Stoplights replayed: windows report green, one drops to amber and its tab flashes, another drops to red with no tab so the attention arrow flashes — until the window is actually viewed](screenshots/stoplights.gif)
+
 - Windows self-report status via the tmux option `@wt_working`; webtmux renders a stoplight dot everywhere the window appears (recents tabs, sidebar rows, preview tiles, Exposé tiles): green = working, amber = prompting you, red = waiting for work, unfilled = not reporting. Hovering any dot shows the full color key.
 - When a window drops out of green while you're looking elsewhere, everything showing it flashes in the new color until you actually view it — no timeout. Alerts cover every window on the server, not just visible tabs; reduced-motion users get a solid ring instead of blinking.
 - A bash prompt-hook installer ships in the repo so ordinary shells paint their own light automatically (see below).
 
+### Split view & regions
+
+![Split view replayed: Ctrl+Alt+Enter adds a second live region (auto-picking the most recent unseen window), the divider drags to resize, Ctrl+Alt+X closes it](screenshots/split-view.gif)
+
+- Split view: add side-by-side terminal regions (Ctrl+Alt+Enter), each an independent live tmux view backed by its own grouped session — watch two windows of the same server at once.
+- One shared sidebar bound to whichever region is focused
+- a draggable divider resizes regions.
+- A new region auto-picks the most-recently-used window not already on screen; two regions never show the same window (occupied windows are greyed out in every switcher).
+- Secondary regions switch sessions freely without dragging the primary or the console along; a split that gets synced onto a shared session self-heals.
+- Close the focused region with Ctrl+Alt+X (the primary region can't be closed).
+
 ### Capture & preview infrastructure
+
 ![Live capture buffers at work: Exposé tiles painted from the shared per-window capture cache](screenshots/capture-infra.jpg)
+
 - The server keeps one deduplicated capture buffer per tmux window, shared across all connections, with freshness coalescing so overlapping UI polls never storm tmux.
 - Clients mirror it in a capture cache powering Exposé tiles, preview tiles, hover previews, and optimistic paint — switching windows paints the cached screen instantly while the live feed catches up. Captures of closed windows are pruned.
 
 ### State persistence
+
 ![Persistence replayed: with a split open, a full browser reload re-assembles every region, the recents strip, and prefs from state stored in the tmux server](screenshots/state-persistence.gif)
+
 - Shared UI state lives in the tmux server itself (global option `@wt_state`), surviving reloads, reconnects, and webtmux restarts, and shared by every browser: sidebar prefs, session order, renderer choice, Exposé/preview/toolbar prefs, split window assignments, the recents strip, access recency, the chosen save directory, and the primary region's window.
 - Per-tab state (focused view, split widths) stays in the browser tab so two browsers don't fight over focus. A reload returns every region to the exact session+window it was on.
 
 ### Copy, scroll & clipboard
+
 ![Copy mode replayed: scrolling up enters copy mode, drag selects in the scrollback, Ctrl+C copies and stays in copy mode, then ordinary typing drops straight back to the prompt](screenshots/copy-scroll.gif)
+
 - Smart copy-mode typing: in a scrolled-up pane, copy-mode motions keep working but ordinary typing drops back to the prompt — no keystrokes silently swallowed.
-- Cmd/Ctrl+C copies and stays in copy mode (grab several regions); Cmd/Ctrl+V exits copy mode first so the paste lands at the prompt; drag enters copy-mode immediately and auto-scrolls; selection highlight clears after copy.
+- Cmd/Ctrl+C copies and stays in copy mode (grab several regions); Cmd/Ctrl+V exits copy mode first so the paste lands at the prompt; dragging to the pane edge auto-scrolls the buffer; selection highlight clears after copy.
 - Clipboard copy works on plain-HTTP LAN access (falls back when the secure clipboard API is missing); large pastes no longer drop the connection.
 - Scroll-mode choices including an "auto+" default and adaptive wheel modes; Ctrl+Alt+[ toggles copy/scrollback mode.
+- **Click-and-drag selects text even over a program holding the mouse** (Claude Code, vim, htop) — no entering copy mode by hand first. The toolbar's mouse-capture dropdown sets who gets a press under `click+drag:`, in the same four steps as the wheel under `copymode on scroll:`: `app` (all to the program) / `buf` (all to the buffer) / `auto` (a program that asked for the mouse gets it) / `auto+` (the default: clicks reach the program, drags select). Shift-drag (⌥-drag on a Mac) still forces a selection in any mode.
+- Starting a selection puts the pane in copy mode for you, so the indicator is honest and dragging to the pane edge scrolls for more. In `auto+`, clicking away drops back out of copy mode — the click after that reaches the program as usual.
 
 ### Save pane buffer to a file
+
 ![Save replayed: the ⤓ dropdown explains where a save lands up front, and Save confirms the exact path the file was written to](screenshots/save-file.gif)
+
 - Toolbar ⤓ saves the focused pane's scrollback: download to the browser, or write a file on the machine webtmux runs on — container-aware, with the save location explained up front and configurable via `WEBTMUX_SAVE_DIR` / `WEBTMUX_PATH_MAP` / `WEBTMUX_HOME` / `WEBTMUX_IN_CONTAINER` (details in the save section below).
 
 ### Keyboard navigation & discoverability
+
 ![The shortcuts overlay (Ctrl+Alt+/): every global chord with modifier labels matching your OS](screenshots/keyboard-shortcuts.jpg)
+
 - A shortcuts overlay (Ctrl+Alt+/) lists every hotkey with modifier labels matching your OS (⌃⌥ on Mac).
 - Global Ctrl+Alt chords mirror tmux letters: W sidebar, P/N recents prev/next, ⇧P/⇧N walk the session's window list in index order, L alt-tab-style MRU cycle with deferred commit, comma rename, X close region, [ copy mode, C new window (also ⌘⌥C on Mac), D drop current window from recents, Enter add split, E Exposé, I/H preview.
 - Consistent custom tooltips everywhere; confirmations appear as a small popup next to the control you clicked, and only an explicit "Yes" acts.
 
 ### Terminal rendering & session plumbing
+
 ![Glyph fidelity: box drawing, block elements, braille and powerline glyphs rendering cleanly across three tmux panes](screenshots/terminal-rendering.jpg)
+
 - Glyph fidelity: tmux clients attach UTF-8-clean and the DOM renderer is the default (WebGL opt-in), so box-drawing and pane borders render correctly; pure black terminal background.
 - Honors a custom tmux socket and env-based detection (`WEBTMUX_SOCKET`, `WEBTMUX_SESSION`).
 - Per-connection tmux controller threading: each browser region follows its pane's real tmux client by tty+pid, fixing wrong-client switches (including cross-container pty name collisions, backed by a pts-number reservation, `WEBTMUX_PTS_FLOOR`).
 
 ### Build, server & reliability
-![The hidden build-id chip (Ctrl+Alt+B) revealing the commit the running binary was built from](screenshots/build-reliability.jpg)
-- JS syntax gate in the build (`make check-js`) so one bad file can't blank the UI; `make test` runs the node unit-test suites for the pure-JS logic.
-- No-store caching on embedded assets so a rebuild is never masked by a stale browser cache; build id/time stamped into the binary and surfaced in the toolbar.
-- Client-supplied session names are sanitized server-side; window names containing `|` can't corrupt the status protocol.
 
-## Hooking into the stoplights
+Discover what build you are running on.
+![The hidden build-id chip (Ctrl+Alt+B) revealing the commit the running binary was built from](screenshots/build-reliability.jpg)
+
+## Setting up the Busy/Working Stoplights
 
 The stoplight contract is one tmux option, set on the window by whatever runs inside it:
 
@@ -101,9 +170,11 @@ tmux set -w @wt_working 0     # red    — waiting for work to do
 tmux set -w -u @wt_working    # unset  — unfilled dot, "not reporting"
 ```
 
-That is the whole API: any script, agent hook, or build wrapper can write it, and every surface showing that window (recents tab, sidebar row, preview tile, Exposé tile) updates within ~500 ms. A drop out of green flashes everywhere the window appears until you view it.
+That is the whole API: any script, agent hook, or build wrapper can write it, and every surface showing that window (recents tab, sidebar row, preview tile, Exposé tile) updates within ~500 ms. A drop out of green flashes everywhere the window appears until you view it — viewing it once is enough, even for a window linked into several sessions.
 
-**Plain bash shells** — source the bundled prompt hooks from `~/.bashrc`:
+### Bash shells
+
+Source the bundled prompt hooks from `~/.bashrc`:
 
 ```sh
 [ -f /path/to/webtmux/install_stoplight_hooks_bash.sh ] && \
@@ -112,37 +183,77 @@ That is the whole API: any script, agent hook, or build wrapper can write it, an
 
 The hooks only activate inside tmux and are idempotent. They paint green when a command starts (bash `DEBUG` trap), red when the prompt returns (`PROMPT_COMMAND`), and leave the window red when the shell exits so it is never stranded green. `exit`/`logout` never paint green, and tab-completion doesn't trigger them.
 
-**Tools that own their window's light** (agents, long-running TUIs that report their own status): two escape hatches keep the shell hooks from fighting them —
+### Claude Code Integration
 
-- `WT_STOPLIGHT_SUPPRESS=1` in the environment disables the shell hooks entirely.
-- `__wt_delegates_status` in the installer script lists launcher commands whose whole lifetime owns the light (by default `claude`, `pi`, and their launch scripts); the shell skips painting green for them so the tool's own writes shine through. Add your launcher's pattern there.
-
-An agent lifecycle integration is then just three writes: `1` when work starts, `2` from a "needs your input" hook, `0` when it goes idle or exits.
-
-**Claude Code** — the recommended preferences: add this `hooks` block to `~/.claude/settings.json` (hooks run in the window's own shell, which inherits `$TMUX`, so a plain `tmux set -w` lands on the right window):
+The recommended preferences: add this `hooks` block to `~/.claude/settings.json` (hooks run in the window's own shell, which inherits `$TMUX`, so a plain `tmux set -w` lands on the right window):
 
 ```json
 {
   "hooks": {
-    "UserPromptSubmit": [{ "hooks": [{ "type": "command",
-      "command": "jq -r '.prompt // \"\"' | grep -q '^/' || tmux set -w @wt_working 1" }] }],
-    "PreToolUse":   [{ "hooks": [{ "type": "command", "command": "tmux set -w @wt_working 1" }] }],
-    "PostToolUse":  [{ "hooks": [{ "type": "command", "command": "tmux set -w @wt_working 1" }] }],
-    "Notification": [{ "hooks": [{ "type": "command",
-      "command": "jq -r '.message // \"\"' | grep -qi 'waiting for your input' || tmux set -w @wt_working 2" }] }],
-    "Stop":         [{ "hooks": [{ "type": "command", "command": "tmux set -w @wt_working 0" }] }],
-    "SessionStart": [{ "hooks": [{ "type": "command", "command": "tmux set -w @wt_working 0" }] }],
-    "SessionEnd":   [{ "hooks": [{ "type": "command", "command": "tmux set -w @wt_working 0" }] }]
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.prompt // \"\"' | grep -q '^/' || tmux set -w @wt_working 1"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [{ "type": "command", "command": "tmux set -w @wt_working 1" }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [{ "type": "command", "command": "tmux set -w @wt_working 1" }]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.message // \"\"' | grep -qi 'waiting for your input' || tmux set -w @wt_working 2"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [{ "type": "command", "command": "tmux set -w @wt_working 0" }]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [{ "type": "command", "command": "tmux set -w @wt_working 0" }]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [{ "type": "command", "command": "tmux set -w @wt_working 0" }]
+      }
+    ]
   }
 }
 ```
 
 Two of the entries are guarded, and the guards matter:
 
-- **UserPromptSubmit skips `/`-prefixed prompts.** Local slash commands (`/model`, `/cost`, …) are handled without a model turn, so no `Stop` ever follows — an unconditional green would latch until the next real turn ends, and the window lies "working" while the agent sits idle. Slash-invoked *skills* do run real turns and re-green via `PreToolUse` a moment later. (A `UserPromptSubmit` hook's stdout is injected into the model's context, so whatever you put here must stay silent — every command above prints nothing.)
+- **UserPromptSubmit skips `/`-prefixed prompts.** Local slash commands (`/model`, `/cost`, …) are handled without a model turn, so no `Stop` ever follows — an unconditional green would latch until the next real turn ends, and the window lies "working" while the agent sits idle. Slash-invoked _skills_ do run real turns and re-green via `PreToolUse` a moment later. (A `UserPromptSubmit` hook's stdout is injected into the model's context, so whatever you put here must stay silent — every command above prints nothing.)
 - **Notification stays red on the idle-timer message.** Claude Code fires `Notification` both when it genuinely needs a decision (permission prompt, question — that's amber) and as a ~60s "waiting for your input" idle reminder after a turn ends (nothing is blocked — repainting that amber would flip every idle window to "needs me" a minute after `Stop` correctly made it red). Unmatched messages default to amber deliberately: a missed block is worse than a spurious one.
 
 `SessionStart`/`SessionEnd`/`Stop` all paint red — "waiting for work" — so a window is never stranded green by a crash or exit. The bash prompt hooks above already skip `claude` launches (`__wt_delegates_status`), so the shell and agent hooks compose without fighting. If the agent runs inside a container where `tmux` can't be reached, keep the same hook shape but swap the `tmux set` for a small script that relays the value (and a window id, e.g. from a `WT_WINDOW` env var passed at launch) to a listener on the host that runs the `tmux set` there.
+
+### Hooking up Tools that own their window's light
+
+For agents, long-running TUIs that report their own status: two escape hatches keep the shell hooks from fighting them:
+
+- `WT_STOPLIGHT_SUPPRESS=1` in the environment disables the shell hooks entirely.
+- `__wt_delegates_status` in the installer script lists launcher commands whose whole lifetime owns the light (by default `claude`, `pi`, and their launch scripts); the shell skips painting green for them so the tool's own writes shine through. Add your launcher's pattern there.
+
+An agent lifecycle integration is then just three writes: `1` when work starts, `2` from a "needs your input" hook, `0` when it goes idle or exits.
 
 ## Quick Start (Sprite)
 
@@ -176,14 +287,14 @@ Replace `user:pass` with your desired credentials.
 
 Prebuilt binaries are available in the `builds/` directory for all major platforms:
 
-| Platform | Binary |
-|----------|--------|
-| Linux (x64) | `builds/webtmux-linux-amd64` |
-| Linux (ARM64) | `builds/webtmux-linux-arm64` |
-| Linux (ARM) | `builds/webtmux-linux-arm` |
-| macOS (Intel) | `builds/webtmux-darwin-amd64` |
-| macOS (Apple Silicon) | `builds/webtmux-darwin-arm64` |
-| FreeBSD (x64) | `builds/webtmux-freebsd-amd64` |
+| Platform              | Binary                         |
+| --------------------- | ------------------------------ |
+| Linux (x64)           | `builds/webtmux-linux-amd64`   |
+| Linux (ARM64)         | `builds/webtmux-linux-arm64`   |
+| Linux (ARM)           | `builds/webtmux-linux-arm`     |
+| macOS (Intel)         | `builds/webtmux-darwin-amd64`  |
+| macOS (Apple Silicon) | `builds/webtmux-darwin-arm64`  |
+| FreeBSD (x64)         | `builds/webtmux-freebsd-amd64` |
 
 ```bash
 # Clone and use prebuilt binary (example for Linux x64)
@@ -254,22 +365,28 @@ webtmux -w --no-auth tmux new-session -A -s main
 
 ### Common Options
 
-| Flag | Description |
-|------|-------------|
-| `-w, --permit-write` | Allow input to the terminal (required for interactive use) |
-| `-p, --port PORT` | Port to listen on (default: 8080) |
-| `-a, --address ADDR` | Address to bind to (default: 0.0.0.0) |
-| `-c, --credential USER:PASS` | Set custom credentials for HTTP Basic Auth |
-| `--no-auth` | Disable authentication (NOT RECOMMENDED) |
-| `--ws-origin REGEX` | Regex for allowed WebSocket origins |
-| `-t, --tls` | Enable TLS/SSL |
-| `--tls-crt FILE` | TLS certificate file |
-| `--tls-key FILE` | TLS key file |
-| `-r, --random-url` | Add random string to URL path |
-| `--reconnect` | Enable automatic reconnection |
-| `--once` | Accept only one client, then exit |
+| Flag                         | Description                                                |
+| ---------------------------- | ---------------------------------------------------------- |
+| `-w, --permit-write`         | Allow input to the terminal (required for interactive use) |
+| `-p, --port PORT`            | Port to listen on (default: 8080)                          |
+| `-a, --address ADDR`         | Address to bind to (default: 0.0.0.0)                      |
+| `-c, --credential USER:PASS` | Set custom credentials for HTTP Basic Auth                 |
+| `--no-auth`                  | Disable authentication (NOT RECOMMENDED)                   |
+| `--ws-origin REGEX`          | Regex for allowed WebSocket origins                        |
+| `-t, --tls`                  | Enable TLS/SSL                                             |
+| `--tls-crt FILE`             | TLS certificate file                                       |
+| `--tls-key FILE`             | TLS key file                                               |
+| `-r, --random-url`           | Add random string to URL path                              |
+| `--reconnect`                | Enable automatic reconnection                              |
+| `--once`                     | Accept only one client, then exit                          |
 
 Run `webtmux --help` for all available options.
+
+There is **no config file**. Every option is a flag, and every flag also has a
+`GOTTY_*` environment variable (shown in `--help`) — so a deployment configures
+webtmux with flags, env, or both. The inherited gotty `--config` flag and its
+`~/.gotty` HCL file were removed: nothing used them, and they were the sole
+reason for three unmaintained dependencies.
 
 ### Saving a pane buffer to a file (and running in a container)
 
@@ -278,7 +395,7 @@ browser, or writes it to a file **on the machine tmux runs on** — which is the
 machine running `webtmux`, and those are not always the same filesystem.
 
 The common trap is running webtmux in a container that mounts only the tmux
-control socket. tmux then reports pane directories as *host* paths
+control socket. tmux then reports pane directories as _host_ paths
 (`/home/you/Projects`) that the writing process cannot see, and a relative save
 fails on a directory you can see perfectly well in your own shell. webtmux now
 detects this: the save dropdown asks the server where a save would land and says
@@ -300,12 +417,12 @@ webtmux knows a directory is shared. Mounting a whole home directory would also
 work and is deliberately not the advice — it is far more of the filesystem than
 saving a text file needs. Four environment variables adjust the resolution:
 
-| Variable | Effect |
-|----------|--------|
-| `WEBTMUX_PATH_MAP` | `host=server[,host2=server2]` prefix rewrites, applied to the pane's directory and to absolute paths you type — e.g. `/home/you/Projects=/workspace` |
-| `WEBTMUX_SAVE_DIR` | Declares a **shared** directory and enables server-side saving in a container; relative saves land here when the pane's own directory isn't visible. Created if missing. Outside a container this defaults to `$HOME`, then the process's working directory. A directory the user names in the dropdown takes precedence |
-| `WEBTMUX_HOME` | What `~` expands to. Unset inside a container, `~` is refused rather than expanded to the image's own home |
-| `WEBTMUX_IN_CONTAINER` | `1`/`0` to override container auto-detection, which only affects the *wording* of the explanation |
+| Variable               | Effect                                                                                                                                                                                                                                                                                                                   |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `WEBTMUX_PATH_MAP`     | `host=server[,host2=server2]` prefix rewrites, applied to the pane's directory and to absolute paths you type — e.g. `/home/you/Projects=/workspace`                                                                                                                                                                     |
+| `WEBTMUX_SAVE_DIR`     | Declares a **shared** directory and enables server-side saving in a container; relative saves land here when the pane's own directory isn't visible. Created if missing. Outside a container this defaults to `$HOME`, then the process's working directory. A directory the user names in the dropdown takes precedence |
+| `WEBTMUX_HOME`         | What `~` expands to. Unset inside a container, `~` is refused rather than expanded to the image's own home                                                                                                                                                                                                               |
+| `WEBTMUX_IN_CONTAINER` | `1`/`0` to override container auto-detection, which only affects the _wording_ of the explanation                                                                                                                                                                                                                        |
 
 ### Knowing which window needs you
 
@@ -323,7 +440,7 @@ start/stop hooks, a script wrapping a long build. webtmux shows it as a stopligh
 dot everywhere a window appears: the recent tabs, the sidebar's window list, the
 preview thumbnails, Exposé.
 
-The dot tells you the state; the **flash** tells you it *changed*. When a window
+The dot tells you the state; the **flash** tells you it _changed_. When a window
 drops out of green while you are looking somewhere else, everything showing that
 window starts flashing in the colour it changed to — the tab, the sidebar row, the
 preview tile's border — and keeps flashing until you go and look at it. There is
@@ -354,6 +471,7 @@ Browser                              Go Backend
 WebTmux extends the gotty protocol with tmux-specific message types:
 
 **Client -> Server:**
+
 - `5` TmuxSelectPane - Switch to pane by ID
 - `6` TmuxSelectWindow - Switch to window by ID
 - `7` TmuxSplitPane - Split current pane (h/v)
@@ -364,6 +482,7 @@ WebTmux extends the gotty protocol with tmux-specific message types:
 - `D` TmuxNewWindow - Create new window
 
 **Server -> Client:**
+
 - `7` TmuxLayoutUpdate - Full layout JSON
 - `9` TmuxModeUpdate - Copy mode state
 

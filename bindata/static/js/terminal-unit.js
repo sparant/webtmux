@@ -8,7 +8,9 @@
 // pair of DOM elements: the div xterm opens into, and its sidebar component.
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { WebglAddon } from '@xterm/addon-webgl';
+// @xterm/addon-webgl is NOT imported here — see the renderer block in init().
+// It is 104 KB and the WebGL renderer is opt-in, so it is loaded with a dynamic
+// import() only when someone has actually opted in.
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { CaptureCache } from './capture-cache.js';
 import { CopyModeArbiter, layoutModeWins } from './copy-mode.js';
@@ -16,6 +18,10 @@ import { copyText } from './clipboard.js';
 import { stateStore } from './state-store.js';
 import { arrowSequence } from './arrow-keys.js';
 import { IS_MAC } from './os.js';
+import {
+  normalizeMouseMode, resolvePress, needsForcedSelection, forceSelectionModifier,
+  movedEnough, leaveCopyModeFirst, PressArbiter,
+} from './mouse-mode.js';
 
 // Protocol message types (must match Go constants)
 export const MSG = {
@@ -86,6 +92,26 @@ const TMUX_MSG_TYPES = new Set([
   MSG.TmuxSavePaneFile, MSG.TmuxSaveInfoRequest, MSG.TmuxSetState, MSG.TmuxRefresh,
 ]);
 
+// --- liveness heartbeat -------------------------------------------------------
+// A CLOSED socket is the easy half of "we lost tmux" and the rarer one. The failure
+// that actually strands you leaves the socket wide OPEN: the server (or tmux, or the
+// box) wedges, nothing comes back, readyState stays OPEN forever, and the UI goes on
+// looking perfectly healthy while your keystrokes vanish. TCP will not tell us — a
+// stalled peer that never closes is indistinguishable from an idle one at that layer.
+//
+// So we ask. The protocol has had a Ping/Pong pair since gotty and nothing ever sent
+// one; the server answers Ping from the SAME serialized handler loop that writes your
+// keystrokes into the pty, so a Pong is proof of exactly the thing typing needs. If
+// that loop is blocked, the Pong stops for the same reason your input does.
+//
+// LAYOUT PUSHES CANNOT BE USED FOR THIS. The server only sends a layout when it
+// CHANGES (handlers.go: `if currentLayout != lastLayout`), so silence from an idle
+// tmux is entirely normal and "no push for N seconds" would fire constantly.
+const HEARTBEAT_MS = 3000;
+// Two missed beats, so one dropped/slow Pong is not a warning. ~8s is also comfortably
+// longer than any tmux command round trip on a loaded box.
+const STALL_MS = 8000;
+
 // Map any stored/legacy value onto a valid mode. The old two-state setting used
 // 'passthrough' for what is now 'app'.
 export function normalizeScrollMode(m) {
@@ -116,6 +142,21 @@ export class TerminalUnit {
     this.fitAddon = null;
     this.ws = null;
     this.reconnectInterval = null;
+    // Has this region's socket ever CLOSED? Latched, and never cleared, because it is
+    // what separates "still opening for the first time" from "we had tmux and lost
+    // it" — see connectionLost(). Without the latch the boot's own CONNECTING state
+    // reads identically to a drop, and the toolbar would flash a connection warning on
+    // every single page load.
+    this._wasClosed = false;
+    // Liveness heartbeat state (see HEARTBEAT_MS): when the last Pong came back, when
+    // the last tick ran (to tell a real stall from a throttled/suspended tab), and
+    // whether we are currently calling this connection stalled.
+    this._lastPongAt = 0;
+    this._lastTickAt = 0;
+    this._heartbeat = null;
+    this._stalled = false;
+    // Called on every open/close/stall change so the owner (SplitManager) can surface it.
+    this.onConnectionChange = null;
     this.bufferSize = 1024 * 1024;
     this._inCopyMode = false;
     this._modeSetAt = 0;      // when _inCopyMode was last decided locally
@@ -124,11 +165,18 @@ export class TerminalUnit {
     // (so a TUI like Claude, vim, less handles its own scrolling). Persisted +
     // toggled from the sidebar. Read here so the handlers below see it on load.
     this.scrollMode = normalizeScrollMode(stateStore.section('renderer').scrollMode);
-    // Keep scroll mode live-synced: it's a shared 'renderer' pref, so a change from
+    // Mouse click/drag behavior — the same four-way choice for the OTHER gesture:
+    // who gets a button press, the program or a local text selection. Separate from
+    // scrollMode because the answers genuinely differ (Claude Code wants the wheel
+    // AND the clicks, but you still want to drag-select its output). See
+    // mouse-mode.js for what each mode means.
+    this.mouseMode = normalizeMouseMode(stateStore.section('renderer').mouseMode);
+    // Keep both modes live-synced: they're shared 'renderer' prefs, so a change from
     // any region's sidebar/toolbar (or another client) updates every unit. Store the
     // unsubscribe so a removed split region doesn't leak the closure.
     this._unsubState = stateStore.subscribe(() => {
       this.scrollMode = normalizeScrollMode(stateStore.section('renderer').scrollMode);
+      this.mouseMode = normalizeMouseMode(stateStore.section('renderer').mouseMode);
     });
     // adaptive-probe state: per-window cached decision + in-flight probe.
     this._scrollDecisions = new Map();   // windowId -> {cmd, decision:'app'|'buffer', ts}
@@ -234,6 +282,13 @@ export class TerminalUnit {
         selection: 'rgba(255, 255, 255, 0.3)',
       },
       scrollback: 0, // tmux handles scrollback via copy mode
+      // Required by the mouse-mode toggle, not a Mac preference. xterm's one way
+      // to say "this press is a selection, not a mouse report" is a modifier —
+      // shift on Windows/Linux, but option on a Mac ONLY if this option is on
+      // (SelectionService.shouldForceSelection). Without it there is no forced
+      // selection on a Mac at all. It also restores the ⌥-drag-to-select that
+      // every native terminal offers over a mouse-grabbing program.
+      macOptionClickForcesSelection: true,
     });
 
     // Unicode 11 width tables — must load BEFORE the first write so wide glyphs
@@ -267,12 +322,29 @@ export class TerminalUnit {
     // to be installed. Correctness beats the WebGL throughput here, so we default to
     // the DOM renderer and make WebGL strictly opt-in (StateStore renderer.webgl)
     // for anyone who wants the GPU path and has a font stack that covers their glyphs.
-    if (stateStore.section('renderer').webgl === true) {
-      try {
-        this.terminal.loadAddon(new WebglAddon());
-      } catch (e) {
-        console.warn('WebGL addon not supported:', e);
-      }
+    //
+    // Because it is opt-in, the addon is fetched with a dynamic import() rather
+    // than a static one at the top of the file: at 104 KB it was the largest
+    // thing every page load downloaded for a renderer almost nobody enables.
+    // The importmap entry in index.html resolves import() identically.
+    //
+    // Deliberately NOT awaited. init() is called from the constructor, so it
+    // cannot be async, and everything below this block — fit, focus, the resize
+    // observer, input handling — must be wired synchronously. xterm accepts an
+    // addon on an already-open terminal, so the DOM renderer simply draws until
+    // the fetch lands and WebGL takes over.
+    //
+    // A stored preference wins; the server's --enable-webgl only seeds clients
+    // that have never chosen. (Before that seed existed the flag was read by
+    // nothing, so it advertised a renderer it could not select.)
+    const rendererPrefs = stateStore.section('renderer');
+    const wantsWebgl = rendererPrefs.webgl === undefined
+      ? (typeof window !== 'undefined' && window.webtmux_webgl === true)
+      : rendererPrefs.webgl === true;
+    if (wantsWebgl) {
+      import('@xterm/addon-webgl')
+        .then(({ WebglAddon }) => this.terminal.loadAddon(new WebglAddon()))
+        .catch((e) => console.warn('WebGL addon not supported:', e));
     }
 
     // Fit terminal and focus
@@ -515,6 +587,32 @@ export class TerminalUnit {
     return !!m && m !== 'none';
   }
 
+  // "Does the program in this pane want the mouse?" — which is NOT the same
+  // question as _mouseTracking() once copy mode is in play.
+  //
+  // Entering tmux copy mode makes tmux stop forwarding the pane program's mouse
+  // mode to the client, so xterm reports 'none' no matter what Claude/vim asked
+  // for. Read live, that says "plain shell" about a pane running a full TUI — and
+  // since selecting now ENTERS copy mode, the very first drag-select would flip
+  // that answer and strand every later click in the buffer.
+  //
+  // So the last answer seen OUTSIDE copy mode is remembered and used while inside
+  // it, forgotten when the window changes (a different program, a different
+  // answer). Callers that need the other question — "will xterm eat this press?",
+  // which is about mouse REPORTING and nothing else — must still use
+  // _mouseTracking() directly.
+  _programWantsMouse() {
+    const live = this._mouseTracking();
+    const win = this.layout?.activeWindowId || '';
+    if (!this.inCopyMode) {
+      this._trackingSeen = live;
+      this._trackingWin = win;
+      return live;
+    }
+    if (live) return true;
+    return this._trackingWin === win && !!this._trackingSeen;
+  }
+
   // The foreground command of the focused pane, used to key probe decisions so a
   // decision auto-invalidates when the running program changes (bash -> vim -> bash).
   _activeCommand() {
@@ -604,66 +702,248 @@ export class TerminalUnit {
     return cellFrac >= this.PROBE_CELL_FRAC || lineFrac >= this.PROBE_LINE_FRAC;
   }
 
-  // Click focuses the terminal; dragging to the top/bottom edge auto-scrolls the
-  // tmux buffer (entering copy-mode) so a text selection can extend past the
-  // visible screen. Only active in 'buffer' scroll mode (passthrough leaves the
-  // mouse entirely to the app). We never preventDefault, so xterm's own text
-  // selection keeps working underneath.
+  // Click-to-focus, click-and-drag to select, and edge auto-scroll.
+  //
+  // The hard part is WHO GETS THE PRESS. While a program has mouse tracking on
+  // (Claude Code, vim, htop) xterm disables its own text selection and forwards
+  // every press to the program, so a drag over the pane highlights nothing. This
+  // used to be "fixed" by entering tmux copy mode once a drag was recognised, on
+  // the theory that it takes the pane out of the app's mouse grab — but xterm's
+  // selection is gated on the mouse-reporting ESCAPE SEQUENCES it has seen, which
+  // a tmux mode change does not necessarily retract, and the press it needed to
+  // anchor on was already spent. Hence the constant "enter copy mode FIRST, then
+  // drag" dance.
+  //
+  // What actually works is xterm's own escape hatch: a press carrying the
+  // force-selection modifier skips the mouse report and starts a local selection
+  // (see mouse-mode.js). So the press is intercepted in the CAPTURE phase, before
+  // either of xterm's handlers sees it, and re-dispatched as whichever kind of
+  // press this.mouseMode says it should have been. Nothing tmux-side is touched:
+  // copy mode is now entered only where it is genuinely needed, at the edge, to
+  // drag a selection PAST the visible screen.
   setupMouseSelection() {
     const container = this.terminalEl;
-    let startX = 0, startY = 0, dragging = false, edgeDir = 0, timer = null;
+    let press = null;               // the live gesture, or null between them
+    let edgeDir = 0, edgeTimer = null;
 
     const setEdge = (dir) => {
       if (dir === edgeDir) return;
       edgeDir = dir;
-      if (timer) { clearInterval(timer); timer = null; }
+      if (edgeTimer) { clearInterval(edgeTimer); edgeTimer = null; }
       if (dir !== 0) {
-        timer = setInterval(() => {
-          if (!this.inCopyMode) {
-            this.sendMessage(MSG.TmuxCopyMode, '1');
-            this.inCopyMode = true;
-          }
+        edgeTimer = setInterval(() => {
+          // beginSelection has already put us here, but a stale flag or a pane that
+          // left copy mode on its own would otherwise aim a scroll at a pane in
+          // normal mode.
+          beginSelection();
           this.sendMessage(edgeDir < 0 ? MSG.TmuxScrollUp : MSG.TmuxScrollDown, '2');
         }, 120);
       }
     };
-    const endDrag = () => { dragging = false; setEdge(0); };
 
+    // A selection is genuinely under way — a drag, or a multi-click that selected a
+    // word — as opposed to a press that merely might become one. This is where the
+    // pane goes into tmux copy mode: selecting IS reading the buffer, so the mode
+    // should say so without anyone having to remember to set it, and it is what
+    // lets a drag to the pane edge scroll for more. Idempotent per gesture, so a
+    // long drag doesn't re-send it on every mousemove.
+    const beginSelection = () => {
+      if (press) {
+        if (press.selecting) return;
+        press.selecting = true;
+      }
+      if (!this.inCopyMode) {
+        this.sendMessage(MSG.TmuxCopyMode, '1');
+        this.inCopyMode = true;
+      }
+    };
+
+    // A deferred press finally declared itself: give it to whoever it belongs to.
+    const arbiter = new PressArbiter({
+      resolve: (verdict) => {
+        if (!press) return;
+        press.verdict = verdict;
+        if (verdict === 'buffer') {
+          // The drag is what resolved it, so the selection starts now. Note the
+          // order: re-dispatch BEFORE entering copy mode, so the anchor is decided
+          // against the mouse-reporting state the press was judged under.
+          this._startSelection(press);
+          beginSelection();
+          return;
+        }
+        // Going to the program instead. If a previous selection left the pane in
+        // copy mode, this click's job is to get out of it: the pane is scrolled up
+        // and reading, so a press replayed into it would land on the wrong thing.
+        // Clicking away means "done reading" — the mode drops, the highlight goes,
+        // and the NEXT click reaches the program with mouse reporting restored.
+        // (It can't be done in one press: the exit is a round-trip to tmux, and
+        // until it lands xterm is still not reporting.)
+        if (leaveCopyModeFirst({ mode: this.mouseMode, verdict, inCopyMode: this.inCopyMode })) {
+          this.exitCopyMode();
+          this.terminal?.clearSelection();
+          return;
+        }
+        this._replayPressToApp(press);
+      },
+    });
+
+    // The gesture is over (or being abandoned): stop edge-scrolling and stop
+    // listening at the document. The listeners live only for the duration of a
+    // press so a page-wide mousemove handler isn't running per split region.
+    const release = () => {
+      setEdge(0);
+      arbiter.cancel();
+      if (!press) return;
+      press = null;
+      document.removeEventListener('mousemove', onDocMove, true);
+      document.removeEventListener('mouseup', onDocUp, true);
+    };
+    this._releaseGesture = release;
+
+    // Capture phase on OUR container — an ancestor of everything xterm binds to,
+    // so this runs before both xterm's selection handler and its mouse-report one
+    // and can still decide which of them gets to see the press.
     container.addEventListener('mousedown', (e) => {
-      if (e.button !== 0) return;
-      this.focus();                     // click brings keyboard focus (+ focuses this unit)
+      if (this._syntheticMouse) return;   // our own re-dispatch: it is meant for xterm
+      if (e.button !== 0) return;         // right/middle stay the program's (and the browser's)
+      this.focus();                       // click brings keyboard focus (+ focuses this unit)
       // Clicking into the terminal collapses the (single, shared) sidebar out of
       // the way — the owner (SplitManager) decides, honoring the pin toggle.
       if (this.onTerminalMousedown) this.onTerminalMousedown();
-      startX = e.clientX; startY = e.clientY; dragging = false;
-    });
 
-    container.addEventListener('mousemove', (e) => {
-      if ((e.buttons & 1) === 0) { endDrag(); return; }   // only while left-dragging
-      if (this._resolveScroll() === 'app') return;        // leave the mouse to the app
-      if (!dragging) {
-        if (Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY) < 5) return;
-        dragging = true;
-        // Enter tmux copy-mode as soon as a drag starts. This takes the pane out
-        // of the app's mouse grab (Claude/vim), so xterm does a LOCAL text
-        // selection immediately instead of forwarding the drag to the app —
-        // matching the behavior you otherwise only get after scrolling first.
-        if (!this.inCopyMode) {
-          this.sendMessage(MSG.TmuxCopyMode, '1');
-          this.inCopyMode = true;
-        }
+      release();                          // whatever came before is done with
+      // Two different questions, and conflating them is a bug in both directions:
+      //   wants — does a program want the mouse? decides WHO gets the press.
+      //   live  — is xterm reporting the mouse right now? decides whether the
+      //           press has to be forced past that reporting to select.
+      // Copy mode drives them apart: it masks the program's mouse mode, so `live`
+      // goes false while the program still wants clicks.
+      const wants = this._programWantsMouse();
+      const live = this._mouseTracking();
+      const verdict = resolvePress({
+        mode: this.mouseMode,
+        mouseTracking: wants,
+        inCopyMode: this.inCopyMode,
+        detail: e.detail,
+      });
+      press = {
+        x: e.clientX, y: e.clientY,       // the ANCHOR: where the selection starts
+        lastX: e.clientX, lastY: e.clientY,
+        detail: e.detail, verdict, live, dragging: false, selecting: false,
+      };
+      document.addEventListener('mousemove', onDocMove, true);
+      document.addEventListener('mouseup', onDocUp, true);
+
+      // A multi-click has ALREADY selected something (a word, a line) — there is no
+      // drag to wait for, so this is a selection as of right now. A single press is
+      // not: it may still turn out to be a click, and putting the pane in copy mode
+      // for every click would be worse than the problem being solved.
+      if (verdict === 'buffer' && e.detail >= 2) beginSelection();
+
+
+      // Cases that need no interference: the program's press, or a selection that
+      // xterm is already able to make for itself (nothing is reporting the mouse).
+      if (verdict !== 'defer' && !needsForcedSelection(verdict, live)) return;
+
+      // From here the program must not see this press at all.
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (verdict === 'buffer') this._startSelection(press);
+      else arbiter.start(e.clientX, e.clientY);
+    }, true);
+
+    const onDocMove = (e) => {
+      if (!press) return;
+      if ((e.buttons & 1) === 0) { release(); return; }   // only while left-dragging
+      press.lastX = e.clientX; press.lastY = e.clientY;
+      // Still undecided: this move may be what settles it (and if it does, the
+      // selection is started from the anchor, not from here).
+      if (arbiter.pending) { arbiter.move(e.clientX, e.clientY); return; }
+      if (press.verdict !== 'buffer') return;             // the program owns this drag
+      if (!press.dragging) {
+        if (!movedEnough(e.clientX - press.x, e.clientY - press.y)) return;
+        press.dragging = true;
+        // The press has become a drag, so a selection is being made — including on
+        // the paths that never touch a synthetic event at all ('buf', and 'auto' in
+        // a plain shell, where xterm was already selecting natively).
+        beginSelection();
       }
-      // Auto-scroll only when dragging near/past the top or bottom edge.
+      // Auto-scroll only when dragging near/past the top or bottom edge. Measured
+      // at the document, so it keeps scrolling once the pointer leaves the pane —
+      // which is exactly where a drag-to-select-more ends up.
       const rect = container.getBoundingClientRect();
       const edge = 28;
       let dir = 0;
       if (e.clientY < rect.top + edge) dir = -1;          // older history
       else if (e.clientY > rect.bottom - edge) dir = 1;   // newer
       setEdge(dir);
-    });
+    };
 
-    window.addEventListener('mouseup', endDrag);
-    container.addEventListener('mouseleave', () => setEdge(0));
+    const onDocUp = () => {
+      // A press that never moved is a click, and the program has been waiting for
+      // it. Resolving from the CAPTURE phase matters: the re-dispatched press
+      // reaches xterm in time to register the release listener for this very
+      // mouseup, so the program gets a press/release pair rather than a lone press.
+      if (arbiter.pending) arbiter.up();
+      release();
+    };
+  }
+
+  // xterm's screen element — the node below both of its mouse listeners, so an
+  // event dispatched here reaches the selection handler AND, if that one declines
+  // it, the mouse-report handler above it. Looked up per use because the terminal
+  // is re-created on some reattach paths.
+  _xtermScreen() {
+    const el = this.terminal?.element;
+    return el?.querySelector('.xterm-screen') || el || null;
+  }
+
+  // Re-dispatch a press we swallowed. `mods` carries the force-selection modifier
+  // (or nothing, to hand the press to the program untouched). Flagged while it is
+  // in flight so the capture handler above lets its own event through.
+  _dispatchPress(press, mods, { x = press.x, y = press.y, type = 'mousedown' } = {}) {
+    const target = this._xtermScreen();
+    if (!target) return;
+    const ev = new MouseEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      clientX: x,
+      clientY: y,
+      button: 0,
+      buttons: 1,
+      // Preserved so double/triple-click still select a word/line rather than
+      // arriving as three unrelated single clicks.
+      detail: type === 'mousedown' ? press.detail : 0,
+      ...mods,
+    });
+    this._syntheticMouse = true;
+    try { target.dispatchEvent(ev); } finally { this._syntheticMouse = false; }
+  }
+
+  // Start a local text selection at the anchor, re-dispatching the press we
+  // swallowed. The force-selection modifier goes on ONLY if xterm was reporting
+  // the mouse when the press happened (press.live) — that is the only case it is
+  // needed, and adding it when xterm's own selection is already enabled means
+  // _handleIncrementalClick, i.e. extending the previous selection instead of
+  // starting a new one. That case is reachable: inside copy mode tmux stops
+  // reporting the mouse, so a deferred press there resolves with live === false.
+  _startSelection(press) {
+    this._dispatchPress(press, press.live ? forceSelectionModifier(IS_MAC) : {});
+    // If the press only became a selection once the pointer had moved, xterm has
+    // just anchored at the press point and knows nothing of the travel since.
+    // Catch it up so the highlight covers the drag so far instead of appearing to
+    // start a few pixels late.
+    if (press.lastX !== press.x || press.lastY !== press.y) {
+      this._dispatchPress(press, { buttons: 1 },
+        { x: press.lastX, y: press.lastY, type: 'mousemove' });
+    }
+  }
+
+  // Hand the program the press it never got. No modifier, so xterm takes its
+  // normal mouse-report path.
+  _replayPressToApp(press) {
+    this._dispatchPress(press, {});
   }
 
   connect() {
@@ -694,6 +974,8 @@ export class TerminalUnit {
       }, 100);
       // (Window restore after a reconnect happens when the first layout arrives —
       // see _rememberOrRestore, gated by this.restorePending.)
+      this._startHeartbeat();
+      if (this.onConnectionChange) this.onConnectionChange(this);
     };
 
     this.ws.onmessage = (event) => {
@@ -702,6 +984,12 @@ export class TerminalUnit {
 
     this.ws.onclose = () => {
       if (this.destroyed) return;
+      this._wasClosed = true;
+      // A closed socket is reported as closed, not as stalled — and there is nothing
+      // left to ping.
+      this._stopHeartbeat();
+      this._stalled = false;
+      if (this.onConnectionChange) this.onConnectionChange(this);
 
       // Reconnect to the SAME session (a grouped region's session is recreated by
       // attach-web.sh under the same name) and RESTORE the window we were viewing
@@ -741,7 +1029,8 @@ export class TerminalUnit {
         break;
 
       case MSG.Pong:
-        // Ignore pong
+        // Proof the server's input loop is still turning — see the heartbeat above.
+        this._notePong();
         break;
 
       case MSG.SetWindowTitle:
@@ -973,8 +1262,12 @@ export class TerminalUnit {
   // observers. Used by the split manager when a region is closed.
   destroy() {
     this.destroyed = true;
+    this._stopHeartbeat();   // else a closed region keeps pinging a dead socket forever
     if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
     if (this._unsubState) { try { this._unsubState(); } catch (e) {} this._unsubState = null; }
+    // A gesture in flight holds document-level listeners; the container going away
+    // does not take those with it.
+    try { this._releaseGesture?.(); } catch (e) {}
     if (this.resizeObserver) { try { this.resizeObserver.disconnect(); } catch (e) {} }
     if (this.ws) { try { this.ws.onclose = null; this.ws.close(); } catch (e) {} }
     if (this.terminal) { try { this.terminal.dispose(); } catch (e) {} }
@@ -1083,6 +1376,70 @@ export class TerminalUnit {
     return !!this.ws && this.ws.readyState === WebSocket.OPEN;
   }
 
+  // ----- liveness ---------------------------------------------------------------
+
+  _startHeartbeat() {
+    this._stopHeartbeat();
+    const now = Date.now();
+    this._lastPongAt = now;      // a fresh socket is alive until it proves otherwise
+    this._lastTickAt = now;
+    this._heartbeat = setInterval(() => this._heartbeatTick(), HEARTBEAT_MS);
+  }
+
+  _stopHeartbeat() {
+    if (this._heartbeat) { clearInterval(this._heartbeat); this._heartbeat = null; }
+  }
+
+  _heartbeatTick() {
+    const now = Date.now();
+    const gap = now - this._lastTickAt;
+    this._lastTickAt = now;
+    // OUR clock stopped, not theirs. Browsers throttle timers in background tabs to
+    // once a minute or so, and a suspended laptop stops them outright — either way we
+    // wake with a huge apparent silence that we caused. Reporting that as a lost
+    // connection would mean every tab you come back to greets you with a false alarm.
+    if (gap > HEARTBEAT_MS * 2.5) {
+      this._lastPongAt = now;
+      this._setStalled(false);
+      return;                    // let the next beat judge, with an honest clock
+    }
+    if (!this.isConnected()) return;
+    this.sendMessage(MSG.Ping);
+    this._setStalled(now - this._lastPongAt > STALL_MS);
+  }
+
+  _notePong() {
+    this._lastPongAt = Date.now();
+    this._setStalled(false);
+  }
+
+  _setStalled(v) {
+    if (this._stalled === v) return;
+    this._stalled = v;
+    if (this.onConnectionChange) this.onConnectionChange(this);
+  }
+
+  // Open, but not answering — see the heartbeat block above.
+  isStalled() {
+    return this._stalled;
+  }
+
+  // Have we LOST the connection to tmux (as opposed to never having had it yet)?
+  //
+  // Two different failures, one answer. The socket may be CLOSED: the server runs this
+  // region's tmux client on the far end of it, so tmux dying, the server dying and the
+  // network dropping all arrive as a close. Or the socket may be OPEN AND MUTE, which
+  // is the one that actually strands you — see the heartbeat block above.
+  //
+  // What the closed half must not report is the ordinary boot: the socket spends its
+  // first moments in CONNECTING, which is indistinguishable from a reconnect attempt by
+  // readyState alone. Hence the latch — only a socket that has closed at least once can
+  // be "lost", and it stays lost across the CONNECTING gaps of the retry loop (which
+  // would otherwise strobe the warning once per retry) until a retry actually opens.
+  connectionLost() {
+    return (this._wasClosed && !this.isConnected()) || this._stalled;
+  }
+
   // Request server-global capture buffers over THIS unit's ws. The reply (a
   // TmuxCaptureData frame) returns on the same ws and is routed to the shared
   // CaptureCache via onCaptureData. windows: 'all' or an array of window ids.
@@ -1134,6 +1491,18 @@ export class TerminalUnit {
     if (this.scrollMode === 'app' && this.inCopyMode) {
       this.exitCopyMode();
     }
+  }
+
+  // Switch mouse click/drag behavior (one of MOUSE_MODES); called from the toolbar
+  // cycle button. Unlike the scroll modes this never touches copy mode: the whole
+  // point of the setting is that selecting no longer requires a mode change, so
+  // changing it shouldn't cause one either.
+  setMouseMode(mode) {
+    this.mouseMode = normalizeMouseMode(mode);
+    stateStore.patchSection('renderer', { mouseMode: this.mouseMode });
+    // A gesture that was mid-flight was arbitrated under the OLD rules; drop it
+    // rather than resolve it under rules the user just changed.
+    this._releaseGesture?.();
   }
 
   // Handle OSC 52 clipboard sequences from tmux

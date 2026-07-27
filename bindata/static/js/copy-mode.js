@@ -48,9 +48,16 @@ export class CopyModeArbiter {
   // sendKeys(str)  — deliver these bytes to the pane (copy-mode commands, or input).
   // exitCopyMode() — leave copy mode; called BEFORE the held keys are delivered so
   //                  they land at the prompt in the order they were typed.
-  // now/setTimer/clearTimer are injectable for tests.
+  // now/setTimer/clearTimer are injectable for tests. The timer defaults are
+  // WRAPPED rather than bare `setTimeout`/`clearTimeout`: stored on an object and
+  // called as `this._setTimer(...)` the bare functions receive the arbiter as their
+  // `this`, and a browser rejects that with "Illegal invocation" — so the pause
+  // that flushes a LONE motion key threw instead of firing, and a single `j` sat
+  // held until the next keystroke. node binds them leniently, which is why the
+  // unit tests never saw it.
   constructor({ sendKeys, exitCopyMode, lookKeys = COPY_LOOK_KEYS, lookMs = COPY_LOOK_MS,
-                setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
+                setTimer = (fn, ms) => setTimeout(fn, ms),
+                clearTimer = (id) => clearTimeout(id) } = {}) {
     this._sendKeys = sendKeys;
     this._exit = exitCopyMode;
     this._lookKeys = lookKeys;

@@ -1,18 +1,33 @@
-# Plan: webtmux portable — Stage 1, offline UI
+# Plan: webtmux portable — Stage 1, remove the runtime CDN dependency *(OPTIONAL)*
 
 `plan-webtmux-portable-vendor.md` — subplan of `plan-webtmux-portable.md`, created
-2026-07-25.
+2026-07-25. **Revised 2026-07-26 (second pass): demoted from required to OPTIONAL, and
+moved to last in the execution order (D → 0 → 2 → 3 → 1).**
 
 ## Goal
 
-The UI must render with **no internet access**. Today `resources/index.html` pulls
-Tailwind from `cdn.tailwindcss.com` and lit + xterm + three addons from `cdn.jsdelivr.net`
-via an importmap, so an air-gapped machine gets a blank page. Vendor them all, and drop
-~2.6 MB of dead assets that are currently embedded in every binary.
+Today `resources/index.html` pulls Tailwind from `cdn.tailwindcss.com` and lit + xterm +
+three addons from `cdn.jsdelivr.net` via an importmap. Vendor them all, and drop ~2.6 MB
+of dead assets currently embedded in every binary.
 
-In the revised execution order (0 → 3 → 1 → 2) this runs **after** the launcher — once it
-merges, a launcher-payload rebuild picks up the offline UI automatically (new content sha
-⇒ redeploy on next connect).
+**Air-gap support is no longer a requirement** *(changed 2026-07-26)*, so this stage is
+now justified on narrower grounds — still real, but no longer blocking:
+
+- **Resilience.** A jsdelivr outage or slow response currently degrades or blanks the UI.
+  A single unresolvable importmap entry stops the whole ES-module graph.
+- **Latency.** Every cold page load makes 6 cross-origin requests before the terminal
+  renders.
+- **~2.6 MB of dead assets** ride in every binary and every SSH deploy the launcher does.
+- **Privacy.** The browser currently announces each session to a third-party CDN.
+- Air-gapped operation becomes possible — now a bonus rather than the point.
+
+**Nothing downstream depends on this.** The launcher fetches whatever webtmux the release
+publishes; if this stage never runs, it ships the CDN-loading UI, which works. When it
+does land, the next release picks it up and launchers install it automatically on their
+next deploy (new sha ⇒ new content-addressed path).
+
+*(The `--network none` verification in Phase 1C is still the sharpest test that vendoring
+actually worked — keep it even though air-gap is no longer a goal.)*
 
 ## Gate — the build/run split must be merged first — **SATISFIED 2026-07-26**
 
@@ -69,10 +84,10 @@ the master plan.
 
 ## Phase 1A — Delete dead weight (commit 1)
 
-Worth doing before the first *published* release: every dead byte here rides in each
-binary — and in the launcher's embedded payloads — so this trims ~2.6 MB from every
-artifact and shrinks the SSH deploy transfer. *(The original "before it multiplies in git
-forever" urgency dissolved when distribution moved to GitHub Releases.)*
+Every dead byte here rides in each released binary and in every SSH deploy the launcher
+performs, so this trims ~2.6 MB from every artifact and transfer. *(The original "before
+it multiplies in git forever" urgency dissolved when distribution moved to GitHub
+Releases; the launcher's embedded payloads, also cited here, no longer exist either.)*
 
 - [ ] **P0** 1.1 Create the worktree per the block above. *(5 min)*
 
@@ -336,9 +351,11 @@ here. After 1.18, in a real browser:
 3. **One bad importmap entry blanks the page** — guarded by task 1.13.
 4. **`check-js` does not glob `vendor/`**, so a corrupt vendored file ships silently.
    Mitigated by the guard in 1.5 and the size assertion in 1.12.
-5. **Do not wire `vendor:` into `build:`** — that would make the offline build require
-   internet.
+5. **Do not wire `vendor:` into `build:`** — that would make an ordinary build require
+   internet, which is the opposite of the point.
 
 ## Next steps
 
-After merge and the manual check, proceed to `plan-webtmux-portable-release.md`.
+This is the last stage in the order (D → 0 → 2 → 3 → 1) and is optional. After merge and
+the manual browser check, cut a release so the vendored UI reaches users — launchers will
+install it automatically on their next deploy, since the new binary has a new sha.

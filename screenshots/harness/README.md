@@ -31,7 +31,12 @@ Pieces:
 - `driver.js` — Playwright script that poses each feature (split, sidebar,
   Exposé, previews, stoplights, copy mode, save dropdown, …) and writes one jpg
   per README feature section into `screenshots/`.
-- `run.sh` — container entry: deps → tmux → webtmux on :8090 → driver.
+- `run.sh` — container entry: deps → tmux → webtmux on :8090 → driver. `DRIVER=<file>.js`
+  runs an ASSERTION driver instead of the screenshot one; those print PASS/FAIL lines and
+  exit non-zero on a failure: `verify-ux5.js` (recents cap, pin, arrow nav, lost-socket
+  spinner), `verify-mousemode.js` (who gets a click/drag over a mouse-grabbing program),
+  `verify-ux6.js` (MRU chord with an empty capture cache, Exposé's status filter, the
+  mouse-capture dropdown, the paired sidebar toggles, paste-trim on rename).
 - `driver-gifs.js` — records one video per animated feature, each scene
   replaying its README section's bullets in order (split → drag divider →
   close; hover → preview → restore; lights change → tabs flash until viewed;

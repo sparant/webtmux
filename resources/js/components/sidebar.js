@@ -12,6 +12,7 @@ import { ALERT_CSS, alertClass, alertTip } from '../alert-flash.js';
 import { alertOf } from '../work-alerts.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
 import { ConfirmPopup, CONFIRM_CSS } from '../confirm-popup.js';
+import { trimPastedName } from '../paste-name.js';
 
 // How many renders revealWindow's "scroll this row into view" waits for its row to
 // appear. A cross-session reveal needs the new session's window list to arrive, which
@@ -137,6 +138,23 @@ class WebtmuxSidebar extends LitElement {
       color: #4a9eff;
       font-family: monospace;
       font-size: 12px;
+    }
+
+    /* The two panel toggles, side by side and equal width. They wrap back to one per
+       line if the panel is ever narrow enough that the labels would clip — abbreviating
+       is worth a row, truncating is not. */
+    .mode-pair {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .mode-pair .mode-btn {
+      flex: 1 1 120px;
+      width: auto;
+      padding-left: 4px;
+      padding-right: 4px;
+      white-space: nowrap;
     }
 
     .mode-btn {
@@ -716,30 +734,58 @@ class WebtmuxSidebar extends LitElement {
   modeRow() {
     // "Close this region" only makes sense for an added (non-primary) region.
     const canClose = this.unit && !this.unit.primary;
+    // The two panel toggles share one line. They were full-width stacked buttons whose
+    // labels spelled out the whole state ("▣ Hover over terminal", "📌 Pinned (stays
+    // open)"), which cost two rows at the top of a panel whose actual job is the window
+    // list — and the prose was in the label, where it is read every time, rather than in
+    // the hover, where it is read once. Abbreviated to the word that differs, with the
+    // full explanation moved to the shared hint (the same ~600ms tooltip the stoplight
+    // dots use, so a hover here doesn't answer more slowly than a hover there).
+    //
+    // ✕ Close this region stays full-width below: it destroys something, and a
+    // destructive control should not sit shoulder-to-shoulder with two harmless toggles
+    // where a mis-aimed click lands on it.
     return html`
       <div class="mode-row">
         <div class="shortcut-hint">Toggle panel: <kbd>${MOD_KEYS[0]}</kbd>+<kbd>${MOD_KEYS[1]}</kbd>+<kbd>W</kbd></div>
         <button
           class="mode-btn"
+          @mouseenter=${(e) => this._tip.enter(e, 'What the panel lists.\n'
+            + `▸ ${this.treeView ? 'all windows' : 'this session'} — ${this.treeView
+              ? 'every session on the server, its windows beneath it (tmux\u2019s prefix+w tree)'
+              : "the session list, with the current session\u2019s windows below it"}\n`
+            + `Click for ${this.treeView ? 'this session' : 'all windows'}. Drag, rename, kill and type-ahead work the same in both.`)}
+          @mouseleave=${() => this._tip.leave()}
           @click=${this.toggleTree}
-          title="Sessions + windows = the session list with the current session's windows below it; All windows = every session on the server with its own windows beneath it (tmux's prefix+w tree). Drag, rename, kill and type-ahead work the same in both."
         >
-          ${this.treeView ? '🌳 All windows (tree)' : '▤ Sessions + windows'}
+          ${this.treeView ? '🌳 all windows' : '▤ this session'}
         </button>
-        <button
-          class="mode-btn"
-          @click=${this.toggleOverlay}
-          title="Hover = float over the terminal; Side-by-side = shrink the terminal to sit beside the pane"
-        >
-          ${this.overlay ? '▣ Hover over terminal' : '⇔ Side-by-side'}
-        </button>
-        <button
-          class="mode-btn"
-          @click=${this.togglePin}
-          title="Pinned = the panel stays open when you click into the terminal; otherwise it auto-hides on terminal click"
-        >
-          ${this.pinned ? '📌 Pinned (stays open)' : '📌 Auto-hide on click'}
-        </button>
+        <div class="mode-pair">
+          <button
+            class="mode-btn"
+            @mouseenter=${(e) => this._tip.enter(e, 'How the panel shares space with the terminal.\n'
+              + `▸ ${this.overlay ? 'float' : 'mount'} — ${this.overlay
+                ? 'floating OVER the terminal; the terminal keeps its full width'
+                : 'MOUNTED beside the terminal, which shrinks to make room'}\n`
+              + `Click for ${this.overlay ? 'mount' : 'float'}.`)}
+            @mouseleave=${() => this._tip.leave()}
+            @click=${this.toggleOverlay}
+          >
+            ${this.overlay ? '▣ float' : '⇔ mount'}
+          </button>
+          <button
+            class="mode-btn"
+            @mouseenter=${(e) => this._tip.enter(e, 'What closes the panel.\n'
+              + `▸ ${this.pinned ? 'pinned' : 'auto hide'} — ${this.pinned
+                ? `it stays open when you click into the terminal or accept a window; only ✕ / ${chord('W')} / Escape close it`
+                : 'it closes when you click into the terminal, or press Enter to accept a window'}\n`
+              + `Click to ${this.pinned ? 'let it auto hide' : 'pin it open'}.`)}
+            @mouseleave=${() => this._tip.leave()}
+            @click=${this.togglePin}
+          >
+            ${this.pinned ? '📌 pinned' : '📌 auto hide'}
+          </button>
+        </div>
         ${canClose ? html`
           <button
             class="mode-btn"
@@ -799,6 +845,7 @@ class WebtmuxSidebar extends LitElement {
               class="session-edit"
               .value=${sess.name}
               @keydown=${(e) => this.onSessionRenameKey(e, sess.name)}
+              @paste=${(e) => this.onNamePaste(e)}
               @blur=${(e) => this.commitSessionRename(e, sess.name)}
               @click=${(e) => e.stopPropagation()}
             >`
@@ -880,6 +927,7 @@ class WebtmuxSidebar extends LitElement {
             class="session-edit tree-edit"
             .value=${node.name}
             @keydown=${(e) => this.onSessionRenameKey(e, node.name)}
+            @paste=${(e) => this.onNamePaste(e)}
             @blur=${(e) => this.commitSessionRename(e, node.name)}
             @click=${(e) => e.stopPropagation()}
           >`
@@ -963,6 +1011,7 @@ class WebtmuxSidebar extends LitElement {
           class="window-edit"
           .value=${win.name || ''}
           @keydown=${(e) => this.onRenameKey(e, win.id)}
+          @paste=${(e) => this.onNamePaste(e)}
           @blur=${(e) => this.commitRename(e, win.id)}
           @click=${(e) => e.stopPropagation()}
         >`
@@ -1402,20 +1451,52 @@ class WebtmuxSidebar extends LitElement {
     return flattenTree(tree, this.treeCollapsed);
   }
 
-  // ACCEPT the browse: keep whatever window is currently previewed and collapse the
-  // panel. Focusing the unit (via SplitManager.focus) records the previewed window
-  // as a real access (MRU) — the commit point — and hands keyboard focus back to the
-  // terminal. Clicking into the terminal takes the SAME path (region mousedown →
-  // focus), so a click is also an accept.
+  // ACCEPT the browse: keep whatever window is currently previewed and — unless the
+  // panel is PINNED — collapse it. Focusing the unit (via SplitManager.focus) records
+  // the previewed window as a real access (MRU) — the commit point — and hands
+  // keyboard focus back to the terminal. Clicking into the terminal takes the SAME
+  // path (region mousedown → focus), so a click is also an accept.
+  //
+  // Pinned means "this panel stays open" — it is the setting you turn on to work OUT
+  // of the window list, and having Enter yank it shut was the one hole in that
+  // promise: clicking a row (the mouse's version of the same accept) has always left
+  // it open. So pinned + Enter commits and stays, exactly like the click.
   dismissAccept() {
-    this._baseline = null;
-    this.collapsed = true;
     // Commit whatever the browse is sitting on. Window browsing is a preview now, so
     // this is the moment it becomes real (and enters the recents strip); a SESSION
     // browse already switched for real, and focusing the unit records it as before.
     const mgr = this.unit?.manager;
+    if (this.pinned) {
+      this._acceptInPlace(mgr?.hover.windowId, mgr?.hover.session);
+      return;
+    }
+    this._baseline = null;
+    this.collapsed = true;
     if (mgr?.hover.windowId) mgr.hover.commit();
     try { this.unit?.focus(); } catch (e) { try { this.unit?.terminal?.focus(); } catch (_) {} }
+  }
+
+  // Accept the browse WITHOUT dismissing — the shared half of "pinned Enter" and of
+  // clicking a window row. Two things have to happen that a plain commit doesn't do:
+  //
+  //   THE BASELINE IS RE-ARMED to what was just accepted. The baseline is what Escape
+  //   reverts to, and it was captured when the panel opened. Leaving it there means a
+  //   later Escape silently throws away the window you deliberately committed to on
+  //   the way here — which reads as Escape closing the panel AND navigating you
+  //   somewhere unrelated.
+  //
+  //   KEYBOARD FOCUS COMES BACK TO THE PANEL. The commit routes through
+  //   goToWindowIn, which ends in terminal.focus() — correct when the accept is a
+  //   dismissal, and the reason ↑/↓ went dead after the first click: the panel was
+  //   still open and still looked focused, but the arrows were going to the shell.
+  _acceptInPlace(windowId = '', session = '') {
+    const mgr = this.unit?.manager;
+    const target = windowId || this.activeWindow;
+    const sess = session || this._ownSession();
+    if (windowId && mgr) mgr.hover.commit(windowId, sess);
+    else if (windowId) this.unit?.selectWindow(windowId);
+    this._baseline = target ? { windowId: target, session: sess } : null;
+    if (!this.collapsed) this.focusPanel();
   }
 
   // DISCARD the browse: restore the window/session that was active when the panel
@@ -1592,15 +1673,17 @@ class WebtmuxSidebar extends LitElement {
 
   // Click a window row = COMMIT the browse: the previewed window becomes real. Goes
   // through the shared HoverPreview so it lands in the region the preview was shown
-  // in — the same path the toolbar recents and the Preview tiles take.
+  // in — the same path the toolbar recents and the Preview tiles take. The panel
+  // stays open (that has always been the rule for a row click), so the accept is the
+  // in-place one: keyboard focus comes back here and ↑/↓ keep working from the row
+  // you just picked, rather than dying at the first click.
+  //
   // Committing a row in ANOTHER session hops the pane there on the way (goToWindowIn
   // handles it) — which is exactly what clicking a window listed under a different
   // session in the tree should mean.
   selectWindow(windowId, session = '') {
     if (this._windowDisabled(windowId)) return;   // shown in another split pane
-    const mgr = this.unit?.manager;
-    if (mgr) mgr.hover.commit(windowId, session || this._ownSession());
-    else this.unit?.selectWindow(windowId);       // no manager (shouldn't happen) — direct
+    this._acceptInPlace(windowId, session || this._ownSession());
   }
 
   // Open the panel ON a specific window and point the browse at it — the landing for
@@ -1734,6 +1817,31 @@ class WebtmuxSidebar extends LitElement {
       // the reason Escape-after-rename didn't collapse the panel.
       this.focusPanel();
     }
+  }
+
+  // Paste into either rename input (window or session): insert the PATH-TRIMMED text
+  // rather than the raw clipboard. Renaming is very often "call it after the thing I am
+  // working on", and the thing is on the clipboard as a path —
+  // `webtmux/plan-webtmux-portable-deps.md` when what you want is
+  // `plan-webtmux-portable-deps`. See paste-name.js for what is and isn't trimmed.
+  //
+  // Only the paste path goes through this; typing is untouched, so the transform is
+  // always attached to an action the user just took and stays editable afterwards. The
+  // insert respects the current selection (a paste over selected text replaces it, as
+  // it would natively) and leaves the caret after the inserted text — a select-all
+  // would make the next keystroke destroy what you just pasted.
+  onNamePaste(e) {
+    const raw = e.clipboardData?.getData('text');
+    if (!raw) return;                          // non-text paste: let the browser have it
+    const trimmed = trimPastedName(raw);
+    if (!trimmed || trimmed === raw) return;   // nothing to improve; default paste
+    e.preventDefault();
+    const input = e.target;
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? start;
+    input.value = input.value.slice(0, start) + trimmed + input.value.slice(end);
+    const caret = start + trimmed.length;
+    input.setSelectionRange(caret, caret);
   }
 
   commitRename(e, windowId) {

@@ -2,7 +2,9 @@
 
 `plan-webtmux-portable-release.md` — subplan of `plan-webtmux-portable.md`, created
 2026-07-25. **Revised 2026-07-26:** distribution moved from committed-in-git binaries to
-**GitHub Releases**, and this stage now runs **last** (execution order 0 → 3 → 1 → 2).
+**GitHub Releases**. **Revised again 2026-07-26 (second pass):** this stage moved from
+last to **third** (execution order D → 0 → **2** → 3 → 1) because it now *unblocks* the
+launcher — Stage 3 fetches the assets published here.
 
 ## Goal
 
@@ -10,33 +12,40 @@ Make a webtmux binary able to say **what it is**, and give it a real distributio
 There are no git tags in this repo, so `VERSION ?= $(shell git describe --tags …)` has
 always fallen back to `dev` — every binary ever shipped is stamped identically. This stage
 adds semver tags, moves binaries out of git and onto GitHub Releases, and publishes
-`v0.1.0` including the Stage 3 launcher binaries.
+`v0.1.0`.
 
-**Why not binaries in git** (the original choice): launcher binaries embed gzipped
-payloads, which neither delta- nor re-compress — real growth would be ~30 MB packed per
-release, ~6× the estimate the original decision rested on. Releases add one user-executed
-`gh` step per release and require github.com reachability at install time; in exchange the
-repo stops growing and install becomes one curl.
+**This stage unblocks Stage 3.** The launcher does not embed webtmux — it downloads the
+release asset matching the target machine's platform. So a published release with
+per-platform assets and a `SHA256SUMS` file is a hard prerequisite for the launcher
+working end-to-end. Two things follow:
 
-## Gates (two)
+- **Asset names are an interface, not a detail.** The launcher constructs URLs from
+  `uname` output, so `webtmux-linux-amd64`, `webtmux-linux-arm64`, `webtmux-darwin-arm64`
+  etc. must be exactly what `make cross-compile` already produces. Renaming an asset
+  breaks every launcher in the field.
+- **`SHA256SUMS` must be published as its own asset.** The launcher fetches it *first*
+  (a few hundred bytes) to decide whether a 12 MB download is needed at all.
 
-**Gate A — Stage 0 done.** Origin must be the user's GitHub fork, and the user needs an
+**Why not binaries in git:** `builds/` is already untracked — the build/run split
+(`af969d2`) did it because the artifact build writes there, and re-tracking would dirty
+the tree on every build. Releases cost one user-executed `gh` step per release. Target
+machines are unaffected either way, since the Mac does the downloading.
+
+## Gate
+
+**Stage 0 done.** Origin must be the user's **public** GitHub fork, and the user needs an
 authenticated `gh` CLI (or a token) on whatever machine performs the publish — **the agent
 has no GitHub access, so every push/publish step here is user-executed** (directly or via
 a `/workspace/claude_run_me_*.sh` host script).
 
 ```bash
 git -C /workspace/webtmux remote get-url origin | grep -q 'github.com' \
-  || { echo "GATE A: Stage 0 not done — origin is $(git -C /workspace/webtmux remote get-url origin)"; exit 1; }
+  || { echo "GATE: Stage 0 not done — origin is $(git -C /workspace/webtmux remote get-url origin)"; exit 1; }
 ```
 
-**Gate B — Stage 1 (vendor) merged.** Published binaries should ship the offline UI and
-not 2.6 MB of dead assets.
-
-```bash
-git -C /workspace/webtmux log local-main --oneline | grep -q 'vendor browser assets' \
-  || { echo "GATE B: Stage 1 not merged — stop"; exit 1; }
-```
+*(A second gate requiring Stage 1 — vendoring — was removed 2026-07-26: air-gap support is
+no longer a requirement, and Stage 1 now runs last and is optional. Releases cut before it
+simply carry the CDN-loading UI, which works.)*
 
 ---
 
@@ -87,25 +96,36 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
       	@cd $(OUTPUT_DIR) && sha256sum $(BINARY_NAME)-* > SHA256SUMS
 
       #   make release-binaries VERSION=v0.1.0   (run AFTER tagging — see Phase 2C order)
-      release-binaries: cross-compile launcher checksums
+      release-binaries: cross-compile checksums
       	@echo "Built $(VERSION). Publish (user-executed):"
-      	@echo "  gh release create $(VERSION) builds/webtmux-* builds/webtmux-launch-* builds/SHA256SUMS \\"
+      	@echo "  gh release create $(VERSION) builds/webtmux-* builds/SHA256SUMS \\"
       	@echo "     --title 'webtmux $(VERSION)' --notes-file release-notes.md"
 
       # Re-fetch the vendored browser deps (the ONLY step that needs network).
-      # Deliberately NOT a prerequisite of build.
+      # Deliberately NOT a prerequisite of build. (Stage 1, optional.)
       vendor:
       	bash scripts/vendor-assets.sh
       ```
 
       Add all new targets to `.PHONY`.
 
-- [ ] **P1** 2.4 **VERIFY ONLY — `.dockerignore` already exists.**
-      The build/run split (`af969d2`) added it with exactly the list below, so that the
-      two plans could not disagree. The `COPY . /src` it protects now lives in the
-      fork's own `Dockerfile` (the artifact build), not in
+      **`release-binaries` does NOT depend on `launcher`** *(changed 2026-07-26)*. With
+      independent builds the two artifacts have no build-order relationship and can be
+      released on separate cadences — a webtmux patch release needs no launcher rebuild at
+      all. Once Stage 3 lands, add `builds/webtmux-launch-*` to a release's asset list
+      **when the launcher itself changed**, not reflexively.
+
+      **Do not rename the `webtmux-<os>-<arch>` outputs.** The launcher builds its download
+      URLs from `uname` output mapped to these exact names; a rename breaks every launcher
+      already distributed.
+
+- [ ] **P1** 2.4 **`.dockerignore` — verify, then delete one dead line.**
+      The build/run split (`af969d2`) added the file. The `COPY . /src` it protects now
+      lives in the fork's own `Dockerfile` (the artifact build), not in
       `scripts/webtmux-docker/Dockerfile` — that file stopped building the binary in the
-      same change. *(5 min)*
+      same change. *(10 min)*
+
+      Current contents:
 
       ```
       .git
@@ -113,13 +133,18 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
       *.gif
       *.ai
       plan-*.md
-      cmd/webtmux-launch/payload/*.gz
+      cmd/webtmux-launch/payload/*.gz     <-- DEAD, remove
       ```
 
-      (No `js/` entry — the legacy webpack tree was deleted in Stage 1.)
-      Confirm with `diff <(cat .dockerignore) -` against that list; add a `js/`-adjacent
-      entry only if Stage 1 left something behind. No `launch.sh --rebuild` is needed for
-      this task any more — the deploy path was verified on the host when the split landed.
+      **Remove the payload line** *(added 2026-07-26)*: it anticipated the launcher
+      embedding gzipped webtmux binaries, a design dropped when the launcher moved to
+      fetching from Releases. That directory will never exist. Stage 3 task 3.4 notes the
+      same cleanup — whichever stage runs first should do it; the other just verifies.
+
+      (No `js/` entry — the legacy webpack tree is deleted in Stage 1, which is optional
+      and now runs last; add one only if that stage lands and leaves something behind.)
+      No `launch.sh --rebuild` is needed here — the deploy path was verified on the host
+      when the split landed.
 
 ---
 
@@ -132,25 +157,28 @@ work — and describe fetching binaries from `builds/`, which is no longer commi
 - [ ] **P0** 2.5 Rewrite the Installation section around Release assets. *(30 min)*
 
       ```bash
-      # Public repo:
       curl -fsSL -o webtmux \
         https://github.com/<you>/webtmux/releases/download/v0.1.0/webtmux-linux-amd64
       chmod +x webtmux
-
-      # Private repo (needs an authenticated gh):
-      gh release download v0.1.0 -R <you>/webtmux -p webtmux-linux-amd64
       ```
 
-      Which form leads depends on the Stage 0 step 0.6 answer (public vs private). Drop
-      the `git archive --remote` and shallow-clone instructions entirely — building from
-      source (`git clone && make build`) remains the documented alternative.
+      The fork is public (Stage 0 step 0.6), so a plain unauthenticated curl is the
+      documented form — no `gh`, no token. Drop the `git archive --remote` and
+      shallow-clone instructions entirely; building from source
+      (`git clone && make build`) remains the documented alternative.
+
+      Note `releases/latest/download/webtmux-linux-amd64` as the always-current variant —
+      it is the same redirect the launcher uses for `--webtmux-version latest`.
 
 - [ ] **P0** 2.6 Fresh-box section: tmux prereq, `chmod +x`, `~/.local/bin` + PATH,
       `webtmux --version`, verify against the release's `SHA256SUMS` asset, and a
       first-run command that **binds loopback** (`-a 127.0.0.1`) — basic auth over plain
-      HTTP must not face a LAN, and the default is `0.0.0.0`. Lead with the launcher
-      (`webtmux-launch <host>`) as the primary cross-machine story; manual install is the
-      fallback. *(25 min)*
+      HTTP must not face a LAN, and the default is `0.0.0.0`. *(25 min)*
+
+      Once Stage 3 lands, this section should lead with `webtmux-launch <host>` as the
+      primary cross-machine story and demote manual install to the fallback — **and note
+      that the launcher makes manual install on the *target* unnecessary entirely**, since
+      it fetches and installs webtmux itself.
 
       Two notes worth stating explicitly:
       - **The tmux protocol-version pinning in the Docker deploy does not apply here** —
@@ -199,10 +227,31 @@ a release needs committing after the build. Tag the release commit, build *from 
       *(15 min)*
 
 - [ ] **P1** 2.10 Verify the documented install path end-to-end from a throwaway
-      container: curl the release asset URL, `chmod +x`, run `--version`, and check the
-      binary against the `SHA256SUMS` asset. If the repo is private, verify the
-      `gh release download` form instead — and make the README lead with whichever form
-      actually works. *(20 min)*
+      container: curl the release asset URL **unauthenticated**, `chmod +x`, run
+      `--version`, and check the binary against the `SHA256SUMS` asset. *(20 min)*
+
+- [ ] **P0** 2.11 **Verify the launcher's contract before Stage 3 depends on it.** These
+      are the exact requests the launcher will make; catching a mismatch now is far
+      cheaper than debugging it inside the launcher. *(15 min)*
+
+      ```bash
+      OWNER=<you>; BASE=https://github.com/$OWNER/webtmux/releases
+
+      # 1. SHA256SUMS is its own asset and fetchable unauthenticated
+      curl -fsSL $BASE/download/v0.1.0/SHA256SUMS
+
+      # 2. Every platform asset resolves (HEAD only — no 12MB download)
+      for p in linux-amd64 linux-arm64 linux-arm darwin-amd64 darwin-arm64; do
+        printf '%-16s ' "$p"
+        curl -fsSLI -o /dev/null -w '%{http_code}\n' $BASE/download/v0.1.0/webtmux-$p
+      done
+
+      # 3. The `latest` redirect works without an API call
+      curl -fsSLI -o /dev/null -w '%{http_code}\n' $BASE/latest/download/webtmux-linux-amd64
+      ```
+
+      All must be `200`. A `404` on `SHA256SUMS` or a renamed asset is exactly the failure
+      that would break every launcher in the field.
 
 ---
 
@@ -210,8 +259,14 @@ a release needs committing after the build. Tag the release commit, build *from 
 
 - **Tag + publish only at release time; never commit binaries.** The repo's size is now
   independent of release cadence.
-- History already carries ~48 MB of packed pre-v0.1.0 binary blobs. **Sunk cost — leave
-  it.** A history rewrite would break the seven live worktrees and every clone.
+- **Asset names are a public interface.** The launcher constructs URLs from them. Adding
+  platforms is safe; renaming or removing is a breaking change for launchers already
+  distributed.
+- **webtmux and the launcher release independently.** A webtmux patch needs no launcher
+  rebuild — that decoupling is the whole point of the launcher fetching rather than
+  embedding. Include `webtmux-launch-*` assets only when the launcher actually changed.
+- History already carries ~48 MB of packed pre-split binary blobs. **Sunk cost — leave
+  it.** A history rewrite would break the live worktrees and every clone.
 
 ---
 
@@ -221,15 +276,20 @@ a release needs committing after the build. Tag the release commit, build *from 
    `gh release create` is a handoff; the plan marks them explicitly.
 2. ~~**`.dockerignore` touches the deploy path**~~ — retired.
    the build/run split (`af969d2`) added `.dockerignore` and verified the deploy path
-   under it on the host, so 2.4 is a verification with nothing left to break.
+   under it on the host, so 2.4 is a verification plus one dead-line deletion.
 3. **Tag on the wrong commit** — 2.7 merges *before* 2.8 tags, so the tag always lands on
    `local-main`.
-4. **Install docs vs repo visibility mismatch** — 2.10 tests the actual documented path
-   against the actual repo visibility before the README ships.
+4. **Forgetting to upload `SHA256SUMS` as an asset.** Easy to treat as a build byproduct,
+   but the launcher fetches it first to avoid a needless 12 MB download — without it the
+   launcher's cheap path is gone. Caught by 2.11.
+5. **A private fork** would make every documented curl fail and force a token into the
+   launcher. Confirmed public in Stage 0 step 0.6; 2.10 proves it unauthenticated.
 
 ## Next steps
 
-This is the final stage. After 2.10, the whole portable plan is complete: retire the two
-legacy plans (`plan-webtmux-split.md`, `plan-webtmux-capture-expose.md`) under CLEANUP
-mode, and consider whether the host-side Docker deployment is still worth keeping now
-that a native binary needs no tmux version-pinning, socket mount, or uid/gid matching.
+Stage 3 (`plan-webtmux-portable-launcher.md`) — the launcher, which fetches the assets
+published here. Then optionally Stage 1 (vendor).
+
+After the launcher lands, consider whether the host-side Docker deployment is still worth
+keeping, now that a native binary needs no tmux version-pinning, socket mount, or uid/gid
+matching.

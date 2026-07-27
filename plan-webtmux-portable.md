@@ -29,28 +29,35 @@ forwarding.
 
 ## Approach
 
-Four stages, executed in the order **0 → 3 → 1 → 2** *(revised 2026-07-26 — see Revision
-history)*, each its own subplan and worktree:
+Five stages, executed in the order **D → 0 → 2 → 3 → 1** *(revised 2026-07-26, second
+pass — see Revision history)*, each its own subplan and worktree:
 
 | Order | Stage | Subplan | Role |
 |---|---|---|---|
-| 1st | 0 | `plan-webtmux-portable-fork.md` | **User-executed.** Migrate to your own GitHub fork — the canonical origin everything else references. |
-| 2nd | 3 | `plan-webtmux-portable-launcher.md` | **The actual deliverable.** Gates only on Stage 0. Its staleness mechanism is the embedded payload's **content sha**, not a version tag, so it does not need Stage 2 first; payloads are dev-stamped until Stage 2 lands. |
-| 3rd | 1 | `plan-webtmux-portable-vendor.md` | Offline UI: the page pulls Tailwind/lit/xterm from CDNs at runtime — no internet means a blank screen. Also drops ~2.6 MB of dead embedded assets. Lands behind the launcher; a payload rebuild picks it up automatically (new sha ⇒ redeploy). **Gated on the build/run split — satisfied `af969d2`.** |
-| 4th | 2 | `plan-webtmux-portable-release.md` | Semver tags + **GitHub Releases** publishing. Binaries leave git. Formalizes distribution of webtmux *and* launcher binaries. |
-| — | D | `plan-webtmux-portable-deps.md` | **Optional, gates nothing.** Dependency audit: 16 modules → 4, dropping three unmaintained packages that have one call site each. |
+| 1st | D | `plan-webtmux-portable-deps.md` | **Minimize dependencies first**, so every later stage is working against a smaller surface. 16 modules → 4; three unmaintained packages with one call site each. Cheapest here: D2.2 (urfave/cli v2→v3) costs far less *before* the launcher is written against v2's API. |
+| 2nd | 0 | `plan-webtmux-portable-fork.md` | **User-executed.** Fork `chrismccord/webtmux` on GitHub — the canonical origin, and the host the launcher downloads from. |
+| 3rd | 2 | `plan-webtmux-portable-release.md` | Semver tags + **GitHub Releases** publishing. **Unblocks Stage 3** — the launcher fetches these assets, so a release must exist before it can work end-to-end. |
+| 4th | 3 | `plan-webtmux-portable-launcher.md` | **The actual deliverable.** Fetches the right webtmux for the target platform from GitHub Releases and installs it over SSH. |
+| 5th | 1 | `plan-webtmux-portable-vendor.md` | **Optional.** Removes the runtime CDN dependency and drops ~2.6 MB of dead assets. No longer required — air-gap support is a nice-to-have, not a goal. **Gated on the build/run split — satisfied `af969d2`.** |
 
 Each stage merges to `local-main` before the next begins.
 
-**Why the launcher no longer waits for Stages 1–2:** the mechanism actually built for
-payload staleness is the content-addressed sha, not the semver tag — and the Mac browser
-in the target workflow has internet, so vendoring isn't on the launcher's critical path.
+**Independent builds — the change that shapes everything else.** The launcher does **not**
+embed webtmux. It resolves the target's platform over SSH, downloads the matching binary
+from a GitHub Release to the Mac, and pushes it over the connection it already has open.
 
-**Why binaries leave git:** launcher binaries embed *gzipped* payloads, which neither
-delta- nor re-compress — committed-binary growth would be roughly **30 MB packed per
-release**, not the 4–6 MB originally estimated from plain Go binaries. GitHub Releases
-(available once Stage 0 lands) removes the growth entirely and gives a one-line curl
-install.
+That kills a combinatorial coupling: with embedding, every webtmux change forced a rebuild
+*and republish* of every launcher binary, and each launcher carried the sum of all target
+payloads (~15 MB). Now the two ship on **independent cadences** — a webtmux fix reaches
+every existing launcher with no launcher release at all — and the launcher stays ~5 MB.
+
+**Why targets never need internet:** the Mac fetches and pushes over SSH, so the target
+needs neither github.com reachability nor `curl`/`wget`. The Mac is the user's laptop; it
+has internet by definition in this workflow.
+
+**Why binaries stay out of git:** `builds/` was untracked by the build/run split
+(`af969d2`) because the artifact build writes there. Releases keep that intact and cost
+one `gh release create` per release.
 
 ## Key design decisions
 
@@ -95,14 +102,18 @@ embedded FS — so this requires **zero Makefile and zero Go changes**. A top-le
 
 ## Trade-offs
 
-- **GitHub Releases, not binaries in git** *(revised 2026-07-26)*. The original
-  binaries-in-git choice predated the Stage 0 GitHub migration and its growth estimate
-  didn't survive the launcher: embedded gzip payloads don't delta-compress, so real growth
-  is ~30 MB packed per release. Releases cost a `gh release create` step per release
-  (user-executed — the agent has no GitHub access) and require target machines to reach
-  github.com at install time; in exchange the repo stays clone-sized and install is one
-  curl. Existing committed binaries get untracked in Stage 2 — history keeps the old blobs
-  (sunk cost, no rewrite: it would break the seven live worktrees).
+- **GitHub Releases, not binaries in git** *(revised 2026-07-26)*. Keeping artifacts
+  committed — as upstream did — was reconsidered and declined: the build/run split already
+  untracked `builds/` because the artifact build writes there, and re-tracking it would
+  dirty the tree on every build. Releases cost one `gh release create` per release
+  (user-executed — the agent has no GitHub access). Target machines are unaffected either
+  way, since the Mac does the downloading. History keeps the old pre-split blobs (sunk
+  cost, no rewrite: it would break the live worktrees).
+- **The launcher fetches instead of embedding** *(added 2026-07-26, second pass)*. Costs a
+  network round-trip on first deploy to a given platform (cached thereafter) and a
+  bootstrapping constraint — a release must exist before the launcher works, mitigated by
+  a `--webtmux-binary <path>` escape hatch. Buys decoupled release cadences, a launcher
+  that stays ~5 MB, and no rebuild-everything-on-every-webtmux-change.
 - **`--no-auth` + a 32-char secret path** for launcher sessions, instead of basic auth.
   Chrome dropped `http://user:pass@host` URLs, so keeping basic auth means typing a
   password every launch, which defeats the purpose. Both ends bind `127.0.0.1`, so reaching
@@ -112,17 +123,19 @@ embedded FS — so this requires **zero Makefile and zero Go changes**. A top-le
 - **Vendored assets are committed, not fetched at build time.** `scripts/vendor-assets.sh`
   is the only networked step and is deliberately *not* wired into `make build` — otherwise
   the offline build would require internet, the exact opposite of the goal.
-- **Nothing binary is committed.** Payload `.gz` files are gitignored (derived, rebuilt by
-  `make launcher`); webtmux and launcher binaries ship as Release assets once Stage 2
-  lands, and are plain local builds before that.
+- **Nothing binary is committed.** webtmux and launcher binaries ship as Release assets;
+  `builds/` holds local artifacts and stays gitignored.
 
 ## What this enables
 
 - Run webtmux on any Linux box from a Mac with one command and no SSH knowledge.
-- A UI that boots on an air-gapped network.
+- Ship a webtmux fix to every existing launcher **without releasing a new launcher**.
+- Target machines that need no internet, no `curl`, and no pre-installed webtmux.
 - Binaries that can say what they are (`webtmux --version` → `v0.1.0`), verifiable against
   the release's `SHA256SUMS` asset.
-- ~2.6 MB smaller binaries, and a repo that stops growing with every release.
+- A smaller dependency surface (16 modules → 4) before any of the above is built on it.
+- *(Optional, via Stage 1)* a UI with no runtime CDN dependency — resilient to jsdelivr
+  being slow or down, and usable air-gapped.
 
 ---
 
@@ -132,10 +145,11 @@ Each subplan declares its own worktree and branch. This master plan creates none
 
 | Stage | Branch | Worktree |
 |---|---|---|
+| D | `chore/portable-deps` | `/workspace/webtmux-portable-deps` |
 | 0 | *(none — remote reconfiguration, user-executed)* | — |
-| 1 | `feat/portable-vendor` | `/workspace/webtmux-portable-vendor` |
 | 2 | `chore/portable-release` | `/workspace/webtmux-portable-release` |
 | 3 | `feat/portable-launcher` | `/workspace/webtmux-portable-launcher` |
+| 1 | `feat/portable-vendor` | `/workspace/webtmux-portable-vendor` |
 
 ### Worktree Reference — read before every execution session
 
@@ -171,22 +185,42 @@ nothing is live until merge **and** `bash /workspace/scripts/webtmux-docker/laun
 
 Detail lives in the subplans. This is the roll-up.
 
-> **Execution order: Phase 0 → Phase 3 → Phase 1 → Phase 2.** The sections below stay in
-> numeric order so task IDs and cross-references remain stable — do NOT execute them top
-> to bottom.
+> **Execution order: Phase D → Phase 0 → Phase 2 → Phase 3 → Phase 1.** The sections
+> below stay in numeric order so task IDs and cross-references remain stable — do NOT
+> execute them top to bottom.
 
-### Phase 0 — GitHub fork migration · `plan-webtmux-portable-fork.md` *(user-executed)*
+### Phase D — Dependency minimization · `plan-webtmux-portable-deps.md` ✅ **COMPLETE 2026-07-27**
 
-- [ ] **P0** 0.1 Create an **empty** GitHub repo (no README/licence init)
-- [ ] **P0** 0.2 Push `local-main` **first**, then `main` and tags
-- [ ] **P0** 0.3 Keep the branch name `local-main`; set it as GitHub's default
+**16 modules → 3, zero indirect dependencies** (one better than the target of 4 —
+`creack/pty` v1.1.24 had already dropped `golang.org/x/sys`). Merged to `local-main`.
+
+- [x] **P0** D1.2 Drop `yudai/hcl` (2015, unmaintained; 1 call site) — takes 3 modules with it
+- [x] **P0** D1.3 Drop `NYTimes/gziphandler` (archived; 1 call site) — ~60 lines of middleware
+- [x] **P1** D1.4 Drop `fatih/structs` (stale since 2018; 5 call sites, `reflect` already imported)
+- [x] **P1** D1.5 Bump `gorilla/websocket` → v1.5.3, `creack/pty` → v1.1.24
+- [x] **P2** D2.1 Drop `pkg/errors` (archived; 58 call sites, mechanical)
+- [x] **P2** D2.2 Migrate `urfave/cli` v2 → v3 (sheds 3 more modules; **do before the launcher**)
+- [x] **P0** D3.1 Make `@xterm/addon-webgl` a dynamic import (104 KB never fetched; it is default-off)
+- [x] **P1** D3.2 Reconcile the dead `EnableWebGL` server option
+
+> **For Stage 3.** The launcher is a second `main`: write it against **urfave/cli v3**
+> (`cli.Command`, not `cli.App`). v3 parses flags anywhere on the line unless
+> `StopOnNthArg` is set — that difference silently broke `webtmux … tmux new-session -A`
+> and was caught only by booting the binary. The "launcher adds zero dependencies"
+> claim now starts from **3** modules, not 16.
+
+### Phase 0 — GitHub fork · `plan-webtmux-portable-fork.md` *(user-executed)*
+
+- [ ] **P0** 0.1 **Fork `chrismccord/webtmux`** on GitHub (the Fork button)
+- [ ] **P0** 0.2 Push `local-main`; set it as GitHub's default branch
+- [ ] **P0** 0.3 Delete any tags inherited from upstream (they poison `git describe --tags`)
 - [ ] **P0** 0.4 Repoint `origin`; `git remote set-url --push upstream DISABLED`
 - [ ] **P1** 0.5 Keep or retire the Dropbox/SSH bare repo
-- [ ] **P0** 0.6 Decide public vs private (only changes whether the Release-asset curl needs a token) → feeds Stage 2
-- [ ] **P1** 0.7 Preserve `LICENSE`; add a one-line attribution to README
+- [ ] **P0** 0.6 Confirm the fork is **public** (unauthenticated Release downloads)
+- [ ] **P1** 0.7 Preserve `LICENSE`; the fork badge supplies attribution
 - [ ] **P0** 0.8 Verify the gate passes
 
-### Phase 1 — Offline UI · `plan-webtmux-portable-vendor.md`
+### Phase 1 — Remove the runtime CDN dependency · `plan-webtmux-portable-vendor.md` *(OPTIONAL, last)*
 
 - [ ] **P0** 1.1 Create worktree `feat/portable-vendor`
 - [ ] **P0** 1.2 Delete ~2.6 MB of dead embedded assets + the legacy `js/` webpack tree
@@ -198,11 +232,11 @@ Detail lives in the subplans. This is the roll-up.
 - [ ] **P0** 1.8 Verify offline (static greps, `--network none` boot, binary grep)
 - [ ] **P0** 1.9 Merge + cleanup
 
-### Phase 2 — Real releases · `plan-webtmux-portable-release.md`
+### Phase 2 — Real releases · `plan-webtmux-portable-release.md` *(unblocks Phase 3)*
 
 - [ ] **P0** 2.1 Create worktree `chore/portable-release`
-- [ ] **P0** 2.2 Untrack `builds/` (gitignore + `git rm --cached`) — binaries become Release assets
-- [ ] **P1** 2.3 `checksums` + `release-binaries` targets; add `.dockerignore`
+- [ ] **P0** 2.2 **Verify only** — `builds/` already untracked by the build/run split
+- [ ] **P1** 2.3 `checksums` + `release-binaries` targets; drop the dead payload line from `.dockerignore`
 - [ ] **P0** 2.4 Rewrite the README install path (curl from `releases/download/…`; currently points at **upstream**)
 - [ ] **P0** 2.5 Cut `v0.1.0` — tag, build from the tag, `gh release create` *(user-executed)*
 - [ ] **P0** 2.6 Merge + cleanup
@@ -210,24 +244,24 @@ Detail lives in the subplans. This is the roll-up.
 ### Phase 3 — The launcher · `plan-webtmux-portable-launcher.md`
 
 - [ ] **P0** 3.1 Create worktree `feat/portable-launcher`
-- [ ] **P0** 3.2 Scaffold `cmd/webtmux-launch/` + embedded payload + Makefile targets
+- [ ] **P0** 3.2 Scaffold `cmd/webtmux-launch/` + Makefile target (**no embedded payload**)
 - [ ] **P0** 3.3 SSH layer: one option set on **every** invocation (`ControlMaster=auto` + keepalives, so whichever call becomes master carries them); one-round-trip probe
-- [ ] **P0** 3.4 **Adopt** an already-running webtmux when present (skips deploy/create/launch)
-- [ ] **P0** 3.5 Content-addressed deploy (sidesteps `ETXTBSY`) + attach script + **detached** base session
+- [ ] **P0** 3.4 **Adopt** an already-running webtmux when present (skips fetch/deploy/create/launch)
+- [ ] **P0** 3.5 **Fetch from GitHub Releases** for the target's platform → Mac cache → push over SSH; content-addressed install (sidesteps `ETXTBSY`) + attach script + **detached** base session
 - [ ] **P0** 3.6 Port allocation + secret path, **persisted per-target** (`~/.config/webtmux-launch/`) so the URL survives launcher restarts; the supervised `ssh -L` command
 - [ ] **P0** 3.7 Readiness poll + browser launch (once, never on reconnect)
 - [ ] **P0** 3.8 Supervisor: backoff, restart, clean teardown — **setup stays out of the restart loop**
 - [ ] **P1** 3.9 Flags, error messages, `--version`
 - [ ] **P0** 3.10 End-to-end tests: attach-vs-create, durability, split-view, reconnect cost
-- [ ] **P1** 3.11 README section; formal launcher publishing lands with Stage 2's first Release
+- [ ] **P1** 3.11 README section; launcher binaries publish alongside webtmux on the next Release
 - [ ] **P0** 3.12 Merge + cleanup
 
 ---
 
 ## Risks
 
-**Browser-only failure modes** — no headless browser exists in this container, so the CSS
-cascade cannot be executed here. Ranked:
+**Browser-only failure modes** *(Stage 1 only — now optional)* — no headless browser
+exists in this container, so the CSS cascade cannot be executed here. Ranked:
 
 1. **`box-sizing` regression (highest).** Tailwind preflight silently supplied
    `*{box-sizing:border-box}`. Without it, `.xterm { height:100%; padding:8px }` overflows
@@ -253,19 +287,26 @@ cascade cannot be executed here. Ranked:
 **Launcher risks:**
 
 7. Remote port collision on a busy shared box (mitigated by `ExitOnForwardFailure` + retry).
-8. `gzip` assumed present on the remote — detect in the probe, fail clearly.
-9. Payload staleness: `make launcher` must always rebuild the payload or you ship a
-   launcher embedding an old webtmux. Content-addressed install paths make this visible.
+8. **Bootstrapping** — the launcher fetches from a Release, so it cannot work end-to-end
+   until Stage 2 publishes one. Hence the order change (2 before 3) and the
+   `--webtmux-binary <path>` escape hatch for development.
+9. **Network required on the Mac at first deploy** to a given platform+version. Cached
+   afterwards. A launcher with a warm cache works offline; a cold one does not.
+10. **Version resolution / sha mismatch** — a deleted release, a renamed asset, or a
+    corrupted download must fail loudly with the URL it tried, never install a partial
+    binary. Verify the sha before pushing anything over SSH.
 
 ---
 
 ## Next steps
 
-1. User executes Stage 0 (`plan-webtmux-portable-fork.md`) and reports the public/private
-   decision from 0.6.
-2. Execute Stage 3 (`plan-webtmux-portable-launcher.md`) — the deliverable.
-3. Then Stage 1 (vendor; finish with the 20-second browser check), then Stage 2 (first
-   published Release, including launcher binaries).
+1. Execute Stage D (`plan-webtmux-portable-deps.md`) — first, so everything downstream is
+   built against a smaller surface.
+2. User executes Stage 0 (`plan-webtmux-portable-fork.md`): fork, push, confirm public.
+3. Execute Stage 2 (`plan-webtmux-portable-release.md`) — publishes `v0.1.0`, which is
+   what the launcher will fetch.
+4. Execute Stage 3 (`plan-webtmux-portable-launcher.md`) — the deliverable.
+5. Optionally Stage 1 (vendor; finish with the 20-second browser check).
 
 **Files:** `plan-webtmux-portable.md` (this) plus the `-fork`, `-launcher`, `-vendor`,
 `-release`, and `-deps` subplans.
@@ -287,3 +328,17 @@ cascade cannot be executed here. Ranked:
   production compose command omits it and split-view works); SSH keepalives moved onto
   whichever invocation becomes the mux master; adopt-mode gains container detection and
   honest credential-recovery limits; per-target URL persistence added.
+- **2026-07-26 (second pass)** — four directional changes:
+  1. **Independent builds.** The launcher no longer embeds webtmux; it fetches the target's
+     platform binary from GitHub Releases to the Mac and pushes it over SSH. Deletes
+     `cmd/webtmux-launch/payload/`, the `go:embed` directory trick, and the
+     `launcher-payload` target. Decouples release cadences and kills the
+     rebuild-everything-on-every-change coupling. *(The ~30 MB/release argument from the
+     previous pass died with the payloads — Releases is retained on its own merits, chiefly
+     that `builds/` is already untracked.)*
+  2. **Stage 0 forks the original repo** via GitHub's Fork button, reversing the earlier
+     standalone-repo recommendation.
+  3. **Air-gap is no longer a requirement** — Stage 1 (vendor) drops to optional and last.
+  4. **Stage D goes first** — minimize dependencies before building on them.
+  Execution order → **D→0→2→3→1**; Stage 2 moves ahead of Stage 3 because the launcher
+  cannot fetch a release that does not exist.

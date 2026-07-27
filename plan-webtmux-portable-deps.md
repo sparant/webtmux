@@ -1,12 +1,47 @@
 # Plan: webtmux portable — dependency audit and reduction
 
 `plan-webtmux-portable-deps.md` — subplan of `plan-webtmux-portable.md`, created
-2026-07-26.
+2026-07-26. **Revised same day: promoted from optional-and-last to FIRST in the execution
+order (D → 0 → 2 → 3 → 1).**
 
-**Optional and independent.** No other stage depends on this, and it gates nothing. Listed
-last because it is cleanup, not capability — but it pairs naturally with the portability
-work: a launcher that ships a binary to strangers' machines benefits from that binary
-having fewer unmaintained parts.
+## ✅ COMPLETE — executed 2026-07-27 on `chore/portable-deps`
+
+**All 11 tasks done across all three phases. 16 modules → 3, with no indirect
+dependencies at all** — one better than the plan's target of 4, because `creack/pty`
+v1.1.24 turned out to have dropped `golang.org/x/sys`.
+
+| | Before | After |
+|---|---|---|
+| Modules | 16 | **3** |
+| Direct / indirect | 7 / 6 (+3 test-only) | **3 / 0** |
+| Unmaintained or archived | 4 | **0** |
+| Go tests | 3 packages | 6 packages (+19 new) |
+| Per-page-load JS | includes 104 KB WebGL addon | **fetched only when opted in** |
+
+Remaining: `urfave/cli/v3`, `gorilla/websocket` v1.5.3, `creack/pty` v1.1.24 — all
+maintained, current, and load-bearing.
+
+**The one thing this taught that no plan predicted:** the urfave/cli v2→v3 migration's
+real hazard was not the API. v3 parses flags *anywhere* on the command line where v2
+stopped at the first positional argument, so `webtmux -w tmux new-session -A -s main`
+died on tmux's own `-A`. It compiled and passed every unit test; only booting the binary
+found it. `StopOnNthArg: 1` restores v2's rule, and `main_test.go` now pins it.
+**Boot the thing.** Two of the three genuinely dangerous defects in this work
+(that one, and the gzip Content-Type sniff) were invisible to the type checker.
+
+**This stage runs first**, so every later stage works against a smaller surface. Three
+reasons it earns the front position rather than the back:
+
+1. **D2.2 (urfave/cli v2 → v3) is far cheaper before the launcher exists.** The launcher
+   is a second `main` with its own flag set. Writing it against v2 and then migrating both
+   binaries is strictly more work than migrating one and writing the second against v3.
+2. **The launcher adds zero dependencies by design** — it uses `net/http` from the
+   standard library to fetch release assets. Shrinking the module tree first means that
+   claim starts from 4 modules rather than 16.
+3. **It is self-contained and low-risk.** Nothing here depends on the fork, a release, or
+   the launcher, so it can proceed immediately while the GitHub migration is arranged.
+
+It still gates nothing: if a later stage becomes urgent, this one can be interrupted.
 
 ## Findings summary
 
@@ -31,7 +66,7 @@ Indirect deps and their sources (verified with `go mod why`):
 - `errwrap`, `go-multierror` — pulled by `yudai/hcl`.
 - `golang.org/x/sys` — pulled by `creack/pty`. Legitimate.
 
-**Cumulative effect if everything below lands: 16 modules → 4.**
+**Cumulative effect if everything below lands: 16 modules → 4.** *(Actual: **3.**)*
 
 ---
 
@@ -64,11 +99,18 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
 
 ---
 
-## Phase D1 — High value, low risk
+## Phase D1 — High value, low risk ✅ COMPLETE
 
-- [ ] **P0** D1.1 Create the worktree. *(5 min)*
+*Outcome: three unmaintained dependencies gone and the two maintained ones current.
+go.mod went from 7 direct + 6 indirect to **4 direct + 3 indirect**. `--help` is
+byte-identical apart from the one intentionally removed `--config` row.*
 
-- [ ] **P0** D1.2 **Drop `yudai/hcl` — the single best removal.** One call site
+- [x] **P0** D1.1 Create the worktree. *(5 min)*
+
+      *Done. No Go toolchain exists in this container — every `go`/`make` command
+      below runs inside a pinned `golang:1.23` container with `/workspace` mounted.*
+
+- [x] **P0** D1.2 **Drop `yudai/hcl` — the single best removal.** One call site
       (`utils/flags.go:122`, inside `ApplyConfigFile`) backing an optional `~/.gotty`
       config file. Removing it also drops `hashicorp/errwrap` and
       `hashicorp/go-multierror`: **three modules for one function.** *(45 min)*
@@ -84,7 +126,14 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
       dependency. **This is the only task here that removes user-visible surface** — call it
       out in the commit message and README.
 
-- [ ] **P0** D1.3 **Drop `NYTimes/gziphandler`** (archived upstream). One call site,
+      *Done. `--help` diff is exactly one line — the `--config` row — and nothing else.
+      README's Common Options section now states there is no config file. **Deviation:**
+      the dead `hcl:"…"` struct tags in `server/options.go` and
+      `backend/localcommand/options.go` were left in place; removing them is not part of
+      this task and would collide with D1.4, which rewrites the reflection that reads
+      those structs.*
+
+- [x] **P0** D1.3 **Drop `NYTimes/gziphandler`** (archived upstream). One call site,
       `server/server.go:317`. Replace with a small middleware, or with
       `klauspost/compress/gzhttp` — the successor the archive notice itself points to.
       *(35 min)*
@@ -97,7 +146,15 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
       **Do not simply delete compression.** It matters more after vendoring: `xterm.js` is
       292 KB raw and roughly 80 KB gzipped, and SSH does not compress unless `-C` is set.
 
-- [ ] **P1** D1.4 **Drop `fatih/structs`** (no release since 2018). Five call sites across
+      *Done — written, not swapped for another module. `server/gzip.go` (~190 lines with
+      comments) keeps gziphandler's 1400-byte minimum so behaviour is unchanged. Three
+      things the naive version gets wrong and this one does not: **Content-Type must be
+      sniffed from the plain bytes** (sniffing the gzip stream labels every asset
+      `application/x-gzip`, which browsers refuse to execute), `Content-Length`/
+      `Accept-Ranges` must be dropped, and 204/304/**206** must not be compressed. Covered
+      by `server/gzip_test.go` — 8 tests, the first Go tests this package has ever had.*
+
+- [x] **P1** D1.4 **Drop `fatih/structs`** (no release since 2018). Five call sites across
       `utils/flags.go` (4) and `utils/default.go` (1), all reflecting over the Options
       structs to read `flagName`/`default`/`hcl` tags. `utils/flags.go` **already imports
       `reflect`**, so this is rewriting five call sites against a package the file already
@@ -106,19 +163,48 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
       Covered by existing tests plus a strong end-to-end check: every flag must still appear
       in `--help` with the same name, shorthand, and default. Diff `--help` before and after.
 
-- [ ] **P1** D1.5 **Bump `gorilla/websocket` → v1.5.3 and `creack/pty` → v1.1.24.** Both
+      *Done. **`--help` is byte-identical** across the change. The `structs` surface used
+      (`Name`/`Tag`/`Kind`/`Value`/`Set`/field lookup) is reimplemented in
+      `utils/structfields.go`, keeping the same method shape so the call sites did not
+      change library and shape at once. **Deviation:** `ApplyFlags` now returns an `error`
+      — reflect cannot write through a non-pointer, so the mistake `structs` used to
+      swallow per-field is now reported once, up front; `main.go` exits on it.
+      `utils/flags_test.go` adds 7 tests (the package had none) pinning tag→flag name,
+      shorthand, `GOTTY_*` env var, default, and cross-struct routing.*
+
+- [x] **P1** D1.5 **Bump `gorilla/websocket` → v1.5.3 and `creack/pty` → v1.1.24.** Both
       are 2020-era pins on actively maintained projects; `x/sys` moves with pty. No API
       changes expected in either. *(30 min)*
 
-- [ ] **P0** D1.6 Verify: `make test`, `go vet ./...`, `make build`, then boot and exercise
+      *Done, no source changes needed — `pty.Start`/`Open`/`Setsize`/`Winsize` and the
+      websocket API are unchanged. **Better than predicted:** `x/sys` did not move with
+      pty, it left. creack/pty v1.1.24 dropped the dependency, so the bump removed an
+      indirect module rather than updating one. `--help` unchanged.*
+
+- [x] **P0** D1.6 Verify: `make test`, `go vet ./...`, `make build`, then boot and exercise
       a real session — a websocket connection and a pty are the two things D1.5 could break.
       Confirm the binary still links statically. *(30 min)*
 
+      *Done, all green. `make test` + `go vet` + `make build` pass; `file ./webtmux` reports
+      **statically linked**. A real webtmux was then booted on a real tmux session inside
+      the container and driven by a purpose-written client
+      (`/workspace/tmp/webtmux-verify/`): basic auth 401s an anonymous request; a websocket
+      connection completes the webtty handshake and **a shell command typed through it is
+      echoed back out of the pty** — gorilla v1.5.3 and creack/pty v1.1.24 exercised
+      together, live. The new gzip middleware served `split-manager.js` at
+      **93,366 → 30,874 bytes (67% saved)**, byte-identical to the plain response after
+      decompression, with a JavaScript `Content-Type` (not `x-gzip`), and correctly left
+      the 875-byte `webtmux.js` uncompressed.*
+
 ---
 
-## Phase D2 — Larger, optional
+## Phase D2 — Larger, optional ✅ COMPLETE
 
-- [ ] **P2** D2.1 **Drop `pkg/errors`** (archived 2021) in favour of stdlib. 58 call sites:
+*Outcome: **16 modules → 3, with no indirect dependencies at all.** Every remaining
+dependency — `urfave/cli/v3`, `gorilla/websocket`, `creack/pty` — is maintained, current,
+and load-bearing.*
+
+- [x] **P2** D2.1 **Drop `pkg/errors`** (archived 2021) in favour of stdlib. 58 call sites:
       26 `Wrapf`, 21 `Wrap`, 9 `New`, 2 `Errorf`, across 8 files. Mechanical but wide.
       *(90 min)*
 
@@ -130,7 +216,16 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
       The only real loss is `pkg/errors` stack traces, which nothing in this codebase
       prints. Do it as one commit, no behaviour changes mixed in.
 
-- [ ] **P2** D2.2 **Migrate `urfave/cli/v2` → `v3`** to shed `go-md2man`, `blackfriday`,
+      *Done. Actual counts: **29 `Wrap`/`Wrapf` + 2 `Errorf` + 10 `New`** across 8 files
+      (the plan's 58 double-counted). Only **5** wraps carry format arguments, so the
+      argument-order risk was narrower than feared; `go vet`'s printf checker independently
+      confirms every rewritten call, and `%w` appears exactly 29 times.
+      **The nil trap never applied:** every call site was read first and all 29 sit inside
+      an `if err != nil` block, so `Wrap(nil, …) == nil` versus a non-nil `fmt.Errorf`
+      cannot fire. The sentinel comparisons at `server/handlers.go:105` still work — those
+      errors are returned unwrapped.*
+
+- [x] **P2** D2.2 **Migrate `urfave/cli/v2` → `v3`** to shed `go-md2man`, `blackfriday`,
       and `sanitized_anchor_name`. Breaking API change across `main.go` and
       `utils/flags.go`. Only worth doing after D1 and D2.1, when it is the last thing
       standing between the project and a four-module tree. *(2-3 hrs)*
@@ -139,14 +234,39 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
       the reflection-driven flag generation and the `GOTTY_*` env-var mapping would both
       have to be hand-rolled.
 
+      *Done — **the tree is now 3 modules with zero indirect dependencies**, one better
+      than the plan's target of 4. API changes: `cli.App` → `cli.Command`,
+      `func(*cli.Context) error` → `func(context.Context, *cli.Command) error`,
+      `EnvVars: []string{…}` → `Sources: cli.EnvVars(…)`, `app.Run(os.Args)` →
+      `cmd.Run(ctx, os.Args)`.*
+
+      *🔴 **The migration's real hazard was not in the API at all.** v2 stopped parsing
+      flags at the first positional argument; **v3 by default parses them anywhere**. That
+      breaks the primary invocation of this program —
+      `webtmux -w tmux new-session -A -s main` — because tmux's `-A` is then read as a
+      webtmux flag: `flag provided but not defined: -A`. It compiles, it passes every unit
+      test, and it fails on the first real launch. Caught by booting the binary, not by the
+      test suite. **`StopOnNthArg: 1` restores v2's rule exactly.**
+      `main_test.go` now pins it (4 tests, verified to fail with the real error when the
+      line is removed); `newRootCommand` was extracted from `main` so they can.*
+
+      *Two intentional user-visible changes: `--help` shows type placeholders
+      (`--port string` rather than `--port value`) and the usage line now reads
+      `webtmux [global options] <command> [<arguments...>]` — v3 prints `ArgsUsage`
+      verbatim where v2 synthesised it. Every flag, alias, default and `GOTTY_*` variable
+      is unchanged. An unknown flag now exits **1** instead of **0**: v2's return value was
+      discarded, so "Incorrect Usage" printed and the process reported success.*
+
 ---
 
-## Phase D3 — Browser dependencies
+## Phase D3 — Browser dependencies ✅ COMPLETE
 
-Post-vendoring the browser payload is ~431 KB. One item is 24% of that and is **not used
-by default**.
+One browser dependency is ~104 KB and is **not used by default**. This applies whether or
+not Stage 1 (vendoring) ever runs — today the 104 KB is fetched from jsdelivr on every
+page load; after vendoring it would be 24% of a ~431 KB embedded payload. Either way it
+is downloaded for nothing.
 
-- [ ] **P0** D3.1 **Make `@xterm/addon-webgl` (104 KB) a dynamic import.** It is
+- [x] **P0** D3.1 **Make `@xterm/addon-webgl` (104 KB) a dynamic import.** It is
       *statically* imported at `resources/js/terminal-unit.js:11` but only conditionally
       constructed at `:246` — `if (stateStore.section('renderer').webgl === true)`. WebGL
       is **strictly opt-in**: the DOM renderer is the default because it does native font
@@ -167,26 +287,57 @@ by default**.
       ```
 
       Requires the enclosing method to be `async` — check callers. The importmap entry
-      stays; dynamic `import()` resolves through it identically.
+      stays; dynamic `import()` resolves through it identically — and identically again
+      after Stage 1 repoints that entry at a local file, so this change is independent of
+      whether vendoring ever happens.
 
-- [ ] **P1** D3.2 **Reconcile the dead `EnableWebGL` server option.**
+      *Done — **but not with the snippet above.** `init()` is called from the constructor,
+      so it cannot be `async` and no caller could await it; awaiting mid-`init()` would
+      also defer the fit, the focus, the resize observer and all input handling behind a
+      network round trip. Instead the import is fired and **not awaited**:
+      `import(...).then(({WebglAddon}) => this.terminal.loadAddon(new WebglAddon()))`.
+      xterm accepts an addon on an already-open terminal, so the DOM renderer draws until
+      the fetch lands. That dissolves risk 4 rather than mitigating it.*
+
+      *Verified in a real headless Chromium against a live server: on a default load the
+      browser makes **no request for `addon-webgl` at all** and the DOM renderer is in
+      use; with the renderer opted in the addon is fetched, **the WebGL renderer actually
+      takes over** (canvas replaces `.xterm-rows`), and there are no page errors.*
+
+- [x] **P1** D3.2 **Reconcile the dead `EnableWebGL` server option.**
       `server/options.go:35` still declares `enable-webgl` with `default:"true"`, but the
       frontend ignores it entirely and defaults to the DOM renderer. The flag lies. Either
       wire it to seed `stateStore`, or delete it and its `GOTTY_ENABLE_WEBGL` env var.
       *(25 min)*
 
-- [ ] **P2** D3.3 Consider inlining `@xterm/addon-fit` (1.8 KB). It is roughly 30 lines of
+      *Done — **wired, not deleted.** Deleting was the smaller change but the worse one:
+      before this, `renderer.webgl` could only be turned on by a legacy
+      `localStorage['webtmux-webgl']` key that exists solely for a one-time migration, so
+      the WebGL renderer had no supported way to be enabled at all. `config.js` now emits
+      `var webtmux_webgl = <bool>` and `terminal-unit.js` uses it **only when the client
+      has no stored preference** — a seed, not an override, so a persisted choice still
+      wins. **The default flips `true` → `false`**, which changes no observed behaviour
+      (nothing read the flag), and `true` would have turned the documented
+      glyph-rendering bug on for everyone. The usage text now says what the flag does.*
+
+- [x] **P2** D3.3 Consider inlining `@xterm/addon-fit` (1.8 KB). It is roughly 30 lines of
       arithmetic over character cell size. Low value — listed only so the audit is
       complete. Probably **decline**: it is tiny, and hand-maintained copies of upstream
       code rot. *(20 min)*
+
+      *Considered and **declined**, as the task anticipated. 1.8 KB is 0.4% of the payload,
+      and `FitAddon` reads xterm internals (`_core._renderService.dimensions`) that are not
+      public API — a hand-copied version would break silently on an xterm upgrade, which is
+      a worse failure than the one it saves. `@xterm/addon-fit` stays.*
 
 **Keep without question:** `lit` (~18 KB, backs all six components and ~53.6 KB of
 `css``` templates — removing it means rewriting the entire component layer),
 `@xterm/xterm` (292 KB — it *is* the terminal), `@xterm/addon-unicode11` (12.5 KB —
 correct wide-character widths, and this fork has a documented history of glyph-width bugs).
 
-**Already being removed by Stage 1:** Tailwind, 407 KB of in-browser JIT compiler serving
-exactly two utility classes.
+**Removed by Stage 1, if it runs:** Tailwind, 407 KB of in-browser JIT compiler serving
+exactly two utility classes. Stage 1 is now optional and last, so this remains a live
+cost until then — worth knowing when weighing whether to run that stage.
 
 ---
 
@@ -218,13 +369,50 @@ exactly two utility classes.
 4. **D3.1 async propagation.** Making the WebGL load dynamic requires the enclosing method
    to be async; if a caller does not await, the addon may load after first paint. Verify
    the terminal still renders on a cold load with WebGL opted in.
-5. **Doing this before Stage 3** would mean the launcher embeds a binary whose dependency
-   surface is still shifting. Prefer running it after the launcher is proven, or well
-   before — not concurrently.
+5. **Do not run this concurrently with Stage 3.** *(Revised 2026-07-26: the original
+   concern — the launcher embedding a binary whose dependency surface was shifting —
+   disappeared with the embedded payload. What remains is simpler: D2.2 changes the CLI
+   framework both binaries use, so overlapping the two would mean rewriting the launcher's
+   flag handling mid-flight.)* Running D **before** Stage 3, as the current order does,
+   removes the conflict entirely.
+6. **D2.2 is the one item with a deadline.** Everything else here can be deferred
+   indefinitely; the urfave/cli migration gets materially more expensive once a second
+   binary is written against v2. If D2 is going to be skipped, decide that *before* Stage
+   3 rather than after.
+
+## Risk outcomes
+
+1. **D1.2 user-visible removal** — happened as designed. `--config`, `GOTTY_CONFIG` and
+   `~/.gotty` are gone; README says so.
+2. **D1.4 flag-generation regression** — did not occur. `--help` is byte-identical.
+3. **D2.1 argument-order slip** — did not occur. Only 5 of 29 wraps carried format
+   arguments, `go vet`'s printf checker validated each, and `%w` count == wrap count.
+   The `Wrap(nil, …)` trap was checked call site by call site: all 29 sit inside
+   `if err != nil`.
+4. **D3.1 async propagation** — **dissolved rather than mitigated**, by not awaiting
+   (see D3.1). Verified in a real browser both ways.
+5. **Do not run concurrently with Stage 3** — respected; Stage 3 has not started.
+6. **D2.2 deadline** — met. It landed before the launcher exists, which was the point.
+
+**One risk the plan did not list, and it was the real one:** v3's flag-after-argument
+parsing (see the completion summary at the top).
 
 ## Next steps
 
-Phase D1 is the high-value block: **three unmaintained dependencies and four modules gone
-for roughly three hours' work**, with D1.2 alone accounting for three of them. D3.1 is a
-30-minute change that cuts a quarter of the vendored browser payload. D2 is worthwhile but
-easy to defer.
+This subplan is finished. Hand off to **Stage 0**, `plan-webtmux-portable-fork.md`
+(user-executed: fork `chrismccord/webtmux` on GitHub), then Stage 2
+(`plan-webtmux-portable-release.md`), then Stage 3 (the launcher).
+
+Two things for whoever writes the launcher:
+
+- It is a second `main`. Write it against **urfave/cli v3** — `cli.Command`, not
+  `cli.App` — and set `StopOnNthArg` if it ever wraps a command of its own.
+- The "launcher adds zero dependencies" claim now starts from **3** modules, not 16.
+
+Two loose ends deliberately left alone as out of scope, both noted in commits:
+
+- `make test-js` runs `node --test test/`, which newer node reads as a file path rather
+  than a directory — the 143 JS tests silently do not run there. They pass when invoked
+  as `node --test "test/*.test.mjs"`.
+- The `hcl:"…"` struct tags in `server/options.go` and `backend/localcommand/factory.go`
+  are now dead metadata naming a config format that no longer exists.

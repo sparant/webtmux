@@ -1,18 +1,21 @@
 // Top toolbar: a most-recently-accessed window strip on the LEFT and the sidebar
 // toggle on the RIGHT. The SplitManager owns the data — it sets `recent`
-// (up to 5 {id,index,name,active,working,alert}) and `collapsed`, and handles
-// clicks via `manager.pickRecentWindow(id)` / `manager.sidebar.toggleCollapsed()`.
+// (up to `recentMax` {id,index,name,active,working,alert}) and `collapsed`, and
+// handles clicks via `manager.pickRecentWindow(id)` /
+// `manager.sidebar.toggleCollapsed()`.
 //
 // The strip ends in an OVERFLOW ARROW (`overflowAlerts`, also from the SplitManager):
-// the windows that need attention and have no tab here, because five slots cannot
-// promise to hold every window that stops. Without it, "nothing in the strip is
-// flashing" quietly meant "nothing in the five windows I happen to be keeping tabs on
-// is flashing" — which is not a thing anyone can act on.
+// the windows that need attention and have no tab here, because a bounded strip
+// cannot promise to hold every window that stops. Without it, "nothing in the strip is
+// flashing" quietly meant "nothing in the few windows I happen to be keeping tabs on
+// is flashing" — which is not a thing anyone can act on. Raising the tab count (the
+// "Recent ▾" menu) shrinks that gap but never closes it; the arrow is what makes the
+// remainder honest.
 //
 // Hovering a recent tab does NOT pop a thumbnail here any more: it asks the shared
 // HoverPreview to show that window in a real terminal region (see hover-preview.js),
 // which is bigger, in place, and the same behavior every other switcher now has.
-import { LitElement, html, css } from 'lit';
+import { LitElement, html, css, svg } from 'lit';
 import { chord, IS_MAC } from '../os.js';
 import { stateStore } from '../state-store.js';
 import { workClass, workLabel, workTip } from '../stoplight.js';
@@ -21,6 +24,8 @@ import { Tip, TIP_CSS } from '../tooltip.js';
 import { saveHint } from '../save-target.js';
 import { copyText } from '../clipboard.js';
 import { SCROLL_MODES as SCROLL_ORDER, normalizeScrollMode as normalizeScroll } from '../terminal-unit.js';
+import { MOUSE_MODES as MOUSE_ORDER, normalizeMouseMode as normalizeMouse } from '../mouse-mode.js';
+import { clampRecentsMax, RECENTS_MIN, RECENTS_MAX } from '../recents-strip.js';
 
 // Recent-tab label shape. Two INDEPENDENT toggles rather than one four-way cycle,
 // because they answer unrelated questions: "which session is this in" and "how much
@@ -41,27 +46,49 @@ function trimWindowName(name) {
   return tail || s;
 }
 
-// Scroll-wheel modes, in the order the toolbar button cycles them — the one list
-// terminal-unit.js owns. `label` is the compact toolbar text; `hint` is the
-// tooltip. (This control moved here from the sidebar.)
+// Scroll-wheel modes, in the order the toolbar cycles them — the one list
+// terminal-unit.js owns. `name` is the short form the closed mouse button and the
+// dropdown rows show; `hint` is the sentence beside it. (This control moved here from
+// the sidebar, and then from a button of its own into the mouse-capture dropdown.)
 const SCROLL_META = {
-  'app':            { label: '🖱 app',   name: 'app',   hint: 'wheel always goes to the program (Claude/vim/less scroll themselves)' },
-  'buffer':         { label: '🖱 buf',   name: 'buf',   hint: 'wheel always scrolls tmux history (copy-mode)' },
-  'adaptive-mode':  { label: '🖱 auto',  name: 'auto',  hint: 'mouse-tracking / full-screen apps get the wheel; a plain shell scrolls history' },
-  'adaptive-probe': { label: '🖱 auto+', name: 'auto+', hint: 'like auto, but probes the ambiguous case — tries the app, then scrolls history if it did not react' },
+  'app':            { name: 'app',   hint: 'wheel always goes to the program (Claude/vim/less scroll themselves)' },
+  'buffer':         { name: 'buf',   hint: 'wheel always scrolls tmux history (copy-mode)' },
+  'adaptive-mode':  { name: 'auto',  hint: 'mouse-tracking / full-screen apps get the wheel; a plain shell scrolls history' },
+  'adaptive-probe': { name: 'auto+', hint: 'like auto, but probes the ambiguous case — tries the app, then scrolls history if it did not react' },
 };
 
-// The scroll button cycles four modes and its label only shows the current one, so
-// the tooltip lists ALL four (current marked ▸) — the mode names alone don't say
-// what they do. Rendered with `white-space: pre-line`, so \n break the lines.
-function scrollTooltip(current) {
-  const lines = SCROLL_ORDER.map((m) => {
-    const meta = SCROLL_META[m];
-    const mark = m === current ? '▸' : ' '; // ▸ current, em-space otherwise (aligns)
-    return `${mark} ${meta.name} — ${meta.hint}`;
-  });
-  return `Scroll-wheel mode — click to cycle:\n${lines.join('\n')}`;
-}
+// Mouse click/drag modes — the same four-way question asked about the OTHER
+// gesture: who gets a button press, the program or a text selection. See
+// mouse-mode.js for what each one does.
+//
+// This used to need a distinguishing label ('sel app' next to '🖱 app') because the
+// two axes were two adjacent buttons and nothing on either said which gesture it
+// governed. Now they are two titled groups in one dropdown, so the group heading does
+// that job and the mode keeps only its bare name.
+const MOUSE_META = {
+  'app':            { name: 'app',   hint: 'every click and drag goes to the program; dragging never selects' },
+  'buffer':         { name: 'buf',   hint: 'every click and drag selects text; the program sees no mouse at all' },
+  'adaptive-mode':  { name: 'auto',  hint: 'a program that asked for the mouse (Claude/vim/htop) gets it; anywhere else, dragging selects' },
+  'adaptive-probe': { name: 'auto+', hint: 'clicks still reach the program, but click-and-DRAG selects text — no entering copy mode first' },
+};
+
+// The closed button has to answer "what am I in?" without a click, so it shows both
+// current modes by their short names. A metaMap lookup that can't fail: an unknown
+// stored mode falls back to the default rather than rendering `undefined`.
+const modeName = (metaMap, cur) => (metaMap[cur] || metaMap['adaptive-probe']).name;
+
+// Hovering the closed button explains BOTH axes — which is the one thing the two
+// separate buttons could do that a single closed button cannot, so it is kept.
+const mouseCaptureTooltip = (mouseCur, scrollCur) => [
+  'Mouse capture — who gets your gestures, the program or webtmux.',
+  'Click for both lists.',
+  '',
+  'click+drag:',
+  ...MOUSE_ORDER.map((m) => `${m === mouseCur ? '▸' : ' '} ${MOUSE_META[m].name} — ${MOUSE_META[m].hint}`),
+  '',
+  'copymode on scroll:',
+  ...SCROLL_ORDER.map((m) => `${m === scrollCur ? '▸' : ' '} ${SCROLL_META[m].name} — ${SCROLL_META[m].hint}`),
+].join('\n');
 
 // The Exposé button's icon. It used to be ▦ — a grid glyph that, next to the
 // split button's ⊞, read as "another box" and said nothing about windows. Four
@@ -102,6 +129,62 @@ function overflowIcon() {
   `;
 }
 
+// The tmux-activity spinner, drawn rather than typed — for the third time in this
+// file, and this one had already shipped broken. It was the character ✳ (U+2733),
+// which has emoji presentation: Chromium renders it from the color-emoji font, and a
+// color-emoji glyph ignores `color` completely. The spinner had been painting itself
+// green-on-navy for as long as it has existed, and NOTHING that recolors it — least
+// of all the red "we lost tmux" state below — could ever have been visible.
+//
+// The same glyph also hid the rotation, and the reason is geometry, not fonts: an
+// eight-spoke star is SYMMETRIC UNDER 45°, so a 45° notch maps it exactly onto
+// itself. Every step this control has ever taken has been a no-op on screen.
+//
+// Hence SPIN_STEP_DEG = 22.5 — exactly half the symmetry period, which is the most
+// distinguishable step a shape with 45° symmetry admits. The star simply alternates
+// between spokes-on-the-axes and spokes-on-the-diagonals, which is unmistakable at
+// 22px. The first fix instead tried a graded-opacity "bright spoke" to mark the
+// heading; that works in principle but not at this size, and it only reads at all if
+// the tail is dimmed to the point where the icon looks half-missing against the navy
+// bar. Uniform spokes are both maximally visible AND legibly stepped, so there is
+// nothing left to trade off.
+//
+// Geometry, in viewBox units on a 20x20 box centred at (10,10). The outer radius is
+// capped so the round cap still fits: an <svg> clips at its viewport, so
+// SPIN_OUTER + SPIN_WIDTH/2 must stay under 10 or the spoke tips get shaved off.
+const SPIN_INNER = 3.4;
+const SPIN_OUTER = 8.3;
+const SPIN_WIDTH = 3.1;
+export const SPIN_STEP_DEG = 22.5;
+
+const SPIN_SPOKES = Array.from({ length: 8 }, (_, i) => {
+  const a = (i * Math.PI) / 4;
+  const sin = Math.sin(a), cos = Math.cos(a);
+  return {
+    x1: (10 + SPIN_INNER * sin).toFixed(2), y1: (10 - SPIN_INNER * cos).toFixed(2),
+    x2: (10 + SPIN_OUTER * sin).toFixed(2), y2: (10 - SPIN_OUTER * cos).toFixed(2),
+  };
+});
+
+// The spokes are interpolated with lit's `svg` tag, NOT `html`. A nested html``
+// template is parsed as an HTML fragment even when it lands inside an <svg>, so its
+// <line>s are created in the XHTML namespace and the browser draws exactly nothing —
+// no error, no warning, an empty 20x20 box that looks like the icon was never wired
+// up. (The other two icons in this file get away with plain html`` because their
+// shapes are literal children of one <svg> the HTML parser handles as foreign
+// content; only INTERPOLATED children need this.)
+function spinIcon() {
+  return html`
+    <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false">
+      <g stroke="currentColor" stroke-width=${SPIN_WIDTH} stroke-linecap="round">
+        ${SPIN_SPOKES.map((s) => svg`
+          <line x1=${s.x1} y1=${s.y1} x2=${s.x2} y2=${s.y2}></line>
+        `)}
+      </g>
+    </svg>
+  `;
+}
+
 // Exposé's hover text. The trackpad gesture is listed HERE, on the button that
 // does the same thing, because that is where someone looking for "how do I get
 // all my windows" is already pointing — the shortcuts overlay only helps people
@@ -118,6 +201,9 @@ class WebtmuxToolbar extends LitElement {
     // Current scroll-wheel mode (mirror of the focused unit's setting). Cycled by
     // the toolbar's scroll button; one of SCROLL_ORDER.
     scrollMode: { type: String },
+    // Current mouse click/drag mode (mirror of the focused unit's setting).
+    // Cycled by the toolbar's selection button; one of MOUSE_ORDER.
+    mouseMode: { type: String },
     // True when the focused split region's active pane is in tmux copy/view mode.
     // Reflected to the `copymode` attribute so :host() can recolor the whole bar.
     copyMode: { type: Boolean, reflect: true, attribute: 'copymode' },
@@ -142,16 +228,27 @@ class WebtmuxToolbar extends LitElement {
     // The window the shared HoverPreview is currently showing ('' = none). Marks
     // which tab the preview on screen belongs to. Set by the SplitManager.
     previewWindow: { type: String },
+    // Whether the mouse-capture dropdown is open (the two gesture modes live in it).
+    mouseMenuOpen: { type: Boolean },
     // Recent-tab label shape (see LABEL_DEFAULTS) + whether its little menu is open.
     showSession: { type: Boolean },
     trimName: { type: Boolean },
     labelMenuOpen: { type: Boolean },
+    // How many tabs the strip holds. Mirrors the shared toolbar.recentMax pref; the
+    // SplitManager is what actually enforces it (see setRecentsMax).
+    recentMax: { type: Number },
     // Recents drag-reorder: the tab being dragged, and the insertion GAP the drop
     // would land in (0..n, -1 = not over the strip).
     dragKey: { type: String },
     dropIndex: { type: Number },
     // tmux-activity spinner position, in increments (rendered as rotation).
     activity: { type: Number },
+    // The spinner's OTHER job: red when a region has lost tmux, with how many regions
+    // are down each way — closed socket vs open-but-mute (see
+    // SplitManager._refreshConnection and TerminalUnit's heartbeat).
+    disconnected: { type: Boolean },
+    lostRegions: { type: Number },
+    stalledRegions: { type: Number },
     // Flashing windows with no tab of their own — see the overflow arrow below.
     // [{id, session, index, name, alert}], most recently raised first.
     overflowAlerts: { type: Array },
@@ -246,8 +343,8 @@ class WebtmuxToolbar extends LitElement {
        windows, and a signal that pulses differently in each place stops reading as
        one signal. Colour says WHICH transition, matching the dot you'd have seen. */
 
-    /* OVERFLOW ARROW: the strip holds five tabs, and the windows that need you do not
-       care about that. When a window drops out of green with no tab, no preview tile
+    /* OVERFLOW ARROW: the strip holds a bounded number of tabs, and the windows that
+       need you do not care about that. When a window drops out of green with no tab, no preview tile
        and no region of its own, this arrow appears at the end of the strip and flashes
        in its place — so "nothing is flashing" can be trusted to mean "nothing needs
        you", which is the only thing that makes the flashes worth watching at all.
@@ -585,26 +682,44 @@ class WebtmuxToolbar extends LitElement {
       background: #37d17a;              /* green — the focused pane */
       box-shadow: 0 0 6px rgba(55, 209, 122, 0.8);
     }
-    /* tmux-activity spinner, far left. Advances one notch (45°) every time webtmux
-       sends tmux a command, debounced — so it flicks when you switch/rename/capture
+    /* tmux-activity spinner, far left. Advances one notch (SPIN_STEP_DEG) every time
+       webtmux sends tmux a command, debounced — so it flicks when you switch/rename/capture
        and sits still when nothing is talking to tmux. A liveness tell you can read
        out of the corner of your eye; there is no other signal that the tmux side of
        the connection is actually doing anything. */
+    /* It has to be READABLE at a glance, which the first drawn version was not: 15px
+       of thin, 75%-faded stroke in a mid blue disappeared into the navy bar. It is
+       full-size, full-opacity and a brighter blue now — the whole point of this
+       control is to be caught out of the corner of your eye, and one that has to be
+       hunted for is telling you nothing. */
     .spin {
       flex: 0 0 auto;
-      width: 20px;
-      height: 20px;
-      margin-right: 2px;
+      width: 22px;
+      height: 22px;
+      margin-right: 3px;
       display: flex;
       align-items: center;
       justify-content: center;
-      color: #4a9eff;
-      font-size: 15px;
+      color: #6cb6ff;
       line-height: 1;
-      opacity: 0.75;
       cursor: default;
       transition: transform 0.18s ease-out;
     }
+    .spin svg { display: block; }
+    /* …and the same spinner in red when the socket to tmux is gone. It PULSES rather
+       than sitting still: a stopped spinner is exactly what an idle one looks like,
+       and this state is a request (go and look), not a report. Red matches the
+       stoplight vocabulary's "not working", which is precisely what tmux is doing. */
+    .spin.lost {
+      color: #ff5470;
+      /* drop-shadow, not text-shadow: the spinner is drawn (see spinIcon) and a text
+         shadow would have nothing to attach to. */
+      filter: drop-shadow(0 0 5px rgba(255, 84, 112, 0.85));
+      animation: wt-lost 1.2s ease-in-out infinite;
+    }
+    /* The pulse dips, it does not blink out: at 0.25 the icon spent half its cycle
+       invisible, which is a worse tell than not pulsing at all. */
+    @keyframes wt-lost { 50% { opacity: 0.5; } }
 
     /* Build id on the far left — read it aloud, or click it to copy (revealing it
        copies it too; see toggleBuild). A button, not a label, because it does
@@ -664,6 +779,45 @@ class WebtmuxToolbar extends LitElement {
       color: #6b7690; font-size: 11px; padding: 2px 2px 0;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
+    /* Strip-size stepper. A −/number/+ row rather than a set of preset buttons:
+       the useful value is "as many as fit on MY toolbar", which is a number nobody
+       else can guess, and stepping to it while watching the strip resize live is the
+       only way to find it. */
+    .label-menu .msize {
+      display: flex; align-items: center; gap: 8px;
+      background: #1a1a2e; border: 1px solid #0f3460; border-radius: 6px;
+      padding: 5px 9px; font-size: 12.5px; color: #e8eefc;
+    }
+    .label-menu .msize .mlabel { flex: 1 1 auto; }
+    .label-menu .msize .mstep {
+      flex: 0 0 auto; width: 22px; height: 22px; line-height: 1;
+      background: #0b1020; color: #e8eefc;
+      border: 1px solid #0f3460; border-radius: 4px;
+      font-family: inherit; font-size: 14px; cursor: pointer;
+    }
+    .label-menu .msize .mstep:hover:not([disabled]) { border-color: #4a9eff; color: #fff; }
+    .label-menu .msize .mstep[disabled] { opacity: 0.3; cursor: default; }
+    .label-menu .msize .mnum {
+      flex: 0 0 auto; min-width: 18px; text-align: center;
+      font-variant-numeric: tabular-nums; font-weight: 600; color: #9fc4ff;
+    }
+
+    /* Mouse-capture dropdown. Reuses .label-menu wholesale — it is the same kind of
+       object (a small settings menu hung off a toolbar control) and two menus that
+       looked subtly different would read as two mechanisms. Only three things differ:
+       it opens from the RIGHT edge (the button sits near the end of the toolbar, so
+       left-aligning would push it off screen), it is wider because every row carries a
+       sentence, and its rows stack name-over-hint instead of being one line. */
+    .mouse-wrap { position: relative; flex: 0 0 auto; display: inline-flex; }
+    .mouse-menu { left: auto; right: 0; min-width: 330px; }
+    .mouse-menu .mitem { align-items: flex-start; }
+    .mouse-menu .mitem .mark { margin-top: 2px; }
+    .mouse-menu .mtext { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .mouse-menu .mtext b { font-weight: 600; color: #e8eefc; }
+    .mouse-menu .mhint {
+      color: #8b96b4; font-size: 11px; line-height: 1.35;
+      white-space: normal;                /* the hints are sentences, so let them wrap */
+    }
   `, ALERT_CSS, TIP_CSS];
 
   constructor() {
@@ -673,6 +827,7 @@ class WebtmuxToolbar extends LitElement {
     // Scroll-wheel mode mirror (moved here from the sidebar). Seeded from the same
     // shared 'renderer' pref the terminal reads, so the label is right on first paint.
     this.scrollMode = normalizeScroll(stateStore.section('renderer').scrollMode || '');
+    this.mouseMode = normalizeMouse(stateStore.section('renderer').mouseMode || '');
     this.copyMode = false; // focused pane in tmux copy/view mode (SplitManager sets)
     this.previewCount = 0;        // windows currently in the preview (SplitManager sets)
     this.previewHidden = false;   // preview tucked away (SplitManager sets)
@@ -687,16 +842,18 @@ class WebtmuxToolbar extends LitElement {
     // reveals it when you need to read the running build aloud. Persisted.
     this.showBuild = stateStore.section('toolbar').showBuild === true;
     this._applyLabelPrefs();
-    // Re-apply shared prefs (scroll mode, build-chip visibility, recents label shape)
-    // on any remote change — e.g. cycling scroll mode from a region sidebar, or
-    // another client toggling.
+    // Re-apply shared prefs (scroll + mouse mode, build-chip visibility, recents
+    // label shape) on any remote change — e.g. cycling a mode from another split
+    // region, or another client toggling.
     stateStore.subscribe(() => {
       this.scrollMode = normalizeScroll(stateStore.section('renderer').scrollMode || '');
+      this.mouseMode = normalizeMouse(stateStore.section('renderer').mouseMode || '');
       this.showBuild = stateStore.section('toolbar').showBuild === true;
       this._applyLabelPrefs();
       this.requestUpdate();
     });
     this._tip = new Tip(this);  // shared hover hint — see tooltip.js
+    this.mouseMenuOpen = false;  // mouse-capture dropdown open?
     this.saveOpen = false;   // save dropdown open?
     this.saveStatus = null;  // transient save result banner (see properties)
     this.saveInfo = null;    // server's "where would this land?" answer
@@ -706,6 +863,9 @@ class WebtmuxToolbar extends LitElement {
     this.dragKey = '';
     this.dropIndex = -1;
     this.activity = 0;
+    this.disconnected = false;
+    this.lostRegions = 0;
+    this.stalledRegions = 0;
     this.overflowAlerts = [];
   }
 
@@ -717,6 +877,18 @@ class WebtmuxToolbar extends LitElement {
       ? LABEL_DEFAULTS.showSession : t.recentShowSession === true;
     this.trimName = t.recentTrimName === undefined
       ? LABEL_DEFAULTS.trimName : t.recentTrimName === true;
+    this.recentMax = clampRecentsMax(t.recentMax);
+  }
+
+  // Resize the strip. Only the shared pref is written here — the SplitManager holds
+  // the strip itself and subscribes to the blob, so the eviction rule for a shrink
+  // lives in ONE place (setRecentsMax) whether the change came from this menu or
+  // from another browser.
+  _setRecentsMax(n) {
+    const next = clampRecentsMax(n);
+    if (next === this.recentMax) return;
+    this.recentMax = next;
+    stateStore.patchSection('toolbar', { recentMax: next });
   }
 
   _setLabelPref(key, value) {
@@ -735,8 +907,14 @@ class WebtmuxToolbar extends LitElement {
 
   // Advance the tmux-activity spinner one notch. Called (debounced) by the
   // SplitManager whenever a region sends tmux a command.
+  //
+  // Deliberately unbounded rather than modulo-8. The counter is multiplied into a CSS
+  // rotation, so wrapping it means one step in eight animates BACKWARDS through seven
+  // notches — a visible counter-spin that reads as something undoing itself. Nothing
+  // else consumes this value, and a session would have to send tmux a command every
+  // second for a month to reach a number a double notices.
   tickActivity() {
-    this.activity = (this.activity + 1) % 8;
+    this.activity += 1;
   }
 
   // Show/hide the build-id chip (Ctrl+Alt+B, wired by the SplitManager). Persisted
@@ -780,6 +958,76 @@ class WebtmuxToolbar extends LitElement {
     const u = this.manager?.focusedUnit;
     if (u?.setScrollMode) u.setScrollMode(next);
     else stateStore.patchSection('renderer', { scrollMode: next });
+  }
+
+  // Cycle the mouse click/drag mode (app -> buf -> auto -> auto+). Same shape as
+  // cycleScroll: applied to the focused unit (which persists it into the shared
+  // 'renderer' pref, so every region and every other browser follows).
+  cycleMouse() {
+    const i = MOUSE_ORDER.indexOf(normalizeMouse(this.mouseMode));
+    const next = MOUSE_ORDER[(i + 1) % MOUSE_ORDER.length];
+    this.mouseMode = next;
+    const u = this.manager?.focusedUnit;
+    if (u?.setMouseMode) u.setMouseMode(next);
+    else stateStore.patchSection('renderer', { mouseMode: next });
+  }
+
+  // Set a mode outright (the dropdown rows), rather than stepping to it. Same apply
+  // path as the cyclers above — the focused unit owns the setting and persists it into
+  // the shared 'renderer' pref — so a click in the menu and a cycle land identically.
+  // Kept separate from the cyclers because the menu shows all four states at once:
+  // "step until the label says what I want" is exactly the interaction it removes.
+  setScrollMode(mode) {
+    if (!SCROLL_ORDER.includes(mode)) return;
+    this.scrollMode = mode;
+    const u = this.manager?.focusedUnit;
+    if (u?.setScrollMode) u.setScrollMode(mode);
+    else stateStore.patchSection('renderer', { scrollMode: mode });
+  }
+
+  setMouseMode(mode) {
+    if (!MOUSE_ORDER.includes(mode)) return;
+    this.mouseMode = mode;
+    const u = this.manager?.focusedUnit;
+    if (u?.setMouseMode) u.setMouseMode(mode);
+    else stateStore.patchSection('renderer', { mouseMode: mode });
+  }
+
+  // ---- mouse-capture dropdown ---------------------------------------------------
+  // ONE button for both gesture modes. They used to be two toolbar buttons labelled
+  // "🖱 auto+" and "sel auto+", which is the shape of the problem: two adjacent
+  // controls answering the same question about different gestures, each with room for
+  // seven characters and no room to say WHICH gesture it governs. The tooltip carried
+  // all of that, so the only way to find out what either button did was to hover it.
+  //
+  // In a dropdown each group can be titled with the gesture it is about — "click+drag:"
+  // and "copymode on scroll:" — and every mode can show its own one-line hint next to
+  // its name, so the whole four-by-two space is legible at once instead of one cell at
+  // a time. The cost is a click to change a mode; the cyclers stay for the keyboard and
+  // for anything that still wants to step.
+  _mouseMenu() {
+    const cur = { mouse: normalizeMouse(this.mouseMode), scroll: normalizeScroll(this.scrollMode) };
+    const group = (kind, title, order, metaMap, apply) => html`
+      <div class="mtitle">${title}</div>
+      ${order.map((m) => html`
+        <button
+          class="mitem"
+          data-kind=${kind}
+          data-mode=${m}
+          @click=${() => apply(m)}
+        >
+          <span class="mark">${cur[kind] === m ? '✓' : ''}</span>
+          <span class="mtext"><b>${metaMap[m].name}</b><span class="mhint">${metaMap[m].hint}</span></span>
+        </button>
+      `)}
+    `;
+    return html`
+      <div class="label-backdrop" @click=${() => { this.mouseMenuOpen = false; }}></div>
+      <div class="label-menu mouse-menu" @click=${(e) => e.stopPropagation()}>
+        ${group('mouse', 'click+drag:', MOUSE_ORDER, MOUSE_META, (m) => this.setMouseMode(m))}
+        ${group('scroll', 'copymode on scroll:', SCROLL_ORDER, SCROLL_META, (m) => this.setScrollMode(m))}
+      </div>
+    `;
   }
 
   // Toggle the save-buffer dropdown. On open, clear any stale result banner and
@@ -974,7 +1222,29 @@ class WebtmuxToolbar extends LitElement {
     return html`
       <div class="label-backdrop" @click=${() => { this.labelMenuOpen = false; }}></div>
       <div class="label-menu" @click=${(e) => e.stopPropagation()}>
-        <div class="mtitle">Recent tab labels</div>
+        <div class="mtitle">Recent tabs</div>
+        <div class="msize">
+          <span class="mlabel">Tabs kept</span>
+          <button
+            class="mstep"
+            aria-label="Keep fewer recent tabs"
+            ?disabled=${this.recentMax <= RECENTS_MIN}
+            @click=${() => this._setRecentsMax(this.recentMax - 1)}
+          >−</button>
+          <span class="mnum">${this.recentMax}</span>
+          <button
+            class="mstep"
+            aria-label="Keep more recent tabs"
+            ?disabled=${this.recentMax >= RECENTS_MAX}
+            @click=${() => this._setRecentsMax(this.recentMax + 1)}
+          >+</button>
+        </div>
+        <div class="mprev">
+          ${this.recentMax === 1
+            ? 'one tab; every other window lives in the overflow arrow and Exposé'
+            : `${this.recentMax} tabs, then the least recently used one is replaced`}
+        </div>
+        <div class="mtitle">Labels</div>
         <button class="mitem" @click=${() => this._setLabelPref('showSession', !this.showSession)}>
           <span class="mark">${this.showSession ? '✓' : ''}</span>Show session
         </button>
@@ -1017,15 +1287,47 @@ class WebtmuxToolbar extends LitElement {
     `;
   }
 
+  // What the red spinner says when you point at it. The important sentence is the
+  // last one: everything on screen still LOOKS live — the terminals keep their last
+  // painted screen and the window list keeps listing windows — so the one thing worth
+  // saying is that none of it is current.
+  //
+  // The two failures get different advice on purpose. A dropped socket is already
+  // being retried, so "wait" is true. A STALLED one is not being retried by anybody —
+  // the browser thinks the connection is fine — so the only thing that helps is
+  // reloading, and saying "hang on, it's reconnecting" would be a lie that keeps
+  // someone typing into a dead socket.
+  _lostTip() {
+    const stalled = this.stalledRegions || 0;
+    const closed = this.lostRegions || 0;
+    const plural = (n, one, many) => (n === 1 ? one : many);
+    const tail = `\n\nWhat is on screen is the last thing that arrived, not what tmux looks`
+      + ` like now; anything you type goes nowhere until the link is back.`;
+    if (stalled) {
+      const which = closed
+        ? `${stalled + closed} terminal regions have`
+        : plural(stalled, 'The terminal has', `${stalled} terminal regions have`);
+      return `tmux has stopped answering. ${which} an open connection that has gone`
+        + ` silent — the server is still there, but it is not responding to input, so`
+        + ` nothing is automatically retrying. Reload the page to reconnect.${tail}`;
+    }
+    const which = plural(closed || 1, 'The terminal has', `${closed} terminal regions have`);
+    return `Lost the connection to tmux. ${which} no live link to the server —`
+      + ` webtmux keeps retrying in the background and this clears the moment one gets through.${tail}`;
+  }
+
   render() {
     return html`
       <span
-        class="spin"
-        style="transform: rotate(${this.activity * 45}deg)"
-        aria-hidden="true"
-        @mouseenter=${(e) => this._tipEnter(e, 'tmux activity — advances one notch each time webtmux sends tmux a command (window switches, renames, captures, saved state).')}
+        class="spin ${this.disconnected ? 'lost' : ''}"
+        style="transform: rotate(${this.activity * SPIN_STEP_DEG}deg)"
+        role=${this.disconnected ? 'img' : 'presentation'}
+        aria-hidden=${this.disconnected ? 'false' : 'true'}
+        aria-label=${this.disconnected ? 'Connection to tmux lost' : ''}
+        @mouseenter=${(e) => this._tipEnter(e, this.disconnected ? this._lostTip()
+          : 'tmux activity — advances one notch each time webtmux sends tmux a command (window switches, renames, captures, saved state).')}
         @mouseleave=${() => this._tipLeave()}
-      >✳</span>
+      >${spinIcon()}</span>
       ${this.showBuild ? html`
         <button
           class="build"
@@ -1046,8 +1348,8 @@ class WebtmuxToolbar extends LitElement {
         <span class="label-wrap">
           <button
             class="label"
-            aria-label="Recent tab label options"
-            @mouseenter=${(e) => this._tipEnter(e, 'Recent windows — click for label options (show the session, trim the window name). Drag tabs to reorder them.')}
+            aria-label="Recent tab options"
+            @mouseenter=${(e) => this._tipEnter(e, `Recent windows — click for options: how many tabs to keep (now ${this.recentMax}), and their labels (show the session, trim the window name). Drag tabs to reorder them.`)}
             @mouseleave=${() => this._tipLeave()}
             @click=${() => { this._tipLeave(); this.labelMenuOpen = !this.labelMenuOpen; }}
           >Recent ▾</button>
@@ -1148,13 +1450,17 @@ class WebtmuxToolbar extends LitElement {
           </div>
         ` : ''}
       </div>
-      <button
-        class="tbtn text"
-        aria-label="Scroll-wheel mode"
-        @mouseenter=${(e) => this._tipEnter(e, scrollTooltip(normalizeScroll(this.scrollMode)))}
-        @mouseleave=${() => this._tipLeave()}
-        @click=${() => { this._tipLeave(); this.cycleScroll(); }}
-      >${(SCROLL_META[normalizeScroll(this.scrollMode)] || SCROLL_META['adaptive-probe']).label}</button>
+      <div class="mouse-wrap">
+        <button
+          class="tbtn text ${this.mouseMenuOpen ? 'on' : ''}"
+          aria-label="Mouse capture — click+drag and scroll-wheel modes"
+          @mouseenter=${(e) => this._tipEnter(e, mouseCaptureTooltip(
+            normalizeMouse(this.mouseMode), normalizeScroll(this.scrollMode)))}
+          @mouseleave=${() => this._tipLeave()}
+          @click=${() => { this._tipLeave(); this.mouseMenuOpen = !this.mouseMenuOpen; }}
+        >🖱 ${modeName(MOUSE_META, normalizeMouse(this.mouseMode))}/${modeName(SCROLL_META, normalizeScroll(this.scrollMode))} ▾</button>
+        ${this.mouseMenuOpen ? this._mouseMenu() : ''}
+      </div>
       ${this.panes.length > 1 ? html`
         <div
           class="dots"

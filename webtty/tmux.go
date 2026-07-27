@@ -2,13 +2,13 @@ package webtty
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
 
-	"github.com/pkg/errors"
 	"webtmux/pkg/tmux"
 )
 
@@ -76,7 +76,7 @@ func (wt *WebTTY) SendTmuxLayout() error {
 
 	data, err := json.Marshal(layout)
 	if err != nil {
-		return errors.Wrap(err, "failed to marshal tmux layout")
+		return fmt.Errorf("failed to marshal tmux layout: %w", err)
 	}
 
 	return wt.masterWrite(append([]byte{TmuxLayoutUpdate}, data...))
@@ -90,7 +90,7 @@ func (wt *WebTTY) SendTmuxModeUpdate(inCopyMode bool) error {
 
 	data, err := json.Marshal(state)
 	if err != nil {
-		return errors.Wrap(err, "failed to marshal tmux mode state")
+		return fmt.Errorf("failed to marshal tmux mode state: %w", err)
 	}
 
 	return wt.masterWrite(append([]byte{TmuxModeUpdate}, data...))
@@ -428,7 +428,7 @@ func (wt *WebTTY) handleSaveInfo(payload []byte) error {
 	env := describeSaveEnv(paneDir, req.Dir)
 	data, err := json.Marshal(env)
 	if err != nil {
-		return errors.Wrap(err, "failed to marshal save info")
+		return fmt.Errorf("failed to marshal save info: %w", err)
 	}
 	return wt.masterWrite(append([]byte{TmuxSaveInfo}, data...))
 }
@@ -488,7 +488,7 @@ func (wt *WebTTY) sendSaveResult(ok bool, path, errMsg string, env SaveEnv) erro
 		Env   SaveEnv `json:"env"`
 	}{OK: ok, Path: path, Error: errMsg, Env: env})
 	if err != nil {
-		return errors.Wrap(err, "failed to marshal save result")
+		return fmt.Errorf("failed to marshal save result: %w", err)
 	}
 	return wt.masterWrite(append([]byte{TmuxSaveResult}, data...))
 }

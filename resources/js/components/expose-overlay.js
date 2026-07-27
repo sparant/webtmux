@@ -18,7 +18,10 @@ import { Terminal } from '@xterm/xterm';
 import { CaptureCache, placementKey } from '../capture-cache.js';
 import { matchesWords, appendChar, backspace, phraseText } from '../search.js';
 import { stateStore } from '../state-store.js';
-import { workClass, workLabel, workTip } from '../stoplight.js';
+import {
+  workClass, workLabel, workTip, WORK_LEGEND,
+  STATUS_FILTERS, normalizeStatusFilter, matchesStatus,
+} from '../stoplight.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
 
 const N_MAX_TILES = 24;
@@ -39,6 +42,10 @@ class WebtmuxExpose extends LitElement {
     // (not just its session + window name). Reactive so the header toggle
     // re-renders. Default off; persisted across sessions.
     _searchBuffers: { state: true },
+    // Narrow the grid to one work status ('all' | 'working' | 'attention' | 'idle').
+    // Reactive so the header's segmented control re-renders when it changes — including
+    // when another client changes it.
+    _statusFilter: { state: true },
   };
 
   // TIP_CSS is appended so a tile's stoplight hint matches the strip's and the
@@ -319,11 +326,16 @@ class WebtmuxExpose extends LitElement {
     // When on, the type-ahead ALSO matches the captured pane content (like tmux's
     // find-mode over a pane's visible buffer); off => only session + window name.
     this._searchBuffers = readSearchBuffers();
+    // Narrow by work status — the triage view. Shared like sort/density (every Exposé
+    // pref is), and persisted, so "show me only what needs me" survives close/reopen.
+    this._statusFilter = readStatusFilter();
     // Re-apply shared expose prefs on a remote change (another client toggled sort /
-    // buffer-search / density). Only rebuild the grid when we're actually open.
+    // buffer-search / density / status filter). Only rebuild the grid when we're
+    // actually open.
     stateStore.subscribe(() => {
       this._sort = readSort();
       this._searchBuffers = readSearchBuffers();
+      this._statusFilter = readStatusFilter();
       this.density = stateStore.section('expose').density || 2;
       this.requestUpdate();
       if (this.open) this._rebuild();
@@ -339,19 +351,41 @@ class WebtmuxExpose extends LitElement {
   // filled imperatively so a reactive re-render never orphans a tile terminal.
   render() {
     const n = this.cache ? this.cache.placementCount : 0;
-    const filtering = this._searchWords.some((w) => w !== '');
-    const shown = filtering ? this._visibleEntries().length : n;
+    const status = normalizeStatusFilter(this._statusFilter);
+    // Two independent narrowings, and the header must not conflate them. `typing` owns
+    // the query readout and the Escape hint, because Escape clears the TYPE-AHEAD and
+    // nothing else. `hiding` owns the "N of M" count, because a status filter hides
+    // windows just as effectively and the count would otherwise claim the server has
+    // four windows when it has forty.
+    const typing = this._searchWords.some((w) => w !== '');
+    const hiding = typing || status !== 'all';
+    const shown = hiding ? this._visibleEntries().length : n;
     return html`
       <link rel="stylesheet" href=${XTERM_CSS} />
       <div class="backdrop" @click=${this._onBackdrop}>
         <div class="head" @click=${(e) => e.stopPropagation()}>
           <span class="title">Windows</span>
-          <span>${filtering ? `${shown} of ${n}` : n} window${(filtering ? shown : n) === 1 ? '' : 's'}</span>
-          ${filtering
+          <span>${hiding ? `${shown} of ${n}` : n} window${(hiding ? shown : n) === 1 ? '' : 's'}</span>
+          ${typing
             ? html`<span class="filter">filter: <b>${this._query}</b><span class="cur">▏</span></span>`
             : html`<span class="typehint">type to filter</span>`}
-          <span><kbd>←→↑↓</kbd> move · <kbd>Enter</kbd> switch · <kbd>Esc</kbd> ${filtering ? 'clear filter' : 'close'}</span>
+          <span><kbd>←→↑↓</kbd> move · <kbd>Enter</kbd> switch · <kbd>Esc</kbd> ${typing ? 'clear filter' : 'close'}</span>
           <span class="spacer"></span>
+          <span class="sort">
+            <span class="lbl">Show</span>
+            <span class="seg">
+              ${STATUS_FILTERS.map((f) => html`
+                <button
+                  class=${status === f.id ? 'active' : ''}
+                  @mouseenter=${(e) => this._tip.enter(e, f.id === 'all'
+                    ? `Show every window, whatever it is doing.\n\n${WORK_LEGEND}`
+                    : `Show only the windows that are ${f.hint}.\n\n${WORK_LEGEND}`)}
+                  @mouseleave=${() => this._tip.leave()}
+                  @click=${() => { this._tip.leave(); this._setStatusFilter(f.id); }}
+                >${f.label}</button>
+              `)}
+            </span>
+          </span>
           <span class="sort">
             <span class="lbl">Search</span>
             <span class="seg">
@@ -457,11 +491,16 @@ class WebtmuxExpose extends LitElement {
 
   // ---- tile building ----------------------------------------------------------
 
-  // Cached entries in sort order, narrowed by the active type-ahead filter. The
-  // haystack is "session index: name" so you can filter by any of them (e.g.
-  // "claude" or "services 3"). No filter → every entry.
+  // Cached entries in sort order, narrowed by the work-status filter and then by the
+  // active type-ahead filter. The haystack is "session index: name" so you can filter
+  // by any of them (e.g. "claude" or "services 3"). No filter → every entry.
+  //
+  // Status first, deliberately: the two narrowings compose (type "claude" while
+  // showing only amber and you get the agents that are waiting on you), and the status
+  // pass is a map lookup per entry against a set that usually shrinks the list by an
+  // order of magnitude, so the expensive buffer search runs over far fewer captures.
   _visibleEntries() {
-    const all = this.cache ? this.cache.all(this._sort) : [];
+    const all = this._statusEntries();
     const terms = this._searchWords.filter((w) => w !== '');
     if (!terms.length) return all;
     const withBuffers = this._searchBuffers;
@@ -473,6 +512,16 @@ class WebtmuxExpose extends LitElement {
       if (withBuffers) hay += ' ' + entrySearchText(e);
       return matchesWords(hay, terms);
     });
+  }
+
+  // Every cached placement in sort order, narrowed by the work-status filter alone.
+  // Split out from _visibleEntries so the header can say "8 of 40" against the count
+  // the filter left standing rather than against the whole server — "3 of 40" when the
+  // status filter is doing most of the hiding reads as a broken type-ahead.
+  _statusEntries() {
+    const all = this.cache ? this.cache.all(this._sort) : [];
+    if (this._statusFilter === 'all') return all;
+    return all.filter((e) => matchesStatus(this._working.get(e.windowId) || '', this._statusFilter));
   }
 
   // The placement key of the focused pane's current window IN its own session —
@@ -513,12 +562,24 @@ class WebtmuxExpose extends LitElement {
     if (!entries.length) {
       const div = document.createElement('div');
       div.className = 'empty';
-      // Distinguish "nothing captured yet" from "filter excludes everything".
-      const filtering = this._searchWords.some((w) => w !== '');
+      // Distinguish "nothing captured yet" from "something is excluding everything" —
+      // and, when something is, say WHICH thing, because the status filter is a control
+      // you can leave switched on and then forget while typing.
+      const typing = this._searchWords.some((w) => w !== '');
+      const status = normalizeStatusFilter(this._statusFilter);
+      const label = (STATUS_FILTERS.find((f) => f.id === status) || {}).label;
       const anyCached = this.cache && this.cache.placementCount > 0;
-      div.textContent = filtering && anyCached
-        ? `No windows match “${this._query}”`
-        : 'Capturing windows…';
+      if (!anyCached) {
+        div.textContent = 'Capturing windows…';
+      } else if (typing && status !== 'all') {
+        div.textContent = `No “${label}” windows match “${this._query}”`;
+      } else if (typing) {
+        div.textContent = `No windows match “${this._query}”`;
+      } else if (status !== 'all') {
+        div.textContent = `No windows are “${label}” right now`;
+      } else {
+        div.textContent = 'Capturing windows…';
+      }
       grid.appendChild(div);
       this._renderedKeys = [];
       return;
@@ -660,6 +721,14 @@ class WebtmuxExpose extends LitElement {
     if (!changed) return;                       // this runs on the 500ms poll
     this._working = new Map(map);
     for (const rec of this._tiles) this._paintWork(rec);
+    // Under a status filter the stoplight is not just paint — it is MEMBERSHIP. A
+    // window that goes amber has to appear in the "Needs you" grid the moment it does,
+    // which is the whole reason to sit in that view. _refresh rebuilds only when the
+    // visible key list actually moved, so this costs nothing when it hasn't.
+    if (this.open && this._statusFilter !== 'all') {
+      this._refresh();
+      this.requestUpdate();   // the header's "N of M" counts filtered members too
+    }
   }
 
   _paintWork(rec) {
@@ -726,6 +795,16 @@ class WebtmuxExpose extends LitElement {
     this._sort = mode; // reactive -> header re-renders with the new active button
     stateStore.patchSection('expose', { sort: mode });
     this._rebuild(); // reorder tiles; cursor stays on the same window
+  }
+
+  // Narrow the grid to one work status. A REBUILD, not a refresh: this changes which
+  // windows are members, and _refresh only repaints the set it already has.
+  _setStatusFilter(id) {
+    const next = normalizeStatusFilter(id);
+    if (this._statusFilter === next) return;
+    this._statusFilter = next;      // reactive -> header re-renders the active button
+    stateStore.patchSection('expose', { statusFilter: next });
+    if (this.open) this._rebuild();
   }
 
   // Toggle whether the type-ahead also searches captured pane output. Persisted so
@@ -857,6 +936,10 @@ function readSort() {
 
 function readSearchBuffers() {
   return stateStore.section('expose').searchBuffers === true;
+}
+
+function readStatusFilter() {
+  return normalizeStatusFilter(stateStore.section('expose').statusFilter);
 }
 
 // Decoded + SGR-stripped pane text for content search, memoized on the entry and

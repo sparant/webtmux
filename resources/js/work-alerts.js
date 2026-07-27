@@ -21,7 +21,8 @@
 //   reading another window is the entire point. So we compare against the value we
 //   last showed, not against a threshold.
 //
-//   CLEAR when the window is on screen (`active`). That is the literal thing the
+//   CLEAR when the window is on screen (`active`) ANYWHERE — see the keying note
+//   below for why "anywhere" and not "in this session". That is the literal thing the
 //   flash is asking you to do, so it's the only acknowledgement that counts — a
 //   re-render, a glance at the strip, or a timeout must not dismiss it. There is
 //   deliberately no expiry: a signal that gives up after 30s is exactly the signal
@@ -37,8 +38,18 @@
 //   the flash keeps its colour even if the tmux option is cleared underneath it.
 //
 // Entries are keyed exactly like tabs — (session, window id), not window id alone —
-// because a window linked into two sessions has a tab in each and they are
-// acknowledged independently: seeing it in one session says nothing about the other.
+// so a window linked into two sessions flashes in BOTH of its tabs. They are raised
+// independently (each placement watches its own transition), but ACKNOWLEDGED
+// TOGETHER: looking at the window in one session clears the flash in every session.
+//
+// That last rule is the opposite of what this module shipped with, and the reversal is
+// the point. The flash asks you to go and LOOK at a window; the two tabs of a linked
+// window are two doors onto one screen, so walking through either one answers the
+// question. Under the old per-placement rule the second tab kept flashing about news
+// you had already read, and the only way to quiet it was to visit the same screen
+// again through the other door — which taught you to dismiss flashes instead of trust
+// them. The keying stays per placement because that is what the SURFACES are: each tab
+// still has to be told whether it is flashing.
 //
 // Every raise also carries a SEQUENCE number. Without one there is no "most recent"
 // among several flashing windows, and taking you to the latest one is the overflow
@@ -59,6 +70,17 @@ export class WorkAlerts {
   // you), plus `alertSeq` (0 when quiet) for "which of these is the most recent".
   // Mutates in place — the caller hands us the array it is about to render.
   mark(entries) {
+    // Which WINDOWS have been acknowledged this poll — on screen somewhere, or back to
+    // green. Collected in a first pass over every placement, and by window id rather
+    // than by (session, id), because that is what makes a linked window's two tabs
+    // stop flashing together: the second placement is normally visited LATER in the
+    // list than the one you are actually looking at, so a single pass would have
+    // already re-raised (or left standing) an alert the acknowledgement should have
+    // cleared.
+    const acked = new Set();
+    for (const w of entries) {
+      if (w.active || w.working === '1') acked.add(w.id);
+    }
     const seen = new Set();
     for (const w of entries) {
       const key = WorkAlerts.key(w);
@@ -67,7 +89,7 @@ export class WorkAlerts {
       this._prev.set(key, w.working);
       const stopped = w.working === '0' || w.working === '2';
       const cur = this._alerts.get(key);
-      if (w.active || w.working === '1') this._alerts.delete(key);
+      if (acked.has(w.id)) this._alerts.delete(key);
       // Raise on the drop out of green — or, if it is ALREADY flashing, re-colour to
       // wherever it has got to since (red -> amber = "and now it wants you"). The
       // flash must never disagree with the dot right next to it.
