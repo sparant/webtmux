@@ -143,9 +143,14 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
       `utils/flags_test.go` adds 7 tests (the package had none) pinning tag→flag name,
       shorthand, `GOTTY_*` env var, default, and cross-struct routing.*
 
-- [ ] **P1** D1.5 **Bump `gorilla/websocket` → v1.5.3 and `creack/pty` → v1.1.24.** Both
+- [x] **P1** D1.5 **Bump `gorilla/websocket` → v1.5.3 and `creack/pty` → v1.1.24.** Both
       are 2020-era pins on actively maintained projects; `x/sys` moves with pty. No API
       changes expected in either. *(30 min)*
+
+      *Done, no source changes needed — `pty.Start`/`Open`/`Setsize`/`Winsize` and the
+      websocket API are unchanged. **Better than predicted:** `x/sys` did not move with
+      pty, it left. creack/pty v1.1.24 dropped the dependency, so the bump removed an
+      indirect module rather than updating one. `--help` unchanged.*
 
 - [ ] **P0** D1.6 Verify: `make test`, `go vet ./...`, `make build`, then boot and exercise
       a real session — a websocket connection and a pty are the two things D1.5 could break.
