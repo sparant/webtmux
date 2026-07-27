@@ -20,13 +20,16 @@ type TmuxController interface {
 	SelectWindow(windowID string) error
 	SwitchSession(sessionName string) error
 	RenameWindow(windowID, name string) error
-	MoveWindow(windowID string, targetPos int) error
+	// MoveWindow/UnlinkWindow take the SESSION whose window list is being changed
+	// ("" = the pane's own): the sidebar's tree view lists every session on the
+	// server, so a reorder or an unlink can target one no pane is attached to.
+	MoveWindow(windowID string, targetPos int, session string) error
 	NewSession() error
 	RenameSession(oldName, newName string) error
 	KillWindow(windowID string) error
 	KillSession(sessionName string) error
 	LinkWindow(windowID, targetSession string) error
-	UnlinkWindow(windowID string) error
+	UnlinkWindow(windowID string, session string) error
 	SplitPane(horizontal bool) error
 	ClosePane(paneID string) error
 	SetGlobalOption(key, val string) error
@@ -213,18 +216,26 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 		return wt.afterCmd("rename window", wt.tmuxCtrl.RenameWindow(windowID, name))
 
 	case TmuxMoveWindow:
-		// payload = "<windowID> <targetPos>"; windowIDs are "@N" (no spaces).
+		// payload = "<windowID> <targetPos> [session]"; windowIDs are "@N" (no spaces).
+		// The optional third field names the session whose window list is being
+		// reordered — the sidebar's tree view drags rows belonging to sessions this
+		// pane isn't attached to. Absent (the single-session view) = the pane's own.
 		s := string(payload)
 		idx := strings.IndexByte(s, ' ')
 		if idx < 0 {
 			return nil
 		}
 		windowID := s[:idx]
-		targetPos, err := strconv.Atoi(strings.TrimSpace(s[idx+1:]))
+		rest := strings.TrimSpace(s[idx+1:])
+		session := ""
+		if sp := strings.IndexByte(rest, ' '); sp >= 0 {
+			rest, session = rest[:sp], strings.TrimSpace(rest[sp+1:])
+		}
+		targetPos, err := strconv.Atoi(strings.TrimSpace(rest))
 		if err != nil {
 			return nil
 		}
-		return wt.afterCmd("move window", wt.tmuxCtrl.MoveWindow(windowID, targetPos))
+		return wt.afterCmd("move window", wt.tmuxCtrl.MoveWindow(windowID, targetPos, session))
 
 	case TmuxNewSession:
 		return wt.afterCmd("new session", wt.tmuxCtrl.NewSession())
@@ -258,7 +269,15 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 		return wt.afterCmd("link window", wt.tmuxCtrl.LinkWindow(windowID, targetSession))
 
 	case TmuxUnlinkWindow:
-		return wt.afterCmd("unlink window", wt.tmuxCtrl.UnlinkWindow(string(payload)))
+		// payload = "<windowID> [session]" — the session to remove it FROM. Absent
+		// (the single-session view) means the pane's own; the tree view names it,
+		// because the row you clicked the × on may live in another session entirely.
+		s := string(payload)
+		windowID, session := s, ""
+		if idx := strings.IndexByte(s, ' '); idx >= 0 {
+			windowID, session = s[:idx], strings.TrimSpace(s[idx+1:])
+		}
+		return wt.afterCmd("unlink window", wt.tmuxCtrl.UnlinkWindow(windowID, session))
 
 	case TmuxSetState:
 		// Persist the shared UI visual-state blob into the tmux global option

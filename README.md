@@ -22,9 +22,13 @@ A UI replacement for tmux Prefix+W. Lets you manage windows/sessions - create/de
 - Preview-before-commit browsing: arrow keys and hovering preview windows/sessions live in the real terminal
   - Enter or click commits
   - Esc puts everything back
-- Type-ahead search to find a window
-- Drag windows to reorder
-- Drag a window onto a session tab to link it there
+- A view toggle switches what the panel lists:
+  - **this session** — the session list, with the current session's windows below it (the default)
+  - **all windows** — every session on the server in your own order, its windows beneath it: tmux's Prefix+W tree, without the modal keybindings
+- Type-ahead search to find a window; in the tree it filters the whole thing, session names included
+- Drag windows to reorder — in any session, not only the one you are attached to
+- Drag a window onto a session (its tab, or its branch of the tree) to link it there
+- In the tree: ↑/↓ walk straight across session boundaries, ←/→ fold a session away, and clicking a window in another session takes you there
 - Hover × kills a window — or just unlinks it when it lives in other sessions too
 - Double-click renames windows and sessions inline; pasting a path into the rename box trims it to the basename without its extension (`webtmux/plan-webtmux-portable-deps.md` → `plan-webtmux-portable-deps`)
 - "+" creates a session or a window
