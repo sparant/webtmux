@@ -25,7 +25,7 @@ A web-based terminal with tmux-specific features. Access your tmux sessions from
 ![The strip in motion: a tab flashes amber when its window prompts, the attention arrow flashes for a red window with no tab, and viewing the window stops its flash](screenshots/toolbar-alerts.gif)
 - Top toolbar with up to five most-recently-used window tabs spanning all sessions; tabs navigate the focused region, each has a hover ×, and the strip persists across reloads.
 - Attention arrow (→) at the end of the strip counts and flashes for windows that need you but are visible nowhere; clicking it opens the most recent one, previewed first.
-- Copy-mode indicator/toggle, scroll-mode toggle, save (⤓) button, Preview add/remove, split-region focus dots, and a hidden build-id chip (Ctrl+Alt+B, copies the build id when revealed).
+- Copy-mode indicator/toggle, scroll-mode toggle, mouse click/drag ("sel") toggle, save (⤓) button, Preview add/remove, split-region focus dots, and a hidden build-id chip (Ctrl+Alt+B, copies the build id when revealed).
 
 ### Exposé (window mosaic)
 ![Exposé replayed: Ctrl+Alt+E opens the mosaic, pressing again densifies 2×2 to 3×3, typing filters by name, Enter switches the focused region](screenshots/expose.gif)
@@ -63,9 +63,10 @@ A web-based terminal with tmux-specific features. Access your tmux sessions from
 ### Copy, scroll & clipboard
 ![Copy mode replayed: scrolling up enters copy mode, drag selects in the scrollback, Ctrl+C copies and stays in copy mode, then ordinary typing drops straight back to the prompt](screenshots/copy-scroll.gif)
 - Smart copy-mode typing: in a scrolled-up pane, copy-mode motions keep working but ordinary typing drops back to the prompt — no keystrokes silently swallowed.
-- Cmd/Ctrl+C copies and stays in copy mode (grab several regions); Cmd/Ctrl+V exits copy mode first so the paste lands at the prompt; drag enters copy-mode immediately and auto-scrolls; selection highlight clears after copy.
+- Cmd/Ctrl+C copies and stays in copy mode (grab several regions); Cmd/Ctrl+V exits copy mode first so the paste lands at the prompt; dragging to the pane edge auto-scrolls the buffer; selection highlight clears after copy.
 - Clipboard copy works on plain-HTTP LAN access (falls back when the secure clipboard API is missing); large pastes no longer drop the connection.
 - Scroll-mode choices including an "auto+" default and adaptive wheel modes; Ctrl+Alt+[ toggles copy/scrollback mode.
+- **Click-and-drag selects text even over a program holding the mouse** (Claude Code, vim, htop) — no entering copy mode first. The toolbar's "sel" button cycles who gets a press, in the same four steps as the scroll toggle: `app` (all to the program) / `buf` (all to the buffer) / `auto` (a program that asked for the mouse gets it) / `auto+` (the default: clicks reach the program, drags select). Shift-drag (⌥-drag on a Mac) still forces a selection in any mode.
 
 ### Save pane buffer to a file
 ![Save replayed: the ⤓ dropdown explains where a save lands up front, and Save confirms the exact path the file was written to](screenshots/save-file.gif)

@@ -1034,8 +1034,9 @@ export class SplitManager {
     // _persistRecents; the common no-change case costs one JSON.stringify.
     this._persistRecents();
     this.toolbar.collapsed = !!this.sidebar?.collapsed;
-    // Keep the toolbar's scroll-mode label reflecting the focused pane's setting.
+    // Keep the toolbar's mode labels reflecting the focused pane's settings.
     if (focused?.scrollMode) this.toolbar.scrollMode = focused.scrollMode;
+    if (focused?.mouseMode) this.toolbar.mouseMode = focused.mouseMode;
     // The same working map the recents dots read, handed to the Preview and to Exposé
     // so their tiles show each window's stoplight in their top-right corner. One map,
     // four surfaces (strip, sidebar list, preview, Exposé) — a window's light can
