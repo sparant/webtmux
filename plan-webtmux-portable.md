@@ -189,16 +189,25 @@ Detail lives in the subplans. This is the roll-up.
 > below stay in numeric order so task IDs and cross-references remain stable — do NOT
 > execute them top to bottom.
 
-### Phase D — Dependency minimization · `plan-webtmux-portable-deps.md` *(runs FIRST)*
+### Phase D — Dependency minimization · `plan-webtmux-portable-deps.md` ✅ **COMPLETE 2026-07-27**
 
-- [ ] **P0** D1.2 Drop `yudai/hcl` (2015, unmaintained; 1 call site) — takes 3 modules with it
-- [ ] **P0** D1.3 Drop `NYTimes/gziphandler` (archived; 1 call site) — ~60 lines of middleware
-- [ ] **P1** D1.4 Drop `fatih/structs` (stale since 2018; 5 call sites, `reflect` already imported)
-- [ ] **P1** D1.5 Bump `gorilla/websocket` → v1.5.3, `creack/pty` → v1.1.24
-- [ ] **P2** D2.1 Drop `pkg/errors` (archived; 58 call sites, mechanical)
-- [ ] **P2** D2.2 Migrate `urfave/cli` v2 → v3 (sheds 3 more modules; **do before the launcher**)
-- [ ] **P0** D3.1 Make `@xterm/addon-webgl` a dynamic import (104 KB never fetched; it is default-off)
-- [ ] **P1** D3.2 Reconcile the dead `EnableWebGL` server option
+**16 modules → 3, zero indirect dependencies** (one better than the target of 4 —
+`creack/pty` v1.1.24 had already dropped `golang.org/x/sys`). Merged to `local-main`.
+
+- [x] **P0** D1.2 Drop `yudai/hcl` (2015, unmaintained; 1 call site) — takes 3 modules with it
+- [x] **P0** D1.3 Drop `NYTimes/gziphandler` (archived; 1 call site) — ~60 lines of middleware
+- [x] **P1** D1.4 Drop `fatih/structs` (stale since 2018; 5 call sites, `reflect` already imported)
+- [x] **P1** D1.5 Bump `gorilla/websocket` → v1.5.3, `creack/pty` → v1.1.24
+- [x] **P2** D2.1 Drop `pkg/errors` (archived; 58 call sites, mechanical)
+- [x] **P2** D2.2 Migrate `urfave/cli` v2 → v3 (sheds 3 more modules; **do before the launcher**)
+- [x] **P0** D3.1 Make `@xterm/addon-webgl` a dynamic import (104 KB never fetched; it is default-off)
+- [x] **P1** D3.2 Reconcile the dead `EnableWebGL` server option
+
+> **For Stage 3.** The launcher is a second `main`: write it against **urfave/cli v3**
+> (`cli.Command`, not `cli.App`). v3 parses flags anywhere on the line unless
+> `StopOnNthArg` is set — that difference silently broke `webtmux … tmux new-session -A`
+> and was caught only by booting the binary. The "launcher adds zero dependencies"
+> claim now starts from **3** modules, not 16.
 
 ### Phase 0 — GitHub fork · `plan-webtmux-portable-fork.md` *(user-executed)*
 

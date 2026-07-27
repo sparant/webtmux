@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
+	"fmt"
 	"html/template"
 	"io/fs"
 	"log"
@@ -15,9 +17,7 @@ import (
 	noesctmpl "text/template"
 	"time"
 
-	"github.com/NYTimes/gziphandler"
 	"github.com/gorilla/websocket"
-	"github.com/pkg/errors"
 
 	"webtmux/bindata"
 	"webtmux/pkg/homedir"
@@ -61,7 +61,7 @@ func New(factory Factory, options *Options) (*Server, error) {
 		path := homedir.Expand(options.IndexFile)
 		indexData, err = os.ReadFile(path)
 		if err != nil {
-			return nil, errors.Wrapf(err, "failed to read custom index file at `%s`", path)
+			return nil, fmt.Errorf("failed to read custom index file at `%s`: %w", path, err)
 		}
 	}
 	indexTemplate, err := template.New("index").Parse(string(indexData))
@@ -80,14 +80,14 @@ func New(factory Factory, options *Options) (*Server, error) {
 
 	titleTemplate, err := noesctmpl.New("title").Parse(options.TitleFormat)
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to parse window title format `%s`", options.TitleFormat)
+		return nil, fmt.Errorf("failed to parse window title format `%s`: %w", options.TitleFormat, err)
 	}
 
 	var originChekcer func(r *http.Request) bool
 	if options.WSOrigin != "" {
 		matcher, err := regexp.Compile(options.WSOrigin)
 		if err != nil {
-			return nil, errors.Wrapf(err, "failed to compile regular expression of Websocket Origin: %s", options.WSOrigin)
+			return nil, fmt.Errorf("failed to compile regular expression of Websocket Origin: %s: %w", options.WSOrigin, err)
 		}
 		originChekcer = func(r *http.Request) bool {
 			return matcher.MatchString(r.Header.Get("Origin"))
@@ -206,7 +206,7 @@ func (server *Server) Run(ctx context.Context, options ...RunOption) error {
 	handlers := server.setupHandlers(cctx, cancel, path, counter)
 	srv, err := server.setupHTTPServer(handlers)
 	if err != nil {
-		return errors.Wrapf(err, "failed to setup an HTTP server")
+		return fmt.Errorf("failed to setup an HTTP server: %w", err)
 	}
 
 	if server.options.PermitWrite {
@@ -222,7 +222,7 @@ func (server *Server) Run(ctx context.Context, options ...RunOption) error {
 	hostPort := net.JoinHostPort(server.options.Address, server.options.Port)
 	listener, err := net.Listen("tcp", hostPort)
 	if err != nil {
-		return errors.Wrapf(err, "failed to listen at `%s`", hostPort)
+		return fmt.Errorf("failed to listen at `%s`: %w", hostPort, err)
 	}
 
 	scheme := "http"
@@ -314,7 +314,7 @@ func (server *Server) setupHandlers(ctx context.Context, cancel context.CancelFu
 		siteHandler = server.wrapBasicAuth(siteHandler, server.options.Credential)
 	}
 
-	withGz := gziphandler.GzipHandler(server.wrapHeaders(siteHandler))
+	withGz := gzipHandler(server.wrapHeaders(siteHandler))
 	siteHandler = server.wrapLogger(withGz)
 
 	wsMux := http.NewServeMux()
@@ -333,7 +333,7 @@ func (server *Server) setupHTTPServer(handler http.Handler) (*http.Server, error
 	if server.options.EnableTLSClientAuth {
 		tlsConfig, err := server.tlsConfig()
 		if err != nil {
-			return nil, errors.Wrapf(err, "failed to setup TLS configuration")
+			return nil, fmt.Errorf("failed to setup TLS configuration: %w", err)
 		}
 		srv.TLSConfig = tlsConfig
 	}

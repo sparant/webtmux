@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,61 +14,92 @@ import (
 	"strings"
 	"syscall"
 
-	cli "github.com/urfave/cli/v2"
+	cli "github.com/urfave/cli/v3"
 
 	"webtmux/backend/localcommand"
-	"webtmux/pkg/homedir"
 	"webtmux/server"
 	"webtmux/utils"
 )
 
-func main() {
-	app := cli.NewApp()
-	app.Name = "webtmux"
-	app.Version = Version
-	app.Usage = "Web terminal for tmux with visual pane layout"
-	app.HideHelpCommand = true
-	appOptions := &server.Options{}
+// stopAfterCommandName is cli.Command.StopOnNthArg's value: 1, meaning flag
+// parsing stops once the first positional argument (the wrapped command) has
+// been seen. It is a variable only because that field is a *int.
+var stopAfterCommandName = 1
 
+// newRootCommand builds the root command: defaults applied to the option
+// structs, one flag per tagged field, and v2's stop-at-the-first-positional
+// parsing. It returns the command with its flags installed, plus the flag ->
+// field mapping ApplyFlags needs. The caller supplies the Action.
+//
+// This is a function rather than inline in main so the argument-passthrough
+// rule below can be tested — it is not something the type system can catch.
+func newRootCommand(appOptions *server.Options, backendOptions *localcommand.Options) (*cli.Command, map[string]string, error) {
 	if err := utils.ApplyDefaultValues(appOptions); err != nil {
-		exit(err, 1)
+		return nil, nil, err
 	}
-	backendOptions := &localcommand.Options{}
 	if err := utils.ApplyDefaultValues(backendOptions); err != nil {
-		exit(err, 1)
+		return nil, nil, err
 	}
 
 	cliFlags, flagMappings, err := utils.GenerateFlags(appOptions, backendOptions)
 	if err != nil {
-		exit(err, 3)
+		return nil, nil, err
 	}
 
-	app.Flags = append(
-		cliFlags,
-		&cli.StringFlag{
-			Name:    "config",
-			Value:   "~/.gotty",
-			Usage:   "Config file path",
-			EnvVars: []string{"GOTTY_CONFIG"},
-		},
-	)
+	// urfave/cli v3 has no App type: the root of the command tree is a Command
+	// like any other. v3 also has no transitive dependencies at all, which is
+	// why this project is on it — v2 pulled in go-md2man, blackfriday and
+	// sanitized_anchor_name purely to render man pages from --help.
+	cmd := &cli.Command{
+		Name:    "webtmux",
+		Version: Version,
+		Usage:   "Web terminal for tmux with visual pane layout",
+		// v2 derived the usage line's trailing "[arguments...]" on its own; v3
+		// prints exactly what ArgsUsage says. Without this the usage line would
+		// stop mentioning the command argument, which is not optional here —
+		// webtmux has nothing to serve without one.
+		ArgsUsage: "<command> [<arguments...>]",
+		// THE load-bearing line of the v2 -> v3 migration. v2 stopped parsing
+		// flags at the first positional argument; v3 by default keeps parsing
+		// them anywhere on the command line. That silently breaks the primary
+		// invocation of this program:
+		//
+		//     webtmux -w -p 8080 tmux new-session -A -s main
+		//
+		// because tmux's own -A is then read as a webtmux flag and rejected
+		// with "flag provided but not defined: -A". Every wrapped command's
+		// flags would collide with ours.
+		//
+		// StopOnNthArg: 1 restores v2's rule exactly — parse flags up to the
+		// first positional argument, then hand everything from the command
+		// onward through untouched.
+		StopOnNthArg:    &stopAfterCommandName,
+		HideHelpCommand: true,
+		Flags:           cliFlags,
+	}
+	return cmd, flagMappings, nil
+}
 
-	app.Action = func(c *cli.Context) error {
-		if c.NArg() == 0 {
+func main() {
+	appOptions := &server.Options{}
+	backendOptions := &localcommand.Options{}
+
+	cmd, flagMappings, err := newRootCommand(appOptions, backendOptions)
+	if err != nil {
+		exit(err, 3)
+	}
+	cliFlags := cmd.Flags
+
+	cmd.Action = func(_ context.Context, cmd *cli.Command) error {
+		if cmd.NArg() == 0 {
 			msg := "Error: No command given."
-			cli.ShowAppHelp(c)
-			exit(fmt.Errorf(msg), 1)
+			cli.ShowAppHelp(cmd)
+			exit(errors.New(msg), 1)
 		}
 
-		configFile := c.String("config")
-		_, err := os.Stat(homedir.Expand(configFile))
-		if configFile != "~/.gotty" || !os.IsNotExist(err) {
-			if err := utils.ApplyConfigFile(configFile, appOptions, backendOptions); err != nil {
-				exit(err, 2)
-			}
+		if err := utils.ApplyFlags(cliFlags, flagMappings, cmd, appOptions, backendOptions); err != nil {
+			exit(err, 3)
 		}
-
-		utils.ApplyFlags(cliFlags, flagMappings, c, appOptions, backendOptions)
 
 		if appOptions.Quiet {
 			log.SetFlags(0)
@@ -78,7 +110,7 @@ func main() {
 		if appOptions.NoAuth {
 			appOptions.EnableBasicAuth = false
 			log.Printf("WARNING: Authentication disabled. Terminal is publicly accessible!")
-		} else if c.IsSet("credential") {
+		} else if cmd.IsSet("credential") {
 			appOptions.EnableBasicAuth = true
 		} else {
 			// Generate random credentials
@@ -96,7 +128,7 @@ func main() {
 			fmt.Printf("\n")
 		}
 
-		if c.IsSet("tls-ca-crt") {
+		if cmd.IsSet("tls-ca-crt") {
 			appOptions.EnableTLSClientAuth = true
 		}
 
@@ -120,7 +152,7 @@ func main() {
 			log.Printf("Reserved %d low pts numbers (floor %d) to keep pane ttys collision-free", n, floor)
 		}
 
-		args := c.Args()
+		args := cmd.Args()
 		factory, err := localcommand.NewFactory(args.First(), args.Tail(), backendOptions)
 		if err != nil {
 			exit(err, 3)
@@ -156,7 +188,13 @@ func main() {
 
 		return nil
 	}
-	app.Run(os.Args)
+	// v3's Run takes a context and returns the error v2 also returned but that
+	// this main discarded — which meant "flag provided but not defined" printed
+	// a usage message and then exited 0. The message is already on stderr by the
+	// time it comes back, so exiting non-zero is all that is left to do.
+	if err := cmd.Run(context.Background(), os.Args); err != nil {
+		os.Exit(1)
+	}
 }
 
 func exit(err error, code int) {

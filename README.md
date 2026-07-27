@@ -379,6 +379,12 @@ webtmux -w --no-auth tmux new-session -A -s main
 
 Run `webtmux --help` for all available options.
 
+There is **no config file**. Every option is a flag, and every flag also has a
+`GOTTY_*` environment variable (shown in `--help`) — so a deployment configures
+webtmux with flags, env, or both. The inherited gotty `--config` flag and its
+`~/.gotty` HCL file were removed: nothing used them, and they were the sole
+reason for three unmaintained dependencies.
+
 ### Saving a pane buffer to a file (and running in a container)
 
 The toolbar's ⤓ button either downloads the focused pane's buffer to your
