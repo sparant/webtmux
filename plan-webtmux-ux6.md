@@ -86,21 +86,21 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
 
 ### Phase 1 — ⌘⌥L / MRU walk survives a reload (P0, item 1)
 
-- [ ] **P0** 1.1 New import-free `resources/js/mru-order.js`: `buildMruOrder({placements,
+- [x] **P0** 1.1 New import-free `resources/js/mru-order.js`: `buildMruOrder({placements,
       captures, recents, accessed, currentId, currentSession, occupied})` → deduped
       `[{id, session}]`, most-recently-accessed first, current window pinned at index 0,
       occupied placements dropped (except the current one), never-accessed windows tailing in
       session/index order. Placement preference for a linked window: the one whose session
       matches the current pane, else the lowest session/index.
-- [ ] **P0** 1.2 `test/mru-order.test.mjs`: empty-capture-cache-after-reload case (the
+- [x] **P0** 1.2 `test/mru-order.test.mjs`: empty-capture-cache-after-reload case (the
       reported bug), linked-window dedupe, occupied filtering, current-window pinning,
       never-accessed tail, junk input totality.
-- [ ] **P0** 1.3 Wire `SplitManager.navigateMru` to `buildMruOrder`, fed from `_placements`
+- [x] **P0** 1.3 Wire `SplitManager.navigateMru` to `buildMruOrder`, fed from `_placements`
       (server-wide directory) + `captureCache` + `recentWindows` + `captureCache.accessed`.
       Keep the snapshot-on-first-tap and deferred-recency-commit behaviour untouched.
-- [ ] **P1** 1.4 Guard the "nothing to cycle" case with a reason: if the walk has <2 entries
+- [x] **P1** 1.4 Guard the "nothing to cycle" case with a reason: if the walk has <2 entries
       because no layout has arrived yet, do nothing (as today) rather than half-cycling.
-- [ ] **P0** 1.5 Run the JS suite; commit.
+- [x] **P0** 1.5 Run the JS suite; commit.
 
 ### Phase 2 — A linked window is acknowledged once, everywhere (P0, item 6)
 
@@ -209,7 +209,7 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
 | Task | Status |
 | ---- | ------ |
 | Phase 0 setup | ✅ |
-| Phase 1 MRU order | ⬜ |
+| Phase 1 MRU order | ✅ |
 | Phase 2 linked-window ack | ⬜ |
 | Phase 3 Exposé filter | ⬜ |
 | Phase 4 paste-trim | ⬜ |
