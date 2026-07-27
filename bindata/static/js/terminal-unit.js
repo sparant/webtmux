@@ -18,7 +18,7 @@ import { arrowSequence } from './arrow-keys.js';
 import { IS_MAC } from './os.js';
 import {
   normalizeMouseMode, resolvePress, needsForcedSelection, forceSelectionModifier,
-  movedEnough, PressArbiter,
+  movedEnough, leaveCopyModeFirst, PressArbiter,
 } from './mouse-mode.js';
 
 // Protocol message types (must match Go constants)
@@ -568,6 +568,32 @@ export class TerminalUnit {
     return !!m && m !== 'none';
   }
 
+  // "Does the program in this pane want the mouse?" — which is NOT the same
+  // question as _mouseTracking() once copy mode is in play.
+  //
+  // Entering tmux copy mode makes tmux stop forwarding the pane program's mouse
+  // mode to the client, so xterm reports 'none' no matter what Claude/vim asked
+  // for. Read live, that says "plain shell" about a pane running a full TUI — and
+  // since selecting now ENTERS copy mode, the very first drag-select would flip
+  // that answer and strand every later click in the buffer.
+  //
+  // So the last answer seen OUTSIDE copy mode is remembered and used while inside
+  // it, forgotten when the window changes (a different program, a different
+  // answer). Callers that need the other question — "will xterm eat this press?",
+  // which is about mouse REPORTING and nothing else — must still use
+  // _mouseTracking() directly.
+  _programWantsMouse() {
+    const live = this._mouseTracking();
+    const win = this.layout?.activeWindowId || '';
+    if (!this.inCopyMode) {
+      this._trackingSeen = live;
+      this._trackingWin = win;
+      return live;
+    }
+    if (live) return true;
+    return this._trackingWin === win && !!this._trackingSeen;
+  }
+
   // The foreground command of the focused pane, used to key probe decisions so a
   // decision auto-invalidates when the running program changes (bash -> vim -> bash).
   _activeCommand() {
@@ -687,16 +713,29 @@ export class TerminalUnit {
       if (edgeTimer) { clearInterval(edgeTimer); edgeTimer = null; }
       if (dir !== 0) {
         edgeTimer = setInterval(() => {
-          // Selecting past the bottom/top of the visible screen is the one thing a
-          // local xterm selection cannot do alone — tmux has to scroll the pane,
-          // and scrolling the pane means copy mode. Entered lazily HERE, so an
-          // ordinary drag inside the screen costs no mode change at all.
-          if (!this.inCopyMode) {
-            this.sendMessage(MSG.TmuxCopyMode, '1');
-            this.inCopyMode = true;
-          }
+          // beginSelection has already put us here, but a stale flag or a pane that
+          // left copy mode on its own would otherwise aim a scroll at a pane in
+          // normal mode.
+          beginSelection();
           this.sendMessage(edgeDir < 0 ? MSG.TmuxScrollUp : MSG.TmuxScrollDown, '2');
         }, 120);
+      }
+    };
+
+    // A selection is genuinely under way — a drag, or a multi-click that selected a
+    // word — as opposed to a press that merely might become one. This is where the
+    // pane goes into tmux copy mode: selecting IS reading the buffer, so the mode
+    // should say so without anyone having to remember to set it, and it is what
+    // lets a drag to the pane edge scroll for more. Idempotent per gesture, so a
+    // long drag doesn't re-send it on every mousemove.
+    const beginSelection = () => {
+      if (press) {
+        if (press.selecting) return;
+        press.selecting = true;
+      }
+      if (!this.inCopyMode) {
+        this.sendMessage(MSG.TmuxCopyMode, '1');
+        this.inCopyMode = true;
       }
     };
 
@@ -705,8 +744,27 @@ export class TerminalUnit {
       resolve: (verdict) => {
         if (!press) return;
         press.verdict = verdict;
-        if (verdict === 'buffer') this._startForcedSelection(press);
-        else this._replayPressToApp(press);
+        if (verdict === 'buffer') {
+          // The drag is what resolved it, so the selection starts now. Note the
+          // order: re-dispatch BEFORE entering copy mode, so the anchor is decided
+          // against the mouse-reporting state the press was judged under.
+          this._startSelection(press);
+          beginSelection();
+          return;
+        }
+        // Going to the program instead. If a previous selection left the pane in
+        // copy mode, this click's job is to get out of it: the pane is scrolled up
+        // and reading, so a press replayed into it would land on the wrong thing.
+        // Clicking away means "done reading" — the mode drops, the highlight goes,
+        // and the NEXT click reaches the program with mouse reporting restored.
+        // (It can't be done in one press: the exit is a round-trip to tmux, and
+        // until it lands xterm is still not reporting.)
+        if (leaveCopyModeFirst({ mode: this.mouseMode, verdict, inCopyMode: this.inCopyMode })) {
+          this.exitCopyMode();
+          this.terminal?.clearSelection();
+          return;
+        }
+        this._replayPressToApp(press);
       },
     });
 
@@ -735,29 +793,43 @@ export class TerminalUnit {
       if (this.onTerminalMousedown) this.onTerminalMousedown();
 
       release();                          // whatever came before is done with
-      const tracking = this._mouseTracking();
+      // Two different questions, and conflating them is a bug in both directions:
+      //   wants — does a program want the mouse? decides WHO gets the press.
+      //   live  — is xterm reporting the mouse right now? decides whether the
+      //           press has to be forced past that reporting to select.
+      // Copy mode drives them apart: it masks the program's mouse mode, so `live`
+      // goes false while the program still wants clicks.
+      const wants = this._programWantsMouse();
+      const live = this._mouseTracking();
       const verdict = resolvePress({
         mode: this.mouseMode,
-        mouseTracking: tracking,
+        mouseTracking: wants,
         inCopyMode: this.inCopyMode,
         detail: e.detail,
       });
       press = {
         x: e.clientX, y: e.clientY,       // the ANCHOR: where the selection starts
         lastX: e.clientX, lastY: e.clientY,
-        detail: e.detail, verdict, dragging: false,
+        detail: e.detail, verdict, live, dragging: false, selecting: false,
       };
       document.addEventListener('mousemove', onDocMove, true);
       document.addEventListener('mouseup', onDocUp, true);
 
+      // A multi-click has ALREADY selected something (a word, a line) — there is no
+      // drag to wait for, so this is a selection as of right now. A single press is
+      // not: it may still turn out to be a click, and putting the pane in copy mode
+      // for every click would be worse than the problem being solved.
+      if (verdict === 'buffer' && e.detail >= 2) beginSelection();
+
+
       // Cases that need no interference: the program's press, or a selection that
-      // xterm is already able to make for itself (nothing is grabbing the mouse).
-      if (verdict !== 'defer' && !needsForcedSelection(verdict, tracking)) return;
+      // xterm is already able to make for itself (nothing is reporting the mouse).
+      if (verdict !== 'defer' && !needsForcedSelection(verdict, live)) return;
 
       // From here the program must not see this press at all.
       e.preventDefault();
       e.stopImmediatePropagation();
-      if (verdict === 'buffer') this._startForcedSelection(press);
+      if (verdict === 'buffer') this._startSelection(press);
       else arbiter.start(e.clientX, e.clientY);
     }, true);
 
@@ -772,6 +844,10 @@ export class TerminalUnit {
       if (!press.dragging) {
         if (!movedEnough(e.clientX - press.x, e.clientY - press.y)) return;
         press.dragging = true;
+        // The press has become a drag, so a selection is being made — including on
+        // the paths that never touch a synthetic event at all ('buf', and 'auto' in
+        // a plain shell, where xterm was already selecting natively).
+        beginSelection();
       }
       // Auto-scroll only when dragging near/past the top or bottom edge. Measured
       // at the document, so it keeps scrolling once the pointer leaves the pane —
@@ -826,10 +902,15 @@ export class TerminalUnit {
     try { target.dispatchEvent(ev); } finally { this._syntheticMouse = false; }
   }
 
-  // Start a local text selection at the anchor, over a program that would
-  // otherwise have eaten the press.
-  _startForcedSelection(press) {
-    this._dispatchPress(press, forceSelectionModifier(IS_MAC));
+  // Start a local text selection at the anchor, re-dispatching the press we
+  // swallowed. The force-selection modifier goes on ONLY if xterm was reporting
+  // the mouse when the press happened (press.live) — that is the only case it is
+  // needed, and adding it when xterm's own selection is already enabled means
+  // _handleIncrementalClick, i.e. extending the previous selection instead of
+  // starting a new one. That case is reachable: inside copy mode tmux stops
+  // reporting the mouse, so a deferred press there resolves with live === false.
+  _startSelection(press) {
+    this._dispatchPress(press, press.live ? forceSelectionModifier(IS_MAC) : {});
     // If the press only became a selection once the pointer had moved, xterm has
     // just anchored at the press point and knows nothing of the travel since.
     // Catch it up so the highlight covers the drag so far instead of appearing to
