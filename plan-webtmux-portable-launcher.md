@@ -380,14 +380,14 @@ install — empty means tmux's default socket, handled correctly at
 
 ## Phase 3A — Scaffold
 
-- [ ] **P0** 3.1 Create the worktree per the block above. No gate check — see Gate. *(5 min)*
+- [x] **P0** 3.1 Create the worktree per the block above. No gate check — see Gate. *(5 min)*
 
-- [ ] **P0** 3.2 Scaffold `cmd/webtmux-launch/`. The repo root stays `package main`
+- [x] **P0** 3.2 Scaffold `cmd/webtmux-launch/`. The repo root stays `package main`
       (`main.go`, `version.go`), so `go build .` still builds webtmux and
       `go build ./cmd/webtmux-launch` builds the launcher — no restructuring needed.
       *(30 min)*
 
-- [ ] **P0** 3.3 **Binary-source configuration — no embedded payload.** *(45 min)*
+- [x] **P0** 3.3 **Binary-source configuration — no embedded payload.** *(45 min)*
       *(Revised 2026-07-26: this task previously embedded gzipped webtmux binaries via
       `//go:embed payload`. See "Independent builds" above for why that is gone. Revised
       2026-07-27: adds the local-source config alongside the release config.)*
@@ -436,7 +436,7 @@ install — empty means tmux's default socket, handled correctly at
       Use `net/http` from the standard library — this adds **zero** dependencies, which
       matters given Stage D runs first specifically to shrink that surface.
 
-- [ ] **P0** 3.4 Makefile targets — a release build and a dev build. *(20 min)*
+- [x] **P0** 3.4 Makefile targets — a release build and a dev build. *(20 min)*
 
       ```make
       launcher:      # build launcher for darwin/arm64, darwin/amd64, linux/amd64
@@ -468,7 +468,7 @@ install — empty means tmux's default socket, handled correctly at
 
 ## Phase 3B — Connection flow
 
-- [ ] **P0** 3.5 **Multiplexed control connection** — one password/2FA prompt covers the
+- [x] **P0** 3.5 **Multiplexed control connection** — one password/2FA prompt covers the
       probe, the copy, and the tunnel instead of three. *(45 min)*
 
       **The mux gotcha that matters:** keepalive options set on a mux *client* are
@@ -488,7 +488,7 @@ install — empty means tmux's default socket, handled correctly at
       must handle it between retries (`ssh -O check`, and remove the socket if dead)
       or the reconnect hangs on a dead mux instead of establishing a fresh connection.
 
-- [ ] **P0** 3.6 **One-round-trip probe** — a small shell snippet returning `uname -s`,
+- [x] **P0** 3.6 **One-round-trip probe** — a small shell snippet returning `uname -s`,
       `uname -m`, `command -v tmux`, `$HOME`, whether the content-addressed binary already
       exists, and **the existing tmux session list**
       (`tmux list-sessions -F '#{session_name}' 2>/dev/null`). Fail with actionable
@@ -507,7 +507,7 @@ install — empty means tmux's default socket, handled correctly at
       `creating session 'main'`. With no `--session` and exactly one existing session,
       default to it rather than to the literal name `main`.
 
-- [ ] **P0** 3.6a **Detect an already-running webtmux** in the same round-trip, and make
+- [x] **P0** 3.6a **Detect an already-running webtmux** in the same round-trip, and make
       adopt the default when one is found. Parse `/proc/<pid>/cmdline` for port, bind
       address, `--path`, and `-c`; read `/proc/<pid>/environ` for `GOTTY_CREDENTIAL` and
       `WEBTMUX_SESSION`; `sha256sum /proc/<pid>/exe` to compare against
@@ -527,7 +527,7 @@ install — empty means tmux's default socket, handled correctly at
       Handle multiple instances: if more than one is found, list them and require
       `--remote-port` to disambiguate rather than guessing.
 
-- [ ] **P0** 3.7 **Resolve from the configured source, then deploy content-addressed** to
+- [x] **P0** 3.7 **Resolve from the configured source, then deploy content-addressed** to
       `~/.cache/webtmux/webtmux-<sha256[:12]>` on the target. *(75 min)*
       *(Revised 2026-07-26: the source is a GitHub Release rather than an embedded blob.
       Revised 2026-07-27: written against the `Source` interface so a local build
@@ -578,7 +578,7 @@ install — empty means tmux's default socket, handled correctly at
       being used this run, and never assume the running binary is one of the newest
       (adopt mode can be attached to something much older).
 
-- [ ] **P1** 3.7a **`--webtmux-binary <path>` escape hatch.** A single-file `Source`:
+- [x] **P1** 3.7a **`--webtmux-binary <path>` escape hatch.** A single-file `Source`:
       hash that exact file, push that exact file, ignore platform naming entirely. Distinct
       from 3.7b's directory — this is for a one-off ("deploy *this* binary, right now"),
       typically the output of a plain `go build` for a single target, where inventing a
@@ -589,7 +589,7 @@ install — empty means tmux's default socket, handled correctly at
       as `Exec format error` on the remote. Catch it: read the ELF/Mach-O header locally
       and refuse up front, naming both the file's architecture and the probed one.
 
-- [ ] **P0** 3.7b **Local source directory — the development path.** *(35 min)*
+- [x] **P0** 3.7b **Local source directory — the development path.** *(35 min)*
       *(Added 2026-07-27: the reason this stage no longer gates on GitHub.)*
 
       Implement the `dirSource` backend: `Digest` hashes `<dir>/webtmux-<platform>`,
@@ -617,7 +617,7 @@ install — empty means tmux's default socket, handled correctly at
       guarantees the sha reported matches the bytes deployed, so this warning is about the
       one thing it cannot catch — forgetting to rebuild.
 
-- [ ] **P0** 3.8 **Allocate ports and secret once per target — and persist them.** Local:
+- [x] **P0** 3.8 **Allocate ports and secret once per target — and persist them.** Local:
       bind `127.0.0.1:0`, read the port, close. Remote: pick a random high port, retry on
       "address already in use" (webtmux has no `--port 0`). *(40 min)*
 
@@ -628,7 +628,7 @@ install — empty means tmux's default socket, handled correctly at
       revives via its own `--reconnect` loop because the URL never changed. Fall back to
       fresh allocation if a stored port has since been taken.
 
-- [ ] **P0** 3.8a **Ship the attach script** next to the binary, as
+- [x] **P0** 3.8a **Ship the attach script** next to the binary, as
       `~/.cache/webtmux/attach-<sha>.sh`. Adapt `scripts/webtmux-docker/attach-web.sh`,
       dropping the container-specific socket default (`/host-tmux/default` → unset, i.e.
       tmux's default socket) and the legacy `WEBTMUX_GROUPED` mode. Keep modes 1 and 2
@@ -641,7 +641,7 @@ install — empty means tmux's default socket, handled correctly at
       glyph** it sends to the browser. That is a server→client downgrade — no font or
       renderer change on the client can fix it.
 
-- [ ] **P0** 3.8b **Create the base session durably**, as its own one-shot SSH command
+- [x] **P0** 3.8b **Create the base session durably**, as its own one-shot SSH command
       during setup, *before* webtmux starts: *(20 min)*
 
       ```bash
@@ -653,7 +653,7 @@ install — empty means tmux's default socket, handled correctly at
       (rather than relying on `-A` inside the supervised child) means the session's
       durability never depends on anything the supervised process does.
 
-- [ ] **P0** 3.9 **The supervised command.** Note it runs the **attach script**, not tmux
+- [x] **P0** 3.9 **The supervised command.** Note it runs the **attach script**, not tmux
       directly, and exports `WEBTMUX_SESSION` — without which `detectTmuxSession()` falls
       back to `"0"` and the sidebar controller targets a nonexistent session. *(35 min)*
 
@@ -682,12 +682,12 @@ install — empty means tmux's default socket, handled correctly at
 
 ## Phase 3C — Supervision and UX
 
-- [ ] **P0** 3.10 **Readiness poll, then open the browser once.** Poll
+- [x] **P0** 3.10 **Readiness poll, then open the browser once.** Poll
       `http://127.0.0.1:<local>/<secret>/` until 200 (with timeout), then `open` (macOS) /
       `xdg-open` (Linux) / `rundll32` (Windows). Only on **first** success — never on
       reconnect, or every network blip spawns a tab. *(30 min)*
 
-- [ ] **P0** 3.11 **Supervisor loop.** Restart with exponential backoff starting at **1s**
+- [x] **P0** 3.11 **Supervisor loop.** Restart with exponential backoff starting at **1s**
       (so a transient blip recovers almost instantly) capped at 30s, resetting after any
       connection that survived >60s. Surface ssh's own stderr rather than swallowing it —
       SSH's messages are better than anything we'd invent. Ctrl-C tears down the child and
@@ -699,12 +699,12 @@ install — empty means tmux's default socket, handled correctly at
       `-o ConnectTimeout=10` so a dead network fails fast instead of hanging on the
       default TCP timeout — without it a reconnect attempt can appear frozen for minutes.
 
-- [ ] **P1** 3.11a **Reconnect status line.** On drop, print a single updating line
+- [x] **P1** 3.11a **Reconnect status line.** On drop, print a single updating line
       (`reconnecting… attempt 3, next in 4s`) rather than a scrolling log. The user's
       browser is already showing a frozen terminal; the launcher's job is to say whether
       it is working on it. *(20 min)*
 
-- [ ] **P1** 3.12 **Flags and errors.** *(35 min)*
+- [x] **P1** 3.12 **Flags and errors.** *(35 min)*
 
       `--local-port`, `--remote-port`, `--session` (tmux session name), `--no-browser`,
       `--auth`, `--force-copy`, `--arch` (override probe), `--verbose` (echo ssh command
@@ -989,3 +989,29 @@ After 3.21 passes, retire the two completed legacy plans (`plan-webtmux-split.md
 `plan-webtmux-capture-expose.md`) under CLEANUP mode, and consider whether the host-side
 Docker deployment is still worth keeping now that a native binary needs no tmux
 version-pinning, no socket mount, and no uid/gid matching.
+
+---
+
+## Execution notes
+
+*(Added during execution, 2026-07-27.)*
+
+- **3.8a — the attach script is content-addressed on its OWN sha**, not the
+  binary's (`attach-<script sha12>.sh`). The plan wrote `attach-<sha>.sh` next to
+  `webtmux-<sha>`, which reads as the binary's. Keying it to its own content is
+  strictly more correct: otherwise editing the script without changing the
+  binary would leave the stale copy in place on every target that already had
+  one — exactly the class of bug content-addressing exists to prevent.
+- **3.5 — `ControlPath` uses our own hash of the target**, not ssh's `%C`. After
+  a drop the master dies and can leave a stale socket; removing it requires
+  knowing the path, which `%C` (expanded inside ssh) does not give us. The hash
+  keeps the path just as short, which is the property `%C` was there for.
+- **3.6 — "does the content-addressed binary exist?" is answered from the
+  probe's `ls -t ~/.cache/webtmux` listing**, not a `test -x` of a path the
+  probe cannot yet know (the sha depends on the platform the probe is
+  discovering). Same single round trip, no chicken-and-egg.
+- **3.9 — `--pass-headers` is NOT needed, confirmed by reading the code.**
+  `server/handlers.go:161` creates the header map itself when injecting
+  `Webtmux-Session`, so the split-view channel works whether or not the flag is
+  set; the flag gates only *client-supplied* request headers
+  (`server/handlers.go:96`). 3.15c verifies this live.

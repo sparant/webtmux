@@ -24,7 +24,24 @@ PLATFORMS = \
 
 export CGO_ENABLED=0
 
-.PHONY: all build clean test test-js install cross-compile release help check-js docker-artifact
+.PHONY: all build clean test test-js install cross-compile release help check-js docker-artifact launcher launcher-dev
+
+# webtmux-launch: the SSH launcher. It carries no webtmux payload — it resolves
+# the target's platform over SSH and gets the matching binary from whichever
+# source is configured — so it builds from its own source alone, needs no
+# cross-compiled webtmux as a prerequisite, and cannot ship a stale one.
+LAUNCHER_NAME = webtmux-launch
+LAUNCHER_PLATFORMS = darwin/arm64 darwin/amd64 linux/amd64
+# RepoOwner is filled in by Stage 0 (the GitHub fork); until then a release
+# build has no release to fetch from and must be pointed at a local source.
+LAUNCHER_REPO_OWNER ?=
+LAUNCHER_REPO_NAME ?= webtmux
+LAUNCHER_WEBTMUX_VERSION ?= v0.1.0
+LAUNCHER_LDFLAGS = -s -w \
+  -X main.Version=$(VERSION) \
+  -X main.RepoOwner=$(LAUNCHER_REPO_OWNER) \
+  -X main.RepoName=$(LAUNCHER_REPO_NAME) \
+  -X main.DefaultWebtmuxVersion=$(LAUNCHER_WEBTMUX_VERSION)
 
 # Default target
 all: build
@@ -123,6 +140,34 @@ cross-compile: clean sync-assets
 	@echo "Done! Binaries in $(OUTPUT_DIR)/"
 	@ls -lh $(OUTPUT_DIR)/
 
+# Release build of the launcher, for the platforms a Mac/Linux user runs it on.
+# main.DefaultSource is left EMPTY on purpose: a released launcher that defaulted
+# to some directory on the builder's machine would look for a path that does not
+# exist on the user's. Asserted by TestReleaseBuildHasNoDefaultSource.
+launcher:
+	@mkdir -p $(OUTPUT_DIR)
+	@echo "Building $(LAUNCHER_NAME) $(VERSION)..."
+	@for platform in $(LAUNCHER_PLATFORMS); do \
+		os=$$(echo $$platform | cut -d/ -f1); \
+		arch=$$(echo $$platform | cut -d/ -f2); \
+		echo "  Building $$os/$$arch..."; \
+		GOOS=$$os GOARCH=$$arch go build -ldflags "$(LAUNCHER_LDFLAGS)" \
+			-o $(OUTPUT_DIR)/$(LAUNCHER_NAME)-$$os-$$arch ./cmd/$(LAUNCHER_NAME) || exit 1; \
+	done
+	@ls -lh $(OUTPUT_DIR)/$(LAUNCHER_NAME)-*
+
+# Dev build: host platform only (a cross-compile matrix in an inner loop is
+# wasted seconds), with builds/ baked in as the binary source. The full local
+# workflow is then two commands with nothing to export and nothing to remember:
+#
+#   make cross-compile
+#   make launcher-dev && ./builds/webtmux-launch testbox
+launcher-dev:
+	@mkdir -p $(OUTPUT_DIR)
+	go build -ldflags "$(LAUNCHER_LDFLAGS) -X main.DefaultSource=$(abspath $(OUTPUT_DIR))" \
+		-o $(OUTPUT_DIR)/$(LAUNCHER_NAME) ./cmd/$(LAUNCHER_NAME)
+	@echo "Done: $(OUTPUT_DIR)/$(LAUNCHER_NAME) (source: $(abspath $(OUTPUT_DIR)))"
+
 # Create release archives
 release: cross-compile
 	@echo "Creating release archives..."
@@ -154,6 +199,8 @@ help:
 	@echo "  make test         Run tests"
 	@echo "  make clean        Remove build artifacts"
 	@echo "  make cross-compile Build for all platforms"
+	@echo "  make launcher     Build webtmux-launch for release (no baked-in source)"
+	@echo "  make launcher-dev Build webtmux-launch for the host, deploying from ./builds"
 	@echo "  make docker-artifact Build builds/webtmux-<os>-<arch> in a container (no local Go)"
 	@echo "  make release      Create release archives"
 	@echo "  make assets       Copy JS assets to bindata"
