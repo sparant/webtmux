@@ -29,6 +29,7 @@ import { CaptureCache } from './capture-cache.js';
 import { HoverPreview } from './hover-preview.js';
 import { WorkAlerts, hiddenAlerts, alertOf } from './work-alerts.js';
 import { clampRecentsMax, RecentsPersistence } from './recents-strip.js';
+import { buildMruOrder } from './mru-order.js';
 import { readSplitState } from './split-state.js';
 import { resolveRestoreView } from './restore-view.js';
 import { saveOkText } from './save-target.js';
@@ -1277,34 +1278,31 @@ export class SplitManager {
   // cycle starts and reused until the chord is released (_endMruCycle): each hop
   // really switches tmux — which re-ranks recency — so re-reading the order mid-walk
   // would make it squirm under you. dir = +1 forward (older), -1 backward (Shift+L).
+  //
+  // The ranking itself lives in mru-order.js. It used to be built here from
+  // captureCache.all('recent') alone, which meant the chord did NOTHING for the first
+  // few seconds after a browser reload with the sidebar collapsed: nothing was
+  // requesting captures, so there were no candidates to rank (the recency map itself
+  // reloads fine — it rides @wt_state). The candidate set is now the server-wide
+  // window directory, which arrives with every layout push whether or not anything is
+  // capturing. See mru-order.js.
   navigateMru(dir) {
     const focused = this.focusedUnit;
     if (!focused) return;
     if (!this._mruCycle) {
-      const occupied = this.occupiedWindowIds(focused);
-      const curId = focused.layout?.activeWindowId;
-      const curSession = this.logicalSession(focused);
-      // Every captured window, most-recently-accessed first (the shared Exposé
-      // "recent" sort), DEDUPED by window id: a window linked into two sessions has
-      // two placements, but the walk must visit it once — else a tap could land on
-      // the SAME screen (its other placement) and look like it did nothing. Drop
-      // placements another pane already shows; always keep our own current window.
-      const seen = new Set();
-      const order = this.captureCache.all('recent')
-        .map((c) => ({ id: c.windowId, session: c.sessionName || '' }))
-        .filter((e) => {
-          if (!(e.id === curId || !occupied.has(e.id))) return false;
-          if (seen.has(e.id)) return false;
-          seen.add(e.id);
-          return true;
-        });
-      // Pin the current window to position 0 (match by id, robust to a session-name
-      // mismatch between the capture and the pane's logical session) so the first
-      // forward tap lands on the PREVIOUS window — classic alt-tab feel.
-      let pos = order.findIndex((e) => e.id === curId);
-      if (pos === -1) order.unshift({ id: curId, session: curSession });
-      else if (pos > 0) order.unshift(order.splice(pos, 1)[0]);
-      if (order.length < 2) return; // nothing else to cycle to
+      const order = buildMruOrder({
+        placements: this._placements || [],
+        captures: this.captureCache.all('recent'),
+        recents: this.recentWindows,
+        accessed: this.captureCache.accessed,
+        currentId: focused.layout?.activeWindowId,
+        currentSession: this.logicalSession(focused),
+        occupied: this.occupiedWindowIds(focused),
+      });
+      // Fewer than two stops means there is nowhere to go — no layout has landed yet,
+      // or this really is the only window. Either way, do nothing rather than
+      // "cycling" back into the window we are already in.
+      if (order.length < 2) return;
       this._mruCycle = { order, pos: 0, unit: focused, last: null };
     }
     const c = this._mruCycle;
@@ -1340,12 +1338,22 @@ export class SplitManager {
     // covered by _accessSeenId below, not by its (now removed) suppress entry.
     for (const e of c.order) unit._suppressAccessIds.delete(e.id);
     unit._accessSeenId = t.id;   // it's the shown window now; keep the layout path from re-noting
-    const meta = this._metaFor(unit, t.id);
     const cap = this.captureCache.get(t.id);
+    // Label the new strip entry from the pane's live window list, then the capture,
+    // then the window DIRECTORY — the last of which is the only source that covers a
+    // window in a session this pane isn't attached to when nothing has captured it.
+    // That is the same gap that used to make the walk itself come up empty after a
+    // reload; without it the tab lands in the strip labelled 'bash'. (Deliberately
+    // not _metaFor: its 'bash' placeholder is always truthy and would swallow both
+    // fallbacks.)
+    const live = (unit.layout?.windows || []).find((w) => w.id === t.id);
+    const dir = (this._placements || []).find(
+      (p) => p.id === t.id && (!t.session || p.session === t.session),
+    ) || (this._placements || []).find((p) => p.id === t.id);
     this.noteAccess(t.id, {
-      index: meta.index != null ? meta.index : cap?.index,
-      name: meta.name || cap?.name || 'bash',
-      session: t.session || meta.session || '',
+      index: live?.index ?? cap?.index ?? dir?.index,
+      name: live?.name || cap?.name || dir?.name || 'bash',
+      session: t.session || this.logicalSession(unit) || '',
     });
   }
 

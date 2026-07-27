@@ -9,6 +9,7 @@ import { ALERT_CSS, alertClass, alertTip } from '../alert-flash.js';
 import { alertOf } from '../work-alerts.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
 import { ConfirmPopup, CONFIRM_CSS } from '../confirm-popup.js';
+import { trimPastedName } from '../paste-name.js';
 
 // How many renders revealWindow's "scroll this row into view" waits for its row to
 // appear. A cross-session reveal needs the new session's window list to arrive, which
@@ -113,6 +114,23 @@ class WebtmuxSidebar extends LitElement {
       color: #4a9eff;
       font-family: monospace;
       font-size: 12px;
+    }
+
+    /* The two panel toggles, side by side and equal width. They wrap back to one per
+       line if the panel is ever narrow enough that the labels would clip — abbreviating
+       is worth a row, truncating is not. */
+    .mode-pair {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .mode-pair .mode-btn {
+      flex: 1 1 120px;
+      width: auto;
+      padding-left: 4px;
+      padding-right: 4px;
+      white-space: nowrap;
     }
 
     .mode-btn {
@@ -573,23 +591,46 @@ class WebtmuxSidebar extends LitElement {
   modeRow() {
     // "Close this region" only makes sense for an added (non-primary) region.
     const canClose = this.unit && !this.unit.primary;
+    // The two panel toggles share one line. They were full-width stacked buttons whose
+    // labels spelled out the whole state ("▣ Hover over terminal", "📌 Pinned (stays
+    // open)"), which cost two rows at the top of a panel whose actual job is the window
+    // list — and the prose was in the label, where it is read every time, rather than in
+    // the hover, where it is read once. Abbreviated to the word that differs, with the
+    // full explanation moved to the shared hint (the same ~600ms tooltip the stoplight
+    // dots use, so a hover here doesn't answer more slowly than a hover there).
+    //
+    // ✕ Close this region stays full-width below: it destroys something, and a
+    // destructive control should not sit shoulder-to-shoulder with two harmless toggles
+    // where a mis-aimed click lands on it.
     return html`
       <div class="mode-row">
         <div class="shortcut-hint">Toggle panel: <kbd>${MOD_KEYS[0]}</kbd>+<kbd>${MOD_KEYS[1]}</kbd>+<kbd>W</kbd></div>
-        <button
-          class="mode-btn"
-          @click=${this.toggleOverlay}
-          title="Hover = float over the terminal; Side-by-side = shrink the terminal to sit beside the pane"
-        >
-          ${this.overlay ? '▣ Hover over terminal' : '⇔ Side-by-side'}
-        </button>
-        <button
-          class="mode-btn"
-          @click=${this.togglePin}
-          title="Auto-hide = the panel closes when you click into the terminal, or press Enter to accept a window. Pinned = it stays open through both; only the ✕/${chord('W')}/Escape close it."
-        >
-          ${this.pinned ? '📌 Pinned (stays open)' : '📌 Auto-hide'}
-        </button>
+        <div class="mode-pair">
+          <button
+            class="mode-btn"
+            @mouseenter=${(e) => this._tip.enter(e, 'How the panel shares space with the terminal.\n'
+              + `▸ ${this.overlay ? 'float' : 'mount'} — ${this.overlay
+                ? 'floating OVER the terminal; the terminal keeps its full width'
+                : 'MOUNTED beside the terminal, which shrinks to make room'}\n`
+              + `Click for ${this.overlay ? 'mount' : 'float'}.`)}
+            @mouseleave=${() => this._tip.leave()}
+            @click=${this.toggleOverlay}
+          >
+            ${this.overlay ? '▣ float' : '⇔ mount'}
+          </button>
+          <button
+            class="mode-btn"
+            @mouseenter=${(e) => this._tip.enter(e, 'What closes the panel.\n'
+              + `▸ ${this.pinned ? 'pinned' : 'auto hide'} — ${this.pinned
+                ? `it stays open when you click into the terminal or accept a window; only ✕ / ${chord('W')} / Escape close it`
+                : 'it closes when you click into the terminal, or press Enter to accept a window'}\n`
+              + `Click to ${this.pinned ? 'let it auto hide' : 'pin it open'}.`)}
+            @mouseleave=${() => this._tip.leave()}
+            @click=${this.togglePin}
+          >
+            ${this.pinned ? '📌 pinned' : '📌 auto hide'}
+          </button>
+        </div>
         ${canClose ? html`
           <button
             class="mode-btn"
@@ -630,6 +671,7 @@ class WebtmuxSidebar extends LitElement {
               class="session-edit"
               .value=${sess.name}
               @keydown=${(e) => this.onSessionRenameKey(e, sess.name)}
+              @paste=${(e) => this.onNamePaste(e)}
               @blur=${(e) => this.commitSessionRename(e, sess.name)}
               @click=${(e) => e.stopPropagation()}
             >`
@@ -679,6 +721,7 @@ class WebtmuxSidebar extends LitElement {
               class="window-edit"
               .value=${win.name || ''}
               @keydown=${(e) => this.onRenameKey(e, win.id)}
+              @paste=${(e) => this.onNamePaste(e)}
               @blur=${(e) => this.commitRename(e, win.id)}
               @click=${(e) => e.stopPropagation()}
             >`
@@ -1304,6 +1347,31 @@ class WebtmuxSidebar extends LitElement {
       // the reason Escape-after-rename didn't collapse the panel.
       this.focusPanel();
     }
+  }
+
+  // Paste into either rename input (window or session): insert the PATH-TRIMMED text
+  // rather than the raw clipboard. Renaming is very often "call it after the thing I am
+  // working on", and the thing is on the clipboard as a path —
+  // `webtmux/plan-webtmux-portable-deps.md` when what you want is
+  // `plan-webtmux-portable-deps`. See paste-name.js for what is and isn't trimmed.
+  //
+  // Only the paste path goes through this; typing is untouched, so the transform is
+  // always attached to an action the user just took and stays editable afterwards. The
+  // insert respects the current selection (a paste over selected text replaces it, as
+  // it would natively) and leaves the caret after the inserted text — a select-all
+  // would make the next keystroke destroy what you just pasted.
+  onNamePaste(e) {
+    const raw = e.clipboardData?.getData('text');
+    if (!raw) return;                          // non-text paste: let the browser have it
+    const trimmed = trimPastedName(raw);
+    if (!trimmed || trimmed === raw) return;   // nothing to improve; default paste
+    e.preventDefault();
+    const input = e.target;
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? start;
+    input.value = input.value.slice(0, start) + trimmed + input.value.slice(end);
+    const caret = start + trimmed.length;
+    input.setSelectionRange(caret, caret);
   }
 
   commitRename(e, windowId) {

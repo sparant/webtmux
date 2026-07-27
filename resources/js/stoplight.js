@@ -43,3 +43,46 @@ export const WORK_LEGEND = [
 export function workTip(working) {
   return `${workLabel(working)}\n\n${WORK_LEGEND}`;
 }
+
+// --- filtering BY stoplight ---------------------------------------------------
+// Exposé can narrow its grid to one work status, which turns "every window on the
+// server" into a triage board: show me only the ones that need me. The vocabulary
+// lives here with the rest of the stoplight's meaning rather than in the overlay,
+// because a filter called "idle" that disagreed with the dot labelled "waiting for
+// work to do" would be two names for one state — the exact failure this module was
+// extracted to prevent.
+//
+// `working` is deliberately the ONLY narrowing axis. A window is either doing work,
+// blocked on you, out of work, or silent; there is nothing else the stoplight knows,
+// and a filter that combined statuses ("anything but green") would need a name that
+// says which combination it means.
+export const STATUS_FILTERS = [
+  { id: 'all',       label: 'All',       hint: 'every window, whatever it is doing' },
+  { id: 'working',   label: 'Working',   hint: 'green — busy right now' },
+  { id: 'attention', label: 'Needs you', hint: 'amber — prompting: blocked until you answer' },
+  { id: 'idle',      label: 'Idle',      hint: 'red — reported that it has run out of work to do' },
+];
+
+// Coerce a stored/typed filter id into a real one. Total, like the other readers of
+// @wt_state: the blob is user-writable tmux state, and an unknown id must degrade to
+// showing everything rather than to an empty grid with no way back — 'all' is the only
+// safe default because it is the only value that can't hide the control's own effect.
+export function normalizeStatusFilter(raw) {
+  return STATUS_FILTERS.some((f) => f.id === raw) ? raw : 'all';
+}
+
+// Does a window with this @wt_working value pass the filter?
+//
+// '' (never set, or `set -u`) passes ONLY under 'all'. It is tempting to fold it into
+// idle — a silent window is usually doing nothing — but "not reporting" is the absence
+// of a claim, not a claim of idleness: most windows on a server never install the hook
+// at all, and lumping them in would make "Idle" mean "everything except my agents" and
+// bury the handful of windows that genuinely said they had run out of work.
+export function matchesStatus(working, filter) {
+  switch (normalizeStatusFilter(filter)) {
+    case 'working':   return working === '1';
+    case 'attention': return working === '2';
+    case 'idle':      return working === '0';
+    default:          return true;
+  }
+}

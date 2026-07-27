@@ -26,7 +26,7 @@ A UI replacement for tmux Prefix+W. Lets you manage windows/sessions - create/de
 - Drag windows to reorder
 - Drag a window onto a session tab to link it there
 - Hover × kills a window — or just unlinks it when it lives in other sessions too
-- Double-click renames windows and sessions inline
+- Double-click renames windows and sessions inline; pasting a path into the rename box trims it to the basename without its extension (`webtmux/plan-webtmux-portable-deps.md` → `plan-webtmux-portable-deps`)
 - "+" creates a session or a window
 - session and window order persists
 
@@ -47,15 +47,14 @@ A tab flashes amber when its window has stopped working and an arrow flashes whe
 - Attention arrow (→) at the end of the strip counts and flashes for windows that need you but are visible nowhere; clicking it opens the most recent one for preview.
 - App wide toggles:
   - Copy-mode indicator/toggle
-  - scroll-mode toggle.
-  - mouse click/drag ("sel") toggle — who gets a mouse press, the program or a text selection.
+  - a single **mouse capture** dropdown holding both gesture questions — `click+drag:` (who gets a mouse press, the program or a text selection) and `copymode on scroll:` (who gets the wheel).
   - save (⤓) button to download your buffer locally or remotely
   - focus dots tell you what region you are in.
   - a hidden build-id chip (Ctrl+Alt+B, copies the build id when revealed).
 
 ### Exposé (window mosaic)
 
-Bring up a mac style Exposé view to see 4 or 9 windows at once. Syllable substring search for filtering. scroll to others. Ordering by most recent lets you quickly find what you were working on, and see status of multiple windows at once.
+Bring up a mac style Exposé view to see 4 or 9 windows at once. Syllable substring search for filtering. scroll to others. Ordering by most recent lets you quickly find what you were working on, and see status of multiple windows at once. A **Show** filter narrows the mosaic to one work status — working / needs you / idle — which turns it into a triage board when a dozen agents are running.
 
 ![Exposé replayed: Ctrl+Alt+E opens the mosaic, pressing again densifies 2×2 to 3×3, typing filters by name, Enter switches the focused region](screenshots/expose.gif)
 
@@ -126,7 +125,7 @@ Keep an eye on specific windows, even while you focus on others.
 - Cmd/Ctrl+C copies and stays in copy mode (grab several regions); Cmd/Ctrl+V exits copy mode first so the paste lands at the prompt; dragging to the pane edge auto-scrolls the buffer; selection highlight clears after copy.
 - Clipboard copy works on plain-HTTP LAN access (falls back when the secure clipboard API is missing); large pastes no longer drop the connection.
 - Scroll-mode choices including an "auto+" default and adaptive wheel modes; Ctrl+Alt+[ toggles copy/scrollback mode.
-- **Click-and-drag selects text even over a program holding the mouse** (Claude Code, vim, htop) — no entering copy mode by hand first. The toolbar's "sel" button cycles who gets a press, in the same four steps as the scroll toggle: `app` (all to the program) / `buf` (all to the buffer) / `auto` (a program that asked for the mouse gets it) / `auto+` (the default: clicks reach the program, drags select). Shift-drag (⌥-drag on a Mac) still forces a selection in any mode.
+- **Click-and-drag selects text even over a program holding the mouse** (Claude Code, vim, htop) — no entering copy mode by hand first. The toolbar's mouse-capture dropdown sets who gets a press under `click+drag:`, in the same four steps as the wheel under `copymode on scroll:`: `app` (all to the program) / `buf` (all to the buffer) / `auto` (a program that asked for the mouse gets it) / `auto+` (the default: clicks reach the program, drags select). Shift-drag (⌥-drag on a Mac) still forces a selection in any mode.
 - Starting a selection puts the pane in copy mode for you, so the indicator is honest and dragging to the pane edge scrolls for more. In `auto+`, clicking away drops back out of copy mode — the click after that reaches the program as usual.
 
 ### Save pane buffer to a file
@@ -167,7 +166,7 @@ tmux set -w @wt_working 0     # red    — waiting for work to do
 tmux set -w -u @wt_working    # unset  — unfilled dot, "not reporting"
 ```
 
-That is the whole API: any script, agent hook, or build wrapper can write it, and every surface showing that window (recents tab, sidebar row, preview tile, Exposé tile) updates within ~500 ms. A drop out of green flashes everywhere the window appears until you view it.
+That is the whole API: any script, agent hook, or build wrapper can write it, and every surface showing that window (recents tab, sidebar row, preview tile, Exposé tile) updates within ~500 ms. A drop out of green flashes everywhere the window appears until you view it — viewing it once is enough, even for a window linked into several sessions.
 
 ### Bash shells
 

@@ -94,18 +94,66 @@ test('a window focused as it stops never flashes', () => {
   assert.equal(out[0].alert, '');
 });
 
-test('the same window in two sessions is acknowledged per tab', () => {
-  // A linked window earns a tab per session; focusing it in one says nothing about
-  // the other, so the alerts must not share a key.
+// A linked window earns a tab per session, so it RAISES in both — but the two tabs are
+// two doors onto one screen, so looking through either one acknowledges both. (This
+// used to assert the opposite; see the keying note in work-alerts.js for why it
+// changed.)
+const linked = (working, activeIn) => [
+  tab('@1', working, { session: 'services', active: activeIn === 'services' }),
+  tab('@1', working, { session: 'editors', active: activeIn === 'editors' }),
+];
+
+test('a linked window flashes in every session it is placed in', () => {
   const a = new WorkAlerts();
-  const strip = (working, activeIn) => [
-    tab('@1', working, { session: 'services', active: activeIn === 'services' }),
-    tab('@1', working, { session: 'editors', active: activeIn === 'editors' }),
-  ];
-  run(a, strip('1'), strip('0'));
-  const out = run(a, strip('0', 'services'));
+  const out = run(a, linked('1'), linked('0'));
+  assert.equal(out[0].alert, '0');
+  assert.equal(out[1].alert, '0');
+});
+
+test('viewing a linked window in ONE session clears the flash in all of them', () => {
+  const a = new WorkAlerts();
+  run(a, linked('1'), linked('0'));
+  const out = run(a, linked('0', 'services'));
   assert.equal(out[0].alert, '', 'the tab you focused is acknowledged');
-  assert.equal(out[1].alert, '0', 'the other session keeps flashing');
+  assert.equal(out[1].alert, '', 'and so is the other door onto the same screen');
+});
+
+test('acknowledging the LATER placement in the list still clears the earlier one', () => {
+  // The pass that clears has to see the whole poll before it decides: the placement
+  // you are looking at is often listed after the one that must stop flashing.
+  const a = new WorkAlerts();
+  run(a, linked('1'), linked('0'));
+  const out = run(a, linked('0', 'editors'));
+  assert.equal(out[0].alert, '', 'services tab quiet even though editors comes second');
+  assert.equal(out[1].alert, '');
+});
+
+test('an acknowledged linked window does not re-raise when you look away', () => {
+  const a = new WorkAlerts();
+  run(a, linked('1'), linked('0'), linked('0', 'services'));
+  const out = run(a, linked('0'));          // still red, nobody viewing it
+  assert.equal(out[0].alert, '', 'no second transition, so no second flash');
+  assert.equal(out[1].alert, '');
+});
+
+test('a linked window that drops out of green again DOES flash again', () => {
+  const a = new WorkAlerts();
+  run(a, linked('1'), linked('0'), linked('0', 'services'));
+  const out = run(a, linked('1'), linked('2'));
+  assert.equal(out[0].alert, '2', 'fresh news is announced in both tabs');
+  assert.equal(out[1].alert, '2');
+});
+
+test('an unviewed linked window keeps flashing in both tabs', () => {
+  const a = new WorkAlerts();
+  const other = (working) => [
+    ...linked(working),
+    tab('@2', working, { session: 'services', active: true }),
+  ];
+  const out = run(a, other('1'), other('0'));
+  assert.equal(out[0].alert, '0');
+  assert.equal(out[1].alert, '0');
+  assert.equal(out[2].alert, '', 'the window you are actually looking at is quiet');
 });
 
 test('a tab leaving the strip forgets its state, so re-entering does not re-flash', () => {

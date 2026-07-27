@@ -1,6 +1,6 @@
 // Ad-hoc verification driver for the toolbar/sidebar UX batch:
 //   1. the recents strip's tab count is settable from the "Recent ▾" menu
-//   2. the pin button reads Auto-hide / Pinned (stays open), and a PINNED panel
+//   2. the pin button reads auto hide / pinned, and a PINNED panel
 //      survives Enter the way it already survives a row click
 //   3. ↑/↓ keep working after a window row is clicked
 //   4. the toolbar spinner goes red when the socket to tmux drops
@@ -151,7 +151,7 @@ async function main() {
       return { text: b.textContent.trim(), pinned: el.pinned };
     });
   }
-  check('unpinned reads "Auto-hide"', pin.text === '📌 Auto-hide', pin.text);
+  check('unpinned reads "auto hide"', pin.text === '📌 auto hide', pin.text);
 
   // Auto-hide: Enter still dismisses (the old behavior must not regress).
   await page.keyboard.press('ArrowDown');
@@ -168,7 +168,7 @@ async function main() {
   await sleep(400);
   const pinnedText = await sidebar((el, rr) =>
     [...rr.querySelectorAll('.mode-btn')].find((x) => x.textContent.includes('📌')).textContent.trim());
-  check('pinned reads "Pinned (stays open)"', pinnedText === '📌 Pinned (stays open)', pinnedText);
+  check('pinned reads "pinned"', pinnedText === '📌 pinned', pinnedText);
 
   await page.keyboard.press('ArrowDown');
   await sleep(700);
