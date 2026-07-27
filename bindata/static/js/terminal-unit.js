@@ -499,9 +499,9 @@ export class TerminalUnit {
           // Swipe up (deltaY > 0) = scroll DOWN in history (show newer)
           // Swipe down (deltaY < 0) = scroll UP in history (show older)
           if (deltaY > 0) {
-            this.sendMessage(MSG.TmuxScrollDown, String(lines));
+            this._scrollBuffer(false, lines);
           } else {
-            this.sendMessage(MSG.TmuxScrollUp, String(lines));
+            this._scrollBuffer(true, lines);
           }
           touchStartY = e.touches[0].clientY;
         }
@@ -524,7 +524,7 @@ export class TerminalUnit {
       }
       if (this.inCopyMode) {
         // Wheel up (deltaY < 0) = older history; down = newer.
-        this.sendMessage(event.deltaY < 0 ? MSG.TmuxScrollUp : MSG.TmuxScrollDown, String(lines));
+        this._scrollBuffer(event.deltaY < 0, lines);
         return false; // Prevent default scroll
       }
       return true; // not in copy mode + wheel-down => nothing to do, pass through
@@ -665,7 +665,7 @@ export class TerminalUnit {
         this.sendMessage(MSG.TmuxCopyMode, '1');
         this.inCopyMode = true;
       }
-      this.sendMessage(MSG.TmuxScrollUp, String(this._probeLines));
+      this._scrollBuffer(true, this._probeLines);
     }
     this._probing = false;
     this._probeBefore = null;
@@ -741,7 +741,7 @@ export class TerminalUnit {
           // left copy mode on its own would otherwise aim a scroll at a pane in
           // normal mode.
           beginSelection();
-          this.sendMessage(edgeDir < 0 ? MSG.TmuxScrollUp : MSG.TmuxScrollDown, '2');
+          this._scrollBuffer(edgeDir < 0, 2);
         }, 120);
       }
     };
@@ -1112,6 +1112,59 @@ export class TerminalUnit {
   // normal mouse-report path.
   _replayPressToApp(press) {
     this._dispatchPress(press, {});
+  }
+
+  // Scroll the tmux buffer, and take any highlight with it.
+  //
+  // Every scroll goes through here rather than sending the message directly,
+  // because scrolling in copy mode is not an xterm scroll and xterm cannot know
+  // about it. This terminal runs with scrollback: 0 — tmux owns the history — so
+  // asking tmux to scroll makes it REPAINT the same viewport with different text.
+  // No line ever moves as far as xterm is concerned, so nothing adjusts a selection
+  // the way xterm's own trim handling would, and the highlight sits at fixed screen
+  // coordinates while other text slides underneath it.
+  //
+  // We are the ones who know the scroll happened, and by how many lines, so we are
+  // the ones who have to move the selection: `up` shows OLDER text, which pushes
+  // the content already on screen DOWN by that many rows.
+  _scrollBuffer(up, lines) {
+    const n = Math.max(1, Number(lines) || 1);
+    // Scrolling ends the copy-mode-transition repair watcher. Without this it
+    // fights the scroll: a selection that this shift deliberately drops (because it
+    // scrolled out of view) looks to the watcher like the wipe it exists to undo,
+    // and it puts the highlight back at the old screen position — over whatever
+    // text has just slid into that spot. A scroll means the drag is well behind us.
+    if (this._selGuard) { clearTimeout(this._selGuard); this._selGuard = null; }
+    this._selGuardPress = null;
+    this.sendMessage(up ? MSG.TmuxScrollUp : MSG.TmuxScrollDown, String(n));
+    this._shiftSelection(up ? n : -n);
+  }
+
+  // Move the selection `rows` down the buffer (negative = up), clipping it to what
+  // is still on screen and dropping it once it has scrolled entirely out of view —
+  // a highlight parked on a line nobody can see is worse than none.
+  _shiftSelection(rows) {
+    const t = this.terminal;
+    if (!rows || !t) return;
+    const pos = t.getSelectionPosition();
+    if (!pos) return;
+    const cols = t.cols;
+    const lastRow = (t.buffer?.active?.length || t.rows) - 1;
+    let sy = pos.start.y + rows, sx = pos.start.x;
+    let ey = pos.end.y + rows, ex = pos.end.x;
+    // Guarded because re-selecting fires selection-change events, and the repair
+    // watcher from a just-finished drag must not read this as a wipe to undo.
+    this._restoringSelection = true;
+    try {
+      if (ey < 0 || sy > lastRow) { t.clearSelection(); return; }
+      if (sy < 0) { sy = 0; sx = 0; }                 // clip the part scrolled off the top
+      if (ey > lastRow) { ey = lastRow; ex = cols; }  // ...and off the bottom
+      const length = (ey - sy) * cols + (ex - sx);
+      if (length <= 0) { t.clearSelection(); return; }
+      t.select(sx, sy, length);
+    } finally {
+      this._restoringSelection = false;
+    }
   }
 
   connect() {
