@@ -186,19 +186,27 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
 
 ### Phase 7 — Verify
 
-- [ ] **P0** 7.1 `make sync-assets`; confirm `resources/js` and `bindata/static/js` are
+- [x] **P0** 7.1 `make sync-assets`; confirm `resources/js` and `bindata/static/js` are
       identical; commit both trees.
-- [ ] **P0** 7.2 Full JS suite + `make check-js` in the worktree.
-- [ ] **P0** 7.3 `go vet ./... && go test ./... && go build` in `golang:1.23`
+- [x] **P0** 7.2 Full JS suite + `make check-js` in the worktree.
+- [x] **P0** 7.3 `go vet ./... && go test ./... && go build` in `golang:1.23`
       (`-buildvcs=false`), and curl a served `/js/*.js` to prove the embedded copy carries the
-      change (the decisive bindata check).
-- [ ] **P1** 7.4 Browser assertions via `screenshots/harness/run.sh DRIVER=verify-ux6.js`:
+      change (the decisive bindata check). **17/17 passed** — vet/test/build, HTTP 200 boot,
+      ten served-marker checks, the old `sel` labels gone, one trigger not two, and
+      `@wt_state` round-tripping the new Exposé pref. The ad-hoc script that ran it is NOT
+      committed (its markers rot the moment the batch lands); the reusable half is
+      `screenshots/harness/verify-ux6.js`.
+- [x] **P1** 7.4 Browser assertions via `screenshots/harness/run.sh DRIVER=verify-ux6.js`:
       the Exposé filter narrows the grid; the mouse dropdown opens and switching a mode
       sticks; the sidebar row shows both toggles on one line; a paste into the rename input
-      lands trimmed. (⌘⌥L-after-reload is covered by the node test — driving a real reload
-      plus a held chord is flaky in Playwright; say so if it is skipped.)
-- [ ] **P1** 7.5 Re-run `verify-mousemode.js` to prove the mouse-mode behaviour survived the
-      control's move.
+      lands trimmed. **22/22 passed.** The MRU-chord check was NOT skipped: rather than
+      racing a real reload against the sidebar's 2s capture poll, the driver empties
+      `captureCache.byPlacement`/`byWindow` — which is the reload state's actual mechanism —
+      and then drives the held ⌃⌥L chord, asserting it navigates and that a second tap
+      returns.
+- [x] **P1** 7.5 Re-run `verify-mousemode.js` to prove the mouse-mode behaviour survived the
+      control's move. **34/34 passed** (driver updated to drive the dropdown). Also re-ran
+      `verify-ux5.js` because it asserted the old sidebar label text: **22/22 passed**.
 
 ### Phase 8 — Land
 
@@ -222,7 +230,7 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
 | Phase 4 paste-trim | ✅ |
 | Phase 5 mouse dropdown | ✅ |
 | Phase 6 sidebar row | ✅ |
-| Phase 7 verify | ⬜ |
+| Phase 7 verify | ✅ |
 | Phase 8 land | ⬜ |
 
 ## Next Steps

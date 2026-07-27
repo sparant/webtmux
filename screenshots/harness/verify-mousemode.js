@@ -259,7 +259,7 @@ async function main() {
   await normalMode();
 
   // ---- 5. sel app : everything is the program's ------------------------------
-  check('the button cycles to app', await setMouseMode('app'));
+  check('the dropdown picks app', await setMouseMode('app'));
   await clearSel();
   before = await reportCount();
   await dragAcross(await rowOf('SELECTME-CCCC'), 0.02, 0.30);
@@ -268,7 +268,7 @@ async function main() {
   check('app : and the program gets it', after > before, `reports ${before} -> ${after}`);
 
   // ---- 6. sel buf : nothing is ----------------------------------------------
-  check('the button cycles to buffer', await setMouseMode('buffer'));
+  check('the dropdown picks buffer', await setMouseMode('buffer'));
   await clearSel();
   before = await reportCount();
   await clickOn(await rowOf('SELECTME-CCCC'), 0.35);
@@ -282,7 +282,7 @@ async function main() {
   await normalMode();
 
   // ---- 7. sel auto : follows the mouse grab ----------------------------------
-  check('the button cycles to auto', await setMouseMode('adaptive-mode'));
+  check('the dropdown picks auto', await setMouseMode('adaptive-mode'));
   await clearSel();
   before = await reportCount();
   await dragAcross(await rowOf('SELECTME-CCCC'), 0.02, 0.30);
