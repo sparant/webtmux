@@ -104,16 +104,18 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
 
 ### Phase 2 — A linked window is acknowledged once, everywhere (P0, item 6)
 
-- [ ] **P0** 2.1 `work-alerts.js`: `mark()` gains a pre-pass computing the set of window
+- [x] **P0** 2.1 `work-alerts.js`: `mark()` gains a pre-pass computing the set of window
       **ids** that are on screen (`active`) or back to green; clearing keys off that set so
       both tabs of a linked window stop flashing when either is viewed. Rewrite the
       "acknowledged independently" comment to record the new rule and why it changed.
-- [ ] **P0** 2.2 Extend `test/work-alerts.test.mjs`: two placements of one id, one active →
+- [x] **P0** 2.2 Extend `test/work-alerts.test.mjs`: two placements of one id, one active →
       both clear; neither active → both keep flashing; the re-colour and raise rules still
       hold (all 10 existing rules must still pass).
-- [ ] **P0** 2.3 Verify the downstream readers need no change (`alertOf` bare-id fallback,
-      `hiddenAlerts` covered-by-id) — note in the plan if any did.
-- [ ] **P0** 2.4 Run the JS suite; commit.
+- [x] **P0** 2.3 Verify the downstream readers need no change (`alertOf` bare-id fallback,
+      `hiddenAlerts` covered-by-id) — note in the plan if any did. **None did:** `alertOf`
+      already falls back to the bare window id and `hiddenAlerts` already counts coverage by
+      id, so deleting both keys at once is all the surfaces needed.
+- [x] **P0** 2.4 Run the JS suite; commit.
 
 ### Phase 3 — Exposé status filter (P1, item 2)
 
@@ -210,7 +212,7 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
 | ---- | ------ |
 | Phase 0 setup | ✅ |
 | Phase 1 MRU order | ✅ |
-| Phase 2 linked-window ack | ⬜ |
+| Phase 2 linked-window ack | ✅ |
 | Phase 3 Exposé filter | ⬜ |
 | Phase 4 paste-trim | ⬜ |
 | Phase 5 mouse dropdown | ⬜ |
