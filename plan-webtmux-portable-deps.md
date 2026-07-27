@@ -4,6 +4,31 @@
 2026-07-26. **Revised same day: promoted from optional-and-last to FIRST in the execution
 order (D → 0 → 2 → 3 → 1).**
 
+## ✅ COMPLETE — executed 2026-07-27 on `chore/portable-deps`
+
+**All 11 tasks done across all three phases. 16 modules → 3, with no indirect
+dependencies at all** — one better than the plan's target of 4, because `creack/pty`
+v1.1.24 turned out to have dropped `golang.org/x/sys`.
+
+| | Before | After |
+|---|---|---|
+| Modules | 16 | **3** |
+| Direct / indirect | 7 / 6 (+3 test-only) | **3 / 0** |
+| Unmaintained or archived | 4 | **0** |
+| Go tests | 3 packages | 6 packages (+19 new) |
+| Per-page-load JS | includes 104 KB WebGL addon | **fetched only when opted in** |
+
+Remaining: `urfave/cli/v3`, `gorilla/websocket` v1.5.3, `creack/pty` v1.1.24 — all
+maintained, current, and load-bearing.
+
+**The one thing this taught that no plan predicted:** the urfave/cli v2→v3 migration's
+real hazard was not the API. v3 parses flags *anywhere* on the command line where v2
+stopped at the first positional argument, so `webtmux -w tmux new-session -A -s main`
+died on tmux's own `-A`. It compiled and passed every unit test; only booting the binary
+found it. `StopOnNthArg: 1` restores v2's rule, and `main_test.go` now pins it.
+**Boot the thing.** Two of the three genuinely dangerous defects in this work
+(that one, and the gzip Content-Type sniff) were invisible to the type checker.
+
 **This stage runs first**, so every later stage works against a smaller surface. Three
 reasons it earns the front position rather than the back:
 
@@ -41,7 +66,7 @@ Indirect deps and their sources (verified with `go mod why`):
 - `errwrap`, `go-multierror` — pulled by `yudai/hcl`.
 - `golang.org/x/sys` — pulled by `creack/pty`. Legitimate.
 
-**Cumulative effect if everything below lands: 16 modules → 4.**
+**Cumulative effect if everything below lands: 16 modules → 4.** *(Actual: **3.**)*
 
 ---
 
@@ -355,13 +380,39 @@ cost until then — worth knowing when weighing whether to run that stage.
    binary is written against v2. If D2 is going to be skipped, decide that *before* Stage
    3 rather than after.
 
+## Risk outcomes
+
+1. **D1.2 user-visible removal** — happened as designed. `--config`, `GOTTY_CONFIG` and
+   `~/.gotty` are gone; README says so.
+2. **D1.4 flag-generation regression** — did not occur. `--help` is byte-identical.
+3. **D2.1 argument-order slip** — did not occur. Only 5 of 29 wraps carried format
+   arguments, `go vet`'s printf checker validated each, and `%w` count == wrap count.
+   The `Wrap(nil, …)` trap was checked call site by call site: all 29 sit inside
+   `if err != nil`.
+4. **D3.1 async propagation** — **dissolved rather than mitigated**, by not awaiting
+   (see D3.1). Verified in a real browser both ways.
+5. **Do not run concurrently with Stage 3** — respected; Stage 3 has not started.
+6. **D2.2 deadline** — met. It landed before the launcher exists, which was the point.
+
+**One risk the plan did not list, and it was the real one:** v3's flag-after-argument
+parsing (see the completion summary at the top).
+
 ## Next steps
 
-Phase D1 is the high-value block: **three unmaintained dependencies and four modules gone
-for roughly three hours' work**, with D1.2 alone accounting for three of them. D3.1 is a
-30-minute change that stops 104 KB being fetched on every page load for a default-off
-renderer.
+This subplan is finished. Hand off to **Stage 0**, `plan-webtmux-portable-fork.md`
+(user-executed: fork `chrismccord/webtmux` on GitHub), then Stage 2
+(`plan-webtmux-portable-release.md`), then Stage 3 (the launcher).
 
-D2 is genuinely optional — but if it is going to happen at all, **do D2.2 now**, before
-the launcher is written against urfave/cli v2 (see risk 6). Then hand off to Stage 0
-(`plan-webtmux-portable-fork.md`).
+Two things for whoever writes the launcher:
+
+- It is a second `main`. Write it against **urfave/cli v3** — `cli.Command`, not
+  `cli.App` — and set `StopOnNthArg` if it ever wraps a command of its own.
+- The "launcher adds zero dependencies" claim now starts from **3** modules, not 16.
+
+Two loose ends deliberately left alone as out of scope, both noted in commits:
+
+- `make test-js` runs `node --test test/`, which newer node reads as a file path rather
+  than a directory — the 143 JS tests silently do not run there. They pass when invoked
+  as `node --test "test/*.test.mjs"`.
+- The `hcl:"…"` struct tags in `server/options.go` and `backend/localcommand/factory.go`
+  are now dead metadata naming a config format that no longer exists.
