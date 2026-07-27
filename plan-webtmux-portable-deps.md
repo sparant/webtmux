@@ -104,7 +104,7 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
       this task and would collide with D1.4, which rewrites the reflection that reads
       those structs.*
 
-- [ ] **P0** D1.3 **Drop `NYTimes/gziphandler`** (archived upstream). One call site,
+- [x] **P0** D1.3 **Drop `NYTimes/gziphandler`** (archived upstream). One call site,
       `server/server.go:317`. Replace with a small middleware, or with
       `klauspost/compress/gzhttp` — the successor the archive notice itself points to.
       *(35 min)*
@@ -116,6 +116,14 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
 
       **Do not simply delete compression.** It matters more after vendoring: `xterm.js` is
       292 KB raw and roughly 80 KB gzipped, and SSH does not compress unless `-C` is set.
+
+      *Done — written, not swapped for another module. `server/gzip.go` (~190 lines with
+      comments) keeps gziphandler's 1400-byte minimum so behaviour is unchanged. Three
+      things the naive version gets wrong and this one does not: **Content-Type must be
+      sniffed from the plain bytes** (sniffing the gzip stream labels every asset
+      `application/x-gzip`, which browsers refuse to execute), `Content-Length`/
+      `Accept-Ranges` must be dropped, and 204/304/**206** must not be compressed. Covered
+      by `server/gzip_test.go` — 8 tests, the first Go tests this package has ever had.*
 
 - [ ] **P1** D1.4 **Drop `fatih/structs`** (no release since 2018). Five call sites across
       `utils/flags.go` (4) and `utils/default.go` (1), all reflecting over the Options

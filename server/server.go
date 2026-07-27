@@ -15,7 +15,6 @@ import (
 	noesctmpl "text/template"
 	"time"
 
-	"github.com/NYTimes/gziphandler"
 	"github.com/gorilla/websocket"
 	"github.com/pkg/errors"
 
@@ -314,7 +313,7 @@ func (server *Server) setupHandlers(ctx context.Context, cancel context.CancelFu
 		siteHandler = server.wrapBasicAuth(siteHandler, server.options.Credential)
 	}
 
-	withGz := gziphandler.GzipHandler(server.wrapHeaders(siteHandler))
+	withGz := gzipHandler(server.wrapHeaders(siteHandler))
 	siteHandler = server.wrapLogger(withGz)
 
 	wsMux := http.NewServeMux()
