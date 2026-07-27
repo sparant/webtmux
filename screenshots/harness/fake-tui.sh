@@ -3,8 +3,10 @@
 #
 #   $1  mouse tracking mode: 1000 (press/release, default), 1002 (button-event,
 #       i.e. motion while a button is down), 1003 (any-event, motion always)
-#   $2  repaint style: inplace (cursor-addressed, default) | scroll (emits lines
-#       that push the screen up, the way a streaming agent transcript does)
+#   $2  repaint style: inplace (cursor-addressed, default) | scroll (a scrolling
+#       sub-region, like a streaming transcript below a fixed header) | fullscroll
+#       (the WHOLE screen scrolls, so every row — including one a selection is
+#       anchored on — moves under it)
 #
 # The first stand-in here was too weak to find real bugs: mouse mode 1000, static
 # output, normal screen. A real TUI differs on three axes that all turned out to
@@ -21,6 +23,7 @@
 export LANG=C.UTF-8
 
 MODE="${1:-1000}"
+ROWS=$(tput lines 2>/dev/null || echo 50)
 REPAINT="${2:-inplace}"
 
 printf '\e[?1049h'                        # alternate screen
@@ -57,6 +60,19 @@ render_reports
       # Scroll a REGION (rows 12-20) rather than the whole screen, so the target
       # rows and the report counter above them survive to be asserted on.
       printf '\e7\e[12;20r\e[20;1H\n  streaming line %04d\e[r\e8' "$i"
+    elif [ "$REPAINT" = "fullscroll" ]; then
+      # A DRIFTING transcript: each new line at the bottom scrolls everything up a
+      # row, and nothing is repainted back into place. This is the case that catches
+      # a repair anchored on a PIXEL — the pixel does not move, but the line it was
+      # pointing at does, so the wrong line gets selected (usually the one above).
+      # The target block is re-emitted periodically so a driver always has one near
+      # the bottom of the screen, with room to drift upward during a drag.
+      printf '\e[%d;1H  filler line %04d\n' "$ROWS" "$i"
+      if [ $(( i % 6 )) -eq 1 ]; then
+        for w in AAAA BBBB CCCC DDDD EEEE FFFF GGGG HHHH; do
+          printf '\e[%d;1HSELECTME-%s some line of program output here\n' "$ROWS" "$w"
+        done
+      fi
     else
       printf '\e7\e[14;1H\e[2K  working... tick %04d \e8' "$i"
     fi

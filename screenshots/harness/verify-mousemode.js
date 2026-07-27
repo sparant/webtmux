@@ -282,6 +282,28 @@ async function main() {
       return /CTME-CCCC/.test(await selection()); })());
   await normalMode();
 
+  // ---- 4b. the anchor must survive a pane that SCROLLS under it ---------------
+  // A streaming program (Claude Code prints constantly, and xterm keeps no
+  // scrollback of its own here) can scroll the buffer during the round trip that
+  // wipes the selection. A repair anchored on the raw pixel then rebuilds the
+  // selection a line off — reported as "it selects the line above". Verified to
+  // bite: with the anchor-following disabled this lands on the NEIGHBOURING marker.
+  await normalMode();
+  await typeLine('bash /src/screenshots/harness/fake-tui.sh 1003 fullscroll');
+  await sleep(2500);
+  await clearSel();
+  row = await rowOf('SELECTME-CCCC');
+  if (row >= 0) {
+    await dragAcross(row, 0.02, 0.30);
+    const drifted = (await selection()) || '';
+    const marker = (drifted.match(/CTME-(\w+)/) || [])[1] || '(none)';
+    check('auto+ : the anchor follows the line when the pane scrolls under it',
+      marker === 'CCCC', `selection began at ${marker}`);
+  } else {
+    check('auto+ : drift target on screen', false);
+  }
+  await normalMode();
+
   // ---- 5. sel app : everything is the program's ------------------------------
   check('the dropdown picks app', await setMouseMode('app'));
   await clearSel();
