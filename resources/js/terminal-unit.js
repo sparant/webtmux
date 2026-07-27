@@ -1023,10 +1023,11 @@ export class TerminalUnit {
   }
 
   // Reorder a window to ordinal position `targetPos` (0-based, in index order)
-  // within the shared window list — the server bubbles it there via swap-window.
-  // Driven by drag-and-drop in the sidebar.
-  moveWindow(windowId, targetPos) {
-    this.sendMessage(MSG.TmuxMoveWindow, windowId + ' ' + targetPos);
+  // within `session`'s window list — the server bubbles it there via swap-window.
+  // Driven by drag-and-drop in the sidebar; `session` is what lets its tree view
+  // reorder a session this pane isn't attached to (empty = this pane's own).
+  moveWindow(windowId, targetPos, session = '') {
+    this.sendMessage(MSG.TmuxMoveWindow, windowId + ' ' + targetPos + (session ? ' ' + session : ''));
   }
 
   // Create a fresh session and switch this pane's view to it (the server picks the
@@ -1061,10 +1062,12 @@ export class TerminalUnit {
     this.sendMessage(MSG.TmuxLinkWindow, windowId + ' ' + targetSession);
   }
 
-  // Unlink a window from THIS pane's session, leaving it running in the other
-  // sessions it's linked into (sidebar hover × when the window lives elsewhere too).
-  unlinkWindow(windowId) {
-    this.sendMessage(MSG.TmuxUnlinkWindow, windowId);
+  // Unlink a window from `session` (empty = THIS pane's own), leaving it running in
+  // the other sessions it's linked into (sidebar hover × when the window lives
+  // elsewhere too). The sidebar's tree view names the session, because the row whose
+  // × was clicked can belong to any of them.
+  unlinkWindow(windowId, session = '') {
+    this.sendMessage(MSG.TmuxUnlinkWindow, windowId + (session ? ' ' + session : ''));
   }
 
   switchSession(sessionName) {

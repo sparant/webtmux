@@ -1,7 +1,10 @@
 // Sidebar component with minimap
 import { LitElement, html, css } from 'lit';
 import { MOD_KEYS, chord } from '../os.js';
-import { matchesWords, appendChar } from '../search.js';
+import { matchesWords, appendChar, backspace, phraseText } from '../search.js';
+import {
+  buildTree, filterTree, flattenTree, stepRow, moveTargetPos, sessionCountOf, rowKey, rowText,
+} from '../window-tree.js';
 import { stateStore } from '../state-store.js';
 import { clientStore } from '../client-store.js';
 import { workClass, workLabel, workTip } from '../stoplight.js';
@@ -27,8 +30,25 @@ class WebtmuxSidebar extends LitElement {
     editingWindow: { type: String },
     // Session name currently being renamed inline ('' = none). Parity with editingWindow.
     editingSession: { type: String },
+    // FLAT ("all windows") view: every session on the server, each with its own
+    // windows listed beneath it — the tree `prefix + w` shows. The default view
+    // (sessions across the top, only the current session's windows below) answers
+    // "what else is in here"; this one answers "where is that window". A shared
+    // pref, so a browser you open tomorrow lists windows the way you left it.
+    treeView: { type: Boolean },
+    // Session names currently COLLAPSED in the tree view — a Set, replaced wholesale
+    // on every change because lit re-renders on identity, not on mutation. Persisted
+    // beside treeView (a folded-away session should stay folded away).
+    treeCollapsed: { type: Object },
     // Window id currently being dragged for reorder ('' = none).
     draggingWindow: { type: String },
+    // Which SESSION's row the dragged window came from. A window linked into two
+    // sessions has a row under each, and they are separate things to drag: the same
+    // window is reorderable within either list, independently.
+    draggingWindowSession: { type: String },
+    // In the tree view, the session whose window list the insertion line belongs to
+    // ('' = none / the single-session view, which has only one list).
+    dropSession: { type: String },
     // Insertion GAP index the reorder drop would land at while a window is dragged
     // over the window list: 0 = before the first row, N = after the last (move to
     // end). -1 = not currently over the list. Drives the single insertion line.
@@ -50,6 +70,10 @@ class WebtmuxSidebar extends LitElement {
     // pointer or the arrow keys — moves THIS, not activeWindow: nothing is committed
     // until you click or press Enter. Set by the SplitManager.
     previewWindow: { type: String },
+    // …and the SESSION the previewed placement was reached through. In the tree view
+    // a linked window has a row under every session it lives in; without this, both
+    // rows would light up for a preview that is only ever of one of them.
+    previewSession: { type: String },
     // Attention flashes, as a WorkAlerts.snapshot() (see work-alerts.js): the windows
     // whose stoplight dropped out of green while you were looking elsewhere. Rows
     // flash for exactly the windows the recents tabs and the preview tiles flash for
@@ -389,6 +413,89 @@ class WebtmuxSidebar extends LitElement {
     }
     .session-tab.sdrop-before::before { left: -3px; }
     .session-tab.sdrop-after::after { right: -3px; }
+
+    /* ---- the flat "all windows" tree ------------------------------------------
+       Same rows, same tabs, same dots as the default view — only the arrangement
+       differs: sessions stack as a column, each with its windows indented under it.
+       Everything below is layout; nothing here restyles a control, so a row reads
+       identically whichever view you are in. */
+    .tnode { margin-bottom: 6px; }
+
+    /* A session header row: the twisty, then the session tab filling the width.
+       Sessions stack vertically here (they wrap along a row in the default view),
+       so the reorder insertion line is HORIZONTAL — see .tdrop-*. */
+    .srow {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .srow > .session-tab, .srow > .session-edit { flex: 1 1 auto; min-width: 0; text-align: left; }
+
+    .twisty {
+      flex: 0 0 auto;
+      width: 18px;
+      height: 22px;
+      background: transparent;
+      border: none;
+      color: #6f7fa5;
+      font-size: 12px;
+      line-height: 22px;
+      padding: 0;
+      cursor: pointer;
+    }
+    .twisty:hover { color: #4a9eff; }
+
+    /* Insertion line for a session reorder in the tree — the horizontal counterpart
+       of .sdrop-before/.sdrop-after, in the same colour and weight. */
+    .session-tab.tdrop-before::before,
+    .session-tab.tdrop-after::after {
+      content: '';
+      position: absolute;
+      left: 0;
+      right: 0;
+      height: 2px;
+      border-radius: 2px;
+      background: #4a9eff;
+      box-shadow: 0 0 6px rgba(74, 158, 255, 0.9);
+    }
+    .session-tab.tdrop-before::before { top: -3px; }
+    .session-tab.tdrop-after::after { bottom: -3px; }
+
+    /* A session's windows: indented under its header, with a hairline spine so a
+       long list still reads as belonging to the session above it. */
+    .window-tabs.tree-wins {
+      margin: 4px 0 0 8px;
+      padding-left: 10px;
+      border-left: 1px solid #22345c;
+      margin-bottom: 6px;
+    }
+
+    /* Dropping a window from ANOTHER session onto this branch links it in — the
+       whole branch lights, exactly as its session tab does, because it is the same
+       action and the same target. */
+    .window-tabs.link-into {
+      border-left-color: #37d17a;
+      box-shadow: -2px 0 0 0 rgba(55, 209, 122, 0.6);
+    }
+
+    .tree-new { width: 100%; text-align: left; margin-top: 4px; }
+    .tree-empty { color: #666; font-size: 14px; padding: 6px 2px; }
+
+    /* The live type-ahead phrase, shown only while it is narrowing the tree. */
+    .filter-chip {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      background: #1a1a2e;
+      border: 1px solid #0f3460;
+      border-radius: 4px;
+      padding: 4px 8px;
+      margin-bottom: 8px;
+      font-size: 13px;
+    }
+    .fc-label { color: #6f7fa5; text-transform: uppercase; letter-spacing: 1px; font-size: 11px; }
+    .fc-text { color: #fff; font-family: monospace; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .fc-hint { color: #6f7fa5; font-size: 11px; }
   `, ALERT_CSS, TIP_CSS, CONFIRM_CSS];
 
   constructor() {
@@ -407,13 +514,18 @@ class WebtmuxSidebar extends LitElement {
     const sb = stateStore.section('sidebar');
     this.overlay = sb.overlay !== false;   // default hover (float over the terminal)
     this.pinned = sb.pinned === true;      // default auto-hide
+    // Which view: sessions-then-windows (default) or the flat all-windows tree.
+    this.treeView = sb.tree === true;
+    this.treeCollapsed = readCollapsed(sb);
     // Window id currently being renamed inline ('' = none).
     this.editingWindow = '';
     // Session name currently being renamed inline ('' = none).
     this.editingSession = '';
     // Drag-and-drop reorder state.
     this.draggingWindow = '';
+    this.draggingWindowSession = '';
     this.dropIndex = -1;
+    this.dropSession = '';
     this.dragOverSession = '';
     // Session-reorder drag state + the persisted webtmux-local session order (a list
     // of session names; unknown/new sessions fall through to the server's order).
@@ -437,8 +549,10 @@ class WebtmuxSidebar extends LitElement {
     // Windows shown by other split regions (disabled here). SplitManager updates it.
     this.disabledWindows = [];
     this.previewWindow = '';
+    this.previewSession = '';
     this.alerts = null;      // WorkAlerts.snapshot(), pushed by the SplitManager
     this._revealRow = '';    // pending revealWindow() scroll target
+    this._revealSess = '';   // …and the session whose row it is (tree view)
     this._revealTries = 0;   // renders left to find it in before giving up
 
     // The TerminalUnit that owns this sidebar sets `this.unit = <unit>` when it
@@ -556,8 +670,37 @@ class WebtmuxSidebar extends LitElement {
     const sb = stateStore.section('sidebar');
     this.overlay = sb.overlay !== false;
     this.pinned = sb.pinned === true;
+    this.treeView = sb.tree === true;
+    this.treeCollapsed = readCollapsed(sb);
     this._sessionOrder = readSessionOrder();
     this.requestUpdate();
+  }
+
+  // Flip between the two views. Durable (StateStore → @wt_state), so it survives a
+  // reload, a reconnect and a webtmux restart, and every browser on this tmux server
+  // agrees on which view the sidebar is in. Any in-progress type-ahead is dropped:
+  // the phrase FILTERS in the tree and merely SELECTS in the list, so carrying it
+  // across would silently change what it was doing.
+  toggleTree() {
+    this.treeView = !this.treeView;
+    stateStore.patchSection('sidebar', { tree: this.treeView });
+    this._resetSearch();
+    this.focusPanel();
+  }
+
+  // Fold a session's windows away in the tree view (the twisty, or ←/→). Persisted
+  // with the view itself — a session you folded away should still be folded away
+  // tomorrow, or it isn't really out of the way.
+  toggleSessionCollapsed(name) {
+    const next = new Set(this.treeCollapsed || []);
+    if (next.has(name)) next.delete(name);
+    else next.add(name);
+    this.treeCollapsed = next;                       // new identity => lit re-renders
+    stateStore.patchSection('sidebar', { treeCollapsed: [...next] });
+  }
+
+  _isCollapsed(name) {
+    return !!(this.treeCollapsed && this.treeCollapsed.has(name));
   }
 
   closeRegion() {
@@ -576,6 +719,13 @@ class WebtmuxSidebar extends LitElement {
     return html`
       <div class="mode-row">
         <div class="shortcut-hint">Toggle panel: <kbd>${MOD_KEYS[0]}</kbd>+<kbd>${MOD_KEYS[1]}</kbd>+<kbd>W</kbd></div>
+        <button
+          class="mode-btn"
+          @click=${this.toggleTree}
+          title="Sessions + windows = the session list with the current session's windows below it; All windows = every session on the server with its own windows beneath it (tmux's prefix+w tree). Drag, rename, kill and type-ahead work the same in both."
+        >
+          ${this.treeView ? '🌳 All windows (tree)' : '▤ Sessions + windows'}
+        </button>
         <button
           class="mode-btn"
           @click=${this.toggleOverlay}
@@ -614,14 +764,33 @@ class WebtmuxSidebar extends LitElement {
       `;
     }
 
+    return html`
+      <div class="sidebar-content" tabindex="0" @keydown=${this.onKeyDown}>
+      ${this.modeRow()}
+      ${this.treeView ? this.renderTree() : this.renderSessionView()}
+      </div>
+      <!-- The shared hover hint. position:fixed, so it can sit last and still land
+           anywhere on screen; it escapes the panel's own overflow-y clip. -->
+      <div class="wt-tip"></div>
+      <!-- The kill confirmation, positioned at whichever × asked. Same reason it
+           sits last and is position:fixed; its contents are built imperatively so
+           this element is stable across re-renders. -->
+      <div class="wt-confirm"></div>
+    `;
+  }
+
+  // ---- the default view: the session list, then THIS session's windows ----------
+  renderSessionView() {
     // The server already hides the ephemeral per-region web-* grouped sessions
     // and marks Active by GROUP (so a split viewing "services" through web-abc
     // marks the services tab active); the client filter is belt-and-braces.
     const sessions = this._sessionList();
+    const own = this._ownSession();
+    // One node, so the window list below is rendered by exactly the same code the
+    // tree uses — same rows, same drag semantics, same ×.
+    const node = { name: own, windows: (this.layout.windows || []).map((w) => ({ ...w, session: own })) };
 
     return html`
-      <div class="sidebar-content" tabindex="0" @keydown=${this.onKeyDown}>
-      ${this.modeRow()}
       <h3>Sessions</h3>
       <div class="session-tabs">
         ${sessions.map(sess => sess.name === this.editingSession
@@ -658,89 +827,247 @@ class WebtmuxSidebar extends LitElement {
       </div>
 
       <h3>Windows</h3>
-      <div
-        class="window-tabs"
-        @dragover=${(e) => this.onWinListDragOver(e)}
-        @dragleave=${(e) => this.onWinListDragLeave(e)}
-        @drop=${(e) => this.onWinListDrop(e)}
-      >
-        ${this.layout.windows?.map((win, i) => html`
-          <div class="wrow">
-            <span
-              class="work ${workClass(this._working(win))}"
-              role="img"
-              aria-label=${workLabel(this._working(win))}
-              @mouseenter=${(e) => this._tip.enter(e, workTip(this._working(win)))}
-              @mouseleave=${() => this._tip.leave()}
-            ></span>
-            ${win.id === this.editingWindow
-              ? html`
-            <input
-              class="window-edit"
-              .value=${win.name || ''}
-              @keydown=${(e) => this.onRenameKey(e, win.id)}
-              @blur=${(e) => this.commitRename(e, win.id)}
-              @click=${(e) => e.stopPropagation()}
-            >`
-              : html`
-            <button
-              data-widx=${i}
-              data-win=${win.id}
-              class="window-tab ${win.id === this.activeWindow ? 'active' : ''} ${this._windowDisabled(win.id) ? 'disabled' : ''} ${win.id === this.draggingWindow ? 'dragging' : ''} ${this.draggingWindow && this.dropIndex === i ? 'drop-before' : ''} ${win.id !== this.activeWindow && win.id === this.previewWindow ? 'previewing' : ''} ${alertClass(this._alert(win))}"
-              draggable="true"
-              @mouseenter=${() => this.previewWindowRow(win.id)}
-              @mouseleave=${() => this.endPreview()}
-              @click=${() => this.selectWindow(win.id)}
-              @dblclick=${() => this.startRename(win.id)}
-              @dragstart=${(e) => this.onDragStart(e, win.id)}
-              @dragend=${() => this.onDragEnd()}
-              title=${(this._windowDisabled(win.id) ? 'Shown in another split pane' : 'Hover to preview · click to switch · double-click to rename · drag between rows to reorder, or onto a session to link') + alertTip(this._alert(win))}
-            >
-              ${win.index}: ${win.name || 'bash'}<span
-                class="kill"
-                aria-label=${this._windowKillLabel(win)}
-                title=${this._windowKillLabel(win)}
-                @click=${(e) => { e.stopPropagation(); this.killWindow(win.id, e.currentTarget); }}
-              >×</span>
-            </button>`}
-          </div>`
-        )}
-        <div class="wrow">
-          <span class="work-gap" aria-hidden="true"></span>
-          <button
-            class="window-tab ${this.draggingWindow && this.dropIndex === (this.layout.windows?.length || 0) ? 'drop-before' : ''}"
-            title="New window"
-            @click=${() => this.newWindow()}
-          >+</button>
-        </div>
-      </div>
+      ${this.renderWindowList(node, { plus: true })}
 
       <div class="session-info">
         Session: ${this.layout.sessionBase || this.layout.sessionName}<br>
         ${this.layout.windows?.length || 0} windows
       </div>
-      </div>
-      <!-- The shared hover hint. position:fixed, so it can sit last and still land
-           anywhere on screen; it escapes the panel's own overflow-y clip. -->
-      <div class="wt-tip"></div>
-      <!-- The kill confirmation, positioned at whichever × asked. Same reason it
-           sits last and is position:fixed; its contents are built imperatively so
-           this element is stable across re-renders. -->
-      <div class="wt-confirm"></div>
     `;
+  }
+
+  // ---- the flat view: every session on the server, its windows beneath it -------
+  //
+  // The tree is built fresh each render from the server-wide directory that already
+  // rides every layout push (layout.allWindows), so it costs no extra tmux traffic —
+  // the data was there all along, only the current session's slice of it was shown.
+  renderTree() {
+    const tree = this._tree();
+    const total = tree.reduce((n, s) => n + s.windows.length, 0);
+    return html`
+      <h3>All windows</h3>
+      ${this._filterChip()}
+      <div class="tree">
+        ${tree.map((node) => this.renderTreeSession(node))}
+        ${tree.length ? '' : html`<div class="tree-empty">No window matches that.</div>`}
+        <button class="session-tab tree-new" title="New session" @click=${() => this.newSession()}>+ New session</button>
+      </div>
+
+      <div class="session-info">
+        Session: ${this.layout.sessionBase || this.layout.sessionName}<br>
+        ${tree.length} session${tree.length === 1 ? '' : 's'} · ${total} window${total === 1 ? '' : 's'}${
+          this._searchWords.length ? ' matching' : ''}
+      </div>
+    `;
+  }
+
+  // One session in the tree: its header row (the same session tab as the default
+  // view, so click/rename/kill/reorder/link all behave identically) plus its windows.
+  renderTreeSession(node) {
+    const collapsed = this._isCollapsed(node.name);
+    return html`
+      <div class="tnode">
+        <div class="srow">
+          <button
+            class="twisty"
+            aria-label=${collapsed ? `Expand ${node.name}` : `Collapse ${node.name}`}
+            title=${collapsed ? 'Expand — or press → on one of its windows' : 'Collapse — or press ← on one of its windows'}
+            @click=${() => this.toggleSessionCollapsed(node.name)}
+          >${collapsed ? '▸' : '▾'}</button>
+          ${node.name === this.editingSession
+            ? html`
+          <input
+            class="session-edit tree-edit"
+            .value=${node.name}
+            @keydown=${(e) => this.onSessionRenameKey(e, node.name)}
+            @blur=${(e) => this.commitSessionRename(e, node.name)}
+            @click=${(e) => e.stopPropagation()}
+          >`
+            : html`
+          <button
+            class="session-tab srow-tab ${node.active ? 'active' : ''} ${node.name === this.dragOverSession ? 'link-target' : ''} ${node.name === this.draggingSession ? 'sdragging' : ''} ${node.name === this.sessionDropTarget ? (this.sessionDropAfter ? 'tdrop-after' : 'tdrop-before') : ''}"
+            draggable="true"
+            @click=${() => this.switchSession(node.name)}
+            @dblclick=${() => this.startSessionRename(node.name)}
+            @dragstart=${(e) => this.onSessionDragStart(e, node.name)}
+            @dragend=${() => this.onSessionDragEnd()}
+            @dragover=${(e) => this.onSessionDragOver(e, node.name)}
+            @dragleave=${() => this.onSessionDragLeave(node.name)}
+            @drop=${(e) => this.onSessionDrop(e, node.name)}
+            title="Click to switch · double-click to rename · drag to reorder · drop a window here to link it"
+          >
+            ${node.name}<span class="win-count">(${node.windows.length})</span><span
+              class="kill"
+              aria-label="Kill session ${node.name}"
+              title="Kill session ${node.name} and all its windows — ends their processes"
+              @click=${(e) => { e.stopPropagation(); this.killSession(node.name, e.currentTarget); }}
+            >×</span>
+          </button>`}
+        </div>
+        ${collapsed ? '' : this.renderWindowList(node, { plus: node.name === this._ownSession(), indent: true })}
+      </div>
+    `;
+  }
+
+  // The window rows of ONE session — the whole of the default view's list, and one
+  // branch of the tree. The list is the reorder drop target: dropping a row from
+  // THIS session lands it in the gap the insertion line marks; dropping one from
+  // another session LINKS it here instead (the same thing dropping on the session
+  // tab does, which is what the whole branch reads as while you drag).
+  //
+  // `plus` adds the "new window" row. In the tree it appears only under the pane's
+  // own session, because tmux creates a window in the session the pane is attached
+  // to — the row would be a lie anywhere else.
+  renderWindowList(node, { plus = false, indent = false } = {}) {
+    const linking = !!this.draggingWindow && this.dragOverSession === node.name;
+    return html`
+      <div
+        class="window-tabs ${indent ? 'tree-wins' : ''} ${linking ? 'link-into' : ''}"
+        data-sess=${node.name}
+        @dragover=${(e) => this.onWinListDragOver(e, node)}
+        @dragleave=${(e) => this.onWinListDragLeave(e)}
+        @drop=${(e) => this.onWinListDrop(e, node)}
+      >
+        ${node.windows.map((win, i) => this.renderWindowRow(win, i, node))}
+        ${plus ? html`
+        <div class="wrow">
+          <span class="work-gap" aria-hidden="true"></span>
+          <button
+            class="window-tab ${this._dropLine(node, node.windows.length) ? 'drop-before' : ''}"
+            title="New window in ${node.name}"
+            @click=${() => this.newWindow()}
+          >+</button>
+        </div>` : ''}
+      </div>
+    `;
+  }
+
+  // One window row: the stoplight dot + the tab (or the inline rename input). `win`
+  // always carries its own `session` — the placement it is a row for — so every
+  // action below (preview, select, reorder, unlink) targets the right one of a
+  // linked window's several homes.
+  renderWindowRow(win, i, node) {
+    const disabled = this._windowDisabled(win.id);
+    return html`
+      <div class="wrow">
+        <span
+          class="work ${workClass(this._working(win))}"
+          role="img"
+          aria-label=${workLabel(this._working(win))}
+          @mouseenter=${(e) => this._tip.enter(e, workTip(this._working(win)))}
+          @mouseleave=${() => this._tip.leave()}
+        ></span>
+        ${win.id === this.editingWindow
+          ? html`
+        <input
+          class="window-edit"
+          .value=${win.name || ''}
+          @keydown=${(e) => this.onRenameKey(e, win.id)}
+          @blur=${(e) => this.commitRename(e, win.id)}
+          @click=${(e) => e.stopPropagation()}
+        >`
+          : html`
+        <button
+          data-widx=${i}
+          data-win=${win.id}
+          data-sess=${win.session || ''}
+          class="window-tab ${this._isActiveRow(win) ? 'active' : ''} ${disabled ? 'disabled' : ''} ${this._isDraggingRow(win) ? 'dragging' : ''} ${this._dropLine(node, i) ? 'drop-before' : ''} ${!this._isActiveRow(win) && this._isPreviewRow(win) ? 'previewing' : ''} ${alertClass(this._alert(win))}"
+          draggable="true"
+          @mouseenter=${() => this.previewWindowRow(win.id, win.session)}
+          @mouseleave=${() => this.endPreview()}
+          @click=${() => this.selectWindow(win.id, win.session)}
+          @dblclick=${() => this.startRename(win.id)}
+          @dragstart=${(e) => this.onDragStart(e, win.id, win.session)}
+          @dragend=${() => this.onDragEnd()}
+          title=${(disabled ? 'Shown in another split pane' : 'Hover to preview · click to switch · double-click to rename · drag between rows to reorder, or onto another session to link') + alertTip(this._alert(win))}
+        >
+          ${win.index}: ${win.name || 'bash'}<span
+            class="kill"
+            aria-label=${this._windowKillLabel(win)}
+            title=${this._windowKillLabel(win)}
+            @click=${(e) => { e.stopPropagation(); this.killWindow(win, e.currentTarget); }}
+          >×</span>
+        </button>`}
+      </div>
+    `;
+  }
+
+  // What the user has typed, shown while it is narrowing the tree. The default view
+  // has nothing to show here — a phrase there SELECTS a row rather than hiding any,
+  // so the selection itself is the feedback.
+  _filterChip() {
+    if (!this._searchWords.length) return '';
+    return html`
+      <div class="filter-chip">
+        <span class="fc-label">filter</span>
+        <span class="fc-text">${phraseText(this._searchWords)}</span>
+        <span class="fc-hint">⌫ · Esc clears</span>
+      </div>
+    `;
+  }
+
+  // The tree, narrowed by the live type-ahead phrase. Built from the server-wide
+  // directory; the session ORDER is the sidebar's own persisted one, so dragging a
+  // session in either view moves it in both.
+  _tree() {
+    const tree = buildTree({
+      sessions: this._sessionList(),
+      allWindows: this.layout?.allWindows || [],
+      windows: this.layout?.windows || [],
+      ownSession: this._ownSession(),
+      working: this.layout?.allWorking || null,
+    });
+    return filterTree(tree, this._searchWords);
+  }
+
+  // Is this row the pane's current window? In the tree, only under the session the
+  // pane is actually viewing it through — the same window's row under another
+  // session is somewhere you can still go, not where you are.
+  _isActiveRow(win) {
+    if (win.id !== this.activeWindow) return false;
+    return !this.treeView || (win.session || '') === this._ownSession();
+  }
+
+  // Is this row the one being PREVIEWED? Keyed by placement in the tree so a linked
+  // window's other row doesn't light up for it.
+  _isPreviewRow(win) {
+    if (!this.previewWindow || win.id !== this.previewWindow) return false;
+    if (this.treeView && this.previewSession) return (win.session || '') === this.previewSession;
+    return true;
+  }
+
+  // Is this row the one being dragged? Same placement rule.
+  _isDraggingRow(win) {
+    if (!this.draggingWindow || win.id !== this.draggingWindow) return false;
+    if (this.treeView && this.draggingWindowSession) return (win.session || '') === this.draggingWindowSession;
+    return true;
+  }
+
+  // Should the insertion line be drawn above row `i` of `node`'s list? Only during a
+  // window drag, and only in the list the pointer is actually over (the tree has one
+  // list per session, and two lines would be two answers to "where will it land").
+  _dropLine(node, i) {
+    if (!this.draggingWindow || this.dropIndex !== i) return false;
+    return !this.dropSession || this.dropSession === node.name;
   }
 
   // --- Drag-and-drop window reordering -------------------------------------
   // Window tabs are draggable. Reordering uses INSERTION-GAP semantics: as you drag
   // over the window list a single bright line shows the gap the window will land in
   // (between any two rows, before the first, or after the last = "move to end"),
-  // and dropping moves it there. Dropping on a SESSION tab instead LINKS it (handled
-  // separately, below) — so the list is only ever a reorder target and the sessions
-  // are only ever link targets, cleanly separated.
-  onDragStart(e, winId) {
+  // and dropping moves it there. Dropping on a SESSION tab LINKS it instead.
+  //
+  // The tree view has one list per session, so a drop there means one of two things,
+  // decided by whether the dragged row belongs to the list under the pointer:
+  //   • its own session's list -> REORDER, with the insertion line, as ever;
+  //   • another session's list -> LINK it into that session (exactly what dropping
+  //     on that session's tab does — the branch you are over IS the session, and
+  //     making the reader aim at the header instead would be a needless trap).
+  onDragStart(e, winId, session = '') {
     // Disabled windows (shown in another pane) can't be dragged meaningfully.
     if (this._windowDisabled(winId)) { e.preventDefault(); return; }
     this.draggingWindow = winId;
+    this.draggingWindowSession = session || this._ownSession();
     try {
       // MUST allow BOTH 'move' (reorder onto the window list) and 'link' (drop onto
       // a session): a dropEffect the effectAllowed set doesn't permit makes the
@@ -752,46 +1079,72 @@ class WebtmuxSidebar extends LitElement {
     } catch (_) {}
   }
 
-  // Over the window list: compute the insertion gap from the pointer's Y against
-  // each row's midpoint and show the line there. preventDefault marks the list a
-  // valid drop target so the drop actually fires.
-  onWinListDragOver(e) {
+  // Over a window list: either mark the insertion gap (a reorder within this
+  // session) or light the whole branch as a link target (a row from elsewhere).
+  // preventDefault marks the list a valid drop target so the drop actually fires.
+  onWinListDragOver(e, node) {
     if (!this.draggingWindow) return;                 // only during a window drag
     e.preventDefault();
+    if (this._dragIsForeign(node)) {
+      // Not this session's window — dropping it here links it in. Same highlight
+      // and same dropEffect as its session tab, because it is the same action.
+      try { e.dataTransfer.dropEffect = 'link'; } catch (_) {}
+      this.dropIndex = -1;
+      if (this.dragOverSession !== node.name) this.dragOverSession = node.name;
+      return;
+    }
     try { e.dataTransfer.dropEffect = 'move'; } catch (_) {}
-    const idx = this._dropIndexAt(e.clientY);
+    if (this.dragOverSession) this.dragOverSession = '';
+    const idx = this._dropIndexAt(e.clientY, e.currentTarget);
     if (idx !== this.dropIndex) this.dropIndex = idx;
+    if (this.dropSession !== node.name) this.dropSession = node.name;
   }
 
   // Clear the line only when the pointer truly leaves the list (not when crossing
   // between child rows, where dragleave also fires and relatedTarget stays inside).
   onWinListDragLeave(e) {
-    if (!e.currentTarget.contains(e.relatedTarget)) this.dropIndex = -1;
+    if (!e.currentTarget.contains(e.relatedTarget)) {
+      this.dropIndex = -1;
+      this.dropSession = '';
+      const name = e.currentTarget.dataset?.sess;
+      if (name && this.dragOverSession === name) this.dragOverSession = '';
+    }
   }
 
-  onWinListDrop(e) {
+  onWinListDrop(e, node) {
     e.preventDefault();
     // Prefer the live drag state; fall back to the dataTransfer payload so a stray
     // reactive re-render that cleared draggingWindow can never eat the drop.
     const srcId = this.draggingWindow || this._dtWindowId(e);
-    const insert = this.dropIndex >= 0 ? this.dropIndex : this._dropIndexAt(e.clientY);
+    const foreign = this._dragIsForeign(node);
+    const insert = this.dropIndex >= 0 ? this.dropIndex : this._dropIndexAt(e.clientY, e.currentTarget);
     this.onDragEnd();
     if (!srcId) return;
-    const wins = this.layout?.windows || [];
-    const from = wins.findIndex(w => w.id === srcId);
-    if (from === -1) return;
-    // Translate the insertion GAP (0..N) into MoveWindow's FINAL ordinal (0..N-1):
-    // removing the row first shifts everything after it down by one, so a gap past
-    // the source maps one lower. A no-op gap (same slot) is skipped.
-    const finalPos = insert > from ? insert - 1 : insert;
-    if (finalPos === from) return;
-    this.unit?.moveWindow(srcId, finalPos);
+    if (foreign) { this.unit?.linkWindow(srcId, node.name); return; }
+    // Translate the insertion GAP (0..N) into MoveWindow's FINAL ordinal (0..N-1);
+    // -1 means the gap is the row's own slot (nothing to do).
+    const finalPos = moveTargetPos(node.windows, srcId, insert);
+    if (finalPos < 0) return;
+    // Name the session: in the tree the list being reordered can belong to a session
+    // no region is attached to, which the server can't infer from this connection.
+    this.unit?.moveWindow(srcId, finalPos, node.name);
   }
 
-  // The insertion gap for pointer-Y: the first row whose vertical midpoint is below
-  // the pointer marks the gap ABOVE it; past every row => after the last (end).
-  _dropIndexAt(y) {
-    const rows = [...this.renderRoot.querySelectorAll('.window-tab[data-widx]')];
+  // Is the row being dragged from a DIFFERENT session than the list it is over? Only
+  // ever true in the tree view (the default view has a single list, which is always
+  // the dragged row's own). A row whose window happens to be linked into the target
+  // session too is not foreign — it has a row there, and that row is what moves.
+  _dragIsForeign(node) {
+    if (!this.draggingWindow || !node) return false;
+    return !(node.windows || []).some((w) => w.id === this.draggingWindow);
+  }
+
+  // The insertion gap for pointer-Y within `container`: the first row whose vertical
+  // midpoint is below the pointer marks the gap ABOVE it; past every row => after
+  // the last (end). Scoped to one list — the tree has several.
+  _dropIndexAt(y, container) {
+    const scope = container || this.renderRoot;
+    const rows = [...scope.querySelectorAll('.window-tab[data-widx]')];
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i].getBoundingClientRect();
       if (y < r.top + r.height / 2) return i;
@@ -806,7 +1159,9 @@ class WebtmuxSidebar extends LitElement {
 
   onDragEnd() {
     this.draggingWindow = '';
+    this.draggingWindowSession = '';
     this.dropIndex = -1;
+    this.dropSession = '';
     this.dragOverSession = '';
   }
 
@@ -822,14 +1177,19 @@ class WebtmuxSidebar extends LitElement {
       e.preventDefault();
       try { e.dataTransfer.dropEffect = 'move'; } catch (_) {}
       const r = e.currentTarget.getBoundingClientRect();
-      const after = e.clientX > r.left + r.width / 2;
+      // The session tabs wrap along a ROW in the default view and stack as a COLUMN
+      // in the tree, so "past the midpoint" is a different axis in each — the same
+      // gesture, measured the way the list you're looking at actually runs.
+      const after = this.treeView
+        ? e.clientY > r.top + r.height / 2
+        : e.clientX > r.left + r.width / 2;
       if (this.sessionDropTarget !== sessionName) this.sessionDropTarget = sessionName;
       if (this.sessionDropAfter !== after) this.sessionDropAfter = after;
       return;
     }
     // LINK: a window tab dragged onto a session tab (existing behavior).
     if (!this.draggingWindow) return;                 // only during a window drag
-    if (this._isCurrentSession(sessionName)) return;  // already here — not a link target
+    if (this._draggedWindowIn(sessionName)) return;   // already there — not a link target
     e.preventDefault();                               // allow the drop
     try { e.dataTransfer.dropEffect = 'link'; } catch (_) {}
     if (this.dragOverSession !== sessionName) this.dragOverSession = sessionName;
@@ -854,9 +1214,23 @@ class WebtmuxSidebar extends LitElement {
     // LINK drop: prefer live drag state; fall back to the dataTransfer payload so the
     // link fires even if a re-render cleared draggingWindow before the drop landed.
     const srcId = this.draggingWindow || this._dtWindowId(e);
+    const already = this._draggedWindowIn(sessionName);
     this.onDragEnd();
-    if (!srcId || this._isCurrentSession(sessionName)) return;
+    if (!srcId || already) return;
     this.unit?.linkWindow(srcId, sessionName);
+  }
+
+  // True when the window being dragged already lives in sessionName, so linking it
+  // there would be a no-op. Answered from the server-wide directory, which knows
+  // every placement; without one (first paint, older server) it falls back to "is
+  // this our own session" — the same answer in the default view, whose rows are all
+  // from that session anyway.
+  _draggedWindowIn(sessionName) {
+    const dir = this.layout?.allWindows || [];
+    if (this.draggingWindow && dir.length) {
+      return dir.some((w) => w.id === this.draggingWindow && w.session === sessionName);
+    }
+    return this._isCurrentSession(sessionName);
   }
 
   // --- Session-tab reorder drag (tmux has no native session order; webtmux-local) ---
@@ -899,17 +1273,34 @@ class WebtmuxSidebar extends LitElement {
       this._resetSearch();
       this.navigateWindow(1);
     } else if (e.key === 'ArrowLeft') {
+      // In the tree ←/→ FOLD the session you're standing in, the way they do in
+      // tmux's own tree — there is no "previous session" to step to when every
+      // session is already on screen, and folding is what that view needs instead.
       e.preventDefault();
-      this._resetSearch();
-      this.navigateSession(-1);
+      if (this.treeView) this.foldCurrentSession(true);
+      else { this._resetSearch(); this.navigateSession(-1); }
     } else if (e.key === 'ArrowRight') {
       e.preventDefault();
-      this._resetSearch();
-      this.navigateSession(1);
+      if (this.treeView) this.foldCurrentSession(false);
+      else { this._resetSearch(); this.navigateSession(1); }
+    } else if (e.key === 'Backspace') {
+      // Rub out the last typed character of the type-ahead phrase (in the tree, of
+      // the filter). Only meaningful while a phrase is up; otherwise fall through.
+      if (!this._searchWords.length) return;
+      e.preventDefault();
+      this._backspaceSearch();
     } else if (e.key === 'Escape') {
+      // With a filter up, Escape clears the FILTER first — dismissing the panel on
+      // the same key would throw away the browse you were in the middle of. A second
+      // Escape (nothing left to clear) dismisses as always.
+      e.preventDefault();
+      if (this.treeView && this._searchWords.length) {
+        this._resetSearch();
+        this.requestUpdate();
+        return;
+      }
       // Escape DISCARDS the browse: restore the window/session we were on before
       // the panel took focus, then dismiss — wherever focus sits inside it.
-      e.preventDefault();
       this._resetSearch();
       this.dismissDiscard();
     } else if (e.key === 'Enter' && tag !== 'BUTTON') {
@@ -928,46 +1319,87 @@ class WebtmuxSidebar extends LitElement {
     }
   }
 
-  // Type-ahead window selection. The phrase is split into space-separated WORDS;
-  // a window matches when EVERY word is a substring of its "index: name" label, and
-  // we select the FIRST such window — so "cla" lands on claude-1 while "cla 2" lands
-  // on claude-2. A printable char grows the current word; if the grown phrase would
-  // match nothing we DISCARD the char (pretend it wasn't typed), so the selection
-  // never jumps to nowhere. Space starts a new word. A ~2s pause resets the phrase.
+  // Type-ahead. The phrase is split into space-separated WORDS; a window matches
+  // when EVERY word is a substring of its label, and we select the FIRST such window
+  // — so "cla" lands on claude-1 while "cla 2" lands on claude-2. A printable char
+  // grows the current word; if the grown phrase would match nothing we DISCARD the
+  // char (pretend it wasn't typed), so the selection never jumps to nowhere. Space
+  // starts a new word. A ~2s pause resets the phrase.
+  //
+  // In the TREE the same phrase also FILTERS: rows that don't match are hidden and
+  // sessions left with none drop out, so what you typed is visible as a narrowing
+  // list rather than only as a moved selection. Same words, same matcher — the only
+  // difference is that the tree has room to show you the answer, and a haystack that
+  // includes the session name (typing a session's name narrows to that session).
   _typeahead(ch) {
     // Any keystroke restarts the idle-reset timer.
     if (this._searchTimer) clearTimeout(this._searchTimer);
-    this._searchTimer = setTimeout(() => this._resetSearch(), 2000);
+    this._searchTimer = setTimeout(() => { this._resetSearch(); this.requestUpdate(); }, 2000);
 
     const words = appendChar(this._searchWords, ch);
     if (ch === ' ') {
       // Separator: an empty trailing word doesn't narrow the match — selection holds.
       this._searchWords = words;
+      this.requestUpdate();
       return;
     }
 
     const match = this._findWindowByWords(words);
     if (!match) return;                         // no match → reject this character
     this._searchWords = words;
+    this.requestUpdate();                       // the tree narrows to what's left
     // Preview it in the pane exactly like arrow-key nav — Enter commits.
-    this.previewWindowRow(match.id);
+    this.previewWindowRow(match.id, match.session);
     this.focusPanel();
   }
 
-  // First selectable window whose "index: name" label contains every non-empty
-  // search word as a substring, or null if none match.
+  // Rub out the last character. Unlike typing, this never rejects: shortening a
+  // phrase can only ever widen the match set, so the row you were on stays matched
+  // and the tree simply shows more around it.
+  _backspaceSearch() {
+    if (this._searchTimer) clearTimeout(this._searchTimer);
+    this._searchTimer = setTimeout(() => { this._resetSearch(); this.requestUpdate(); }, 2000);
+    this._searchWords = backspace(this._searchWords);
+    this.requestUpdate();
+  }
+
+  // First selectable row whose label contains every non-empty search word, or null
+  // if none match. The label is "index: name" in the default view and "session
+  // index: name" in the tree, where the session is on screen and worth filtering by.
   _findWindowByWords(words) {
     const terms = words.filter(w => w !== '');
     if (terms.length === 0) return null;
-    return (this.layout?.windows || []).find(w => {
+    const tree = this.treeView;
+    return this._rows({ filtered: false }).find(w => {
       if (this._windowDisabled(w.id)) return false;
-      return matchesWords(`${w.index}: ${w.name || 'bash'}`, terms);
+      return matchesWords(tree ? rowText(w) : `${w.index}: ${w.name || 'bash'}`, terms);
     }) || null;
   }
 
   _resetSearch() {
     if (this._searchTimer) { clearTimeout(this._searchTimer); this._searchTimer = null; }
     this._searchWords = [];
+  }
+
+  // The rows the keyboard walks, top to bottom, exactly as rendered: this session's
+  // windows in the default view; every visible window in the tree (collapsed
+  // sessions contribute none — they aren't on screen). `filtered` narrows by the
+  // live type-ahead phrase, which is what ↑/↓ should walk; the type-ahead's own
+  // search deliberately looks at the UNFILTERED set, or growing a phrase could never
+  // move the selection off the rows that phrase already matched.
+  _rows({ filtered = true } = {}) {
+    if (!this.treeView) {
+      const own = this._ownSession();
+      return (this.layout?.windows || []).map((w) => ({ ...w, session: own }));
+    }
+    const tree = filtered ? this._tree() : buildTree({
+      sessions: this._sessionList(),
+      allWindows: this.layout?.allWindows || [],
+      windows: this.layout?.windows || [],
+      ownSession: this._ownSession(),
+      working: this.layout?.allWorking || null,
+    });
+    return flattenTree(tree, this.treeCollapsed);
   }
 
   // ACCEPT the browse: keep whatever window is currently previewed and collapse the
@@ -1044,7 +1476,7 @@ class WebtmuxSidebar extends LitElement {
   // (this panel's session, window) so a linked window is acknowledged per placement,
   // exactly as its recents tabs are.
   _alert(win) {
-    return alertOf(this.alerts, this._ownSession(), win?.id);
+    return alertOf(this.alerts, win?.session || this._ownSession(), win?.id);
   }
 
   // Step delta windows from the active one (wrapping), by the sidebar's own window
@@ -1053,26 +1485,40 @@ class WebtmuxSidebar extends LitElement {
   // otherwise drop keyboard focus (and break a second arrow press) if focus had
   // been on a now-replaced tab button.
   navigateWindow(delta) {
-    const windows = this.layout?.windows || [];
-    if (windows.length === 0) return;
-    // Step from wherever the browse currently sits — the previewed window if one is
-    // up, otherwise the pane's real window.
-    const from = this.previewWindow || this.activeWindow;
-    let idx = windows.findIndex(w => w.id === from);
-    if (idx === -1) idx = 0;
-    for (let n = 0; n < windows.length; n++) {
-      idx = (idx + delta + windows.length) % windows.length;
-      const cand = windows[idx];
-      if (cand && !this._windowDisabled(cand.id)) {
-        // Arrow-key browsing is a PREVIEW, exactly like hovering: the region shows
-        // the window's captured screen, tmux is not touched, and nothing enters the
-        // recents strip until Enter (or a click) commits it.
-        this.previewWindowRow(cand.id);
-        this.focusPanel();
-        return;
-      }
-    }
+    const rows = this._rows();
+    if (!rows.length) return;
+    // Step from wherever the browse currently sits — the previewed row if one is up,
+    // otherwise the pane's real window in its own session. In the tree the walk
+    // crosses session boundaries: the last window of one session is followed by the
+    // first of the next, because that is what the list on screen does.
+    const from = this.previewWindow
+      ? rowKey(this.previewSession || this._ownSession(), this.previewWindow)
+      : rowKey(this._ownSession(), this.activeWindow);
+    const cand = stepRow(rows, from, delta, (r) => this._windowDisabled(r.id));
     // Every other window is occupied by another pane — nothing to move to.
+    if (!cand) return;
+    // Arrow-key browsing is a PREVIEW, exactly like hovering: the region shows the
+    // window's captured screen, tmux is not touched, and nothing enters the recents
+    // strip until Enter (or a click) commits it.
+    this.previewWindowRow(cand.id, cand.session);
+    this.focusPanel();
+  }
+
+  // ← / → in the tree: fold the session the browse is standing in away, or unfold
+  // it. Folding does NOT move the preview — you asked to tidy the list, not to go
+  // somewhere — but the folded rows leave the ↑/↓ walk with them, which is the point.
+  foldCurrentSession(collapse) {
+    const name = this._cursorSession();
+    if (!name) return;
+    if (collapse === this._isCollapsed(name)) return;   // already folded / unfolded
+    this.toggleSessionCollapsed(name);
+    this.focusPanel();
+  }
+
+  // The session the browse is currently in: the previewed row's, else the pane's own.
+  _cursorSession() {
+    if (this.previewWindow && this.previewSession) return this.previewSession;
+    return this._ownSession();
   }
 
   // The user-selectable session list: exactly what render() shows (web-* shadow
@@ -1147,10 +1593,13 @@ class WebtmuxSidebar extends LitElement {
   // Click a window row = COMMIT the browse: the previewed window becomes real. Goes
   // through the shared HoverPreview so it lands in the region the preview was shown
   // in — the same path the toolbar recents and the Preview tiles take.
-  selectWindow(windowId) {
+  // Committing a row in ANOTHER session hops the pane there on the way (goToWindowIn
+  // handles it) — which is exactly what clicking a window listed under a different
+  // session in the tree should mean.
+  selectWindow(windowId, session = '') {
     if (this._windowDisabled(windowId)) return;   // shown in another split pane
     const mgr = this.unit?.manager;
-    if (mgr) mgr.hover.commit(windowId, this._ownSession());
+    if (mgr) mgr.hover.commit(windowId, session || this._ownSession());
     else this.unit?.selectWindow(windowId);       // no manager (shouldn't happen) — direct
   }
 
@@ -1175,14 +1624,21 @@ class WebtmuxSidebar extends LitElement {
     // already taken us. (Already open = the baseline from when you opened it stands.)
     if (this.collapsed) this.collapsed = false;
     const target = session || this._ownSession();
-    if (target && target !== this._ownSession() && this.unit) {
+    // The TREE already lists the target's row, whatever session it is in, so there is
+    // nothing to point at it — and hopping the pane's session to reveal a window you
+    // have not yet chosen would be a navigation the arrow never asked for.
+    if (target && target !== this._ownSession() && this.unit && !this.treeView) {
       this.unit._suppressAccessNext = true;
       this.switchSession(target);
     }
+    // …but a row folded away is not on screen either: unfold its session so the
+    // scroll below has something to land on.
+    if (this.treeView && this._isCollapsed(target)) this.toggleSessionCollapsed(target);
     this.unit?.manager?.hover.enter(windowId, target);
     // The row may not exist yet (a session hop lands a layout or two later), so the
     // scroll is a standing request the next render fulfils.
     this._revealRow = windowId;
+    this._revealSess = target;
     this._revealTries = REVEAL_TRIES;
     this._scrollRevealIntoView();
     this.focusPanel();
@@ -1201,10 +1657,17 @@ class WebtmuxSidebar extends LitElement {
     const id = this._revealRow;
     if (!id) return;
     if (this.collapsed || --this._revealTries <= 0) { this._revealRow = ''; return; }
+    const sess = this._revealSess;
     this.updateComplete.then(() => {
-      const el = this.renderRoot?.querySelector(`.window-tab[data-win="${id}"]`);
+      // In the tree the same window can have a row under several sessions, so aim at
+      // the placement the arrow was flashing about; fall back to the id alone when
+      // no session was given (or that row hasn't rendered yet).
+      const root = this.renderRoot;
+      const el = (sess && root?.querySelector(`.window-tab[data-win="${id}"][data-sess="${sess}"]`))
+        || root?.querySelector(`.window-tab[data-win="${id}"]`);
       if (!el || this._revealRow !== id) return;
       this._revealRow = '';
+      this._revealSess = '';
       try { el.scrollIntoView({ block: 'nearest' }); } catch (e) { /* cosmetic only */ }
     });
   }
@@ -1214,8 +1677,8 @@ class WebtmuxSidebar extends LitElement {
   // shows are NOT skipped: the preview controller sees they're on screen and simply
   // draws nothing, which keeps the browse "engaged" so moving on to the next row is
   // still instant instead of re-pausing.
-  previewWindowRow(windowId) {
-    this.unit?.manager?.hover.enter(windowId, this._ownSession());
+  previewWindowRow(windowId, session = '') {
+    this.unit?.manager?.hover.enter(windowId, session || this._ownSession());
   }
 
   // Stop pointing at a row. The preview controller applies its own grace, so
@@ -1326,13 +1789,17 @@ class WebtmuxSidebar extends LitElement {
   //
   // The confirmation opens AT the × (`anchor`), not in the middle of the screen —
   // see confirm-popup.js for why. Anything but its Yes dismisses it untouched.
-  killWindow(windowId, anchor) {
-    const win = (this.layout?.windows || []).find(w => w.id === windowId);
+  // `win` is the ROW that was clicked, so the unlink removes the window from the
+  // session that row is under — which in the tree need not be the session this pane
+  // is viewing.
+  killWindow(win, anchor) {
+    if (!win) return;
+    const windowId = win.id;
     if (this._windowLinkedElsewhere(win)) {
-      this.unit?.unlinkWindow(windowId);   // just remove it from this session
+      this.unit?.unlinkWindow(windowId, win.session || '');   // remove it from THAT session
       return;
     }
-    const label = win ? `window ${win.index}: ${win.name || 'bash'}` : 'this window';
+    const label = `window ${win.index}: ${win.name || 'bash'}`;
     this._confirm.ask(anchor, {
       message: `Kill ${label}?\nThis ends its processes.`,
       yes: 'Kill',
@@ -1340,18 +1807,28 @@ class WebtmuxSidebar extends LitElement {
     });
   }
 
-  // A window is "linked elsewhere" when it belongs to more than one logical
-  // session (sessionCount from the backend; defaults to 1 when unknown).
+  // A window is "linked elsewhere" when it belongs to more than one logical session.
+  // The server-wide directory answers this for every row, including the ones in
+  // sessions no pane is attached to (which carry no sessionCount of their own); the
+  // current session's rows still prefer their own count, which is the same number.
   _windowLinkedElsewhere(win) {
-    return (win?.sessionCount || 1) > 1;
+    return this._sessionCount(win) > 1;
+  }
+
+  _sessionCount(win) {
+    if (!win) return 1;
+    if (win.sessionCount) return win.sessionCount;
+    return sessionCountOf(this.layout?.allWindows, win.id);
   }
 
   // Tooltip/aria-label for a window's × — distinguishes the unlink case ("Remove
   // from session") from the kill case ("Kill window"), matching what the click does.
   _windowKillLabel(win) {
-    if (this._windowLinkedElsewhere(win)) {
-      const others = (win.sessionCount || 2) - 1;
-      return `Remove window ${win.index} from this session — stays open in ${others} other session${others === 1 ? '' : 's'}`;
+    const count = this._sessionCount(win);
+    if (count > 1) {
+      const others = count - 1;
+      const where = win.session ? `from ${win.session}` : 'from this session';
+      return `Remove window ${win.index} ${where} — stays open in ${others} other session${others === 1 ? '' : 's'}`;
     }
     return `Kill window ${win.index}: ${win?.name || 'bash'} — ends its processes`;
   }
@@ -1390,6 +1867,14 @@ class WebtmuxSidebar extends LitElement {
 function readSessionOrder() {
   const v = stateStore.get('sessionOrder', []);
   return Array.isArray(v) ? v.filter((n) => typeof n === 'string') : [];
+}
+
+// The persisted set of sessions folded away in the tree view, as a Set (stored as a
+// plain array — the blob is JSON). Anything malformed reads as "nothing folded",
+// which is the harmless answer: you see more than you asked for, not less.
+function readCollapsed(sidebarSection) {
+  const v = sidebarSection?.treeCollapsed;
+  return new Set(Array.isArray(v) ? v.filter((n) => typeof n === 'string') : []);
 }
 
 customElements.define('webtmux-sidebar', WebtmuxSidebar);

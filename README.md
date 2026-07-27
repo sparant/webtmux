@@ -17,6 +17,7 @@ A web-based terminal with tmux-specific features. Access your tmux sessions from
 - Toggle with Ctrl+Alt+W from anywhere; hover-overlay mode with a pin toggle; vertical window list.
 - Preview-before-commit browsing: arrow keys and hovering preview windows/sessions live in the real terminal; Enter or click commits, Esc puts everything back.
 - Type-ahead search to find a window; drag rows to reorder, drag a window onto a session tab to link it there.
+- A view toggle switches the panel between the default (sessions, then this session's windows) and a flat tree of **every** window on the server — sessions in your own order, their windows beneath them, like tmux's `prefix + w`. Typing filters the whole tree (session name included), ↑/↓ walk straight across session boundaries, ←/→ fold a session away, and rows drag to reorder within any session or onto another to link. The chosen view and the folds persist with the rest of the shared state.
 - Hover × kills a window — or just unlinks it when it lives in other sessions too; empty sessions skip the confirmation. Double-click renames windows and sessions inline; "+" creates a session; session order persists.
 - Ephemeral split-view helper sessions (`web-*`) are hidden from the list.
 

@@ -36,13 +36,13 @@ func (c *failCtrl) SelectPane(string) error              { return errNope }
 func (c *failCtrl) SelectWindow(string) error            { return errNope }
 func (c *failCtrl) SwitchSession(string) error           { return errNope }
 func (c *failCtrl) RenameWindow(string, string) error    { return errNope }
-func (c *failCtrl) MoveWindow(string, int) error         { return errNope }
+func (c *failCtrl) MoveWindow(string, int, string) error { return errNope }
 func (c *failCtrl) NewSession() error                    { return errNope }
 func (c *failCtrl) RenameSession(string, string) error   { return errNope }
 func (c *failCtrl) KillWindow(string) error              { return errNope }
 func (c *failCtrl) KillSession(string) error             { return errNope }
 func (c *failCtrl) LinkWindow(string, string) error      { return errNope }
-func (c *failCtrl) UnlinkWindow(string) error            { return errNope }
+func (c *failCtrl) UnlinkWindow(string, string) error    { return errNope }
 func (c *failCtrl) SplitPane(bool) error                 { return errNope }
 func (c *failCtrl) ClosePane(string) error               { return errNope }
 func (c *failCtrl) SetGlobalOption(string, string) error { return errNope }
@@ -96,12 +96,16 @@ func TestTmuxCommandFailureNeverEndsTheConnection(t *testing.T) {
 		{"switch session", TmuxSwitchSession, "services"},
 		{"rename window", TmuxRenameWindow, "@3 build"},
 		{"move window", TmuxMoveWindow, "@3 2"},
+		// The tree view's form of the same two commands: a third/second field naming
+		// the session being reordered / unlinked from.
+		{"move window in another session", TmuxMoveWindow, "@3 2 editors"},
 		{"new session", TmuxNewSession, ""},
 		{"rename session", TmuxRenameSession, "old new"},
 		{"kill window", TmuxKillWindow, "@3"},
 		{"kill session", TmuxKillSession, "scratch"},
 		{"link window", TmuxLinkWindow, "@3 services"},
 		{"unlink window", TmuxUnlinkWindow, "@3"},
+		{"unlink window from another session", TmuxUnlinkWindow, "@3 editors"},
 		{"set state", TmuxSetState, `{"v":1}`},
 		{"refresh client", TmuxRefresh, ""},
 		{"unknown message type", 'z', ""},

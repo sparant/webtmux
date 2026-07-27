@@ -569,21 +569,85 @@ func (c *Controller) windowOrderAndPos(windowID string) ([]int, int) {
 	return idxs, -1
 }
 
+// sessionWindowOrder lists session's window indices in ascending (display) order,
+// plus the ordinal position and the tmux index of windowID within that order
+// (-1, -1 when it isn't there).
+//
+// The layout cache only ever holds the pane's OWN session, so it cannot answer this
+// for another one — and the sidebar's tree view shows every session on the server,
+// where a drag can reorder (or an × can unlink) a window the pane isn't attached to.
+// That is one extra `list-windows` fork per such action, which is nothing next to
+// how rare the action is; the pane's own session keeps using the cache (below).
+func (c *Controller) sessionWindowOrder(session, windowID string) ([]int, int, int) {
+	out, err := c.runTmux("list-windows", "-t", session, "-F", "#{window_index} #{window_id}")
+	if err != nil {
+		return nil, -1, -1
+	}
+	return parseWindowOrder(out, windowID)
+}
+
+// parseWindowOrder turns `list-windows -F "#{window_index} #{window_id}"` output
+// into the ascending index order, the ordinal position of windowID within it, and
+// that window's own index (-1, -1 when it isn't listed). Split out from the tmux
+// call so the arithmetic every reorder depends on is testable without a tmux server.
+func parseWindowOrder(out, windowID string) ([]int, int, int) {
+	type row struct {
+		index int
+		id    string
+	}
+	rows := make([]row, 0, 8)
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 {
+			continue
+		}
+		n, err := strconv.Atoi(f[0])
+		if err != nil {
+			continue
+		}
+		rows = append(rows, row{n, f[1]})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].index < rows[j].index })
+	order := make([]int, 0, len(rows))
+	pos, idx := -1, -1
+	for p, r := range rows {
+		order = append(order, r.index)
+		if r.id == windowID {
+			pos, idx = p, r.index
+		}
+	}
+	return order, pos, idx
+}
+
 // MoveWindow reorders windowID so it lands at ordinal position targetPos (0-based,
-// in index order) within the shared window list. It is realized as a sequence of
-// adjacent swap-window calls that "bubble" the window across the fixed index slots
-// — unlike move-window, swap-window never collides with an occupied index, and
-// because grouped sessions share the window list one reorder moves it for every
-// pane. The client sends the desired final position; we compute the swaps.
-func (c *Controller) MoveWindow(windowID string, targetPos int) error {
-	order, srcPos := c.windowOrderAndPos(windowID)
-	if srcPos < 0 {
-		// Stale cache — refresh once and retry the lookup.
-		c.RefreshLayout()
+// in index order) within the window list of `session` — or of the pane's own
+// session when that is empty. It is realized as a sequence of adjacent swap-window
+// calls that "bubble" the window across the fixed index slots — unlike move-window,
+// swap-window never collides with an occupied index, and because grouped sessions
+// share the window list one reorder moves it for every pane. The client sends the
+// desired final position; we compute the swaps.
+//
+// `session` is what makes a reorder possible from the sidebar's tree view, where the
+// row being dragged may belong to a session no region is attached to. Empty keeps
+// the original behavior exactly: the pane's own session, read from the warm layout
+// cache without an extra tmux call.
+func (c *Controller) MoveWindow(windowID string, targetPos int, session string) error {
+	var order []int
+	var srcPos int
+	sess := session
+	if session == "" {
+		sess = c.session()
 		order, srcPos = c.windowOrderAndPos(windowID)
+		if srcPos < 0 {
+			// Stale cache — refresh once and retry the lookup.
+			c.RefreshLayout()
+			order, srcPos = c.windowOrderAndPos(windowID)
+		}
+	} else {
+		order, srcPos, _ = c.sessionWindowOrder(session, windowID)
 	}
 	if srcPos < 0 || len(order) == 0 {
-		return fmt.Errorf("move-window: window %s not found in layout", windowID)
+		return fmt.Errorf("move-window: window %s not found in session %q", windowID, sess)
 	}
 	if targetPos < 0 {
 		targetPos = 0
@@ -591,7 +655,6 @@ func (c *Controller) MoveWindow(windowID string, targetPos int) error {
 	if targetPos > len(order)-1 {
 		targetPos = len(order) - 1
 	}
-	sess := c.session()
 	// swap-window exchanges the two windows AND their indices, so bubbling the
 	// source one fixed index slot at a time walks it to the target position while
 	// the intervening windows shift by one — exactly an insertion reorder.
@@ -846,18 +909,29 @@ func (c *Controller) LinkWindow(windowID, targetSession string) error {
 // the whole group). The caller only reaches here when the window is linked
 // elsewhere, so tmux never has to kill it — but we omit -k so a stale count can
 // never silently destroy the last link.
-func (c *Controller) UnlinkWindow(windowID string) error {
+func (c *Controller) UnlinkWindow(windowID string, session string) error {
 	if windowID == "" {
 		return nil
 	}
-	idx, ok := c.windowIndex(windowID)
-	if !ok {
-		c.RefreshLayout()
+	var idx int
+	var ok bool
+	base := session
+	if session == "" {
+		// The pane's own session: its window list is the warm layout cache.
+		base = c.logicalSession()
 		idx, ok = c.windowIndex(windowID)
+		if !ok {
+			c.RefreshLayout()
+			idx, ok = c.windowIndex(windowID)
+		}
+	} else {
+		// A session this pane isn't attached to — the sidebar's tree view can remove a
+		// window from any of them, so the index has to be read from tmux directly.
+		_, pos, i := c.sessionWindowOrder(session, windowID)
+		idx, ok = i, pos >= 0
 	}
-	base := c.logicalSession()
 	if !ok || base == "" {
-		return fmt.Errorf("unlink-window: window %s not found in layout", windowID)
+		return fmt.Errorf("unlink-window: window %s not found in session %q", windowID, base)
 	}
 	if _, err := c.runTmux("unlink-window", "-t", fmt.Sprintf("%s:%d", base, idx)); err != nil {
 		return err

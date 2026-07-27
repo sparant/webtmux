@@ -1351,7 +1351,12 @@ export class SplitManager {
   // highlight. Cheap — both are Lit components that diff.
   onHoverPreviewChange() {
     if (this.toolbar) this.toolbar.previewWindow = this.hover.windowId;
-    if (this.sidebar) this.sidebar.previewWindow = this.hover.windowId;
+    if (this.sidebar) {
+      this.sidebar.previewWindow = this.hover.windowId;
+      // …and WHICH placement: the sidebar's tree view lists a linked window once per
+      // session, and only the row the preview belongs to should light up.
+      this.sidebar.previewSession = this.hover.session || '';
+    }
   }
 
   _pushLayout(unit) {
@@ -1360,6 +1365,7 @@ export class SplitManager {
     sb.activePane = unit.layout?.activePaneId || '';
     sb.activeWindow = unit.layout?.activeWindowId || '';
     sb.previewWindow = this.hover?.windowId || '';
+    sb.previewSession = this.hover?.session || '';
     this._pushDisabled();
   }
 

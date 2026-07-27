@@ -90,3 +90,70 @@ func TestParseAllWindowsEmpty(t *testing.T) {
 		t.Errorf("empty listing must yield nothing, got %+v / %+v", working, refs)
 	}
 }
+
+// `list-windows -t <session> -F "#{window_index} #{window_id}"` output. tmux lists
+// a session's windows in index order already, but the indexes are NOT dense (a
+// killed window leaves a hole) — which is the whole reason a reorder is expressed
+// as an ordinal POSITION and realized by bubbling across the holes.
+const sessionWindowsFixture = `0 @0
+3 @5
+4 @1
+9 @7
+`
+
+func TestParseWindowOrder(t *testing.T) {
+	order, pos, idx := parseWindowOrder(sessionWindowsFixture, "@1")
+	want := []int{0, 3, 4, 9}
+	if len(order) != len(want) {
+		t.Fatalf("order = %v, want %v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("order = %v, want %v", order, want)
+		}
+	}
+	// @1 sits in index slot 4, which is the THIRD window (ordinal 2) — the number the
+	// sidebar's drop arithmetic speaks in.
+	if pos != 2 || idx != 4 {
+		t.Errorf("pos, idx = %d, %d; want 2, 4", pos, idx)
+	}
+}
+
+func TestParseWindowOrderSortsByIndex(t *testing.T) {
+	// Order must come from the INDEX, not from the listing order: MoveWindow bubbles
+	// by adjacent swaps, so a mis-sorted order swaps the wrong pair of windows.
+	order, pos, _ := parseWindowOrder("9 @7\n0 @0\n4 @1\n", "@7")
+	if len(order) != 3 || order[0] != 0 || order[1] != 4 || order[2] != 9 {
+		t.Fatalf("order = %v, want [0 4 9]", order)
+	}
+	if pos != 2 {
+		t.Errorf("pos = %d, want 2 (last)", pos)
+	}
+}
+
+func TestParseWindowOrderMissingWindow(t *testing.T) {
+	// The window isn't in that session — the caller must be able to tell, because
+	// "not there" is a refused command, not a move to position 0.
+	order, pos, idx := parseWindowOrder(sessionWindowsFixture, "@99")
+	if len(order) != 4 {
+		t.Fatalf("order = %v, want the session's 4 windows", order)
+	}
+	if pos != -1 || idx != -1 {
+		t.Errorf("pos, idx = %d, %d; want -1, -1", pos, idx)
+	}
+}
+
+func TestParseWindowOrderIgnoresJunk(t *testing.T) {
+	// Short/garbled rows (a tmux error line, a truncated read) are skipped rather
+	// than counted — a phantom slot in `order` would bubble a window one step too far.
+	order, pos, _ := parseWindowOrder("0 @0\nnot-a-row\nx @9\n1 @1\n", "@1")
+	if len(order) != 2 || order[0] != 0 || order[1] != 1 {
+		t.Fatalf("order = %v, want [0 1]", order)
+	}
+	if pos != 1 {
+		t.Errorf("pos = %d, want 1", pos)
+	}
+	if o, p, i := parseWindowOrder("", "@1"); len(o) != 0 || p != -1 || i != -1 {
+		t.Errorf("empty listing = %v, %d, %d; want [], -1, -1", o, p, i)
+	}
+}
