@@ -1,12 +1,14 @@
 # webtmux
 
-A web-based terminal with tmux-specific features. Access your tmux sessions from any browser with a visual pane layout, touch-friendly controls, and automatic scroll-to-copy-mode.
+A web-based terminal with tmux-specific features. Access your tmux sessions from any browser with a visual pane layout, touch-friendly controls, and automatic scroll-to-copy-mode. Most importantly, see at a glance of all your windows which are working and which are idle. Get notified when a window is ready for more work!
 
-- Multtiple ways (Exposé, Pip, Preview Bar) for quick monitoring and status of your tmux windows.
+- Multiple ways ([Exposé](#windows-mosaic), [Pip, Preview Bar](#preview-and-picture-in-picture), [Sidebar](#windows-view-in-sidebar), [Recents Tabs](#toolbar-and-recent-tabs)) to [quickly monitor](#hover-previews) and access your tmux windows.
+- [Get notified with visuals](#stoplights-and-work-alerts) when your tmux windows are done working, are prompting for input or are idle waiting for more work.
+  - Perfect for working with AI coding agents - know exactly when they are done/need input
+  - **setup required for feature to work**
 - Take advantage of modern UI - Use Drag and Drop, Previews on hover etc to manage your tmux state.
 - Controls mimick familiar tmux shortcuts - just with control+Option instead of the usual prefix.
 - Discoverability of all features - no more searching for shortcuts or remembering commands
-- Get notified with visuals when your tmux windows are done working and idle waiting for more work (perfect for working with AI coding agents - know exactly when they are done/need input) **setup required for feature to work**
 - Quickly access your most recent windows. Monitor any window keeping it always in your view
 
 ## Unique Features
@@ -17,22 +19,18 @@ A UI replacement for tmux Prefix+W. Lets you manage windows/sessions - create/de
 
 ![Sidebar browse replayed: Ctrl+Alt+W opens the panel, hovering rows previews windows live in the real terminal, Esc puts everything back, click commits](screenshots/sidebar.gif)
 
-- Toggle with Ctrl+Alt+W from anywhere
-- Hover-overlay to have it come up when you need it or pin to have it always stay open
-- Preview-before-commit browsing: arrow keys and hovering preview windows/sessions live in the real terminal
-  - Enter or click commits
-  - Esc puts everything back
-- A view toggle switches what the panel lists:
-  - **this session** — the session list, with the current session's windows below it (the default)
-  - **all windows** — every session on the server in your own order, its windows beneath it: tmux's Prefix+W tree, without the modal keybindings
-- Type-ahead search to find a window; in the tree it filters the whole thing, session names included
-- Drag windows to reorder — in any session, not only the one you are attached to
-- Drag a window onto a session (its tab, or its branch of the tree) to link it there
-- In the tree: ↑/↓ walk straight across session boundaries, ←/→ fold a session away, and clicking a window in another session takes you there
-- Hover × kills a window — or just unlinks it when it lives in other sessions too
-- Double-click renames windows and sessions inline; pasting a path into the rename box trims it to the basename without its extension (`webtmux/plan-webtmux-portable-deps.md` → `plan-webtmux-portable-deps`)
-- "+" creates a session or a window
-- session and window order persists
+- Toggle with Ctrl+Alt+W from anywhere.
+- Hover-overlay to have it come up when you need it or pin to have it always stay open.
+- Preview-before-commit browsing: arrow keys and hovering preview windows/sessions live in the real terminal.
+  - Enter or click commits.
+  - Esc puts everything back.
+- Type-ahead search to find a window.
+- Drag windows to reorder.
+- Drag a window onto a session tab to link it there.
+- Hover × kills a window — or just unlinks it when it lives in other sessions too.
+- Double-click renames windows and sessions inline.
+- "+" creates a session or a window.
+- session and window order persists.
 
 ### Toolbar and Recent Tabs
 
@@ -56,9 +54,9 @@ A tab flashes amber when its window has stopped working and an arrow flashes whe
   - focus dots tell you what region you are in.
   - a hidden build-id chip (Ctrl+Alt+B, copies the build id when revealed).
 
-### Exposé (window mosaic)
+### Windows Mosaic
 
-Bring up a mac style Exposé view to see 4 or 9 windows at once. Syllable substring search for filtering. scroll to others. Ordering by most recent lets you quickly find what you were working on, and see status of multiple windows at once. A **Show** filter narrows the mosaic to one work status — working / needs you / idle — which turns it into a triage board when a dozen agents are running.
+Bring up a mac style Exposé view to see 4 or 9 windows at once. Syllable substring search for filtering and scroll to see additional windows. Order by most recent to quickly find what you were working on, or see status of multiple windows at once. A **Show** filter narrows the mosaic to one work status — working / needs you / idle — which turns it into a triage board when a dozen agents are running.
 
 ![Exposé replayed: Ctrl+Alt+E opens the mosaic, pressing again densifies 2×2 to 3×3, typing filters by name, Enter switches the focused region](screenshots/expose.gif)
 
@@ -68,35 +66,40 @@ Bring up a mac style Exposé view to see 4 or 9 windows at once. Syllable substr
 - Type to filter by name, with an optional toggle to search captured window content too
 - Linked windows appear once; sort by session or recency
 
-### Preview / picture-in-picture
-
-![Preview replayed: Ctrl+Alt+I floats one window as a corner PiP that blanks while you view its window; a second window docks both as an edge bar; Ctrl+Alt+H hides and restores it](screenshots/preview-pip.gif)
+### Preview and Picture-in-Picture
 
 Keep an eye on specific windows, even while you focus on others.
 
-- "Preview" collects windows to keep an eye on: one window floats as a corner PiP box; two or more dock as a bar along a screen edge that reserves space instead of covering the terminal.
-- Ctrl+Alt+I adds/removes the focused window; Ctrl+Alt+H hides/shows the preview without losing it; tiles are read-only and click-to-switch.
-- The single-window PiP blanks itself while the focused region already shows that window, and reappears when you move away.
+![Preview replayed: Ctrl+Alt+I floats one window as a corner PiP that blanks while you view its window; a second window docks both as an edge bar; Ctrl+Alt+H hides and restores it](screenshots/preview-pip.gif)
 
-### Hover previews
+- "Preview" collects windows to keep an eye on. Toggle with Command+Option+I
+  - A single window floats as a corner PiP box.
+  - Two or more dock as a bar along a screen edge that reserves space instead of covering the terminal.
+- Ctrl+Alt+I adds/removes the focused window.
+- Ctrl+Alt+H hides/shows the preview while keeping the windows in it.
+- Provides another way to quickly switch to high priority windows.
 
-- Pointing at any window — recents tab, sidebar row, preview tile, — previews it full-size in a real terminal region instantly for quick status check.
+### Hover Previews
+
+- Pointing at any window — recents tab, sidebar row, preview tile — previews it full-size in a real terminal region instantly for quick status check.
 
 ![Hover preview replayed: pointing at a recents tab paints that window full-size in the real terminal, marked as temporary; moving away restores the original view](screenshots/hover-preview.gif)
 
 - The visible preview is temporary, move the mouse away or press Escape to go back to what you were doing.
-- or commit to the new window with click/Enter
+- Commit to the new window with mouse left click or keyboard Enter.
 - Previews wait for a fresh capture at the right pane geometry before painting, so you never see a stale or mis-sized screen.
 
-### Stoplights & work alerts
+### Stoplights and Work Alerts
 
 ![Stoplights replayed: windows report green, one drops to amber and its tab flashes, another drops to red with no tab so the attention arrow flashes — until the window is actually viewed](screenshots/stoplights.gif)
 
-- Windows self-report status via the tmux option `@wt_working`; webtmux renders a stoplight dot everywhere the window appears (recents tabs, sidebar rows, preview tiles, Exposé tiles): green = working, amber = prompting you, red = waiting for work, unfilled = not reporting. Hovering any dot shows the full color key.
-- When a window drops out of green while you're looking elsewhere, everything showing it flashes in the new color until you actually view it — no timeout. Alerts cover every window on the server, not just visible tabs; reduced-motion users get a solid ring instead of blinking.
-- A bash prompt-hook installer ships in the repo so ordinary shells paint their own light automatically (see below).
+- Webtmux renders a stoplight dot everywhere the window appears (recents tabs, sidebar rows, preview tiles, Exposé tiles): green = working, amber = prompting you, red = waiting for work, unfilled = not reporting.
+- Windows self-report status via the tmux option `@wt_working`.
+- When a window drops out of green while you're looking elsewhere, everything showing it flashes in the new color until you actually view it.
+  - Alerts cover every window on the server, not just visible tabs.
+- A bash prompt-hook installer ships in the repo so ordinary shells paint their own light automatically (see below), or hook into your Agent framework (like Claude)
 
-### Split view & regions
+### Split View And Regions
 
 ![Split view replayed: Ctrl+Alt+Enter adds a second live region (auto-picking the most recent unseen window), the divider drags to resize, Ctrl+Alt+X closes it](screenshots/split-view.gif)
 
