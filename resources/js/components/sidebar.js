@@ -597,6 +597,14 @@ class WebtmuxSidebar extends LitElement {
     // A pending "scroll to this row" from revealWindow, re-tried until the row shows
     // up (a cross-session reveal waits for the new session's window list to arrive).
     if (this._revealRow) this._scrollRevealIntoView();
+    // Whatever is being PREVIEWED — a recents tab under the pointer, an Exposé tile,
+    // a preview tile, ↑/↓ — marks a row here. The mark is no use below the fold, and
+    // the panel is long now that the tree can list every window on the server, so
+    // bring it into view. (block:'nearest' means a row already on screen doesn't
+    // move, so this never fights your own scrolling.)
+    if (changedProperties.has('previewWindow') || changedProperties.has('previewSession')) {
+      this._scrollPreviewIntoView();
+    }
     if (changedProperties.has('collapsed')) {
       if (this.collapsed) {
         this.classList.add('collapsed');
@@ -973,7 +981,7 @@ class WebtmuxSidebar extends LitElement {
             >×</span>
           </button>`}
         </div>
-        ${collapsed ? '' : this.renderWindowList(node, { plus: node.name === this._ownSession(), indent: true })}
+        ${collapsed ? '' : this.renderWindowList(node, { plus: true, indent: true })}
       </div>
     `;
   }
@@ -984,9 +992,9 @@ class WebtmuxSidebar extends LitElement {
   // another session LINKS it here instead (the same thing dropping on the session
   // tab does, which is what the whole branch reads as while you drag).
   //
-  // `plus` adds the "new window" row. In the tree it appears only under the pane's
-  // own session, because tmux creates a window in the session the pane is attached
-  // to — the row would be a lie anywhere else.
+  // `plus` adds the "new window" row — under EVERY session in the tree, each
+  // creating its window in the session it sits under (the pane stays where it is;
+  // adding a window to a session you are looking at is not a reason to go there).
   renderWindowList(node, { plus = false, indent = false } = {}) {
     const linking = !!this.draggingWindow && this.dragOverSession === node.name;
     return html`
@@ -1004,7 +1012,7 @@ class WebtmuxSidebar extends LitElement {
           <button
             class="window-tab ${this._dropLine(node, node.windows.length) ? 'drop-before' : ''}"
             title="New window in ${node.name}"
-            @click=${() => this.newWindow()}
+            @click=${() => this.newWindow(node.name)}
           >+</button>
         </div>` : ''}
       </div>
@@ -1348,13 +1356,16 @@ class WebtmuxSidebar extends LitElement {
     const tag = e.target?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
 
+    // The arrows walk the rows that are ON SCREEN — so with a filter up they walk
+    // the matches, and the filter survives. They used to clear it first, from when
+    // the phrase was a transient type-ahead that only moved a highlight: now that it
+    // hides rows, clearing it on the first ↓ would throw away the list you were
+    // stepping through at the moment you started stepping through it.
     if (e.key === 'ArrowUp') {
       e.preventDefault();
-      this._resetSearch();
       this.navigateWindow(-1);
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
-      this._resetSearch();
       this.navigateWindow(1);
     } else if (e.key === 'ArrowLeft') {
       // In the tree ←/→ FOLD the session you're standing in, the way they do in
@@ -1362,11 +1373,11 @@ class WebtmuxSidebar extends LitElement {
       // session is already on screen, and folding is what that view needs instead.
       e.preventDefault();
       if (this.treeView) this.foldCurrentSession(true);
-      else { this._resetSearch(); this.navigateSession(-1); }
+      else this.navigateSession(-1);
     } else if (e.key === 'ArrowRight') {
       e.preventDefault();
       if (this.treeView) this.foldCurrentSession(false);
-      else { this._resetSearch(); this.navigateSession(1); }
+      else this.navigateSession(1);
     } else if (e.key === 'Backspace') {
       // Rub out the last typed character of the type-ahead phrase (in the tree, of
       // the filter). Only meaningful while a phrase is up; otherwise fall through.
@@ -1825,6 +1836,31 @@ class WebtmuxSidebar extends LitElement {
     });
   }
 
+  // Bring the previewed row into view. When the tree has that session FOLDED there is
+  // no row to scroll to — folding is an explicit "hide this", so it is not undone
+  // behind your back; the session's own header is scrolled to instead, which at least
+  // shows where the preview lives.
+  _scrollPreviewIntoView() {
+    const id = this.previewWindow;
+    if (!id || this.collapsed) return;
+    const rr = this.renderRoot;
+    if (!rr) return;
+    const sess = this.previewSession || '';
+    const row = (sess && rr.querySelector(`.window-tab[data-win="${id}"][data-sess="${sess}"]`))
+      || rr.querySelector(`.window-tab[data-win="${id}"]`)
+      || (sess && this._isCollapsed(sess) ? this._sessionHeaderEl(sess) : null);
+    if (!row) return;
+    try { row.scrollIntoView({ block: 'nearest' }); } catch (e) { /* cosmetic only */ }
+  }
+
+  // The tree's header button for a session, or null (default view / not rendered).
+  _sessionHeaderEl(name) {
+    for (const el of this.renderRoot.querySelectorAll('.srow .session-tab')) {
+      if (el.textContent.trim().startsWith(name)) return el;
+    }
+    return null;
+  }
+
   // Point at a window row: PREVIEW it (see hover-preview.js). Pure browsing —
   // nothing switches until a click or Enter. Rows for windows another region already
   // shows are NOT skipped: the preview controller sees they're on screen and simply
@@ -2027,8 +2063,18 @@ class WebtmuxSidebar extends LitElement {
     });
   }
 
-  newWindow() {
-    this.unit?.newWindow();
+  // The "+" at the end of a session's window list — one per session in the tree, so
+  // the session it sits under is the session the window is created in.
+  //
+  // Our OWN session is deliberately sent as "" (the backend's "this pane's session")
+  // rather than by name. tmux makes a new window current in the session it targeted,
+  // and a split pane views its session through an ephemeral grouped shadow: naming
+  // the base would create the window in the shared list but leave the pane sitting
+  // where it was, so the "+" you just pressed would appear to do nothing. Sending ""
+  // targets the pane's own client, which follows the new window — the behaviour the
+  // default view's "+" has always had.
+  newWindow(session = '') {
+    this.unit?.newWindow(session === this._ownSession() ? '' : session);
   }
 
   // Create a fresh session and switch this pane's view to it (the "+" at the end

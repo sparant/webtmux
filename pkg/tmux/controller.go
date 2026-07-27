@@ -842,9 +842,20 @@ func (c *Controller) ScrollDown(lines int) error {
 	return err
 }
 
-// NewWindow creates a new window
-func (c *Controller) NewWindow() error {
-	_, err := c.runTmux("new-window", "-t", c.session())
+// NewWindow creates a new window in `session` — or in the pane's own session when
+// that is empty, which is what the toolbar chord and the default sidebar view send.
+//
+// The sidebar's tree view lists every session with its own "+", so the target has to
+// be nameable: `new-window -t <session>` appends there without this pane following
+// it, which is the point — you are adding a window to a session you are looking at,
+// not one you are working in. (tmux makes the new window current WITHIN that
+// session; no client is switched.)
+func (c *Controller) NewWindow(session string) error {
+	target := session
+	if target == "" {
+		target = c.session()
+	}
+	_, err := c.runTmux("new-window", "-t", target)
 	if err != nil {
 		return err
 	}

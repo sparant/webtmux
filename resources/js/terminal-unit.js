@@ -1534,8 +1534,11 @@ export class TerminalUnit {
     this.sendMessage(MSG.TmuxSplitPane, horizontal ? 'h' : 'v');
   }
 
-  newWindow() {
-    this.sendMessage(MSG.TmuxNewWindow, '');
+  // Create a window in `session` (empty = this pane's own session, which is what
+  // the toolbar chord and the default sidebar view want). The sidebar's tree view
+  // names the session, because there its "+" sits under a specific one.
+  newWindow(session = '') {
+    this.sendMessage(MSG.TmuxNewWindow, session || '');
   }
 
   // Reorder a window to ordinal position `targetPos` (0-based, in index order)
