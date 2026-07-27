@@ -17,7 +17,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  MAX_RECENTS, sanitizeRecents, recentsSignature, RecentsPersistence,
+  MAX_RECENTS, RECENTS_MIN, RECENTS_MAX, clampRecentsMax,
+  sanitizeRecents, recentsSignature, RecentsPersistence,
 } from '../resources/js/recents-strip.js';
 import { StateStore } from '../resources/js/state-store.js';
 
@@ -67,6 +68,44 @@ test('sanitizeRecents caps at MAX_RECENTS', () => {
   const many = Array.from({ length: MAX_RECENTS + 4 }, (_, i) => entry(`@${i}`));
   assert.equal(sanitizeRecents(many).length, MAX_RECENTS);
   assert.equal(sanitizeRecents(many, 2).length, 2, 'the cap is overridable');
+});
+
+// --- the settable cap --------------------------------------------------------
+//
+// The cap arrives from the same user-writable tmux blob the entries do, so it gets
+// the same treatment: every input produces a usable number. The NaN case below is the
+// one that matters — `list.length < NaN` is false, so a NaN cap doesn't make the strip
+// unbounded, it makes noteAccess evict on every single access and pins the strip at
+// whatever one tab it happens to hold, with nothing on screen to explain it.
+
+test('clampRecentsMax falls back to the default for anything unusable', () => {
+  for (const junk of [undefined, null, NaN, '', 'five', {}, [], Infinity, -Infinity]) {
+    assert.equal(clampRecentsMax(junk), MAX_RECENTS, `junk cap: ${String(junk)}`);
+  }
+});
+
+test('clampRecentsMax holds the bounds and takes whole tabs only', () => {
+  assert.equal(clampRecentsMax(0), RECENTS_MIN, 'a zero-slot strip is unreachable, not smaller');
+  assert.equal(clampRecentsMax(-7), RECENTS_MIN);
+  assert.equal(clampRecentsMax(999), RECENTS_MAX);
+  assert.equal(clampRecentsMax(8), 8, 'an in-range value is kept');
+  assert.equal(clampRecentsMax('12'), 12, 'a numeric string (blob round-trip) is accepted');
+  assert.equal(clampRecentsMax(6.9), 6, 'there is no such thing as most of a tab');
+});
+
+test('the persisted strip is truncated to the CURRENT cap, not the default', () => {
+  const windows = Array.from({ length: 9 }, (_, i) => entry(`@${i}`));
+  const store = new StateStore();
+  store.load(JSON.stringify({ v: 1, rev: 2, recentTabs: { windows } }));
+
+  // A client whose cap is 8 must get all 8 back — the old fixed cap of 5 would have
+  // silently destroyed the extra tabs on the next persist.
+  const wide = new RecentsPersistence(store, 'recentTabs', 8);
+  assert.equal(wide.restore().length, 8);
+
+  // …and one that has since been narrowed reads the narrow strip.
+  wide.setMax(3);
+  assert.equal(wide.adopt().length, 3, 'a narrower cap re-truncates on the next read');
 });
 
 test('sanitizeRecents is total for junk input', () => {

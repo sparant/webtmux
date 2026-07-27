@@ -28,7 +28,7 @@ import { TerminalUnit, MSG } from './terminal-unit.js';
 import { CaptureCache } from './capture-cache.js';
 import { HoverPreview } from './hover-preview.js';
 import { WorkAlerts, hiddenAlerts, alertOf } from './work-alerts.js';
-import { MAX_RECENTS, RecentsPersistence } from './recents-strip.js';
+import { clampRecentsMax, RecentsPersistence } from './recents-strip.js';
 import { readSplitState } from './split-state.js';
 import { resolveRestoreView } from './restore-view.js';
 import { saveOkText } from './save-target.js';
@@ -93,10 +93,14 @@ export class SplitManager {
     // Persisted (shared 'recentTabs' section) so the strip survives a reload — see
     // _persistRecents/_restoreRecents. Recency lives in captureCache.accessed; this
     // list is the bounded/stable ORDER, which recency alone can't reconstruct.
-    this.recentWindows = [];         // {id,index,name,session}, stable order (MAX_RECENTS)
+    this.recentWindows = [];         // {id,index,name,session}, stable order (recentsMax)
+    // How many tabs the strip holds. A shared pref (toolbar.recentMax) rather than a
+    // constant — see recents-strip.js. Read BEFORE addUnit(): that path can already
+    // reach noteAccess, which enforces this bound.
+    this.recentsMax = clampRecentsMax(stateStore.section('toolbar').recentMax);
     // Must exist before addUnit() below: that path reaches _refreshToolbar (and so
     // _persistRecents) while the strip is still empty and unrestored.
-    this._recents = new RecentsPersistence(stateStore);
+    this._recents = new RecentsPersistence(stateStore, 'recentTabs', this.recentsMax);
     // Same no-write-before-first-read rule for the 'split' section; set true once
     // _restoreSplitState has read the blob.
     this._splitRestored = false;
@@ -177,6 +181,8 @@ export class SplitManager {
     unit.onLayout = (u) => this._onUnitLayout(u);
     // Every tmux command this region sends ticks the toolbar's activity spinner.
     unit.onTmuxActivity = () => this.pulseTmuxActivity();
+    // …and losing/regaining the socket recolors it — see _refreshConnection.
+    unit.onConnectionChange = () => this._refreshConnection();
     // Route this unit's capture replies into the shared cache, and give the unit
     // read access for optimistic paint on window switch.
     unit.captureCache = this.captureCache;
@@ -358,6 +364,9 @@ export class SplitManager {
     region.remove();
 
     this.units.splice(idx, 1);
+    // A closed region takes its (possibly dead) socket with it — the warning must go
+    // with it, or closing the broken region leaves the toolbar claiming tmux is gone.
+    this._refreshConnection();
     this._syncSplitClass();
     this._equalizeRegions();   // remaining regions re-split evenly
     this.focus(this.units[Math.min(idx, this.units.length - 1)] || this.units[0]);
@@ -640,7 +649,7 @@ export class SplitManager {
     } else {
       const entry = { id, index: meta.index, name: meta.name || 'bash', session };
       const list = [...this.recentWindows];
-      if (list.length < MAX_RECENTS) {
+      if (list.length < this.recentsMax) {
         list.push(entry);
       } else {
         // Evict the least-recently-accessed slot (recency from the shared store).
@@ -649,6 +658,30 @@ export class SplitManager {
         list[lru] = entry;
       }
       this.recentWindows = list;
+    }
+    this._refreshToolbar();
+  }
+
+  // Change how many tabs the strip holds (the "Recent ▾" menu, or another browser
+  // writing toolbar.recentMax). Raising it just leaves room the next accesses fill;
+  // LOWERING it has to evict, and it evicts by the same rule noteAccess does — least
+  // recently accessed first — so shrinking the strip and then letting it refill by
+  // hand land on the same tabs. The survivors keep their display ORDER, because that
+  // order is arranged by hand (drag) and re-sorting it by recency would silently undo
+  // the arrangement as a side effect of a size change.
+  setRecentsMax(max) {
+    const next = clampRecentsMax(max);
+    if (next === this.recentsMax) return;
+    this.recentsMax = next;
+    this._recents.setMax(next);
+    if (this.recentWindows.length > next) {
+      const recencyOf = (e) => this.captureCache.accessed.get(e.id) ?? 0;
+      const keep = new Set(
+        [...this.recentWindows]
+          .sort((a, b) => recencyOf(b) - recencyOf(a))
+          .slice(0, next),
+      );
+      this.recentWindows = this.recentWindows.filter((e) => keep.has(e));
     }
     this._refreshToolbar();
   }
@@ -703,7 +736,7 @@ export class SplitManager {
 
   // Seed the strip from the shared blob at boot, and adopt it when ANOTHER client
   // changes it. Entries are sanitized (the blob is user-writable tmux state) and
-  // capped at MAX_RECENTS, the same bound noteAccess enforces. Windows that died while this
+  // capped at recentsMax, the same bound noteAccess enforces. Windows that died while this
   // client was away are NOT filtered here — no layout has arrived yet, so there is
   // nothing to compare against; _pruneDeletedRecents drops them on the first push.
   _restoreRecents() {
@@ -714,6 +747,10 @@ export class SplitManager {
     // inside StateStore's _applying guard, so the _persistRecents it triggers is a
     // no-op and cannot loop the adopted value back to the server.
     stateStore.subscribe((_state, fromRemote) => {
+      // The cap first, and on LOCAL writes too: the "Recent ▾" menu patches the blob
+      // and this is what turns that into an actual resize. setRecentsMax is a no-op
+      // when the value hasn't moved, which is every other write to the blob.
+      this.setRecentsMax(stateStore.section('toolbar').recentMax);
       if (!fromRemote) return;
       const next = this._recents.adopt();
       if (!next) return;                // echo of our own write, or another section
@@ -1345,6 +1382,27 @@ export class SplitManager {
     if (now - (this._lastPulseAt || 0) < 200) return;
     this._lastPulseAt = now;
     this.toolbar?.tickActivity?.();
+  }
+
+  // Recolor that same spinner when a region's socket drops or comes back.
+  //
+  // It goes on the SPINNER rather than in a banner because the spinner is already the
+  // one thing on screen that means "the tmux side is alive" — it ticks when webtmux
+  // talks to tmux, so a dead connection expresses itself as a spinner that simply
+  // stops. That is indistinguishable from an idle one, which is the whole problem:
+  // the panes keep showing their last painted screen, the window list keeps listing
+  // windows, and nothing looks wrong until you type into a terminal that answers
+  // nothing. Red on the control you already read for liveness says it in the place
+  // you were already looking.
+  //
+  // ANY region counts. A split's regions each hold their own socket, and one of them
+  // going dark means part of what's on screen is a photograph — the toolbar spinner
+  // is global, so it reports the worst case and the tooltip names the count.
+  _refreshConnection() {
+    if (!this.toolbar) return;
+    const lost = this.units.filter((u) => u.connectionLost?.()).length;
+    this.toolbar.lostRegions = lost;
+    this.toolbar.disconnected = lost > 0;
   }
 
   // A hover preview appeared/moved/ended: repaint the switchers' "being previewed"

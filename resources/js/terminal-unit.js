@@ -116,6 +116,14 @@ export class TerminalUnit {
     this.fitAddon = null;
     this.ws = null;
     this.reconnectInterval = null;
+    // Has this region's socket ever CLOSED? Latched, and never cleared, because it is
+    // what separates "still opening for the first time" from "we had tmux and lost
+    // it" — see connectionLost(). Without the latch the boot's own CONNECTING state
+    // reads identically to a drop, and the toolbar would flash a connection warning on
+    // every single page load.
+    this._wasClosed = false;
+    // Called on every open/close so the owner (SplitManager) can surface the state.
+    this.onConnectionChange = null;
     this.bufferSize = 1024 * 1024;
     this._inCopyMode = false;
     this._modeSetAt = 0;      // when _inCopyMode was last decided locally
@@ -694,6 +702,7 @@ export class TerminalUnit {
       }, 100);
       // (Window restore after a reconnect happens when the first layout arrives —
       // see _rememberOrRestore, gated by this.restorePending.)
+      if (this.onConnectionChange) this.onConnectionChange(this);
     };
 
     this.ws.onmessage = (event) => {
@@ -702,6 +711,8 @@ export class TerminalUnit {
 
     this.ws.onclose = () => {
       if (this.destroyed) return;
+      this._wasClosed = true;
+      if (this.onConnectionChange) this.onConnectionChange(this);
 
       // Reconnect to the SAME session (a grouped region's session is recreated by
       // attach-web.sh under the same name) and RESTORE the window we were viewing
@@ -1078,6 +1089,20 @@ export class TerminalUnit {
   // Is this unit's ws currently usable for sending a request?
   isConnected() {
     return !!this.ws && this.ws.readyState === WebSocket.OPEN;
+  }
+
+  // Have we LOST the connection to tmux (as opposed to never having had it yet)?
+  //
+  // The ws IS the connection to tmux: the server runs this region's tmux client on
+  // the far end of it, so tmux dying, the server dying, and the network dropping all
+  // arrive here as the same close. What this must not report is the ordinary boot —
+  // the socket spends its first moments in CONNECTING, which is indistinguishable
+  // from a reconnect attempt by readyState alone. Hence the latch: only a socket that
+  // has closed at least once can be "lost", and it stays lost across the CONNECTING
+  // gaps of the retry loop (which would otherwise strobe the warning once per retry)
+  // until one of those retries actually opens.
+  connectionLost() {
+    return this._wasClosed && !this.isConnected();
   }
 
   // Request server-global capture buffers over THIS unit's ws. The reply (a
