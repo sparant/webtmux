@@ -116,6 +116,23 @@ class WebtmuxSidebar extends LitElement {
       font-size: 12px;
     }
 
+    /* The two panel toggles, side by side and equal width. They wrap back to one per
+       line if the panel is ever narrow enough that the labels would clip — abbreviating
+       is worth a row, truncating is not. */
+    .mode-pair {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .mode-pair .mode-btn {
+      flex: 1 1 120px;
+      width: auto;
+      padding-left: 4px;
+      padding-right: 4px;
+      white-space: nowrap;
+    }
+
     .mode-btn {
       width: 100%;
       background: #1a1a2e;
@@ -574,23 +591,46 @@ class WebtmuxSidebar extends LitElement {
   modeRow() {
     // "Close this region" only makes sense for an added (non-primary) region.
     const canClose = this.unit && !this.unit.primary;
+    // The two panel toggles share one line. They were full-width stacked buttons whose
+    // labels spelled out the whole state ("▣ Hover over terminal", "📌 Pinned (stays
+    // open)"), which cost two rows at the top of a panel whose actual job is the window
+    // list — and the prose was in the label, where it is read every time, rather than in
+    // the hover, where it is read once. Abbreviated to the word that differs, with the
+    // full explanation moved to the shared hint (the same ~600ms tooltip the stoplight
+    // dots use, so a hover here doesn't answer more slowly than a hover there).
+    //
+    // ✕ Close this region stays full-width below: it destroys something, and a
+    // destructive control should not sit shoulder-to-shoulder with two harmless toggles
+    // where a mis-aimed click lands on it.
     return html`
       <div class="mode-row">
         <div class="shortcut-hint">Toggle panel: <kbd>${MOD_KEYS[0]}</kbd>+<kbd>${MOD_KEYS[1]}</kbd>+<kbd>W</kbd></div>
-        <button
-          class="mode-btn"
-          @click=${this.toggleOverlay}
-          title="Hover = float over the terminal; Side-by-side = shrink the terminal to sit beside the pane"
-        >
-          ${this.overlay ? '▣ Hover over terminal' : '⇔ Side-by-side'}
-        </button>
-        <button
-          class="mode-btn"
-          @click=${this.togglePin}
-          title="Auto-hide = the panel closes when you click into the terminal, or press Enter to accept a window. Pinned = it stays open through both; only the ✕/${chord('W')}/Escape close it."
-        >
-          ${this.pinned ? '📌 Pinned (stays open)' : '📌 Auto-hide'}
-        </button>
+        <div class="mode-pair">
+          <button
+            class="mode-btn"
+            @mouseenter=${(e) => this._tip.enter(e, 'How the panel shares space with the terminal.\n'
+              + `▸ ${this.overlay ? 'float' : 'mount'} — ${this.overlay
+                ? 'floating OVER the terminal; the terminal keeps its full width'
+                : 'MOUNTED beside the terminal, which shrinks to make room'}\n`
+              + `Click for ${this.overlay ? 'mount' : 'float'}.`)}
+            @mouseleave=${() => this._tip.leave()}
+            @click=${this.toggleOverlay}
+          >
+            ${this.overlay ? '▣ float' : '⇔ mount'}
+          </button>
+          <button
+            class="mode-btn"
+            @mouseenter=${(e) => this._tip.enter(e, 'What closes the panel.\n'
+              + `▸ ${this.pinned ? 'pinned' : 'auto hide'} — ${this.pinned
+                ? `it stays open when you click into the terminal or accept a window; only ✕ / ${chord('W')} / Escape close it`
+                : 'it closes when you click into the terminal, or press Enter to accept a window'}\n`
+              + `Click to ${this.pinned ? 'let it auto hide' : 'pin it open'}.`)}
+            @mouseleave=${() => this._tip.leave()}
+            @click=${this.togglePin}
+          >
+            ${this.pinned ? '📌 pinned' : '📌 auto hide'}
+          </button>
+        </div>
         ${canClose ? html`
           <button
             class="mode-btn"

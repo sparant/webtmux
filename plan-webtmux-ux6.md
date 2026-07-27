@@ -174,14 +174,14 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
 
 ### Phase 6 — Sidebar mode row: two toggles on one line (P1, item 5)
 
-- [ ] **P1** 6.1 Put the overlay and pin toggles side by side in `.mode-row` (a flex row that
+- [x] **P1** 6.1 Put the overlay and pin toggles side by side in `.mode-row` (a flex row that
       wraps), abbreviated to fit the collapsed panel width: `▣ mount` / `⇔ float` and
       `📌 pinned` / `📌 auto-hide`.
-- [ ] **P1** 6.2 Give both the shared `tooltip.js` hint (~600ms) carrying the full sentence
+- [x] **P1** 6.2 Give both the shared `tooltip.js` hint (~600ms) carrying the full sentence
       the `title=` attribute has today — the sidebar already imports `TIP_CSS` for stoplight
       dots, so this is the same mechanism, and native `title` is dropped for consistency with
       how the stoplight dots were converted.
-- [ ] **P1** 6.3 Keep "✕ Close this region" full-width beneath (it is destructive and should
+- [x] **P1** 6.3 Keep "✕ Close this region" full-width beneath (it is destructive and should
       not sit shoulder-to-shoulder with two harmless toggles). `make check-js`; commit.
 
 ### Phase 7 — Verify
@@ -221,7 +221,7 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
 | Phase 3 Exposé filter | ✅ |
 | Phase 4 paste-trim | ✅ |
 | Phase 5 mouse dropdown | ✅ |
-| Phase 6 sidebar row | ⬜ |
+| Phase 6 sidebar row | ✅ |
 | Phase 7 verify | ⬜ |
 | Phase 8 land | ⬜ |
 
