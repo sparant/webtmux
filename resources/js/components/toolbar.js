@@ -1,18 +1,21 @@
 // Top toolbar: a most-recently-accessed window strip on the LEFT and the sidebar
 // toggle on the RIGHT. The SplitManager owns the data — it sets `recent`
-// (up to 5 {id,index,name,active,working,alert}) and `collapsed`, and handles
-// clicks via `manager.pickRecentWindow(id)` / `manager.sidebar.toggleCollapsed()`.
+// (up to `recentMax` {id,index,name,active,working,alert}) and `collapsed`, and
+// handles clicks via `manager.pickRecentWindow(id)` /
+// `manager.sidebar.toggleCollapsed()`.
 //
 // The strip ends in an OVERFLOW ARROW (`overflowAlerts`, also from the SplitManager):
-// the windows that need attention and have no tab here, because five slots cannot
-// promise to hold every window that stops. Without it, "nothing in the strip is
-// flashing" quietly meant "nothing in the five windows I happen to be keeping tabs on
-// is flashing" — which is not a thing anyone can act on.
+// the windows that need attention and have no tab here, because a bounded strip
+// cannot promise to hold every window that stops. Without it, "nothing in the strip is
+// flashing" quietly meant "nothing in the few windows I happen to be keeping tabs on
+// is flashing" — which is not a thing anyone can act on. Raising the tab count (the
+// "Recent ▾" menu) shrinks that gap but never closes it; the arrow is what makes the
+// remainder honest.
 //
 // Hovering a recent tab does NOT pop a thumbnail here any more: it asks the shared
 // HoverPreview to show that window in a real terminal region (see hover-preview.js),
 // which is bigger, in place, and the same behavior every other switcher now has.
-import { LitElement, html, css } from 'lit';
+import { LitElement, html, css, svg } from 'lit';
 import { chord, IS_MAC } from '../os.js';
 import { stateStore } from '../state-store.js';
 import { workClass, workLabel, workTip } from '../stoplight.js';
@@ -21,6 +24,7 @@ import { Tip, TIP_CSS } from '../tooltip.js';
 import { saveHint } from '../save-target.js';
 import { copyText } from '../clipboard.js';
 import { SCROLL_MODES as SCROLL_ORDER, normalizeScrollMode as normalizeScroll } from '../terminal-unit.js';
+import { clampRecentsMax, RECENTS_MIN, RECENTS_MAX } from '../recents-strip.js';
 
 // Recent-tab label shape. Two INDEPENDENT toggles rather than one four-way cycle,
 // because they answer unrelated questions: "which session is this in" and "how much
@@ -102,6 +106,48 @@ function overflowIcon() {
   `;
 }
 
+// The tmux-activity spinner, drawn rather than typed — for the third time in this
+// file, and this one had already shipped broken. It was the character ✳ (U+2733),
+// which has emoji presentation: Chromium renders it from the color-emoji font, and a
+// color-emoji glyph ignores `color` completely. The spinner had been painting itself
+// green-on-navy for as long as it has existed, and NOTHING that recolors it — least
+// of all the red "we lost tmux" state below — could ever have been visible.
+//
+// The same glyph also hid the rotation: ✳ has eight identical spokes, so turning it
+// 45° maps it exactly onto itself. Two notches of "activity" were indistinguishable.
+//
+// So: eight spokes at graded opacity, all in currentColor. The bright spoke makes the
+// 45° step legible (a throbber, which is what this always meant), and every state —
+// idle blue, lost red — now actually reaches the pixels.
+const SPIN_SPOKES = Array.from({ length: 8 }, (_, i) => {
+  const a = (i * Math.PI) / 4;
+  const sin = Math.sin(a), cos = Math.cos(a);
+  return {
+    x1: (10 + 3.6 * sin).toFixed(2), y1: (10 - 3.6 * cos).toFixed(2),
+    x2: (10 + 8.4 * sin).toFixed(2), y2: (10 - 8.4 * cos).toFixed(2),
+    o: (1 - i * 0.105).toFixed(2),
+  };
+});
+
+// The spokes are interpolated with lit's `svg` tag, NOT `html`. A nested html``
+// template is parsed as an HTML fragment even when it lands inside an <svg>, so its
+// <line>s are created in the XHTML namespace and the browser draws exactly nothing —
+// no error, no warning, an empty 20x20 box that looks like the icon was never wired
+// up. (The other two icons in this file get away with plain html`` because their
+// shapes are literal children of one <svg> the HTML parser handles as foreign
+// content; only INTERPOLATED children need this.)
+function spinIcon() {
+  return html`
+    <svg viewBox="0 0 20 20" width="15" height="15" aria-hidden="true" focusable="false">
+      <g stroke="currentColor" stroke-width="2.1" stroke-linecap="round">
+        ${SPIN_SPOKES.map((s) => svg`
+          <line x1=${s.x1} y1=${s.y1} x2=${s.x2} y2=${s.y2} opacity=${s.o}></line>
+        `)}
+      </g>
+    </svg>
+  `;
+}
+
 // Exposé's hover text. The trackpad gesture is listed HERE, on the button that
 // does the same thing, because that is where someone looking for "how do I get
 // all my windows" is already pointing — the shortcuts overlay only helps people
@@ -146,12 +192,19 @@ class WebtmuxToolbar extends LitElement {
     showSession: { type: Boolean },
     trimName: { type: Boolean },
     labelMenuOpen: { type: Boolean },
+    // How many tabs the strip holds. Mirrors the shared toolbar.recentMax pref; the
+    // SplitManager is what actually enforces it (see setRecentsMax).
+    recentMax: { type: Number },
     // Recents drag-reorder: the tab being dragged, and the insertion GAP the drop
     // would land in (0..n, -1 = not over the strip).
     dragKey: { type: String },
     dropIndex: { type: Number },
     // tmux-activity spinner position, in increments (rendered as rotation).
     activity: { type: Number },
+    // The spinner's OTHER job: red when a region has lost its socket to tmux, with
+    // how many regions are down (see SplitManager._refreshConnection).
+    disconnected: { type: Boolean },
+    lostRegions: { type: Number },
     // Flashing windows with no tab of their own — see the overflow arrow below.
     // [{id, session, index, name, alert}], most recently raised first.
     overflowAlerts: { type: Array },
@@ -246,8 +299,8 @@ class WebtmuxToolbar extends LitElement {
        windows, and a signal that pulses differently in each place stops reading as
        one signal. Colour says WHICH transition, matching the dot you'd have seen. */
 
-    /* OVERFLOW ARROW: the strip holds five tabs, and the windows that need you do not
-       care about that. When a window drops out of green with no tab, no preview tile
+    /* OVERFLOW ARROW: the strip holds a bounded number of tabs, and the windows that
+       need you do not care about that. When a window drops out of green with no tab, no preview tile
        and no region of its own, this arrow appears at the end of the strip and flashes
        in its place — so "nothing is flashing" can be trusted to mean "nothing needs
        you", which is the only thing that makes the flashes worth watching at all.
@@ -599,12 +652,25 @@ class WebtmuxToolbar extends LitElement {
       align-items: center;
       justify-content: center;
       color: #4a9eff;
-      font-size: 15px;
       line-height: 1;
       opacity: 0.75;
       cursor: default;
       transition: transform 0.18s ease-out;
     }
+    .spin svg { display: block; }
+    /* …and the same spinner in red when the socket to tmux is gone. It PULSES rather
+       than sitting still: a stopped spinner is exactly what an idle one looks like,
+       and this state is a request (go and look), not a report. Red matches the
+       stoplight vocabulary's "not working", which is precisely what tmux is doing. */
+    .spin.lost {
+      color: #e94560;
+      opacity: 1;
+      /* drop-shadow, not text-shadow: the spinner is drawn (see spinIcon) and a text
+         shadow would have nothing to attach to. */
+      filter: drop-shadow(0 0 4px rgba(233, 69, 96, 0.8));
+      animation: wt-lost 1.2s ease-in-out infinite;
+    }
+    @keyframes wt-lost { 50% { opacity: 0.25; } }
 
     /* Build id on the far left — read it aloud, or click it to copy (revealing it
        copies it too; see toggleBuild). A button, not a label, because it does
@@ -664,6 +730,28 @@ class WebtmuxToolbar extends LitElement {
       color: #6b7690; font-size: 11px; padding: 2px 2px 0;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
+    /* Strip-size stepper. A −/number/+ row rather than a set of preset buttons:
+       the useful value is "as many as fit on MY toolbar", which is a number nobody
+       else can guess, and stepping to it while watching the strip resize live is the
+       only way to find it. */
+    .label-menu .msize {
+      display: flex; align-items: center; gap: 8px;
+      background: #1a1a2e; border: 1px solid #0f3460; border-radius: 6px;
+      padding: 5px 9px; font-size: 12.5px; color: #e8eefc;
+    }
+    .label-menu .msize .mlabel { flex: 1 1 auto; }
+    .label-menu .msize .mstep {
+      flex: 0 0 auto; width: 22px; height: 22px; line-height: 1;
+      background: #0b1020; color: #e8eefc;
+      border: 1px solid #0f3460; border-radius: 4px;
+      font-family: inherit; font-size: 14px; cursor: pointer;
+    }
+    .label-menu .msize .mstep:hover:not([disabled]) { border-color: #4a9eff; color: #fff; }
+    .label-menu .msize .mstep[disabled] { opacity: 0.3; cursor: default; }
+    .label-menu .msize .mnum {
+      flex: 0 0 auto; min-width: 18px; text-align: center;
+      font-variant-numeric: tabular-nums; font-weight: 600; color: #9fc4ff;
+    }
   `, ALERT_CSS, TIP_CSS];
 
   constructor() {
@@ -706,6 +794,8 @@ class WebtmuxToolbar extends LitElement {
     this.dragKey = '';
     this.dropIndex = -1;
     this.activity = 0;
+    this.disconnected = false;
+    this.lostRegions = 0;
     this.overflowAlerts = [];
   }
 
@@ -717,6 +807,18 @@ class WebtmuxToolbar extends LitElement {
       ? LABEL_DEFAULTS.showSession : t.recentShowSession === true;
     this.trimName = t.recentTrimName === undefined
       ? LABEL_DEFAULTS.trimName : t.recentTrimName === true;
+    this.recentMax = clampRecentsMax(t.recentMax);
+  }
+
+  // Resize the strip. Only the shared pref is written here — the SplitManager holds
+  // the strip itself and subscribes to the blob, so the eviction rule for a shrink
+  // lives in ONE place (setRecentsMax) whether the change came from this menu or
+  // from another browser.
+  _setRecentsMax(n) {
+    const next = clampRecentsMax(n);
+    if (next === this.recentMax) return;
+    this.recentMax = next;
+    stateStore.patchSection('toolbar', { recentMax: next });
   }
 
   _setLabelPref(key, value) {
@@ -974,7 +1076,29 @@ class WebtmuxToolbar extends LitElement {
     return html`
       <div class="label-backdrop" @click=${() => { this.labelMenuOpen = false; }}></div>
       <div class="label-menu" @click=${(e) => e.stopPropagation()}>
-        <div class="mtitle">Recent tab labels</div>
+        <div class="mtitle">Recent tabs</div>
+        <div class="msize">
+          <span class="mlabel">Tabs kept</span>
+          <button
+            class="mstep"
+            aria-label="Keep fewer recent tabs"
+            ?disabled=${this.recentMax <= RECENTS_MIN}
+            @click=${() => this._setRecentsMax(this.recentMax - 1)}
+          >−</button>
+          <span class="mnum">${this.recentMax}</span>
+          <button
+            class="mstep"
+            aria-label="Keep more recent tabs"
+            ?disabled=${this.recentMax >= RECENTS_MAX}
+            @click=${() => this._setRecentsMax(this.recentMax + 1)}
+          >+</button>
+        </div>
+        <div class="mprev">
+          ${this.recentMax === 1
+            ? 'one tab; every other window lives in the overflow arrow and Exposé'
+            : `${this.recentMax} tabs, then the least recently used one is replaced`}
+        </div>
+        <div class="mtitle">Labels</div>
         <button class="mitem" @click=${() => this._setLabelPref('showSession', !this.showSession)}>
           <span class="mark">${this.showSession ? '✓' : ''}</span>Show session
         </button>
@@ -1017,15 +1141,31 @@ class WebtmuxToolbar extends LitElement {
     `;
   }
 
+  // What the red spinner says when you point at it. The important sentence is the
+  // last one: everything on screen still LOOKS live — the terminals keep their last
+  // painted screen and the window list keeps listing windows — so the one thing worth
+  // saying is that none of it is current.
+  _lostTip() {
+    const n = this.lostRegions || 1;
+    const which = n > 1 ? `${n} terminal regions have` : 'The terminal has';
+    return `Lost the connection to tmux. ${which} no live link to the server —`
+      + ` webtmux keeps retrying in the background and this clears the moment one gets through.`
+      + `\n\nWhat is on screen is the last thing that arrived, not what tmux looks like now;`
+      + ` anything you type goes nowhere until the link is back.`;
+  }
+
   render() {
     return html`
       <span
-        class="spin"
+        class="spin ${this.disconnected ? 'lost' : ''}"
         style="transform: rotate(${this.activity * 45}deg)"
-        aria-hidden="true"
-        @mouseenter=${(e) => this._tipEnter(e, 'tmux activity — advances one notch each time webtmux sends tmux a command (window switches, renames, captures, saved state).')}
+        role=${this.disconnected ? 'img' : 'presentation'}
+        aria-hidden=${this.disconnected ? 'false' : 'true'}
+        aria-label=${this.disconnected ? 'Connection to tmux lost' : ''}
+        @mouseenter=${(e) => this._tipEnter(e, this.disconnected ? this._lostTip()
+          : 'tmux activity — advances one notch each time webtmux sends tmux a command (window switches, renames, captures, saved state).')}
         @mouseleave=${() => this._tipLeave()}
-      >✳</span>
+      >${spinIcon()}</span>
       ${this.showBuild ? html`
         <button
           class="build"
@@ -1046,8 +1186,8 @@ class WebtmuxToolbar extends LitElement {
         <span class="label-wrap">
           <button
             class="label"
-            aria-label="Recent tab label options"
-            @mouseenter=${(e) => this._tipEnter(e, 'Recent windows — click for label options (show the session, trim the window name). Drag tabs to reorder them.')}
+            aria-label="Recent tab options"
+            @mouseenter=${(e) => this._tipEnter(e, `Recent windows — click for options: how many tabs to keep (now ${this.recentMax}), and their labels (show the session, trim the window name). Drag tabs to reorder them.`)}
             @mouseleave=${() => this._tipLeave()}
             @click=${() => { this._tipLeave(); this.labelMenuOpen = !this.labelMenuOpen; }}
           >Recent ▾</button>

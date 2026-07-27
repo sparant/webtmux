@@ -586,9 +586,9 @@ class WebtmuxSidebar extends LitElement {
         <button
           class="mode-btn"
           @click=${this.togglePin}
-          title="Pinned = the panel stays open when you click into the terminal; otherwise it auto-hides on terminal click"
+          title="Auto-hide = the panel closes when you click into the terminal, or press Enter to accept a window. Pinned = it stays open through both; only the ✕/${chord('W')}/Escape close it."
         >
-          ${this.pinned ? '📌 Pinned (stays open)' : '📌 Auto-hide on click'}
+          ${this.pinned ? '📌 Pinned (stays open)' : '📌 Auto-hide'}
         </button>
         ${canClose ? html`
           <button
@@ -970,20 +970,52 @@ class WebtmuxSidebar extends LitElement {
     this._searchWords = [];
   }
 
-  // ACCEPT the browse: keep whatever window is currently previewed and collapse the
-  // panel. Focusing the unit (via SplitManager.focus) records the previewed window
-  // as a real access (MRU) — the commit point — and hands keyboard focus back to the
-  // terminal. Clicking into the terminal takes the SAME path (region mousedown →
-  // focus), so a click is also an accept.
+  // ACCEPT the browse: keep whatever window is currently previewed and — unless the
+  // panel is PINNED — collapse it. Focusing the unit (via SplitManager.focus) records
+  // the previewed window as a real access (MRU) — the commit point — and hands
+  // keyboard focus back to the terminal. Clicking into the terminal takes the SAME
+  // path (region mousedown → focus), so a click is also an accept.
+  //
+  // Pinned means "this panel stays open" — it is the setting you turn on to work OUT
+  // of the window list, and having Enter yank it shut was the one hole in that
+  // promise: clicking a row (the mouse's version of the same accept) has always left
+  // it open. So pinned + Enter commits and stays, exactly like the click.
   dismissAccept() {
-    this._baseline = null;
-    this.collapsed = true;
     // Commit whatever the browse is sitting on. Window browsing is a preview now, so
     // this is the moment it becomes real (and enters the recents strip); a SESSION
     // browse already switched for real, and focusing the unit records it as before.
     const mgr = this.unit?.manager;
+    if (this.pinned) {
+      this._acceptInPlace(mgr?.hover.windowId, mgr?.hover.session);
+      return;
+    }
+    this._baseline = null;
+    this.collapsed = true;
     if (mgr?.hover.windowId) mgr.hover.commit();
     try { this.unit?.focus(); } catch (e) { try { this.unit?.terminal?.focus(); } catch (_) {} }
+  }
+
+  // Accept the browse WITHOUT dismissing — the shared half of "pinned Enter" and of
+  // clicking a window row. Two things have to happen that a plain commit doesn't do:
+  //
+  //   THE BASELINE IS RE-ARMED to what was just accepted. The baseline is what Escape
+  //   reverts to, and it was captured when the panel opened. Leaving it there means a
+  //   later Escape silently throws away the window you deliberately committed to on
+  //   the way here — which reads as Escape closing the panel AND navigating you
+  //   somewhere unrelated.
+  //
+  //   KEYBOARD FOCUS COMES BACK TO THE PANEL. The commit routes through
+  //   goToWindowIn, which ends in terminal.focus() — correct when the accept is a
+  //   dismissal, and the reason ↑/↓ went dead after the first click: the panel was
+  //   still open and still looked focused, but the arrows were going to the shell.
+  _acceptInPlace(windowId = '', session = '') {
+    const mgr = this.unit?.manager;
+    const target = windowId || this.activeWindow;
+    const sess = session || this._ownSession();
+    if (windowId && mgr) mgr.hover.commit(windowId, sess);
+    else if (windowId) this.unit?.selectWindow(windowId);
+    this._baseline = target ? { windowId: target, session: sess } : null;
+    if (!this.collapsed) this.focusPanel();
   }
 
   // DISCARD the browse: restore the window/session that was active when the panel
@@ -1146,12 +1178,13 @@ class WebtmuxSidebar extends LitElement {
 
   // Click a window row = COMMIT the browse: the previewed window becomes real. Goes
   // through the shared HoverPreview so it lands in the region the preview was shown
-  // in — the same path the toolbar recents and the Preview tiles take.
+  // in — the same path the toolbar recents and the Preview tiles take. The panel
+  // stays open (that has always been the rule for a row click), so the accept is the
+  // in-place one: keyboard focus comes back here and ↑/↓ keep working from the row
+  // you just picked, rather than dying at the first click.
   selectWindow(windowId) {
     if (this._windowDisabled(windowId)) return;   // shown in another split pane
-    const mgr = this.unit?.manager;
-    if (mgr) mgr.hover.commit(windowId, this._ownSession());
-    else this.unit?.selectWindow(windowId);       // no manager (shouldn't happen) — direct
+    this._acceptInPlace(windowId, this._ownSession());
   }
 
   // Open the panel ON a specific window and point the browse at it — the landing for

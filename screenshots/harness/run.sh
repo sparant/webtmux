@@ -43,7 +43,7 @@ fi
 echo "webtmux up on :8090"
 
 mkdir -p /src/screenshots
-NODE_PATH=/tmp/pw/node_modules node /src/screenshots/harness/driver.js
+NODE_PATH=/tmp/pw/node_modules node "/src/screenshots/harness/${DRIVER:-driver.js}"
 rc=$?
 pkill -f webtmux-test 2>/dev/null || true
 exit $rc

@@ -19,10 +19,40 @@
 // Kept import-free (like work-alerts.js) so `node --test` can load it directly;
 // split-manager.js pulls in lit and could never run under the test harness.
 
-// Tab slots in the strip. The strip is a glance-able switcher, not a history: past
-// ~5 the tabs stop being distinguishable at a glance and the Exposé is the better
-// tool. noteAccess evicts the least-recently-accessed slot to stay within this.
+// Tab slots in the strip, by DEFAULT. The strip is a glance-able switcher, not a
+// history: past ~5 the tabs stop being distinguishable at a glance and the Exposé is
+// the better tool. noteAccess evicts the least-recently-accessed slot to stay within
+// whatever the current cap is.
+//
+// It is only a default because "how many windows do I flip between" is a property of
+// the user's workspace, not of the widget: on a wide monitor with a dozen live agents
+// five tabs is an overflow arrow that never goes away. The cap is settable from the
+// "Recent ▾" menu and rides the shared blob (toolbar.recentMax) like the other strip
+// prefs, so every browser on this tmux server keeps the same strip.
 export const MAX_RECENTS = 5;
+
+// Bounds for the settable cap. The floor is 1 rather than 0 because a strip with no
+// slots is not a smaller strip, it's a removed feature with no way back — the "Recent"
+// label (and so the menu that would restore it) only renders when a tab exists. The
+// ceiling is where the tabs stop fitting any plausible toolbar and the Exposé is
+// unambiguously the better tool.
+export const RECENTS_MIN = 1;
+export const RECENTS_MAX = 20;
+
+// Coerce a stored/typed cap into the allowed range. Total, like sanitizeRecents: the
+// value comes from the same user-writable tmux blob, and a junk cap must degrade to
+// the default rather than to a strip of NaN slots (which would evict every access —
+// `list.length < NaN` is false — and quietly pin the strip at one tab).
+// Only a number, or a string that is one, is a cap. Everything else — absent, null,
+// blank, an object — means "no preference" and takes the default. Number() alone
+// would not do: it turns null, '' and [] into 0, and a MISSING cap clamping to the
+// floor is how "I never set this" silently becomes a one-tab strip.
+export function clampRecentsMax(raw) {
+  const n = typeof raw === 'number' ? raw
+    : (typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN);
+  if (!Number.isFinite(n)) return MAX_RECENTS;
+  return Math.min(RECENTS_MAX, Math.max(RECENTS_MIN, Math.floor(n)));
+}
 
 // Coerce arbitrary blob content into well-formed strip entries.
 //
@@ -91,16 +121,24 @@ export function recentsSignature(list) {
 export class RecentsPersistence {
   // `store` is the StateStore singleton (only .section()/.patchSection() are used,
   // so a plain stub works in tests).
-  constructor(store, section = 'recentTabs') {
+  constructor(store, section = 'recentTabs', max = MAX_RECENTS) {
     this.store = store;
     this.sectionName = section;
+    this.max = clampRecentsMax(max);
     this._sig = null;
     this._restored = false;
   }
 
+  // Change the cap future reads are truncated to. Does NOT touch what the caller is
+  // already holding — SplitManager owns the live list and trims it by recency, which
+  // is information this module doesn't have.
+  setMax(max) {
+    this.max = clampRecentsMax(max);
+  }
+
   // Read the persisted strip. Until this has run, persist() is inert.
   restore() {
-    const list = sanitizeRecents(this.store.section(this.sectionName).windows);
+    const list = sanitizeRecents(this.store.section(this.sectionName).windows, this.max);
     this._sig = recentsSignature(list);
     this._restored = true;
     return list;
@@ -126,7 +164,7 @@ export class RecentsPersistence {
   // blob still matches what we hold (the echo of our own write, or an unrelated
   // section changing) so the caller can skip a pointless re-render.
   adopt() {
-    const list = sanitizeRecents(this.store.section(this.sectionName).windows);
+    const list = sanitizeRecents(this.store.section(this.sectionName).windows, this.max);
     const sig = recentsSignature(list);
     if (sig === this._sig) return null;
     this._sig = sig;
