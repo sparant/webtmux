@@ -281,7 +281,111 @@ Replace `user:pass` with your desired credentials.
 - **Single Binary**: All assets embedded - just download and run
 - **Real-time Updates**: Layout changes sync automatically
 
+## Running webtmux on another machine — `webtmux-launch`
+
+One command on your laptop, against any box you can already SSH to:
+
+```bash
+webtmux-launch linuxbox
+```
+
+That works out which webtmux the target needs, installs it over the SSH
+connection, starts it, tunnels the port back to `127.0.0.1`, keeps both alive
+across drops, and opens your browser. **The target machine needs nothing but
+`ssh` and `tmux`** — no internet, no `curl`, no pre-installed webtmux, no
+systemd unit. The `<ssh-target>` is passed to `ssh` verbatim, so
+`~/.ssh/config` aliases, `user@host` forms and `ProxyJump` bastions all work,
+and you get one auth prompt for the whole session.
+
+If a webtmux is **already running** on that box, the launcher adopts it —
+tunnel only, nothing deployed, nothing started, and quitting the launcher leaves
+your long-lived instance running. Otherwise it starts its own, and that one is
+disposable on purpose: it dies with the SSH connection, and the tmux session
+(created detached, owned by the tmux server) survives. A dropped link costs one
+SSH handshake to recover, with your panes exactly where they were. The URL is
+generated once per target and reused forever, so a browser tab left open
+reconnects on its own.
+
+**Getting the launcher.** Build it from a checkout:
+
+```bash
+make launcher          # -> builds/webtmux-launch-{darwin-arm64,darwin-amd64,linux-amd64}
+```
+
+Pre-built launcher binaries are published as release assets from
+`https://github.com/<owner>/webtmux/releases` — download the one for your
+laptop's platform, `chmod +x`, and put it on your `PATH`. The launcher and
+webtmux ship on independent cadences: a webtmux fix reaches every launcher
+already installed with no launcher update at all.
+
+Useful flags:
+
+| Flag | Effect |
+| --- | --- |
+| `--session <name>` | which tmux session to attach (default: the box's only session, else `main`) |
+| `--no-browser` | print the URL instead of opening it |
+| `--auth` | keep basic auth on, for a shared multi-user box |
+| `--fresh` / `--adopt-only` | ignore a running instance / refuse to start one |
+| `--webtmux-version vX.Y.Z\|latest` | which release to install |
+| `--verbose` | echo the ssh command lines and say which binary source won |
+
+**Which webtmux gets installed.** The launcher carries no webtmux payload; it
+downloads the matching release asset and pushes it down the SSH connection it
+already has open. The version is **pinned** at build time (currently `v0.1.0`)
+rather than tracking latest, so a launcher you have been using does not upgrade
+your remote out from under you mid-session — `--webtmux-version` overrides.
+Binaries land content-addressed under `~/.cache/webtmux/webtmux-<sha>`, so a
+repeat launch transfers nothing and several versions coexist safely.
+
+**Security model.** Both ends bind `127.0.0.1` and the URL carries a 32-character
+secret path, so reaching the terminal needs either the SSH-authenticated tunnel
+or a local account on one of the two machines. Stated plainly: *any local user on
+either machine who learns the secret path gets a shell.* The secret is visible in
+`ps` on both machines (it is a `--path` argument) and stored in
+`~/.config/webtmux-launch/<target>.json`. For a shared box, use `--auth`.
+
+### Developing against a local build
+
+Point the launcher at a build directory instead of a release. `make
+cross-compile` already writes exactly the filenames a release publishes, so a
+checkout is a drop-in substitute — no manifest, no copy step:
+
+```bash
+make cross-compile
+export WEBTMUX_LAUNCH_SOURCE=$PWD/builds
+webtmux-launch testbox            # deploys what you just compiled
+```
+
+Or bake it in and skip the export entirely:
+
+```bash
+make cross-compile
+make launcher-dev && ./builds/webtmux-launch testbox
+```
+
+Precedence, highest first: `--webtmux-binary <file>` › `--webtmux-source <dir>` ›
+`$WEBTMUX_LAUNCH_SOURCE` › the `make launcher-dev` default › the GitHub release.
+A configured-but-invalid directory is a **hard error**, never a quiet fall back
+to downloading. Every run prints one line naming the source, its sha and how old
+the build is — local mode cannot misreport what it deployed, but it cannot know
+you forgot to run `make cross-compile`, so read that line when a fix "doesn't
+take".
+
+Note the trade a local source makes: it verifies the bytes against a hash
+computed from those same bytes, which is an integrity check against a truncated
+or racing read — **not** an authenticity check like the release's published
+`SHA256SUMS`. That is the right trade for your own build output, and it is why
+the source must always be configured explicitly and is never auto-detected.
+
+The end-to-end suite (`test/launcher/run.sh`) stands up a throwaway
+sshd+tmux container and exercises probe, deploy, tunnel, adopt, split-view,
+durability and reconnect against it — entirely offline.
+
 ## Installation
+
+Manual installation, for when you want webtmux on a machine permanently rather
+than launched on demand. If you just want to reach a remote tmux from your
+laptop, `webtmux-launch` above is the shorter path.
 
 ### Prebuilt Binaries
 
