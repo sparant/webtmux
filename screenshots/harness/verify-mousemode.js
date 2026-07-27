@@ -360,6 +360,61 @@ async function main() {
   check('auto+ : a motionless hold reaches the program before the release',
     midHold > beforeHold, `reports ${beforeHold} -> ${midHold} while still held`);
 
+  // ---- 10. a selection must follow its text when the buffer scrolls ----------
+  // Scrolling in copy mode is not an xterm scroll: tmux owns the history and
+  // repaints the same viewport with different text, so nothing in xterm moves a
+  // highlight. Left alone, it stays at fixed screen coordinates while other lines
+  // slide under it. Checked by TEXT, which is the only thing that says whether the
+  // highlight is still on what the user picked.
+  await setMouseMode('buffer');
+  await normalMode();
+  // The TUI from the previous sections is still running and would swallow this —
+  // get back to a real shell prompt first.
+  await unit((u) => { u.terminal.focus(); });
+  await page.keyboard.press('Control+c');
+  await sleep(600);
+  await typeLine('clear; for i in $(seq 1 400); do printf "HISTORY-LINE-%03d marker\\n" $i; done');
+  await sleep(1800);
+  {
+    const lines = (await screenText()).split('\n');
+    let r = -1;
+    const mid = Math.floor(lines.length / 2);
+    for (let i = mid; i >= 0; i--) if (/HISTORY-LINE-\d+/.test(lines[i])) { r = i; break; }
+    if (r < 0) {
+      check('scroll-follow: target line on screen', false);
+    } else {
+      await dragAcross(r, 0.02, 0.30);
+      const picked = await selection();
+      const mark = (picked.match(/LINE-(\d+)/) || [])[1];
+      check('scroll-follow: a line is selected to start with', !!mark, JSON.stringify(picked));
+
+      // Up five lines: the highlight must still be on the SAME text.
+      await unit((u) => { u._scrollBuffer(true, 5); });
+      await sleep(1200);
+      const afterUp = await selection();
+      check('scroll-follow: the highlight stays on its own text after scrolling up',
+        (afterUp.match(/LINE-(\d+)/) || [])[1] === mark,
+        `picked LINE-${mark}, now ${JSON.stringify(afterUp)}`);
+
+      // Back down by a DIFFERENT amount. Symmetric scrolling would prove nothing:
+      // up 5 then down 5 restores the original view, so even a highlight pinned to
+      // the screen lands back on the right text by coincidence.
+      await unit((u) => { u._scrollBuffer(false, 3); });
+      await sleep(1200);
+      check('scroll-follow: and after scrolling back by a different amount',
+        ((await selection()).match(/LINE-(\d+)/) || [])[1] === mark,
+        `picked LINE-${mark}, now ${JSON.stringify(await selection())}`);
+
+      // Scrolled far enough away, it should be dropped rather than left parked on
+      // a line nobody can see.
+      await unit((u) => { u._scrollBuffer(true, 200); });
+      await sleep(1200);
+      check('scroll-follow: a highlight scrolled out of view is dropped',
+        !(await selection()), JSON.stringify(await selection()));
+    }
+  }
+  await normalMode();
+
   await finish(browser);
 }
 
