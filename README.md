@@ -306,6 +306,18 @@ SSH handshake to recover, with your panes exactly where they were. The URL is
 generated once per target and reused forever, so a browser tab left open
 reconnects on its own.
 
+**Getting the launcher.** Build it from a checkout:
+
+```bash
+make launcher          # -> builds/webtmux-launch-{darwin-arm64,darwin-amd64,linux-amd64}
+```
+
+Pre-built launcher binaries are published as release assets from
+`https://github.com/<owner>/webtmux/releases` — download the one for your
+laptop's platform, `chmod +x`, and put it on your `PATH`. The launcher and
+webtmux ship on independent cadences: a webtmux fix reaches every launcher
+already installed with no launcher update at all.
+
 Useful flags:
 
 | Flag | Effect |
