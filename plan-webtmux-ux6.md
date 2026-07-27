@@ -138,19 +138,22 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
 
 ### Phase 4 — Paste-trim in the rename input (P1, item 3)
 
-- [ ] **P1** 4.1 New import-free `resources/js/paste-name.js`: `trimPastedName(text)` →
+- [x] **P1** 4.1 New import-free `resources/js/paste-name.js`: `trimPastedName(text)` →
       basename after the last `/`, minus a trailing extension
       (`webtmux/plan-webtmux-portable-deps.md` → `plan-webtmux-portable-deps`). Total on junk;
       leaves a plain word alone; strips only a *short* trailing extension so a dotted window
       name (`v1.2.3`) is not mangled; collapses whitespace/newlines (a paste can carry them);
-      returns `''` for nothing-usable so the paste is left to the browser.
-- [ ] **P1** 4.2 `test/paste-name.test.mjs` — the user's example plus trailing slash, no
+      returns `''` for nothing-usable so the paste is left to the browser. **Deviation:** the
+      extension rule ended up *letters-only*, not length-only — `v1.2.3` and a 1-char
+      extension are the same shape, so length alone cannot separate them. Cost: `capture.mp4`
+      keeps its suffix, which is the right way to be wrong.
+- [x] **P1** 4.2 `test/paste-name.test.mjs` — the user's example plus trailing slash, no
       slash, no extension, dotfile, multi-line, empty.
-- [ ] **P1** 4.3 Wire a `@paste` handler on the sidebar's `.window-edit` input (and
+- [x] **P1** 4.3 Wire a `@paste` handler on the sidebar's `.window-edit` input (and
       `.session-edit`, for parity): intercept, insert the trimmed text at the selection,
       leave the caret after it. Fall through to the default paste when the helper yields
       nothing.
-- [ ] **P1** 4.4 Run the JS suite; commit.
+- [x] **P1** 4.4 Run the JS suite; commit.
 
 ### Phase 5 — One "mouse" dropdown replaces the two mode buttons (P1, item 4)
 
@@ -216,7 +219,7 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
 | Phase 1 MRU order | ✅ |
 | Phase 2 linked-window ack | ✅ |
 | Phase 3 Exposé filter | ✅ |
-| Phase 4 paste-trim | ⬜ |
+| Phase 4 paste-trim | ✅ |
 | Phase 5 mouse dropdown | ⬜ |
 | Phase 6 sidebar row | ⬜ |
 | Phase 7 verify | ⬜ |

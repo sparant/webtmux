@@ -26,7 +26,7 @@ A UI replacement for tmux Prefix+W. Lets you manage windows/sessions - create/de
 - Drag windows to reorder
 - Drag a window onto a session tab to link it there
 - Hover × kills a window — or just unlinks it when it lives in other sessions too
-- Double-click renames windows and sessions inline
+- Double-click renames windows and sessions inline; pasting a path into the rename box trims it to the basename without its extension (`webtmux/plan-webtmux-portable-deps.md` → `plan-webtmux-portable-deps`)
 - "+" creates a session or a window
 - session and window order persists
 

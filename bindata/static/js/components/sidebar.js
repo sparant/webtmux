@@ -9,6 +9,7 @@ import { ALERT_CSS, alertClass, alertTip } from '../alert-flash.js';
 import { alertOf } from '../work-alerts.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
 import { ConfirmPopup, CONFIRM_CSS } from '../confirm-popup.js';
+import { trimPastedName } from '../paste-name.js';
 
 // How many renders revealWindow's "scroll this row into view" waits for its row to
 // appear. A cross-session reveal needs the new session's window list to arrive, which
@@ -630,6 +631,7 @@ class WebtmuxSidebar extends LitElement {
               class="session-edit"
               .value=${sess.name}
               @keydown=${(e) => this.onSessionRenameKey(e, sess.name)}
+              @paste=${(e) => this.onNamePaste(e)}
               @blur=${(e) => this.commitSessionRename(e, sess.name)}
               @click=${(e) => e.stopPropagation()}
             >`
@@ -679,6 +681,7 @@ class WebtmuxSidebar extends LitElement {
               class="window-edit"
               .value=${win.name || ''}
               @keydown=${(e) => this.onRenameKey(e, win.id)}
+              @paste=${(e) => this.onNamePaste(e)}
               @blur=${(e) => this.commitRename(e, win.id)}
               @click=${(e) => e.stopPropagation()}
             >`
@@ -1304,6 +1307,31 @@ class WebtmuxSidebar extends LitElement {
       // the reason Escape-after-rename didn't collapse the panel.
       this.focusPanel();
     }
+  }
+
+  // Paste into either rename input (window or session): insert the PATH-TRIMMED text
+  // rather than the raw clipboard. Renaming is very often "call it after the thing I am
+  // working on", and the thing is on the clipboard as a path —
+  // `webtmux/plan-webtmux-portable-deps.md` when what you want is
+  // `plan-webtmux-portable-deps`. See paste-name.js for what is and isn't trimmed.
+  //
+  // Only the paste path goes through this; typing is untouched, so the transform is
+  // always attached to an action the user just took and stays editable afterwards. The
+  // insert respects the current selection (a paste over selected text replaces it, as
+  // it would natively) and leaves the caret after the inserted text — a select-all
+  // would make the next keystroke destroy what you just pasted.
+  onNamePaste(e) {
+    const raw = e.clipboardData?.getData('text');
+    if (!raw) return;                          // non-text paste: let the browser have it
+    const trimmed = trimPastedName(raw);
+    if (!trimmed || trimmed === raw) return;   // nothing to improve; default paste
+    e.preventDefault();
+    const input = e.target;
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? start;
+    input.value = input.value.slice(0, start) + trimmed + input.value.slice(end);
+    const caret = start + trimmed.length;
+    input.setSelectionRange(caret, caret);
   }
 
   commitRename(e, windowId) {
