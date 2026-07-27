@@ -86,6 +86,26 @@ const TMUX_MSG_TYPES = new Set([
   MSG.TmuxSavePaneFile, MSG.TmuxSaveInfoRequest, MSG.TmuxSetState, MSG.TmuxRefresh,
 ]);
 
+// --- liveness heartbeat -------------------------------------------------------
+// A CLOSED socket is the easy half of "we lost tmux" and the rarer one. The failure
+// that actually strands you leaves the socket wide OPEN: the server (or tmux, or the
+// box) wedges, nothing comes back, readyState stays OPEN forever, and the UI goes on
+// looking perfectly healthy while your keystrokes vanish. TCP will not tell us — a
+// stalled peer that never closes is indistinguishable from an idle one at that layer.
+//
+// So we ask. The protocol has had a Ping/Pong pair since gotty and nothing ever sent
+// one; the server answers Ping from the SAME serialized handler loop that writes your
+// keystrokes into the pty, so a Pong is proof of exactly the thing typing needs. If
+// that loop is blocked, the Pong stops for the same reason your input does.
+//
+// LAYOUT PUSHES CANNOT BE USED FOR THIS. The server only sends a layout when it
+// CHANGES (handlers.go: `if currentLayout != lastLayout`), so silence from an idle
+// tmux is entirely normal and "no push for N seconds" would fire constantly.
+const HEARTBEAT_MS = 3000;
+// Two missed beats, so one dropped/slow Pong is not a warning. ~8s is also comfortably
+// longer than any tmux command round trip on a loaded box.
+const STALL_MS = 8000;
+
 // Map any stored/legacy value onto a valid mode. The old two-state setting used
 // 'passthrough' for what is now 'app'.
 export function normalizeScrollMode(m) {
@@ -122,7 +142,14 @@ export class TerminalUnit {
     // reads identically to a drop, and the toolbar would flash a connection warning on
     // every single page load.
     this._wasClosed = false;
-    // Called on every open/close so the owner (SplitManager) can surface the state.
+    // Liveness heartbeat state (see HEARTBEAT_MS): when the last Pong came back, when
+    // the last tick ran (to tell a real stall from a throttled/suspended tab), and
+    // whether we are currently calling this connection stalled.
+    this._lastPongAt = 0;
+    this._lastTickAt = 0;
+    this._heartbeat = null;
+    this._stalled = false;
+    // Called on every open/close/stall change so the owner (SplitManager) can surface it.
     this.onConnectionChange = null;
     this.bufferSize = 1024 * 1024;
     this._inCopyMode = false;
@@ -702,6 +729,7 @@ export class TerminalUnit {
       }, 100);
       // (Window restore after a reconnect happens when the first layout arrives —
       // see _rememberOrRestore, gated by this.restorePending.)
+      this._startHeartbeat();
       if (this.onConnectionChange) this.onConnectionChange(this);
     };
 
@@ -712,6 +740,10 @@ export class TerminalUnit {
     this.ws.onclose = () => {
       if (this.destroyed) return;
       this._wasClosed = true;
+      // A closed socket is reported as closed, not as stalled — and there is nothing
+      // left to ping.
+      this._stopHeartbeat();
+      this._stalled = false;
       if (this.onConnectionChange) this.onConnectionChange(this);
 
       // Reconnect to the SAME session (a grouped region's session is recreated by
@@ -752,7 +784,8 @@ export class TerminalUnit {
         break;
 
       case MSG.Pong:
-        // Ignore pong
+        // Proof the server's input loop is still turning — see the heartbeat above.
+        this._notePong();
         break;
 
       case MSG.SetWindowTitle:
@@ -984,6 +1017,7 @@ export class TerminalUnit {
   // observers. Used by the split manager when a region is closed.
   destroy() {
     this.destroyed = true;
+    this._stopHeartbeat();   // else a closed region keeps pinging a dead socket forever
     if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
     if (this._unsubState) { try { this._unsubState(); } catch (e) {} this._unsubState = null; }
     if (this.resizeObserver) { try { this.resizeObserver.disconnect(); } catch (e) {} }
@@ -1091,18 +1125,68 @@ export class TerminalUnit {
     return !!this.ws && this.ws.readyState === WebSocket.OPEN;
   }
 
+  // ----- liveness ---------------------------------------------------------------
+
+  _startHeartbeat() {
+    this._stopHeartbeat();
+    const now = Date.now();
+    this._lastPongAt = now;      // a fresh socket is alive until it proves otherwise
+    this._lastTickAt = now;
+    this._heartbeat = setInterval(() => this._heartbeatTick(), HEARTBEAT_MS);
+  }
+
+  _stopHeartbeat() {
+    if (this._heartbeat) { clearInterval(this._heartbeat); this._heartbeat = null; }
+  }
+
+  _heartbeatTick() {
+    const now = Date.now();
+    const gap = now - this._lastTickAt;
+    this._lastTickAt = now;
+    // OUR clock stopped, not theirs. Browsers throttle timers in background tabs to
+    // once a minute or so, and a suspended laptop stops them outright — either way we
+    // wake with a huge apparent silence that we caused. Reporting that as a lost
+    // connection would mean every tab you come back to greets you with a false alarm.
+    if (gap > HEARTBEAT_MS * 2.5) {
+      this._lastPongAt = now;
+      this._setStalled(false);
+      return;                    // let the next beat judge, with an honest clock
+    }
+    if (!this.isConnected()) return;
+    this.sendMessage(MSG.Ping);
+    this._setStalled(now - this._lastPongAt > STALL_MS);
+  }
+
+  _notePong() {
+    this._lastPongAt = Date.now();
+    this._setStalled(false);
+  }
+
+  _setStalled(v) {
+    if (this._stalled === v) return;
+    this._stalled = v;
+    if (this.onConnectionChange) this.onConnectionChange(this);
+  }
+
+  // Open, but not answering — see the heartbeat block above.
+  isStalled() {
+    return this._stalled;
+  }
+
   // Have we LOST the connection to tmux (as opposed to never having had it yet)?
   //
-  // The ws IS the connection to tmux: the server runs this region's tmux client on
-  // the far end of it, so tmux dying, the server dying, and the network dropping all
-  // arrive here as the same close. What this must not report is the ordinary boot —
-  // the socket spends its first moments in CONNECTING, which is indistinguishable
-  // from a reconnect attempt by readyState alone. Hence the latch: only a socket that
-  // has closed at least once can be "lost", and it stays lost across the CONNECTING
-  // gaps of the retry loop (which would otherwise strobe the warning once per retry)
-  // until one of those retries actually opens.
+  // Two different failures, one answer. The socket may be CLOSED: the server runs this
+  // region's tmux client on the far end of it, so tmux dying, the server dying and the
+  // network dropping all arrive as a close. Or the socket may be OPEN AND MUTE, which
+  // is the one that actually strands you — see the heartbeat block above.
+  //
+  // What the closed half must not report is the ordinary boot: the socket spends its
+  // first moments in CONNECTING, which is indistinguishable from a reconnect attempt by
+  // readyState alone. Hence the latch — only a socket that has closed at least once can
+  // be "lost", and it stays lost across the CONNECTING gaps of the retry loop (which
+  // would otherwise strobe the warning once per retry) until a retry actually opens.
   connectionLost() {
-    return this._wasClosed && !this.isConnected();
+    return (this._wasClosed && !this.isConnected()) || this._stalled;
   }
 
   // Request server-global capture buffers over THIS unit's ws. The reply (a

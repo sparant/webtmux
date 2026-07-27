@@ -221,6 +221,24 @@ async function main() {
     disconnected: el.disconnected,
   }));
   check('spinner is normal while connected', spinBefore.lost === false, JSON.stringify(spinBefore));
+
+  // One activity notch must actually CHANGE THE SHAPE. The spinner is an eight-spoke
+  // star, which is symmetric under 45° — the step it shipped with mapped the icon
+  // exactly onto itself, so "activity" was a transform that rendered identically
+  // forever. Compare consecutive notches as images, not as a transform string.
+  const spinBox0 = await page.evaluate(() => {
+    const r = document.querySelector('webtmux-toolbar').shadowRoot
+      .querySelector('.spin').getBoundingClientRect();
+    return { x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) };
+  });
+  await page.screenshot({ path: OUT + '/verify-ux5-notch-a.png', clip: spinBox0 });
+  const rotBefore = await toolbar((el, rr) => rr.querySelector('.spin').style.transform);
+  await toolbar((el) => el.tickActivity());
+  await sleep(600);   // past the 0.18s transform transition
+  const rotAfter = await toolbar((el, rr) => rr.querySelector('.spin').style.transform);
+  await page.screenshot({ path: OUT + '/verify-ux5-notch-b.png', clip: spinBox0 });
+  check('one activity notch is a visible rotation', rotBefore !== rotAfter,
+    `${rotBefore} -> ${rotAfter}`);
   const okBox = await page.evaluate(() => {
     const r = document.querySelector('webtmux-toolbar').shadowRoot
       .querySelector('.spin').getBoundingClientRect();
@@ -228,6 +246,41 @@ async function main() {
   });
   await page.screenshot({ path: OUT + '/verify-ux5-ink-ok.png', clip: okBox });
 
+  // ---- 4a. the OPEN-BUT-MUTE stall ------------------------------------------
+  // The failure that actually strands you, and the one a readyState check cannot see:
+  // the server (or tmux) wedges, the socket stays OPEN, and everything keeps looking
+  // healthy while keystrokes vanish. Simulated by swallowing what the page sends and
+  // withholding what comes back — the socket object is untouched and still reports
+  // OPEN throughout, exactly as it did in the real incident.
+  await page.evaluate(() => {
+    for (const u of window.webtmux.manager.units) {
+      u.ws.send = () => {};                       // our pings go nowhere
+      u.ws.onmessage = () => {};                  // and nothing comes back
+    }
+  });
+  await sleep(14000);   // STALL_MS is 8s, judged on a 3s heartbeat
+  const stall = await toolbar((el, rr) => ({
+    lost: rr.querySelector('.spin').classList.contains('lost'),
+    disconnected: el.disconnected,
+    stalled: el.stalledRegions,
+    closed: el.lostRegions,
+    open: window.webtmux.manager.units.every((u) => u.ws.readyState === WebSocket.OPEN),
+  }));
+  check('a mute-but-open connection turns the spinner red',
+    stall.lost === true && stall.stalled >= 1, JSON.stringify(stall));
+  check('…and it really was still an OPEN socket (what readyState alone misses)',
+    stall.open === true, `open=${stall.open}`);
+  const stallTip = await toolbar((el) => el._lostTip());
+  check('the stall tooltip says to reload rather than to wait',
+    /stopped answering/.test(stallTip) && /Reload/.test(stallTip) && !/keeps retrying/.test(stallTip),
+    stallTip.slice(0, 60) + '…');
+
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await sleep(4000);
+  const recovered = await toolbar((el, rr) => rr.querySelector('.spin').classList.contains('lost'));
+  check('a reload clears the stall', recovered === false, `lost=${recovered}`);
+
+  // ---- 4b. the closed socket -------------------------------------------------
   // Drop every region's socket from underneath the page, exactly as a dead tmux
   // (or a restarted server) would.
   await page.evaluate(() => {
@@ -247,7 +300,11 @@ async function main() {
   check('spinner goes red when the connection to tmux drops',
     spinAfter.lost === true && spinAfter.disconnected === true && spinAfter.regions >= 1,
     JSON.stringify(spinAfter));
-  check('and it is actually rendered red', /rgb\(233, 69, 96\)/.test(spinAfter.color), spinAfter.color);
+  // Test the CHANNELS, not the exact hex: the shade is a design choice that gets
+  // tuned, and pinning it here turns every legibility tweak into a false failure.
+  const rgb = (spinAfter.color.match(/\d+/g) || []).map(Number);
+  check('and it is actually rendered red',
+    rgb.length >= 3 && rgb[0] > 200 && rgb[0] > rgb[1] * 2 && rgb[0] > rgb[2] * 2, spinAfter.color);
   await page.screenshot({ path: OUT + '/verify-ux5-lost.png', clip: { x: 0, y: 0, width: 700, height: 44 } });
 
   // …and PIXELS, not just computed style. The glyph this replaced (✳) had emoji

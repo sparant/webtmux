@@ -1398,11 +1398,20 @@ export class SplitManager {
   // ANY region counts. A split's regions each hold their own socket, and one of them
   // going dark means part of what's on screen is a photograph — the toolbar spinner
   // is global, so it reports the worst case and the tooltip names the count.
+  //
+  // The two failures are counted separately because they need different words. A
+  // CLOSED socket is self-healing: the retry loop is already running and the tooltip
+  // can honestly say to wait. A STALLED one — open, mute, see TerminalUnit's heartbeat
+  // — is not: nothing is retrying, because as far as the browser is concerned nothing
+  // is wrong. Telling someone to sit tight in that case is telling them to keep typing
+  // into a socket that will never answer.
   _refreshConnection() {
     if (!this.toolbar) return;
-    const lost = this.units.filter((u) => u.connectionLost?.()).length;
-    this.toolbar.lostRegions = lost;
-    this.toolbar.disconnected = lost > 0;
+    const closed = this.units.filter((u) => u._wasClosed && !u.isConnected()).length;
+    const stalled = this.units.filter((u) => u.isStalled?.()).length;
+    this.toolbar.lostRegions = closed;
+    this.toolbar.stalledRegions = stalled;
+    this.toolbar.disconnected = closed + stalled > 0;
   }
 
   // A hover preview appeared/moved/ended: repaint the switchers' "being previewed"
