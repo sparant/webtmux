@@ -113,19 +113,33 @@ function overflowIcon() {
 // green-on-navy for as long as it has existed, and NOTHING that recolors it — least
 // of all the red "we lost tmux" state below — could ever have been visible.
 //
-// The same glyph also hid the rotation: ✳ has eight identical spokes, so turning it
-// 45° maps it exactly onto itself. Two notches of "activity" were indistinguishable.
+// The same glyph also hid the rotation, and the reason is geometry, not fonts: an
+// eight-spoke star is SYMMETRIC UNDER 45°, so a 45° notch maps it exactly onto
+// itself. Every step this control has ever taken has been a no-op on screen.
 //
-// So: eight spokes at graded opacity, all in currentColor. The bright spoke makes the
-// 45° step legible (a throbber, which is what this always meant), and every state —
-// idle blue, lost red — now actually reaches the pixels.
+// Hence SPIN_STEP_DEG = 22.5 — exactly half the symmetry period, which is the most
+// distinguishable step a shape with 45° symmetry admits. The star simply alternates
+// between spokes-on-the-axes and spokes-on-the-diagonals, which is unmistakable at
+// 22px. The first fix instead tried a graded-opacity "bright spoke" to mark the
+// heading; that works in principle but not at this size, and it only reads at all if
+// the tail is dimmed to the point where the icon looks half-missing against the navy
+// bar. Uniform spokes are both maximally visible AND legibly stepped, so there is
+// nothing left to trade off.
+//
+// Geometry, in viewBox units on a 20x20 box centred at (10,10). The outer radius is
+// capped so the round cap still fits: an <svg> clips at its viewport, so
+// SPIN_OUTER + SPIN_WIDTH/2 must stay under 10 or the spoke tips get shaved off.
+const SPIN_INNER = 3.4;
+const SPIN_OUTER = 8.3;
+const SPIN_WIDTH = 3.1;
+export const SPIN_STEP_DEG = 22.5;
+
 const SPIN_SPOKES = Array.from({ length: 8 }, (_, i) => {
   const a = (i * Math.PI) / 4;
   const sin = Math.sin(a), cos = Math.cos(a);
   return {
-    x1: (10 + 3.6 * sin).toFixed(2), y1: (10 - 3.6 * cos).toFixed(2),
-    x2: (10 + 8.4 * sin).toFixed(2), y2: (10 - 8.4 * cos).toFixed(2),
-    o: (1 - i * 0.105).toFixed(2),
+    x1: (10 + SPIN_INNER * sin).toFixed(2), y1: (10 - SPIN_INNER * cos).toFixed(2),
+    x2: (10 + SPIN_OUTER * sin).toFixed(2), y2: (10 - SPIN_OUTER * cos).toFixed(2),
   };
 });
 
@@ -138,10 +152,10 @@ const SPIN_SPOKES = Array.from({ length: 8 }, (_, i) => {
 // content; only INTERPOLATED children need this.)
 function spinIcon() {
   return html`
-    <svg viewBox="0 0 20 20" width="15" height="15" aria-hidden="true" focusable="false">
-      <g stroke="currentColor" stroke-width="2.1" stroke-linecap="round">
+    <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false">
+      <g stroke="currentColor" stroke-width=${SPIN_WIDTH} stroke-linecap="round">
         ${SPIN_SPOKES.map((s) => svg`
-          <line x1=${s.x1} y1=${s.y1} x2=${s.x2} y2=${s.y2} opacity=${s.o}></line>
+          <line x1=${s.x1} y1=${s.y1} x2=${s.x2} y2=${s.y2}></line>
         `)}
       </g>
     </svg>
@@ -201,10 +215,12 @@ class WebtmuxToolbar extends LitElement {
     dropIndex: { type: Number },
     // tmux-activity spinner position, in increments (rendered as rotation).
     activity: { type: Number },
-    // The spinner's OTHER job: red when a region has lost its socket to tmux, with
-    // how many regions are down (see SplitManager._refreshConnection).
+    // The spinner's OTHER job: red when a region has lost tmux, with how many regions
+    // are down each way — closed socket vs open-but-mute (see
+    // SplitManager._refreshConnection and TerminalUnit's heartbeat).
     disconnected: { type: Boolean },
     lostRegions: { type: Number },
+    stalledRegions: { type: Number },
     // Flashing windows with no tab of their own — see the overflow arrow below.
     // [{id, session, index, name, alert}], most recently raised first.
     overflowAlerts: { type: Array },
@@ -638,22 +654,26 @@ class WebtmuxToolbar extends LitElement {
       background: #37d17a;              /* green — the focused pane */
       box-shadow: 0 0 6px rgba(55, 209, 122, 0.8);
     }
-    /* tmux-activity spinner, far left. Advances one notch (45°) every time webtmux
-       sends tmux a command, debounced — so it flicks when you switch/rename/capture
+    /* tmux-activity spinner, far left. Advances one notch (SPIN_STEP_DEG) every time
+       webtmux sends tmux a command, debounced — so it flicks when you switch/rename/capture
        and sits still when nothing is talking to tmux. A liveness tell you can read
        out of the corner of your eye; there is no other signal that the tmux side of
        the connection is actually doing anything. */
+    /* It has to be READABLE at a glance, which the first drawn version was not: 15px
+       of thin, 75%-faded stroke in a mid blue disappeared into the navy bar. It is
+       full-size, full-opacity and a brighter blue now — the whole point of this
+       control is to be caught out of the corner of your eye, and one that has to be
+       hunted for is telling you nothing. */
     .spin {
       flex: 0 0 auto;
-      width: 20px;
-      height: 20px;
-      margin-right: 2px;
+      width: 22px;
+      height: 22px;
+      margin-right: 3px;
       display: flex;
       align-items: center;
       justify-content: center;
-      color: #4a9eff;
+      color: #6cb6ff;
       line-height: 1;
-      opacity: 0.75;
       cursor: default;
       transition: transform 0.18s ease-out;
     }
@@ -663,14 +683,15 @@ class WebtmuxToolbar extends LitElement {
        and this state is a request (go and look), not a report. Red matches the
        stoplight vocabulary's "not working", which is precisely what tmux is doing. */
     .spin.lost {
-      color: #e94560;
-      opacity: 1;
+      color: #ff5470;
       /* drop-shadow, not text-shadow: the spinner is drawn (see spinIcon) and a text
          shadow would have nothing to attach to. */
-      filter: drop-shadow(0 0 4px rgba(233, 69, 96, 0.8));
+      filter: drop-shadow(0 0 5px rgba(255, 84, 112, 0.85));
       animation: wt-lost 1.2s ease-in-out infinite;
     }
-    @keyframes wt-lost { 50% { opacity: 0.25; } }
+    /* The pulse dips, it does not blink out: at 0.25 the icon spent half its cycle
+       invisible, which is a worse tell than not pulsing at all. */
+    @keyframes wt-lost { 50% { opacity: 0.5; } }
 
     /* Build id on the far left — read it aloud, or click it to copy (revealing it
        copies it too; see toggleBuild). A button, not a label, because it does
@@ -796,6 +817,7 @@ class WebtmuxToolbar extends LitElement {
     this.activity = 0;
     this.disconnected = false;
     this.lostRegions = 0;
+    this.stalledRegions = 0;
     this.overflowAlerts = [];
   }
 
@@ -837,8 +859,14 @@ class WebtmuxToolbar extends LitElement {
 
   // Advance the tmux-activity spinner one notch. Called (debounced) by the
   // SplitManager whenever a region sends tmux a command.
+  //
+  // Deliberately unbounded rather than modulo-8. The counter is multiplied into a CSS
+  // rotation, so wrapping it means one step in eight animates BACKWARDS through seven
+  // notches — a visible counter-spin that reads as something undoing itself. Nothing
+  // else consumes this value, and a session would have to send tmux a command every
+  // second for a month to reach a number a double notices.
   tickActivity() {
-    this.activity = (this.activity + 1) % 8;
+    this.activity += 1;
   }
 
   // Show/hide the build-id chip (Ctrl+Alt+B, wired by the SplitManager). Persisted
@@ -1145,20 +1173,36 @@ class WebtmuxToolbar extends LitElement {
   // last one: everything on screen still LOOKS live — the terminals keep their last
   // painted screen and the window list keeps listing windows — so the one thing worth
   // saying is that none of it is current.
+  //
+  // The two failures get different advice on purpose. A dropped socket is already
+  // being retried, so "wait" is true. A STALLED one is not being retried by anybody —
+  // the browser thinks the connection is fine — so the only thing that helps is
+  // reloading, and saying "hang on, it's reconnecting" would be a lie that keeps
+  // someone typing into a dead socket.
   _lostTip() {
-    const n = this.lostRegions || 1;
-    const which = n > 1 ? `${n} terminal regions have` : 'The terminal has';
+    const stalled = this.stalledRegions || 0;
+    const closed = this.lostRegions || 0;
+    const plural = (n, one, many) => (n === 1 ? one : many);
+    const tail = `\n\nWhat is on screen is the last thing that arrived, not what tmux looks`
+      + ` like now; anything you type goes nowhere until the link is back.`;
+    if (stalled) {
+      const which = closed
+        ? `${stalled + closed} terminal regions have`
+        : plural(stalled, 'The terminal has', `${stalled} terminal regions have`);
+      return `tmux has stopped answering. ${which} an open connection that has gone`
+        + ` silent — the server is still there, but it is not responding to input, so`
+        + ` nothing is automatically retrying. Reload the page to reconnect.${tail}`;
+    }
+    const which = plural(closed || 1, 'The terminal has', `${closed} terminal regions have`);
     return `Lost the connection to tmux. ${which} no live link to the server —`
-      + ` webtmux keeps retrying in the background and this clears the moment one gets through.`
-      + `\n\nWhat is on screen is the last thing that arrived, not what tmux looks like now;`
-      + ` anything you type goes nowhere until the link is back.`;
+      + ` webtmux keeps retrying in the background and this clears the moment one gets through.${tail}`;
   }
 
   render() {
     return html`
       <span
         class="spin ${this.disconnected ? 'lost' : ''}"
-        style="transform: rotate(${this.activity * 45}deg)"
+        style="transform: rotate(${this.activity * SPIN_STEP_DEG}deg)"
         role=${this.disconnected ? 'img' : 'presentation'}
         aria-hidden=${this.disconnected ? 'false' : 'true'}
         aria-label=${this.disconnected ? 'Connection to tmux lost' : ''}

@@ -11,10 +11,18 @@
 # every class and computed-style assertion passed. Only the rendered pixels can tell
 # you this control is on screen and the right colour.
 #
-# Usage: check-spinner-ink.sh <connected.png> <lost.png>
+# Usage: check-spinner-ink.sh <connected.png> <lost.png> [notch-a.png notch-b.png]
+#
+# With the two optional notch crops it also asserts that ONE activity step changes the
+# rendered icon. That is not pedantry: the spinner is an eight-spoke star, which is
+# symmetric under 45°, and 45° is exactly the step it shipped with — every "notch" was
+# a rotation that mapped the icon onto itself, so the liveness tell this control exists
+# to give had never once moved. A transform-string assertion would have passed happily.
 set -u
 ok=$1
 lost=$2
+notch_a=${3:-}
+notch_b=${4:-}
 
 # Mean colour of a crop. The spinner is a thin figure on a fixed navy background, so
 # the mean moves with the ink and nothing else; comparing the two states against each
@@ -44,6 +52,18 @@ if [ "$lor" -gt "$okr" ] && [ "$lor" -gt "$log" ]; then
   echo "PASS  the lost spinner's ink is red on the pixels"
 else
   echo "FAIL  the lost spinner is not red on the pixels"; fail=1
+fi
+
+# 3. One notch moves the pixels. Root-mean-square difference between the two crops;
+#    identical renders give 0, and the 22.5° step lands well clear of it.
+if [ -n "$notch_a" ] && [ -n "$notch_b" ]; then
+  rmse=$(compare -metric RMSE "$notch_a" "$notch_b" null: 2>&1 | sed 's/.*(\(.*\))/\1/')
+  moved=$(awk -v v="$rmse" 'BEGIN { print (v > 0.02) ? 1 : 0 }')
+  if [ "$moved" = "1" ]; then
+    echo "PASS  one activity notch changes the rendered icon (RMSE $rmse)"
+  else
+    echo "FAIL  consecutive notches render identically (RMSE $rmse) — the step is a no-op"; fail=1
+  fi
 fi
 
 exit $fail
