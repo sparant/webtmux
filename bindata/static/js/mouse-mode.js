@@ -66,18 +66,37 @@ export function resolvePress({ mode, mouseTracking = false, inCopyMode = false, 
     // someone who pinned the toggle doesn't want it quietly overridden.
     case 'app': return 'app';
     case 'buffer': return 'buffer';
-    // The adaptive modes are the ones asked to "work it out", and a pane already
-    // in copy mode has answered: you are reading the buffer, not driving the app.
+    // A pane already in copy mode has answered the question auto is asking: you
+    // are reading the buffer, not driving the app.
     case 'adaptive-mode':
       return (mouseTracking && !inCopyMode) ? 'app' : 'buffer';
     default: {
-      if (!mouseTracking || inCopyMode) return 'buffer';
+      // auto+ does NOT short-circuit on copy mode, and that matters now that
+      // selecting ENTERS copy mode: it would mean one drag-select silently turns
+      // every later click into a selection too, and the clicks only come back
+      // once you remember to leave a mode you never chose to be in — the exact
+      // friction this setting exists to remove. auto+ says clicks are the
+      // program's, so they stay the program's; leaveCopyModeFirst() is what makes
+      // that safe.
+      if (!mouseTracking) return 'buffer';
       // A double/triple click is never "press a button in the TUI" — it is the
       // word/line select everyone reaches for. Don't make it wait for the drag
       // heuristic it would fail.
       return detail >= 2 ? 'buffer' : 'defer';
     }
   }
+}
+
+// Selecting now puts the pane in copy mode (see beginSelection in terminal-unit),
+// so a later press that belongs to the PROGRAM has to get it back out first —
+// otherwise the click lands on a pane that is scrolled up and reading, and the
+// program either never sees it or sees it at the wrong place. Clicking away is
+// how you say "done reading", so that is where the mode is dropped.
+//
+// Only for a press auto+ deferred and then handed over: the flat 'app' mode never
+// enters copy mode on its own, and has no business leaving one you chose.
+export function leaveCopyModeFirst({ mode, verdict, inCopyMode }) {
+  return normalizeMouseMode(mode) === 'adaptive-probe' && verdict === 'app' && !!inCopyMode;
 }
 
 // What a deferred press turned out to be. Only a drag is ours; a click and a

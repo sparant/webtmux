@@ -38,6 +38,7 @@ const selection = () => unit((u) => u.terminal.getSelection());
 const clearSel = () => unit((u) => { u.terminal.clearSelection(); });
 const tracking = () => unit((u) => u.terminal.modes.mouseTrackingMode);
 const mouseMode = () => unit((u) => u.mouseMode);
+const inCopy = () => unit((u) => u.inCopyMode);
 
 // Everything on screen, so a mouse report the pane printed can be counted.
 const screenText = () => unit((u) => {
@@ -103,13 +104,22 @@ async function clickOn(row, frac) {
 }
 
 // Cycle the "sel" button until it reads `want`. Second .tbtn.text in the toolbar.
+// Also leaves copy mode: selecting now enters it, so without this each section
+// would inherit the previous one's mode and test something other than it means to.
 async function setMouseMode(want) {
   for (let i = 0; i < 5; i++) {
-    if (await mouseMode() === want) return true;
+    if (await mouseMode() === want) { await normalMode(); return true; }
     await toolbar((el, rr) => { rr.querySelectorAll('.tbtn.text')[1].click(); });
     await sleep(200);
   }
+  await normalMode();
   return await mouseMode() === want;
+}
+
+// Back to a pane in normal mode with nothing highlighted.
+async function normalMode() {
+  await unit((u) => { u.terminal.clearSelection(); if (u.inCopyMode) u.exitCopyMode(); });
+  await sleep(500);
 }
 
 // ---- the run -----------------------------------------------------------------
@@ -141,6 +151,10 @@ async function main() {
   let sel = await selection();
   // The drag starts a few columns in, so the selection is the tail of the marker.
   check('drag-selects in a plain shell (native path untouched)', /CTME-CCCC/.test(sel), JSON.stringify(sel));
+  // The native path never re-dispatches anything, so copy mode has to be entered
+  // by the drag tracking rather than as a side effect of the synthetic press.
+  check('a plain-shell drag also enters copy mode', await inCopy() === true);
+  await normalMode();
 
   // A second drag must be a FRESH selection, not an extension of the first — the
   // trap a blanket shift-synthesis would fall into (_handleIncrementalClick).
@@ -178,8 +192,35 @@ async function main() {
   check('auto+ : click-and-drag SELECTS over a mouse-grabbing program',
     /CTME-CCCC/.test(sel), JSON.stringify(sel));
   check('auto+ : and that drag sent the program nothing', after === before, `reports ${before} -> ${after}`);
-  check('auto+ : selecting did NOT force the pane into copy mode',
-    (await unit((u) => u.inCopyMode)) === false);
+  // The point of this change: selecting puts the pane in copy mode by itself, and
+  // the highlight has to survive the redraw that tmux does on the way in.
+  check('auto+ : the drag entered copy mode on its own', await inCopy() === true);
+  await sleep(800);
+  check('auto+ : and the selection survived the copy-mode redraw',
+    /CTME-CCCC/.test(await selection()), JSON.stringify(await selection()));
+  check('auto+ : tmux agrees the pane is in a mode',
+    await unit((u) => !!u.layout?.activePaneInMode) === true);
+
+  // ...and clicking away must get the pane OUT of copy mode, or one drag-select
+  // would strand every later click in the buffer. tmux stops reporting the mouse
+  // while in copy mode, so the exit is a round-trip and this first click can only
+  // dismiss; the point is that the click AFTER it reaches the program again.
+  await clickOn(await rowOf('SELECTME-DDDD'), 0.35);
+  check('auto+ : a click while in copy mode leaves copy mode', await inCopy() === false);
+  check('auto+ : and clears the highlight', !(await selection()), JSON.stringify(await selection()));
+  await sleep(900);   // let tmux restore the program's mouse reporting
+  check('auto+ : mouse reporting comes back after the exit',
+    await tracking() !== 'none', `mouseTrackingMode=${await tracking()}`);
+  before = await reportCount();
+  await clickOn(await rowOf('SELECTME-DDDD'), 0.35);
+  after = await reportCount();
+  check('auto+ : and the next click reaches the program again',
+    after > before, `reports ${before} -> ${after}`);
+  check('auto+ : a drag still selects after all that',
+    await (async () => { await clearSel();
+      await dragAcross(await rowOf('SELECTME-CCCC'), 0.02, 0.30);
+      return /CTME-CCCC/.test(await selection()); })());
+  await normalMode();
 
   // ---- 5. sel app : everything is the program's ------------------------------
   check('the button cycles to app', await setMouseMode('app'));
@@ -197,9 +238,12 @@ async function main() {
   await clickOn(await rowOf('SELECTME-CCCC'), 0.35);
   after = await reportCount();
   check('buf : not even a bare click reaches the program', after === before, `reports ${before} -> ${after}`);
+  check('buf : a bare click does NOT enter copy mode', await inCopy() === false);
   await clearSel();
   await dragAcross(await rowOf('SELECTME-CCCC'), 0.02, 0.30);
   check('buf : a drag selects', /CTME-CCCC/.test(await selection()), JSON.stringify(await selection()));
+  check('buf : and the drag entered copy mode', await inCopy() === true);
+  await normalMode();
 
   // ---- 7. sel auto : follows the mouse grab ----------------------------------
   check('the button cycles to auto', await setMouseMode('adaptive-mode'));

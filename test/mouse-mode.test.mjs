@@ -10,7 +10,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MOUSE_MODES, normalizeMouseMode, resolvePress, deferredVerdict, movedEnough,
-  needsForcedSelection, forceSelectionModifier, PressArbiter, DRAG_SLOP_PX,
+  needsForcedSelection, forceSelectionModifier, leaveCopyModeFirst, PressArbiter,
+  DRAG_SLOP_PX,
 } from '../resources/js/mouse-mode.js';
 
 // ---- mode normalisation ------------------------------------------------------
@@ -48,10 +49,29 @@ test('auto+ defers a lone click over a mouse-grabbing program, and only then', (
   assert.equal(resolvePress({ mode: 'adaptive-probe', mouseTracking: false }), 'buffer');
 });
 
-test('a pane already in copy mode is reading, so the adaptive modes select', () => {
-  const ctx = { mouseTracking: true, inCopyMode: true };
-  assert.equal(resolvePress({ mode: 'adaptive-mode', ...ctx }), 'buffer');
-  assert.equal(resolvePress({ mode: 'adaptive-probe', ...ctx }), 'buffer');
+test('a pane already in copy mode is reading, so auto selects', () => {
+  assert.equal(resolvePress({ mode: 'adaptive-mode', mouseTracking: true, inCopyMode: true }), 'buffer');
+});
+
+test('auto+ keeps giving the program its clicks even in copy mode', () => {
+  // Selecting now ENTERS copy mode, so short-circuiting here would mean one
+  // drag-select quietly turns every later click into a selection as well — the
+  // same "you are stuck in a mode you never chose" friction, just moved.
+  assert.equal(resolvePress({ mode: 'adaptive-probe', mouseTracking: true, inCopyMode: true }), 'defer');
+  // Still 'buffer' with nothing listening: there is no program to click.
+  assert.equal(resolvePress({ mode: 'adaptive-probe', mouseTracking: false, inCopyMode: true }), 'buffer');
+});
+
+test('a click handed to the program leaves copy mode first, in auto+ only', () => {
+  assert.equal(leaveCopyModeFirst({ mode: 'adaptive-probe', verdict: 'app', inCopyMode: true }), true);
+  // Nothing to leave.
+  assert.equal(leaveCopyModeFirst({ mode: 'adaptive-probe', verdict: 'app', inCopyMode: false }), false);
+  // A selection obviously must not drop the mode it just entered.
+  assert.equal(leaveCopyModeFirst({ mode: 'adaptive-probe', verdict: 'buffer', inCopyMode: true }), false);
+  // The flat modes never enter copy mode themselves, so they don't get to exit a
+  // copy mode the user put the pane in deliberately.
+  assert.equal(leaveCopyModeFirst({ mode: 'app', verdict: 'app', inCopyMode: true }), false);
+  assert.equal(leaveCopyModeFirst({ mode: 'adaptive-mode', verdict: 'app', inCopyMode: true }), false);
 });
 
 test('a double-click selects immediately instead of waiting to be a drag', () => {
