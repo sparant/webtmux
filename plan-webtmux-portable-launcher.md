@@ -5,28 +5,44 @@
 
 ## Goal
 
-One command on a Mac that: ships webtmux to a Linux box over SSH, starts it, tunnels the
-port back, keeps both alive, and opens the browser.
+One command on a Mac that: works out which webtmux the target machine needs, fetches it
+from GitHub, installs it over SSH, starts it, tunnels the port back, keeps both alive, and
+opens the browser.
 
 ```bash
 webtmux-launch linuxbox          # that's it
 ```
 
-Replaces: SSH in → start webtmux → keep it alive → set up a port forward → keep *that*
-alive → paste a URL.
+Replaces: SSH in → install webtmux → start it → keep it alive → set up a port forward →
+keep *that* alive → paste a URL.
+
+**The launcher and webtmux are built and released independently.** *(Revised 2026-07-26:
+an earlier design embedded gzipped webtmux binaries in the launcher via `//go:embed`.)*
+The launcher carries no webtmux at all — it resolves the target's platform over SSH and
+downloads the matching release asset.
+
+That removes a combinatorial coupling: with embedding, every webtmux change forced a
+rebuild *and republish* of every launcher binary, and each launcher carried the sum of all
+target payloads (~15 MB). Now a webtmux fix reaches every launcher already in the field
+with **no launcher release at all**, and the launcher stays ~5 MB.
+
+The Mac does the downloading and pushes over the SSH connection it already has open, so
+**target machines need no internet, no `curl`/`wget`, and no pre-installed webtmux.**
 
 ## Gate
 
 **Do not execute until Stage 0 (`plan-webtmux-portable-fork.md`) is done** — origin must
-be the user's GitHub fork. *(Revised 2026-07-26: this stage previously gated on Stage 2's
-tags, but payload identity is the content sha, not the version stamp — dev-stamped
-payloads are fine. When Stage 1 later merges, rebuilding the launcher automatically
-redeploys the new webtmux, because the sha changes.)*
+be the user's public GitHub fork, which is where release assets are fetched from.
 
 ```bash
 git -C /workspace/webtmux remote get-url origin | grep -q 'github.com' \
   || { echo "GATE: Stage 0 not done — origin is $(git -C /workspace/webtmux remote get-url origin)"; exit 1; }
 ```
+
+**Stage 2 should also have published `v0.1.0`** before end-to-end testing — the launcher
+fetches a release, so there must be one. That is why the execution order is D → 0 → 2 → 3.
+Development can proceed without it via `--webtmux-binary <path>` (task 3.7a); only the
+fetch-path tests (3.15e) genuinely require a published release.
 
 ---
 
@@ -68,8 +84,8 @@ split cleanly, and the implementation must preserve this split:
 
 | Step | Cold start | Reconnect |
 |---|---|---|
-| Probe (arch, tmux, gzip, session list) | yes | **no** — cached in memory for the process lifetime |
-| Deploy binary + attach script | yes, if the sha is missing | **no** — content-addressed `test -x` already satisfied |
+| Probe (arch, tmux, session list) | yes | **no** — cached in memory for the process lifetime |
+| Fetch from GitHub + deploy + attach script | yes, if the sha is missing | **no** — content-addressed `test -x` already satisfied |
 | Create base session (`new-session -d`) | yes | **no** — the session is durable; it outlived the drop |
 | Readiness poll + open browser | yes | **no** — first success only |
 | `ssh -L … exec webtmux … attach` | yes | **yes — this is the entire reconnect** |
@@ -194,10 +210,11 @@ Parse `-p/--port`, `-a/--address`, `-m/--path`, and `-c/--credential` straight o
 for your own processes. Read `/proc/<pid>/environ` for `GOTTY_CREDENTIAL` and
 `WEBTMUX_SESSION` too (same-user readable).
 
-**Is it the same build?** `sha256sum /proc/<pid>/exe` and compare against the embedded
-payload's sha — the content-addressing from task 3.7 gives this for free. On mismatch,
-adopt anyway but warn: an older build may predate the vendored assets or split-view.
-`--fresh` overrides.
+**Is it the same build?** `sha256sum /proc/<pid>/exe` and compare against the expected sha
+for the resolved version — which comes from the release's `SHA256SUMS` asset (task 3.7).
+On mismatch, adopt anyway but warn: an older build may predate a feature you rely on.
+`--fresh` overrides. Note this comparison is **free of a binary download** — only the tiny
+`SHA256SUMS` asset is fetched, so adopt mode never pulls 12 MB.
 
 **Credential recovery has hard limits — be precise about them.** Recovery works in
 exactly two cases: `-c user:pass` on the command line (readable from
@@ -275,32 +292,45 @@ install — empty means tmux's default socket, handled correctly at
       `go build ./cmd/webtmux-launch` builds the launcher — no restructuring needed.
       *(30 min)*
 
-- [ ] **P0** 3.3 Embedded payload. *(35 min)*
+- [ ] **P0** 3.3 **Release-fetch configuration — no embedded payload.** *(35 min)*
+      *(Revised 2026-07-26: this task previously embedded gzipped webtmux binaries via
+      `//go:embed payload`. See "Independent builds" above for why that is gone.)*
+
+      Bake three values at build time with ldflags, so the launcher is self-describing and
+      needs no config file to work:
 
       ```
-      cmd/webtmux-launch/payload/webtmux-linux-amd64.gz   (~5 MB, GITIGNORED)
-      cmd/webtmux-launch/payload/webtmux-linux-arm64.gz   (~5 MB, GITIGNORED)
-      cmd/webtmux-launch/payload/README.md                (COMMITTED)
+      -X main.RepoOwner=<you> -X main.RepoName=webtmux -X main.DefaultWebtmuxVersion=v0.1.0
       ```
 
-      Use `//go:embed payload` on the **directory**, not `payload/*.gz` — a glob with no
-      matches is a **compile error**, so a clean checkout would fail to build. The
-      committed README keeps the directory non-empty; a missing arch then fails at
-      *runtime* with a clear message instead of breaking the build.
+      A **pinned default** rather than always-latest: reproducible, no surprise upgrade
+      mid-session, and the happy path needs no version-resolution request at all.
+      `--webtmux-version vX.Y.Z|latest` overrides.
 
-      Gitignore `cmd/webtmux-launch/payload/*.gz` — they are derived. Launcher binaries
-      are **not committed either**: they publish as GitHub Release assets when Stage 2
-      lands, and are plain local `make launcher` builds until then. (Embedded gzip
-      payloads don't delta-compress, so committing them would cost ~30 MB packed per
-      release.)
+      **No GitHub API, no auth, no JSON parsing** — both forms are plain HTTPS GETs that
+      work on a public repo, with `latest` handled by GitHub's own redirect:
 
-- [ ] **P0** 3.4 Makefile targets. `launcher-payload` must **always** rebuild, or you ship
-      a launcher embedding an old webtmux. *(25 min)*
+      ```
+      https://github.com/<owner>/<repo>/releases/download/<tag>/webtmux-<platform>
+      https://github.com/<owner>/<repo>/releases/latest/download/webtmux-<platform>
+      ```
+
+      Use `net/http` from the standard library — this adds **zero** dependencies, which
+      matters given Stage D runs first specifically to shrink that surface.
+
+- [ ] **P0** 3.4 Makefile target — just one now. *(15 min)*
 
       ```make
-      launcher-payload: sync-assets     # cross-compile webtmux for linux, gzip into payload/
-      launcher: launcher-payload        # build launcher for darwin/arm64, darwin/amd64, linux/amd64
+      launcher:    # build launcher for darwin/arm64, darwin/amd64, linux/amd64
       ```
+
+      No `launcher-payload`, no cross-compiling webtmux as a prerequisite: the launcher
+      builds from its own source alone. Consequently `make launcher` is fast and cannot
+      ship a stale webtmux — the old "payload staleness" risk disappears with the payload.
+
+      **Also drop the now-dead `.dockerignore` line** `cmd/webtmux-launch/payload/*.gz`
+      (it was added anticipating this design). Stage 2 task 2.4 tracks the same cleanup;
+      whichever runs first should do it.
 
 ---
 
@@ -327,11 +357,17 @@ install — empty means tmux's default socket, handled correctly at
       or the reconnect hangs on a dead mux instead of establishing a fresh connection.
 
 - [ ] **P0** 3.6 **One-round-trip probe** — a small shell snippet returning `uname -s`,
-      `uname -m`, `command -v tmux`, `command -v gzip`, `$HOME`, whether the
-      content-addressed binary already exists, and **the existing tmux session list**
+      `uname -m`, `command -v tmux`, `$HOME`, whether the content-addressed binary already
+      exists, and **the existing tmux session list**
       (`tmux list-sessions -F '#{session_name}' 2>/dev/null`). Fail with actionable
       errors: no tmux → name the install command for the detected distro; unsupported
-      arch → say which arches are embedded. *(45 min)*
+      platform → say which platforms the release publishes. *(45 min)*
+
+      `uname -s`/`-m` now feed the **release asset name** (`linux-amd64`, `linux-arm64`,
+      `darwin-arm64`, …), so normalize them carefully: `x86_64`→`amd64`, `aarch64`→`arm64`,
+      `armv7l`→`arm`. A wrong mapping produces a 404 on download rather than a bad binary,
+      but the error must name the asset it looked for. `gzip` is no longer probed — the
+      launcher controls the transfer and does not need it remotely.
 
       The session list is for **reporting and `--session` validation only** — the actual
       attach uses `-A` (atomic attach-or-create), so there is no check-then-create race.
@@ -342,10 +378,10 @@ install — empty means tmux's default socket, handled correctly at
 - [ ] **P0** 3.6a **Detect an already-running webtmux** in the same round-trip, and make
       adopt the default when one is found. Parse `/proc/<pid>/cmdline` for port, bind
       address, `--path`, and `-c`; read `/proc/<pid>/environ` for `GOTTY_CREDENTIAL` and
-      `WEBTMUX_SESSION`; `sha256sum /proc/<pid>/exe` to compare against the embedded
-      payload. *(45 min)*
+      `WEBTMUX_SESSION`; `sha256sum /proc/<pid>/exe` to compare against the expected sha
+      from the release's `SHA256SUMS`. *(45 min)*
 
-      Adopt mode **skips tasks 3.7 (deploy), 3.8a (attach script), 3.8b (session create),
+      Adopt mode **skips tasks 3.7 (fetch + deploy), 3.8a (attach script), 3.8b (session create),
       and the remote-command half of 3.9** — the launcher only builds the tunnel and opens
       the browser. Report port, bind, session, uptime, and build match. Warn on a
       `0.0.0.0` bind or `--no-auth` with no secret path — but check the pid namespace
@@ -356,18 +392,44 @@ install — empty means tmux's default socket, handled correctly at
       Handle multiple instances: if more than one is found, list them and require
       `--remote-port` to disambiguate rather than guessing.
 
-- [ ] **P0** 3.7 **Content-addressed deploy** to
-      `~/.cache/webtmux/webtmux-<sha256[:12]>`. *(45 min)*
+- [ ] **P0** 3.7 **Fetch from GitHub, then deploy content-addressed** to
+      `~/.cache/webtmux/webtmux-<sha256[:12]>` on the target. *(75 min)*
+      *(Revised 2026-07-26: the source is a GitHub Release rather than an embedded blob.
+      The content-addressing and the atomic install are unchanged.)*
 
-      Three properties come free from content-addressing:
-      - "Is a copy needed?" becomes a plain `test -x` — no version parsing, no ambiguity.
-      - It sidesteps **`ETXTBSY`** entirely. You can never be asked to overwrite a
-        *running* binary, because a new build gets a new name.
-      - Multiple launcher versions coexist. Prune older entries on success.
+      **Order matters — check before you download.** The `SHA256SUMS` asset is a few
+      hundred bytes; the binary is ~12 MB. So:
 
-      Transfer streams the gzip over ssh and decompresses remotely:
-      `gzip -dc > tmp && chmod +x tmp && mv -f tmp final`. The `mv` makes installation
-      atomic.
+      1. GET `SHA256SUMS` for the resolved version (cache it on the Mac).
+      2. Look up the expected sha for the target's platform → gives the install path.
+      3. `test -x ~/.cache/webtmux/webtmux-<sha12>` on the target.
+      4. **Already there → stop.** No download, no transfer. This is the common case on a
+         repeat launch, and it costs one tiny HTTP GET plus one `test`.
+      5. Otherwise fetch the binary to the Mac cache, **verify its sha**, then push.
+
+      **Mac-side cache:** `~/.cache/webtmux-launch/<version>/webtmux-<platform>`, so a
+      second target on the same platform needs no second download, and a warm cache works
+      offline entirely.
+
+      **Verify before transfer, never after.** A corrupted or truncated download must fail
+      on the Mac — never push an unverified binary and discover the problem remotely.
+
+      **Transfer** streams over the existing SSH connection to a temp path, then
+      `chmod +x` and atomic `mv`. Content-addressed naming means the destination never
+      collides with a *running* binary, so **`ETXTBSY` remains structurally impossible**.
+      Gzip the stream in-process if worth it — but the remote no longer needs `gzip`
+      installed, which removes a probe check and a failure mode.
+
+      Three properties still come free from content-addressing:
+      - "Is a copy needed?" is a plain `test -x` — no version parsing, no ambiguity.
+      - `ETXTBSY` is structurally impossible.
+      - Multiple versions coexist. Prune older entries on success.
+
+- [ ] **P1** 3.7a **`--webtmux-binary <path>` escape hatch.** Skips fetching entirely and
+      pushes a local file. Three reasons it earns its keep: the launcher is testable
+      **before any release exists** (which matters because Stage 2 must otherwise land
+      first), a developer can deploy an unreleased build, and a fully-offline Mac can still
+      deploy. Compute the sha locally so the install path stays content-addressed. *(20 min)*
 
 - [ ] **P0** 3.8 **Allocate ports and secret once per target — and persist them.** Local:
       bind `127.0.0.1:0`, read the port, close. Remote: pick a random high port, retry on
@@ -460,8 +522,9 @@ install — empty means tmux's default socket, handled correctly at
 
       `--local-port`, `--remote-port`, `--session` (tmux session name), `--no-browser`,
       `--auth`, `--force-copy`, `--arch` (override probe), `--verbose` (echo ssh command
-      lines), `--version`, plus the adopt controls: `--fresh` (ignore a running instance)
-      and `--adopt-only` (fail rather than start one).
+      lines), `--version`; the adopt controls `--fresh` (ignore a running instance) and
+      `--adopt-only` (fail rather than start one); and the fetch controls
+      `--webtmux-version vX.Y.Z|latest` and `--webtmux-binary <path>`.
 
       Positional: `webtmux-launch [flags] <ssh-target> [-- tmux args…]`, with
       `<ssh-target>` passed **verbatim** to `ssh` so config aliases and bastions work.
@@ -479,7 +542,18 @@ The launcher can be exercised **fully without a Mac**, inside this container.
       and assert 200 on `/<secret>/`. Covers probe → deploy → tunnel → readiness. *(30 min)*
 
 - [ ] **P0** 3.15 **Idempotence:** run twice; the second run must skip the copy
-      (content-addressed `test -x` hit). Verify with `--verbose`. *(15 min)*
+      (content-addressed `test -x` hit) **and skip the binary download** — only the tiny
+      `SHA256SUMS` GET should occur. Verify with `--verbose`. *(15 min)*
+
+- [ ] **P0** 3.15e **Fetch-path tests.** *(40 min)*
+      - **Cold cache** → downloads, verifies sha, pushes, installs.
+      - **Warm Mac cache, empty target** → no download, pushes from cache.
+      - **`--webtmux-version latest`** → resolves via the `releases/latest/download`
+        redirect with no API call.
+      - **Bad version** (`v9.9.9`) → fails with the URL it tried, installs nothing.
+      - **Corrupted download** (truncate the cached file, force re-verify) → fails on the
+        Mac, pushes nothing.
+      - **`--webtmux-binary <path>`** → deploys a local file with no network at all.
 
 - [ ] **P0** 3.14a **Adopt mode.** Start webtmux by hand on the test container, then run
       the launcher. Confirm it: reports the adoption with port/session/build-match, does
@@ -544,10 +618,14 @@ The launcher can be exercised **fully without a Mac**, inside this container.
 
 - [ ] **P0** 3.18 `make test`, `go vet ./...`, commit. *(15 min)*
 
-- [ ] **P1** 3.19 Add the README section for the launcher. Formal publishing (tag +
-      `gh release create` with launcher binaries as assets) lands with Stage 2, which now
-      runs after this stage — until then `make launcher` builds are used directly.
-      *(20 min)*
+- [ ] **P1** 3.19 Add the README section for the launcher, leading with it as the primary
+      cross-machine story (manual install is the fallback). Publish launcher binaries as
+      assets on the **next** release — Stage 2 already established the mechanism, and
+      because the two are now independent, the launcher can be released on its own cadence
+      whenever it is ready. *(20 min)*
+
+      Document `--webtmux-version` and note the pinned default, so a user can tell which
+      webtmux a given launcher will install without reading source.
 
 - [ ] **P0** 3.20 Merge + cleanup, then push. *(15 min)*
 
@@ -568,13 +646,18 @@ The launcher can be exercised **fully without a Mac**, inside this container.
 
 1. **Remote port collision** on a busy shared box. Mitigated by `ExitOnForwardFailure` +
    retry, but may need several attempts.
-2. **`gzip` assumed present on the remote.** Universal on Linux, but 3.6 detects it and
-   fails clearly rather than mid-transfer.
-3. **Payload staleness** — `make launcher` must always rebuild the payload. The
-   content-addressed install path makes a stale payload *visible* (new sha ⇒ new file)
-   rather than silent.
-4. **`//go:embed payload/*.gz` would break a clean checkout** — 3.3 embeds the directory
-   with a committed README instead. Easy to get wrong.
+2. **Bootstrapping: no release, no fetch.** The launcher cannot work end-to-end until
+   Stage 2 publishes `v0.1.0` — which is exactly why Stage 2 now runs before Stage 3.
+   `--webtmux-binary` (3.7a) unblocks development before then.
+3. **Network required on the Mac at first deploy** for a given platform+version; cached
+   afterwards, and a warm cache is fully offline. Errors must distinguish "no network"
+   from "404 — that version or asset does not exist"; they need different fixes, and both
+   should name the URL attempted.
+4. **Platform-mapping mistakes** (`x86_64`→`amd64`, `aarch64`→`arm64`, `armv7l`→`arm`)
+   surface as a 404 rather than a wrong binary — the safe failure mode, *provided* the
+   message names the asset it looked for.
+4a. **Never push an unverified binary.** Sha-check on the Mac before transfer (3.7); a
+   truncated download discovered remotely is far harder to diagnose.
 5. **Browser spawning on every reconnect** if the "first success only" guard in 3.10 is
    missed — a network blip would open dozens of tabs.
 6. **ControlPath length limit.** Unix socket paths cap around 104 chars on macOS; `%C`

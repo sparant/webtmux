@@ -1,12 +1,22 @@
 # Plan: webtmux portable — dependency audit and reduction
 
 `plan-webtmux-portable-deps.md` — subplan of `plan-webtmux-portable.md`, created
-2026-07-26.
+2026-07-26. **Revised same day: promoted from optional-and-last to FIRST in the execution
+order (D → 0 → 2 → 3 → 1).**
 
-**Optional and independent.** No other stage depends on this, and it gates nothing. Listed
-last because it is cleanup, not capability — but it pairs naturally with the portability
-work: a launcher that ships a binary to strangers' machines benefits from that binary
-having fewer unmaintained parts.
+**This stage runs first**, so every later stage works against a smaller surface. Three
+reasons it earns the front position rather than the back:
+
+1. **D2.2 (urfave/cli v2 → v3) is far cheaper before the launcher exists.** The launcher
+   is a second `main` with its own flag set. Writing it against v2 and then migrating both
+   binaries is strictly more work than migrating one and writing the second against v3.
+2. **The launcher adds zero dependencies by design** — it uses `net/http` from the
+   standard library to fetch release assets. Shrinking the module tree first means that
+   claim starts from 4 modules rather than 16.
+3. **It is self-contained and low-risk.** Nothing here depends on the fork, a release, or
+   the launcher, so it can proceed immediately while the GitHub migration is arranged.
+
+It still gates nothing: if a later stage becomes urgent, this one can be interrupted.
 
 ## Findings summary
 
@@ -143,8 +153,10 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
 
 ## Phase D3 — Browser dependencies
 
-Post-vendoring the browser payload is ~431 KB. One item is 24% of that and is **not used
-by default**.
+One browser dependency is ~104 KB and is **not used by default**. This applies whether or
+not Stage 1 (vendoring) ever runs — today the 104 KB is fetched from jsdelivr on every
+page load; after vendoring it would be 24% of a ~431 KB embedded payload. Either way it
+is downloaded for nothing.
 
 - [ ] **P0** D3.1 **Make `@xterm/addon-webgl` (104 KB) a dynamic import.** It is
       *statically* imported at `resources/js/terminal-unit.js:11` but only conditionally
@@ -167,7 +179,9 @@ by default**.
       ```
 
       Requires the enclosing method to be `async` — check callers. The importmap entry
-      stays; dynamic `import()` resolves through it identically.
+      stays; dynamic `import()` resolves through it identically — and identically again
+      after Stage 1 repoints that entry at a local file, so this change is independent of
+      whether vendoring ever happens.
 
 - [ ] **P1** D3.2 **Reconcile the dead `EnableWebGL` server option.**
       `server/options.go:35` still declares `enable-webgl` with `default:"true"`, but the
@@ -185,8 +199,9 @@ by default**.
 `@xterm/xterm` (292 KB — it *is* the terminal), `@xterm/addon-unicode11` (12.5 KB —
 correct wide-character widths, and this fork has a documented history of glyph-width bugs).
 
-**Already being removed by Stage 1:** Tailwind, 407 KB of in-browser JIT compiler serving
-exactly two utility classes.
+**Removed by Stage 1, if it runs:** Tailwind, 407 KB of in-browser JIT compiler serving
+exactly two utility classes. Stage 1 is now optional and last, so this remains a live
+cost until then — worth knowing when weighing whether to run that stage.
 
 ---
 
@@ -218,13 +233,24 @@ exactly two utility classes.
 4. **D3.1 async propagation.** Making the WebGL load dynamic requires the enclosing method
    to be async; if a caller does not await, the addon may load after first paint. Verify
    the terminal still renders on a cold load with WebGL opted in.
-5. **Doing this before Stage 3** would mean the launcher embeds a binary whose dependency
-   surface is still shifting. Prefer running it after the launcher is proven, or well
-   before — not concurrently.
+5. **Do not run this concurrently with Stage 3.** *(Revised 2026-07-26: the original
+   concern — the launcher embedding a binary whose dependency surface was shifting —
+   disappeared with the embedded payload. What remains is simpler: D2.2 changes the CLI
+   framework both binaries use, so overlapping the two would mean rewriting the launcher's
+   flag handling mid-flight.)* Running D **before** Stage 3, as the current order does,
+   removes the conflict entirely.
+6. **D2.2 is the one item with a deadline.** Everything else here can be deferred
+   indefinitely; the urfave/cli migration gets materially more expensive once a second
+   binary is written against v2. If D2 is going to be skipped, decide that *before* Stage
+   3 rather than after.
 
 ## Next steps
 
 Phase D1 is the high-value block: **three unmaintained dependencies and four modules gone
 for roughly three hours' work**, with D1.2 alone accounting for three of them. D3.1 is a
-30-minute change that cuts a quarter of the vendored browser payload. D2 is worthwhile but
-easy to defer.
+30-minute change that stops 104 KB being fetched on every page load for a default-off
+renderer.
+
+D2 is genuinely optional — but if it is going to happen at all, **do D2.2 now**, before
+the launcher is written against urfave/cli v2 (see risk 6). Then hand off to Stage 0
+(`plan-webtmux-portable-fork.md`).

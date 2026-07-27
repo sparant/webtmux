@@ -19,75 +19,90 @@ accidentally push or PR back upstream.
 Stage 2 rewrites those instructions, and it cannot write the right URL until the fork
 exists. Stage 2 also pushes tags and release binaries, which need a canonical home.
 
-**Honest scoping note:** only **Stage 2 onward** has a hard technical dependency here.
-Stage 1 (`plan-webtmux-portable-vendor.md`) touches asset loading and the build only — it
-never references a remote. If you want to start Stage 1 while doing this migration, that
-is safe; it merges to `local-main` either way. The gate is written at Stage 2 for that
-reason.
+**It is also what the launcher downloads from.** Stage 3 resolves the target machine's
+platform over SSH and fetches the matching binary from this repo's Releases — so the fork
+is not just a home for the code, it is the distribution host.
+
+**Scoping:** Stages 2 and 3 both hard-depend on this. Stage D (deps) and Stage 1 (vendor)
+touch only local code and could run before or during the migration.
 
 ---
 
-## Recommendation: a standalone repo, NOT the GitHub "Fork" button
+## Approach: use the GitHub "Fork" button
 
-Given "I never plan on merging back into the codebase I forked from", **do not use
-GitHub's Fork button.** Create a fresh empty repo and push your history into it.
+*(Revised 2026-07-26 — reverses an earlier recommendation to create a standalone repo.
+Recorded here because the reasoning changed, not just the conclusion.)*
 
-| | Fork button | Standalone repo |
-|---|---|---|
-| Can be made **private** | **No** — forks of public repos cannot be made private | Yes |
-| New PRs default to | **`chrismccord/webtmux`** — one mis-click opens a PR against upstream | Your own repo |
-| Fork network | Shares object storage with upstream; your repo is listed under theirs | Independent |
-| Pull upstream changes later | Built in | `git remote add upstream …` — equally easy |
-| "forked from" attribution badge | Yes | Lost (replace with a README line) |
+Fork `chrismccord/webtmux` normally. The earlier objections were real but no longer bind:
 
-The only thing the Fork button gives you that matters is the attribution badge, and a
-sentence in the README covers that better anyway. The accidental-PR-to-upstream footgun
-and the inability to go private are both real and permanent.
+| Earlier objection | Why it no longer applies |
+|---|---|
+| Forks of public repos **cannot be made private** | The fork must be **public** anyway — that is what makes Release assets downloadable without a token, which is exactly what the launcher needs. |
+| Fork network lists your repo under upstream's | Not a problem; the lineage is real and worth showing. |
+| Lost "forked from" attribution badge | Now a *reason to fork* — the badge is the attribution, so the README needs no substitute sentence. |
+| **New PRs default to `chrismccord/webtmux`** | **Still true.** This is the one live caveat: when opening a PR from the GitHub UI, check the base repo. Mitigated below by disabling pushes to `upstream` entirely. |
 
-**Git history is preserved either way.** Pushing to a standalone repo keeps every upstream
-commit with its original author and dates — you are not erasing lineage, just not using
-GitHub's fork *relationship*.
+**Git history is identical either way** — a fork is a server-side clone. What differs is
+only GitHub's fork *relationship*, which is now wanted rather than avoided.
+
+**One fork-specific gotcha, handled in 0.3:** a fork copies upstream's git **tags**.
+Inherited tags would poison `git describe --tags`, which is where `VERSION` comes from — a
+stray upstream `v1.x` would make our `v0.1.0` describe strangely. GitHub *Release objects*
+are **not** inherited, so `releases/latest` on the fork resolves to our own first release.
 
 ---
 
 ## Worktree
 
-**None.** This stage changes remotes and pushes history; it makes no commits to tracked
-files except the two README/LICENSE touch-ups in step 0.7, which land directly on
-`local-main`. Creating a worktree for a remote reconfiguration would be pure ceremony.
+**None.** This stage changes remotes and pushes history; the only tracked-file touch is
+the optional README note in step 0.7, which lands directly on `local-main`. Creating a
+worktree for a remote reconfiguration would be pure ceremony.
 
 ---
 
 ## Steps (you run these)
 
-- [ ] **P0** 0.1 **Create an empty repo on GitHub.** Name it `webtmux`. **Do not**
-      initialize with a README, `.gitignore`, or license — any initial commit creates an
-      unrelated history and your first push will be rejected. *(5 min)*
+- [ ] **P0** 0.1 **Fork `chrismccord/webtmux`** on GitHub — the Fork button. Keep the name
+      `webtmux`. Leave "Copy the default branch only" **unchecked** if offered; extra
+      branches are harmless and you may want upstream's history intact. *(3 min)*
 
-      Public or private is your call; private only means the Release-asset install needs
-      an authenticated `gh` instead of a bare curl (see 0.6).
+      **It must be public** — that is what lets the launcher download Release assets
+      without a token (see 0.6).
 
-- [ ] **P0** 0.2 **Push your history.** From `/workspace/webtmux`: *(10 min)*
+- [ ] **P0** 0.2 **Push `local-main` and make it the default.** *(10 min)*
 
       ```bash
       cd /workspace/webtmux
       git remote add github git@github.com:<you>/webtmux.git
       git push github local-main
-      git push github main          # the upstream-tracking branch, for reference
-      git push github --tags        # no-op today; tags arrive in Stage 2
       ```
 
-      Push `local-main` **first** so GitHub picks it as the default branch. If it guesses
-      wrong, fix it under Settings → General → Default branch.
+      Then GitHub → Settings → General → **Default branch** → `local-main`. A fresh fork
+      defaults to upstream's `main`, so this must be set explicitly — otherwise anyone
+      cloning gets upstream's code with none of the fork's work.
 
-- [ ] **P0** 0.3 **Keep `local-main` as the branch name.** Renaming it to `main` would be
-      tidier, but seven live worktrees (`/workspace/webtmux-*`) and the deploy path all
-      reference it, and the container builds from `local-main`. Not worth the disruption.
-      Set the GitHub *default branch* to `local-main` and move on. *(2 min)*
+      Keep the branch **name** `local-main`. Renaming to `main` would be tidier, but the
+      live worktrees (`/workspace/webtmux-*`) and the deploy path all reference it, and
+      the container builds from it. Not worth the disruption.
 
-      The existing `main` branch tracks `upstream/main` at `6852248` and is far behind.
-      Keep it as a reference point for future upstream cherry-picks, or delete it — it is
-      not used by anything.
+      The local `main` branch tracks `upstream/main` at `6852248` and is far behind; the
+      fork already has upstream's `main` server-side, so there is nothing to push.
+
+- [ ] **P0** 0.3 **Delete inherited tags — fork-specific, easy to miss.** A fork copies
+      upstream's git tags, and `VERSION` comes from `git describe --tags`. A stray
+      upstream tag would make `v0.1.0` describe oddly and could confuse a human reading
+      `webtmux --version`. *(10 min)*
+
+      ```bash
+      git ls-remote --tags github            # what the fork inherited
+      git tag                                # what the local clone has (was empty)
+      # For each unwanted tag:
+      git push github :refs/tags/<tag>       # delete server-side
+      git tag -d <tag>                       # delete locally, if present
+      ```
+
+      GitHub **Release objects are not inherited**, so `releases/latest` on the fork will
+      resolve to your own first release regardless. Only the tags need cleaning.
 
 - [ ] **P0** 0.4 **Repoint `origin` and neuter `upstream`.** *(10 min)*
 
@@ -115,28 +130,33 @@ files except the two README/LICENSE touch-ups in step 0.7, which land directly o
 
       Whichever you choose, tell Claude — it changes what Stage 2's README documents.
 
-- [ ] **P0** 0.6 **Decide public vs private.** *(Revised 2026-07-26: distribution is now
-      GitHub Releases, so this decision only determines whether the install curl needs
-      auth — binaries are no longer committed to git at all.)* *(5 min)*
+- [ ] **P0** 0.6 **Confirm the fork is public.** *(Revised 2026-07-26: with the launcher
+      fetching Release assets, this is no longer a free choice.)* *(5 min)*
 
-      - **Public** → `curl -fsSL https://github.com/<you>/webtmux/releases/download/v0.1.0/webtmux-linux-amd64`
-      - **Private** → `gh release download v0.1.0 -R <you>/webtmux -p webtmux-linux-amd64`
-        (requires an authenticated `gh` on the target)
+      A **public** fork lets the launcher download with a plain unauthenticated HTTPS GET
+      and no GitHub API call:
 
-      Either way, Stage 2's publish step needs an authenticated `gh` CLI on your side —
-      **all pushes and release publishing are yours to run**; the agent has no GitHub
-      access. Tell Claude the answer so Stage 2's README leads with the right form.
+      ```
+      https://github.com/<you>/webtmux/releases/download/v0.1.0/webtmux-linux-amd64
+      https://github.com/<you>/webtmux/releases/latest/download/webtmux-linux-amd64
+      ```
 
-- [ ] **P1** 0.7 **Attribution and licence hygiene.** *(15 min)*
-      - Confirm `LICENSE` is intact and unmodified. This lineage is gotty (yudai) → webtmux
-        (chrismccord) → yours; the licence and its copyright lines must be preserved
-        regardless of how far the fork diverges.
-      - Add one line near the top of `README.md`: *"A fork of
-        [chrismccord/webtmux](https://github.com/chrismccord/webtmux), itself derived from
-        [yudai/gotty](https://github.com/yudai/gotty). Substantially diverged; not intended
-        to be merged back."* This replaces the "forked from" badge you gave up in 0.1 and
-        sets expectations for anyone who finds the repo.
-      - Commit both directly to `local-main` and push.
+      A **private** fork would force every launcher to carry a GitHub token — a
+      credential-distribution problem that defeats the "one command, no setup" goal.
+      Forks of a public repo are public anyway, so this is the default; just confirm it.
+
+      Publishing still needs an authenticated `gh` **on your side** — all pushes and
+      `gh release create` runs are yours; the agent has no GitHub access.
+
+- [ ] **P1** 0.7 **Licence hygiene.** Confirm `LICENSE` is intact and unmodified. The
+      lineage is gotty (yudai) → webtmux (chrismccord) → yours; the licence and its
+      copyright lines must be preserved however far the fork diverges. *(5 min)*
+
+      **No README attribution line is needed** — GitHub's "forked from chrismccord/webtmux"
+      badge supplies it. *(An earlier revision added one to compensate for the standalone
+      repo losing the badge; forking makes it redundant.)* A line noting that the fork has
+      substantially diverged and is not intended to be merged back is still worth adding
+      for anyone who finds it.
 
 - [ ] **P0** 0.8 **Verify the gate passes.** *(5 min)*
 
@@ -145,13 +165,14 @@ files except the two README/LICENSE touch-ups in step 0.7, which land directly o
       git remote get-url origin | grep -q 'github.com' && echo "origin OK"
       git remote get-url --push upstream | grep -q '^DISABLED$' && echo "upstream neutered OK"
       git ls-remote origin local-main | grep -q . && echo "reachable OK"
+      test -z "$(git ls-remote --tags origin)" && echo "no inherited tags OK"
       ```
 
 ---
 
 ## Gate check for downstream stages
 
-Stage 2 (`plan-webtmux-portable-release.md`) must not begin until this passes:
+Stages 2 and 3 must not begin until this passes:
 
 ```bash
 git -C /workspace/webtmux remote get-url origin | grep -q 'github.com' \
@@ -179,21 +200,26 @@ produce conflicts across most of the frontend for very little gain.
 
 ## Risks
 
-1. **Initializing the GitHub repo with a README** → `! [rejected] … fetch first` on your
-   first push, and the usual "fix" people reach for is `--force`, which is fine here but
-   confusing. Just create it empty (0.1).
-2. **Pushing `main` before `local-main`** → GitHub sets `main` as default, and anyone
-   cloning gets the *upstream* code with none of your work. Push `local-main` first (0.2).
-3. **Renaming `local-main` to `main`** would break seven worktrees and the deploy path.
-   Explicitly declined in 0.3.
-4. **Repo size:** history carries ~48 MB of packed binary blobs from the committed-`builds/`
-   era, so clones start heavy; Stage 2 untracks `builds/` so it stops growing. No history
-   rewrite — it would break the seven live worktrees.
-5. **Dropbox-hosted bare repo** (if kept) can corrupt under concurrent `.git` writes if two
+1. **Forgetting to change the default branch** → a fresh fork defaults to upstream's
+   `main`, so anyone cloning (and every `releases/latest` reader looking for source) gets
+   upstream's code with none of your work. Fixed in 0.2 and worth double-checking.
+2. **Inherited tags poisoning `git describe --tags`** → `VERSION` is derived from it, so a
+   stray upstream tag shows up in `webtmux --version`. Cleaned in 0.3; verified in 0.8.
+3. **Accidental PR against `chrismccord/webtmux`** → the one real cost of forking. The
+   GitHub PR UI defaults the base repo to upstream. `--push upstream DISABLED` (0.4) stops
+   command-line pushes but *cannot* stop a web-UI PR; check the base repo dropdown.
+4. **Renaming `local-main` to `main`** would break the live worktrees and the deploy path.
+   Explicitly declined in 0.2.
+5. **Repo size:** history carries ~48 MB of packed binary blobs from the committed-`builds/`
+   era, so clones start heavy. `builds/` is already untracked (the build/run split), so it
+   no longer grows. No history rewrite — it would break the live worktrees.
+6. **A private fork would break the launcher** — every launcher would need a GitHub token.
+   Confirmed public in 0.6.
+7. **Dropbox-hosted bare repo** (if kept) can corrupt under concurrent `.git` writes if two
    machines push while Dropbox is mid-sync. Another reason to consider retiring it (0.5).
 
 ## Next steps
 
-Once 0.8 passes, tell Claude the answer to 0.6 (public vs private) and whether the Mac
-bare repo was kept. Then **Stage 3 (`plan-webtmux-portable-launcher.md`)** — the
-deliverable — per the revised execution order 0 → 3 → 1 → 2.
+Once 0.8 passes, tell Claude whether the Mac bare repo was kept, then run **Stage 2
+(`plan-webtmux-portable-release.md`)** to publish `v0.1.0` — which is what the launcher
+will fetch. Execution order is D → 0 → 2 → 3 → 1.
