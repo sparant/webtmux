@@ -76,9 +76,12 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
 
 ## Phase D1 — High value, low risk
 
-- [ ] **P0** D1.1 Create the worktree. *(5 min)*
+- [x] **P0** D1.1 Create the worktree. *(5 min)*
 
-- [ ] **P0** D1.2 **Drop `yudai/hcl` — the single best removal.** One call site
+      *Done. No Go toolchain exists in this container — every `go`/`make` command
+      below runs inside a pinned `golang:1.23` container with `/workspace` mounted.*
+
+- [x] **P0** D1.2 **Drop `yudai/hcl` — the single best removal.** One call site
       (`utils/flags.go:122`, inside `ApplyConfigFile`) backing an optional `~/.gotty`
       config file. Removing it also drops `hashicorp/errwrap` and
       `hashicorp/go-multierror`: **three modules for one function.** *(45 min)*
@@ -93,6 +96,13 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
       support is ever wanted back, `encoding/json` over a small struct is ~20 lines with no
       dependency. **This is the only task here that removes user-visible surface** — call it
       out in the commit message and README.
+
+      *Done. `--help` diff is exactly one line — the `--config` row — and nothing else.
+      README's Common Options section now states there is no config file. **Deviation:**
+      the dead `hcl:"…"` struct tags in `server/options.go` and
+      `backend/localcommand/options.go` were left in place; removing them is not part of
+      this task and would collide with D1.4, which rewrites the reflection that reads
+      those structs.*
 
 - [ ] **P0** D1.3 **Drop `NYTimes/gziphandler`** (archived upstream). One call site,
       `server/server.go:317`. Replace with a small middleware, or with

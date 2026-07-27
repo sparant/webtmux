@@ -16,7 +16,6 @@ import (
 	cli "github.com/urfave/cli/v2"
 
 	"webtmux/backend/localcommand"
-	"webtmux/pkg/homedir"
 	"webtmux/server"
 	"webtmux/utils"
 )
@@ -42,29 +41,13 @@ func main() {
 		exit(err, 3)
 	}
 
-	app.Flags = append(
-		cliFlags,
-		&cli.StringFlag{
-			Name:    "config",
-			Value:   "~/.gotty",
-			Usage:   "Config file path",
-			EnvVars: []string{"GOTTY_CONFIG"},
-		},
-	)
+	app.Flags = cliFlags
 
 	app.Action = func(c *cli.Context) error {
 		if c.NArg() == 0 {
 			msg := "Error: No command given."
 			cli.ShowAppHelp(c)
 			exit(fmt.Errorf(msg), 1)
-		}
-
-		configFile := c.String("config")
-		_, err := os.Stat(homedir.Expand(configFile))
-		if configFile != "~/.gotty" || !os.IsNotExist(err) {
-			if err := utils.ApplyConfigFile(configFile, appOptions, backendOptions); err != nil {
-				exit(err, 2)
-			}
 		}
 
 		utils.ApplyFlags(cliFlags, flagMappings, c, appOptions, backendOptions)

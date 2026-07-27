@@ -1,16 +1,11 @@
 package utils
 
 import (
-	"log"
-	"os"
 	"reflect"
 	"strings"
 
 	"github.com/fatih/structs"
 	"github.com/urfave/cli/v2"
-	"github.com/yudai/hcl"
-
-	"webtmux/pkg/homedir"
 )
 
 func GenerateFlags(options ...interface{}) (flags []cli.Flag, mappings map[string]string, err error) {
@@ -103,26 +98,4 @@ func ApplyFlags(
 		}
 		field.Set(val)
 	}
-}
-
-func ApplyConfigFile(filePath string, options ...interface{}) error {
-	filePath = homedir.Expand(filePath)
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		return err
-	}
-
-	fileString := []byte{}
-	log.Printf("Loading config file at: %s", filePath)
-	fileString, err := os.ReadFile(filePath)
-	if err != nil {
-		return err
-	}
-
-	for _, object := range options {
-		if err := hcl.Decode(object, string(fileString)); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
