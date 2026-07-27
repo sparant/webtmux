@@ -53,13 +53,19 @@ func TestRemoteCommandShape(t *testing.T) {
 func TestAuthModeUsesEnvNotArgv(t *testing.T) {
 	p := &probe{Home: "/home/dev"}
 	dep := planDeploy(p, strings.Repeat("b", 64))
-	cfg := &targetConfig{LocalPort: 1, RemotePort: 2, Secret: "pw"}
+	cfg := &targetConfig{LocalPort: 1, RemotePort: 2, Secret: "urlsecret", Password: "pw"}
 	cmd := remoteCommand(dep, cfg, "main", &options{auth: true})
 	if strings.Contains(cmd, "-c ") || strings.Contains(cmd, "--credential") {
 		t.Errorf("credential must not appear in argv: %s", cmd)
 	}
 	if !strings.Contains(cmd, "GOTTY_CREDENTIAL='webtmux:pw'") {
 		t.Errorf("credential should ride the environment: %s", cmd)
+	}
+	// The password must not BE the secret path: whoever learns the URL would
+	// then already have the password, and basic auth would add nothing on the
+	// shared box it exists for.
+	if strings.Contains(cmd, "webtmux:urlsecret") {
+		t.Errorf("password reuses the secret path: %s", cmd)
 	}
 	if strings.Contains(cmd, "--no-auth") {
 		t.Errorf("--auth must not also pass --no-auth: %s", cmd)

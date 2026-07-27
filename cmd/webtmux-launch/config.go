@@ -23,6 +23,10 @@ type targetConfig struct {
 	LocalPort  int    `json:"local_port"`
 	RemotePort int    `json:"remote_port"`
 	Secret     string `json:"secret"`
+	// Password is only used by --auth. It is deliberately NOT the secret path:
+	// reusing that would mean anyone who learned the URL already had the
+	// password, so basic auth would add nothing on the shared box it exists for.
+	Password string `json:"password,omitempty"`
 
 	path string // where this was loaded from; not serialised
 }
@@ -103,6 +107,13 @@ func (c *targetConfig) ensure(localOverride, remoteOverride int) error {
 			return err
 		}
 		c.Secret = s
+	}
+	if c.Password == "" {
+		pw, err := randomSecret(20)
+		if err != nil {
+			return err
+		}
+		c.Password = pw
 	}
 	return nil
 }

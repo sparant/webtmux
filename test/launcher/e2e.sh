@@ -334,6 +334,32 @@ fi
 kill_launcher "$pid"
 
 # ---------------------------------------------------------------------------
+step "auth mode (--auth) — the shared-box path"
+# ---------------------------------------------------------------------------
+reset_target
+pid=$(launch_bg /tmp/auth.log --auth)
+if wait_for /tmp/auth.log 'ready: http' 60; then
+  UAU=$(url_from /tmp/auth.log)
+  PW=$(grep -oE 'webtmux:[A-Za-z0-9]+' /tmp/auth.log | head -1)
+  [ -n "$PW" ] && ok "prints the credential (browsers no longer accept user:pass@host)" \
+                || no "no credential printed — the user could not get in"
+  code=$(curl -s -o /dev/null -w '%{http_code}' "$UAU")
+  [ "$code" = 401 ] && ok "unauthenticated request is refused (401)" || no "expected 401, got $code"
+  code=$(curl -s -o /dev/null -u "$PW" -w '%{http_code}' "$UAU")
+  [ "$code" = 200 ] && ok "the printed credential works" || no "credential rejected: $code"
+  # Risk 7: a credential passed as -c user:pass is visible in ps to every user
+  # on that box. It must ride the environment instead.
+  if rsh "tr '\0' ' ' < /proc/\$(pgrep '^webtmux' | head -1)/cmdline" | grep -q "${PW#webtmux:}"; then
+    no "the password is visible in the remote process's argv"
+  else
+    ok "the password is not in argv (it rides GOTTY_CREDENTIAL)"
+  fi
+else
+  no "--auth run never became ready"; tail -5 /tmp/auth.log
+fi
+kill_launcher "$pid"
+
+# ---------------------------------------------------------------------------
 step "3.15f local-source tests"
 # ---------------------------------------------------------------------------
 reset_target

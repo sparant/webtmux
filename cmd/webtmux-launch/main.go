@@ -266,6 +266,11 @@ func launch(ctx context.Context, o *options, ssh *sshRunner, p *probe, cfg *targ
 		fmt.Fprintf(os.Stderr, "warning: could not persist ports for %s: %v\n", o.target, err)
 	}
 	fmt.Printf("url: %s\n", cfg.url())
+	if o.auth {
+		// Chrome dropped http://user:pass@host URLs, so the credential cannot
+		// ride in the link — it has to be printed for the user to paste.
+		fmt.Printf("auth: basic — webtmux:%s\n", cfg.Password)
+	}
 	return sup.run(ctx)
 }
 
@@ -291,7 +296,7 @@ func remoteCommand(dep *deployment, cfg *targetConfig, session string, o *option
 	if o.auth {
 		// When a credential is passed it goes through the environment, never
 		// -c user:pass, which is visible in ps to every user on that machine.
-		fmt.Fprintf(&b, "GOTTY_CREDENTIAL=%s ", shellQuote("webtmux:"+cfg.Secret))
+		fmt.Fprintf(&b, "GOTTY_CREDENTIAL=%s ", shellQuote("webtmux:"+cfg.Password))
 	}
 	fmt.Fprintf(&b, "%s -w -a 127.0.0.1 -p %d --path %s --reconnect ",
 		shellQuote(dep.BinaryPath), cfg.RemotePort, shellQuote(cfg.urlPath()))
