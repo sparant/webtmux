@@ -48,6 +48,7 @@ A tab flashes amber when its window has stopped working and an arrow flashes whe
 - App wide toggles:
   - Copy-mode indicator/toggle
   - scroll-mode toggle.
+  - mouse click/drag ("sel") toggle — who gets a mouse press, the program or a text selection.
   - save (⤓) button to download your buffer locally or remotely
   - focus dots tell you what region you are in.
   - a hidden build-id chip (Ctrl+Alt+B, copies the build id when revealed).
@@ -122,9 +123,10 @@ Keep an eye on specific windows, even while you focus on others.
 ![Copy mode replayed: scrolling up enters copy mode, drag selects in the scrollback, Ctrl+C copies and stays in copy mode, then ordinary typing drops straight back to the prompt](screenshots/copy-scroll.gif)
 
 - Smart copy-mode typing: in a scrolled-up pane, copy-mode motions keep working but ordinary typing drops back to the prompt — no keystrokes silently swallowed.
-- Cmd/Ctrl+C copies and stays in copy mode (grab several regions); Cmd/Ctrl+V exits copy mode first so the paste lands at the prompt; drag enters copy-mode immediately and auto-scrolls; selection highlight clears after copy.
+- Cmd/Ctrl+C copies and stays in copy mode (grab several regions); Cmd/Ctrl+V exits copy mode first so the paste lands at the prompt; dragging to the pane edge auto-scrolls the buffer; selection highlight clears after copy.
 - Clipboard copy works on plain-HTTP LAN access (falls back when the secure clipboard API is missing); large pastes no longer drop the connection.
 - Scroll-mode choices including an "auto+" default and adaptive wheel modes; Ctrl+Alt+[ toggles copy/scrollback mode.
+- **Click-and-drag selects text even over a program holding the mouse** (Claude Code, vim, htop) — no entering copy mode first. The toolbar's "sel" button cycles who gets a press, in the same four steps as the scroll toggle: `app` (all to the program) / `buf` (all to the buffer) / `auto` (a program that asked for the mouse gets it) / `auto+` (the default: clicks reach the program, drags select). Shift-drag (⌥-drag on a Mac) still forces a selection in any mode.
 
 ### Save pane buffer to a file
 

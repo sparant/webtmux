@@ -16,6 +16,10 @@ import { copyText } from './clipboard.js';
 import { stateStore } from './state-store.js';
 import { arrowSequence } from './arrow-keys.js';
 import { IS_MAC } from './os.js';
+import {
+  normalizeMouseMode, resolvePress, needsForcedSelection, forceSelectionModifier,
+  movedEnough, PressArbiter,
+} from './mouse-mode.js';
 
 // Protocol message types (must match Go constants)
 export const MSG = {
@@ -159,11 +163,18 @@ export class TerminalUnit {
     // (so a TUI like Claude, vim, less handles its own scrolling). Persisted +
     // toggled from the sidebar. Read here so the handlers below see it on load.
     this.scrollMode = normalizeScrollMode(stateStore.section('renderer').scrollMode);
-    // Keep scroll mode live-synced: it's a shared 'renderer' pref, so a change from
+    // Mouse click/drag behavior — the same four-way choice for the OTHER gesture:
+    // who gets a button press, the program or a local text selection. Separate from
+    // scrollMode because the answers genuinely differ (Claude Code wants the wheel
+    // AND the clicks, but you still want to drag-select its output). See
+    // mouse-mode.js for what each mode means.
+    this.mouseMode = normalizeMouseMode(stateStore.section('renderer').mouseMode);
+    // Keep both modes live-synced: they're shared 'renderer' prefs, so a change from
     // any region's sidebar/toolbar (or another client) updates every unit. Store the
     // unsubscribe so a removed split region doesn't leak the closure.
     this._unsubState = stateStore.subscribe(() => {
       this.scrollMode = normalizeScrollMode(stateStore.section('renderer').scrollMode);
+      this.mouseMode = normalizeMouseMode(stateStore.section('renderer').mouseMode);
     });
     // adaptive-probe state: per-window cached decision + in-flight probe.
     this._scrollDecisions = new Map();   // windowId -> {cmd, decision:'app'|'buffer', ts}
@@ -269,6 +280,13 @@ export class TerminalUnit {
         selection: 'rgba(255, 255, 255, 0.3)',
       },
       scrollback: 0, // tmux handles scrollback via copy mode
+      // Required by the mouse-mode toggle, not a Mac preference. xterm's one way
+      // to say "this press is a selection, not a mouse report" is a modifier —
+      // shift on Windows/Linux, but option on a Mac ONLY if this option is on
+      // (SelectionService.shouldForceSelection). Without it there is no forced
+      // selection on a Mac at all. It also restores the ⌥-drag-to-select that
+      // every native terminal offers over a mouse-grabbing program.
+      macOptionClickForcesSelection: true,
     });
 
     // Unicode 11 width tables — must load BEFORE the first write so wide glyphs
@@ -639,21 +657,40 @@ export class TerminalUnit {
     return cellFrac >= this.PROBE_CELL_FRAC || lineFrac >= this.PROBE_LINE_FRAC;
   }
 
-  // Click focuses the terminal; dragging to the top/bottom edge auto-scrolls the
-  // tmux buffer (entering copy-mode) so a text selection can extend past the
-  // visible screen. Only active in 'buffer' scroll mode (passthrough leaves the
-  // mouse entirely to the app). We never preventDefault, so xterm's own text
-  // selection keeps working underneath.
+  // Click-to-focus, click-and-drag to select, and edge auto-scroll.
+  //
+  // The hard part is WHO GETS THE PRESS. While a program has mouse tracking on
+  // (Claude Code, vim, htop) xterm disables its own text selection and forwards
+  // every press to the program, so a drag over the pane highlights nothing. This
+  // used to be "fixed" by entering tmux copy mode once a drag was recognised, on
+  // the theory that it takes the pane out of the app's mouse grab — but xterm's
+  // selection is gated on the mouse-reporting ESCAPE SEQUENCES it has seen, which
+  // a tmux mode change does not necessarily retract, and the press it needed to
+  // anchor on was already spent. Hence the constant "enter copy mode FIRST, then
+  // drag" dance.
+  //
+  // What actually works is xterm's own escape hatch: a press carrying the
+  // force-selection modifier skips the mouse report and starts a local selection
+  // (see mouse-mode.js). So the press is intercepted in the CAPTURE phase, before
+  // either of xterm's handlers sees it, and re-dispatched as whichever kind of
+  // press this.mouseMode says it should have been. Nothing tmux-side is touched:
+  // copy mode is now entered only where it is genuinely needed, at the edge, to
+  // drag a selection PAST the visible screen.
   setupMouseSelection() {
     const container = this.terminalEl;
-    let startX = 0, startY = 0, dragging = false, edgeDir = 0, timer = null;
+    let press = null;               // the live gesture, or null between them
+    let edgeDir = 0, edgeTimer = null;
 
     const setEdge = (dir) => {
       if (dir === edgeDir) return;
       edgeDir = dir;
-      if (timer) { clearInterval(timer); timer = null; }
+      if (edgeTimer) { clearInterval(edgeTimer); edgeTimer = null; }
       if (dir !== 0) {
-        timer = setInterval(() => {
+        edgeTimer = setInterval(() => {
+          // Selecting past the bottom/top of the visible screen is the one thing a
+          // local xterm selection cannot do alone — tmux has to scroll the pane,
+          // and scrolling the pane means copy mode. Entered lazily HERE, so an
+          // ordinary drag inside the screen costs no mode change at all.
           if (!this.inCopyMode) {
             this.sendMessage(MSG.TmuxCopyMode, '1');
             this.inCopyMode = true;
@@ -662,43 +699,151 @@ export class TerminalUnit {
         }, 120);
       }
     };
-    const endDrag = () => { dragging = false; setEdge(0); };
 
+    // A deferred press finally declared itself: give it to whoever it belongs to.
+    const arbiter = new PressArbiter({
+      resolve: (verdict) => {
+        if (!press) return;
+        press.verdict = verdict;
+        if (verdict === 'buffer') this._startForcedSelection(press);
+        else this._replayPressToApp(press);
+      },
+    });
+
+    // The gesture is over (or being abandoned): stop edge-scrolling and stop
+    // listening at the document. The listeners live only for the duration of a
+    // press so a page-wide mousemove handler isn't running per split region.
+    const release = () => {
+      setEdge(0);
+      arbiter.cancel();
+      if (!press) return;
+      press = null;
+      document.removeEventListener('mousemove', onDocMove, true);
+      document.removeEventListener('mouseup', onDocUp, true);
+    };
+    this._releaseGesture = release;
+
+    // Capture phase on OUR container — an ancestor of everything xterm binds to,
+    // so this runs before both xterm's selection handler and its mouse-report one
+    // and can still decide which of them gets to see the press.
     container.addEventListener('mousedown', (e) => {
-      if (e.button !== 0) return;
-      this.focus();                     // click brings keyboard focus (+ focuses this unit)
+      if (this._syntheticMouse) return;   // our own re-dispatch: it is meant for xterm
+      if (e.button !== 0) return;         // right/middle stay the program's (and the browser's)
+      this.focus();                       // click brings keyboard focus (+ focuses this unit)
       // Clicking into the terminal collapses the (single, shared) sidebar out of
       // the way — the owner (SplitManager) decides, honoring the pin toggle.
       if (this.onTerminalMousedown) this.onTerminalMousedown();
-      startX = e.clientX; startY = e.clientY; dragging = false;
-    });
 
-    container.addEventListener('mousemove', (e) => {
-      if ((e.buttons & 1) === 0) { endDrag(); return; }   // only while left-dragging
-      if (this._resolveScroll() === 'app') return;        // leave the mouse to the app
-      if (!dragging) {
-        if (Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY) < 5) return;
-        dragging = true;
-        // Enter tmux copy-mode as soon as a drag starts. This takes the pane out
-        // of the app's mouse grab (Claude/vim), so xterm does a LOCAL text
-        // selection immediately instead of forwarding the drag to the app —
-        // matching the behavior you otherwise only get after scrolling first.
-        if (!this.inCopyMode) {
-          this.sendMessage(MSG.TmuxCopyMode, '1');
-          this.inCopyMode = true;
-        }
+      release();                          // whatever came before is done with
+      const tracking = this._mouseTracking();
+      const verdict = resolvePress({
+        mode: this.mouseMode,
+        mouseTracking: tracking,
+        inCopyMode: this.inCopyMode,
+        detail: e.detail,
+      });
+      press = {
+        x: e.clientX, y: e.clientY,       // the ANCHOR: where the selection starts
+        lastX: e.clientX, lastY: e.clientY,
+        detail: e.detail, verdict, dragging: false,
+      };
+      document.addEventListener('mousemove', onDocMove, true);
+      document.addEventListener('mouseup', onDocUp, true);
+
+      // Cases that need no interference: the program's press, or a selection that
+      // xterm is already able to make for itself (nothing is grabbing the mouse).
+      if (verdict !== 'defer' && !needsForcedSelection(verdict, tracking)) return;
+
+      // From here the program must not see this press at all.
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (verdict === 'buffer') this._startForcedSelection(press);
+      else arbiter.start(e.clientX, e.clientY);
+    }, true);
+
+    const onDocMove = (e) => {
+      if (!press) return;
+      if ((e.buttons & 1) === 0) { release(); return; }   // only while left-dragging
+      press.lastX = e.clientX; press.lastY = e.clientY;
+      // Still undecided: this move may be what settles it (and if it does, the
+      // selection is started from the anchor, not from here).
+      if (arbiter.pending) { arbiter.move(e.clientX, e.clientY); return; }
+      if (press.verdict !== 'buffer') return;             // the program owns this drag
+      if (!press.dragging) {
+        if (!movedEnough(e.clientX - press.x, e.clientY - press.y)) return;
+        press.dragging = true;
       }
-      // Auto-scroll only when dragging near/past the top or bottom edge.
+      // Auto-scroll only when dragging near/past the top or bottom edge. Measured
+      // at the document, so it keeps scrolling once the pointer leaves the pane —
+      // which is exactly where a drag-to-select-more ends up.
       const rect = container.getBoundingClientRect();
       const edge = 28;
       let dir = 0;
       if (e.clientY < rect.top + edge) dir = -1;          // older history
       else if (e.clientY > rect.bottom - edge) dir = 1;   // newer
       setEdge(dir);
-    });
+    };
 
-    window.addEventListener('mouseup', endDrag);
-    container.addEventListener('mouseleave', () => setEdge(0));
+    const onDocUp = () => {
+      // A press that never moved is a click, and the program has been waiting for
+      // it. Resolving from the CAPTURE phase matters: the re-dispatched press
+      // reaches xterm in time to register the release listener for this very
+      // mouseup, so the program gets a press/release pair rather than a lone press.
+      if (arbiter.pending) arbiter.up();
+      release();
+    };
+  }
+
+  // xterm's screen element — the node below both of its mouse listeners, so an
+  // event dispatched here reaches the selection handler AND, if that one declines
+  // it, the mouse-report handler above it. Looked up per use because the terminal
+  // is re-created on some reattach paths.
+  _xtermScreen() {
+    const el = this.terminal?.element;
+    return el?.querySelector('.xterm-screen') || el || null;
+  }
+
+  // Re-dispatch a press we swallowed. `mods` carries the force-selection modifier
+  // (or nothing, to hand the press to the program untouched). Flagged while it is
+  // in flight so the capture handler above lets its own event through.
+  _dispatchPress(press, mods, { x = press.x, y = press.y, type = 'mousedown' } = {}) {
+    const target = this._xtermScreen();
+    if (!target) return;
+    const ev = new MouseEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      clientX: x,
+      clientY: y,
+      button: 0,
+      buttons: 1,
+      // Preserved so double/triple-click still select a word/line rather than
+      // arriving as three unrelated single clicks.
+      detail: type === 'mousedown' ? press.detail : 0,
+      ...mods,
+    });
+    this._syntheticMouse = true;
+    try { target.dispatchEvent(ev); } finally { this._syntheticMouse = false; }
+  }
+
+  // Start a local text selection at the anchor, over a program that would
+  // otherwise have eaten the press.
+  _startForcedSelection(press) {
+    this._dispatchPress(press, forceSelectionModifier(IS_MAC));
+    // If the press only became a selection once the pointer had moved, xterm has
+    // just anchored at the press point and knows nothing of the travel since.
+    // Catch it up so the highlight covers the drag so far instead of appearing to
+    // start a few pixels late.
+    if (press.lastX !== press.x || press.lastY !== press.y) {
+      this._dispatchPress(press, { buttons: 1 },
+        { x: press.lastX, y: press.lastY, type: 'mousemove' });
+    }
+  }
+
+  // Hand the program the press it never got. No modifier, so xterm takes its
+  // normal mouse-report path.
+  _replayPressToApp(press) {
+    this._dispatchPress(press, {});
   }
 
   connect() {
@@ -1020,6 +1165,9 @@ export class TerminalUnit {
     this._stopHeartbeat();   // else a closed region keeps pinging a dead socket forever
     if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
     if (this._unsubState) { try { this._unsubState(); } catch (e) {} this._unsubState = null; }
+    // A gesture in flight holds document-level listeners; the container going away
+    // does not take those with it.
+    try { this._releaseGesture?.(); } catch (e) {}
     if (this.resizeObserver) { try { this.resizeObserver.disconnect(); } catch (e) {} }
     if (this.ws) { try { this.ws.onclose = null; this.ws.close(); } catch (e) {} }
     if (this.terminal) { try { this.terminal.dispose(); } catch (e) {} }
@@ -1240,6 +1388,18 @@ export class TerminalUnit {
     if (this.scrollMode === 'app' && this.inCopyMode) {
       this.exitCopyMode();
     }
+  }
+
+  // Switch mouse click/drag behavior (one of MOUSE_MODES); called from the toolbar
+  // cycle button. Unlike the scroll modes this never touches copy mode: the whole
+  // point of the setting is that selecting no longer requires a mode change, so
+  // changing it shouldn't cause one either.
+  setMouseMode(mode) {
+    this.mouseMode = normalizeMouseMode(mode);
+    stateStore.patchSection('renderer', { mouseMode: this.mouseMode });
+    // A gesture that was mid-flight was arbitrated under the OLD rules; drop it
+    // rather than resolve it under rules the user just changed.
+    this._releaseGesture?.();
   }
 
   // Handle OSC 52 clipboard sequences from tmux

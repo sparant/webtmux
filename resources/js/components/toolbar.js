@@ -24,6 +24,7 @@ import { Tip, TIP_CSS } from '../tooltip.js';
 import { saveHint } from '../save-target.js';
 import { copyText } from '../clipboard.js';
 import { SCROLL_MODES as SCROLL_ORDER, normalizeScrollMode as normalizeScroll } from '../terminal-unit.js';
+import { MOUSE_MODES as MOUSE_ORDER, normalizeMouseMode as normalizeMouse } from '../mouse-mode.js';
 import { clampRecentsMax, RECENTS_MIN, RECENTS_MAX } from '../recents-strip.js';
 
 // Recent-tab label shape. Two INDEPENDENT toggles rather than one four-way cycle,
@@ -55,17 +56,32 @@ const SCROLL_META = {
   'adaptive-probe': { label: '🖱 auto+', name: 'auto+', hint: 'like auto, but probes the ambiguous case — tries the app, then scrolls history if it did not react' },
 };
 
-// The scroll button cycles four modes and its label only shows the current one, so
+// Mouse click/drag modes — the same four-way question asked about the OTHER
+// gesture: who gets a button press, the program or a text selection. See
+// mouse-mode.js for what each one does. Labelled 'sel' rather than a second mouse
+// glyph, because two 🖱 buttons side by side would say nothing about which is
+// which, and what this one governs is whether you can select at all.
+const MOUSE_META = {
+  'app':            { label: 'sel app',   name: 'app',   hint: 'every click and drag goes to the program; dragging never selects' },
+  'buffer':         { label: 'sel buf',   name: 'buf',   hint: 'every click and drag selects text; the program sees no mouse at all' },
+  'adaptive-mode':  { label: 'sel auto',  name: 'auto',  hint: 'a program that asked for the mouse (Claude/vim/htop) gets it; anywhere else, dragging selects' },
+  'adaptive-probe': { label: 'sel auto+', name: 'auto+', hint: 'clicks still reach the program, but click-and-DRAG selects text — no entering copy mode first' },
+};
+
+// Each mode button cycles four modes and its label only shows the current one, so
 // the tooltip lists ALL four (current marked ▸) — the mode names alone don't say
 // what they do. Rendered with `white-space: pre-line`, so \n break the lines.
-function scrollTooltip(current) {
-  const lines = SCROLL_ORDER.map((m) => {
-    const meta = SCROLL_META[m];
+function modeTooltip(title, order, metaMap, current) {
+  const lines = order.map((m) => {
+    const meta = metaMap[m];
     const mark = m === current ? '▸' : ' '; // ▸ current, em-space otherwise (aligns)
     return `${mark} ${meta.name} — ${meta.hint}`;
   });
-  return `Scroll-wheel mode — click to cycle:\n${lines.join('\n')}`;
+  return `${title} — click to cycle:\n${lines.join('\n')}`;
 }
+
+const scrollTooltip = (cur) => modeTooltip('Scroll-wheel mode', SCROLL_ORDER, SCROLL_META, cur);
+const mouseTooltip = (cur) => modeTooltip('Mouse click & drag mode', MOUSE_ORDER, MOUSE_META, cur);
 
 // The Exposé button's icon. It used to be ▦ — a grid glyph that, next to the
 // split button's ⊞, read as "another box" and said nothing about windows. Four
@@ -178,6 +194,9 @@ class WebtmuxToolbar extends LitElement {
     // Current scroll-wheel mode (mirror of the focused unit's setting). Cycled by
     // the toolbar's scroll button; one of SCROLL_ORDER.
     scrollMode: { type: String },
+    // Current mouse click/drag mode (mirror of the focused unit's setting).
+    // Cycled by the toolbar's selection button; one of MOUSE_ORDER.
+    mouseMode: { type: String },
     // True when the focused split region's active pane is in tmux copy/view mode.
     // Reflected to the `copymode` attribute so :host() can recolor the whole bar.
     copyMode: { type: Boolean, reflect: true, attribute: 'copymode' },
@@ -782,6 +801,7 @@ class WebtmuxToolbar extends LitElement {
     // Scroll-wheel mode mirror (moved here from the sidebar). Seeded from the same
     // shared 'renderer' pref the terminal reads, so the label is right on first paint.
     this.scrollMode = normalizeScroll(stateStore.section('renderer').scrollMode || '');
+    this.mouseMode = normalizeMouse(stateStore.section('renderer').mouseMode || '');
     this.copyMode = false; // focused pane in tmux copy/view mode (SplitManager sets)
     this.previewCount = 0;        // windows currently in the preview (SplitManager sets)
     this.previewHidden = false;   // preview tucked away (SplitManager sets)
@@ -796,11 +816,12 @@ class WebtmuxToolbar extends LitElement {
     // reveals it when you need to read the running build aloud. Persisted.
     this.showBuild = stateStore.section('toolbar').showBuild === true;
     this._applyLabelPrefs();
-    // Re-apply shared prefs (scroll mode, build-chip visibility, recents label shape)
-    // on any remote change — e.g. cycling scroll mode from a region sidebar, or
-    // another client toggling.
+    // Re-apply shared prefs (scroll + mouse mode, build-chip visibility, recents
+    // label shape) on any remote change — e.g. cycling a mode from another split
+    // region, or another client toggling.
     stateStore.subscribe(() => {
       this.scrollMode = normalizeScroll(stateStore.section('renderer').scrollMode || '');
+      this.mouseMode = normalizeMouse(stateStore.section('renderer').mouseMode || '');
       this.showBuild = stateStore.section('toolbar').showBuild === true;
       this._applyLabelPrefs();
       this.requestUpdate();
@@ -910,6 +931,18 @@ class WebtmuxToolbar extends LitElement {
     const u = this.manager?.focusedUnit;
     if (u?.setScrollMode) u.setScrollMode(next);
     else stateStore.patchSection('renderer', { scrollMode: next });
+  }
+
+  // Cycle the mouse click/drag mode (app -> buf -> auto -> auto+). Same shape as
+  // cycleScroll: applied to the focused unit (which persists it into the shared
+  // 'renderer' pref, so every region and every other browser follows).
+  cycleMouse() {
+    const i = MOUSE_ORDER.indexOf(normalizeMouse(this.mouseMode));
+    const next = MOUSE_ORDER[(i + 1) % MOUSE_ORDER.length];
+    this.mouseMode = next;
+    const u = this.manager?.focusedUnit;
+    if (u?.setMouseMode) u.setMouseMode(next);
+    else stateStore.patchSection('renderer', { mouseMode: next });
   }
 
   // Toggle the save-buffer dropdown. On open, clear any stale result banner and
@@ -1339,6 +1372,13 @@ class WebtmuxToolbar extends LitElement {
         @mouseleave=${() => this._tipLeave()}
         @click=${() => { this._tipLeave(); this.cycleScroll(); }}
       >${(SCROLL_META[normalizeScroll(this.scrollMode)] || SCROLL_META['adaptive-probe']).label}</button>
+      <button
+        class="tbtn text"
+        aria-label="Mouse click and drag mode"
+        @mouseenter=${(e) => this._tipEnter(e, mouseTooltip(normalizeMouse(this.mouseMode)))}
+        @mouseleave=${() => this._tipLeave()}
+        @click=${() => { this._tipLeave(); this.cycleMouse(); }}
+      >${(MOUSE_META[normalizeMouse(this.mouseMode)] || MOUSE_META['adaptive-probe']).label}</button>
       ${this.panes.length > 1 ? html`
         <div
           class="dots"
