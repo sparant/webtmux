@@ -46,42 +46,49 @@ function trimWindowName(name) {
   return tail || s;
 }
 
-// Scroll-wheel modes, in the order the toolbar button cycles them — the one list
-// terminal-unit.js owns. `label` is the compact toolbar text; `hint` is the
-// tooltip. (This control moved here from the sidebar.)
+// Scroll-wheel modes, in the order the toolbar cycles them — the one list
+// terminal-unit.js owns. `name` is the short form the closed mouse button and the
+// dropdown rows show; `hint` is the sentence beside it. (This control moved here from
+// the sidebar, and then from a button of its own into the mouse-capture dropdown.)
 const SCROLL_META = {
-  'app':            { label: '🖱 app',   name: 'app',   hint: 'wheel always goes to the program (Claude/vim/less scroll themselves)' },
-  'buffer':         { label: '🖱 buf',   name: 'buf',   hint: 'wheel always scrolls tmux history (copy-mode)' },
-  'adaptive-mode':  { label: '🖱 auto',  name: 'auto',  hint: 'mouse-tracking / full-screen apps get the wheel; a plain shell scrolls history' },
-  'adaptive-probe': { label: '🖱 auto+', name: 'auto+', hint: 'like auto, but probes the ambiguous case — tries the app, then scrolls history if it did not react' },
+  'app':            { name: 'app',   hint: 'wheel always goes to the program (Claude/vim/less scroll themselves)' },
+  'buffer':         { name: 'buf',   hint: 'wheel always scrolls tmux history (copy-mode)' },
+  'adaptive-mode':  { name: 'auto',  hint: 'mouse-tracking / full-screen apps get the wheel; a plain shell scrolls history' },
+  'adaptive-probe': { name: 'auto+', hint: 'like auto, but probes the ambiguous case — tries the app, then scrolls history if it did not react' },
 };
 
 // Mouse click/drag modes — the same four-way question asked about the OTHER
 // gesture: who gets a button press, the program or a text selection. See
-// mouse-mode.js for what each one does. Labelled 'sel' rather than a second mouse
-// glyph, because two 🖱 buttons side by side would say nothing about which is
-// which, and what this one governs is whether you can select at all.
+// mouse-mode.js for what each one does.
+//
+// This used to need a distinguishing label ('sel app' next to '🖱 app') because the
+// two axes were two adjacent buttons and nothing on either said which gesture it
+// governed. Now they are two titled groups in one dropdown, so the group heading does
+// that job and the mode keeps only its bare name.
 const MOUSE_META = {
-  'app':            { label: 'sel app',   name: 'app',   hint: 'every click and drag goes to the program; dragging never selects' },
-  'buffer':         { label: 'sel buf',   name: 'buf',   hint: 'every click and drag selects text; the program sees no mouse at all' },
-  'adaptive-mode':  { label: 'sel auto',  name: 'auto',  hint: 'a program that asked for the mouse (Claude/vim/htop) gets it; anywhere else, dragging selects' },
-  'adaptive-probe': { label: 'sel auto+', name: 'auto+', hint: 'clicks still reach the program, but click-and-DRAG selects text — no entering copy mode first' },
+  'app':            { name: 'app',   hint: 'every click and drag goes to the program; dragging never selects' },
+  'buffer':         { name: 'buf',   hint: 'every click and drag selects text; the program sees no mouse at all' },
+  'adaptive-mode':  { name: 'auto',  hint: 'a program that asked for the mouse (Claude/vim/htop) gets it; anywhere else, dragging selects' },
+  'adaptive-probe': { name: 'auto+', hint: 'clicks still reach the program, but click-and-DRAG selects text — no entering copy mode first' },
 };
 
-// Each mode button cycles four modes and its label only shows the current one, so
-// the tooltip lists ALL four (current marked ▸) — the mode names alone don't say
-// what they do. Rendered with `white-space: pre-line`, so \n break the lines.
-function modeTooltip(title, order, metaMap, current) {
-  const lines = order.map((m) => {
-    const meta = metaMap[m];
-    const mark = m === current ? '▸' : ' '; // ▸ current, em-space otherwise (aligns)
-    return `${mark} ${meta.name} — ${meta.hint}`;
-  });
-  return `${title} — click to cycle:\n${lines.join('\n')}`;
-}
+// The closed button has to answer "what am I in?" without a click, so it shows both
+// current modes by their short names. A metaMap lookup that can't fail: an unknown
+// stored mode falls back to the default rather than rendering `undefined`.
+const modeName = (metaMap, cur) => (metaMap[cur] || metaMap['adaptive-probe']).name;
 
-const scrollTooltip = (cur) => modeTooltip('Scroll-wheel mode', SCROLL_ORDER, SCROLL_META, cur);
-const mouseTooltip = (cur) => modeTooltip('Mouse click & drag mode', MOUSE_ORDER, MOUSE_META, cur);
+// Hovering the closed button explains BOTH axes — which is the one thing the two
+// separate buttons could do that a single closed button cannot, so it is kept.
+const mouseCaptureTooltip = (mouseCur, scrollCur) => [
+  'Mouse capture — who gets your gestures, the program or webtmux.',
+  'Click for both lists.',
+  '',
+  'click+drag:',
+  ...MOUSE_ORDER.map((m) => `${m === mouseCur ? '▸' : ' '} ${MOUSE_META[m].name} — ${MOUSE_META[m].hint}`),
+  '',
+  'copymode on scroll:',
+  ...SCROLL_ORDER.map((m) => `${m === scrollCur ? '▸' : ' '} ${SCROLL_META[m].name} — ${SCROLL_META[m].hint}`),
+].join('\n');
 
 // The Exposé button's icon. It used to be ▦ — a grid glyph that, next to the
 // split button's ⊞, read as "another box" and said nothing about windows. Four
@@ -221,6 +228,8 @@ class WebtmuxToolbar extends LitElement {
     // The window the shared HoverPreview is currently showing ('' = none). Marks
     // which tab the preview on screen belongs to. Set by the SplitManager.
     previewWindow: { type: String },
+    // Whether the mouse-capture dropdown is open (the two gesture modes live in it).
+    mouseMenuOpen: { type: Boolean },
     // Recent-tab label shape (see LABEL_DEFAULTS) + whether its little menu is open.
     showSession: { type: Boolean },
     trimName: { type: Boolean },
@@ -792,6 +801,23 @@ class WebtmuxToolbar extends LitElement {
       flex: 0 0 auto; min-width: 18px; text-align: center;
       font-variant-numeric: tabular-nums; font-weight: 600; color: #9fc4ff;
     }
+
+    /* Mouse-capture dropdown. Reuses .label-menu wholesale — it is the same kind of
+       object (a small settings menu hung off a toolbar control) and two menus that
+       looked subtly different would read as two mechanisms. Only three things differ:
+       it opens from the RIGHT edge (the button sits near the end of the toolbar, so
+       left-aligning would push it off screen), it is wider because every row carries a
+       sentence, and its rows stack name-over-hint instead of being one line. */
+    .mouse-wrap { position: relative; flex: 0 0 auto; display: inline-flex; }
+    .mouse-menu { left: auto; right: 0; min-width: 330px; }
+    .mouse-menu .mitem { align-items: flex-start; }
+    .mouse-menu .mitem .mark { margin-top: 2px; }
+    .mouse-menu .mtext { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .mouse-menu .mtext b { font-weight: 600; color: #e8eefc; }
+    .mouse-menu .mhint {
+      color: #8b96b4; font-size: 11px; line-height: 1.35;
+      white-space: normal;                /* the hints are sentences, so let them wrap */
+    }
   `, ALERT_CSS, TIP_CSS];
 
   constructor() {
@@ -827,6 +853,7 @@ class WebtmuxToolbar extends LitElement {
       this.requestUpdate();
     });
     this._tip = new Tip(this);  // shared hover hint — see tooltip.js
+    this.mouseMenuOpen = false;  // mouse-capture dropdown open?
     this.saveOpen = false;   // save dropdown open?
     this.saveStatus = null;  // transient save result banner (see properties)
     this.saveInfo = null;    // server's "where would this land?" answer
@@ -943,6 +970,64 @@ class WebtmuxToolbar extends LitElement {
     const u = this.manager?.focusedUnit;
     if (u?.setMouseMode) u.setMouseMode(next);
     else stateStore.patchSection('renderer', { mouseMode: next });
+  }
+
+  // Set a mode outright (the dropdown rows), rather than stepping to it. Same apply
+  // path as the cyclers above — the focused unit owns the setting and persists it into
+  // the shared 'renderer' pref — so a click in the menu and a cycle land identically.
+  // Kept separate from the cyclers because the menu shows all four states at once:
+  // "step until the label says what I want" is exactly the interaction it removes.
+  setScrollMode(mode) {
+    if (!SCROLL_ORDER.includes(mode)) return;
+    this.scrollMode = mode;
+    const u = this.manager?.focusedUnit;
+    if (u?.setScrollMode) u.setScrollMode(mode);
+    else stateStore.patchSection('renderer', { scrollMode: mode });
+  }
+
+  setMouseMode(mode) {
+    if (!MOUSE_ORDER.includes(mode)) return;
+    this.mouseMode = mode;
+    const u = this.manager?.focusedUnit;
+    if (u?.setMouseMode) u.setMouseMode(mode);
+    else stateStore.patchSection('renderer', { mouseMode: mode });
+  }
+
+  // ---- mouse-capture dropdown ---------------------------------------------------
+  // ONE button for both gesture modes. They used to be two toolbar buttons labelled
+  // "🖱 auto+" and "sel auto+", which is the shape of the problem: two adjacent
+  // controls answering the same question about different gestures, each with room for
+  // seven characters and no room to say WHICH gesture it governs. The tooltip carried
+  // all of that, so the only way to find out what either button did was to hover it.
+  //
+  // In a dropdown each group can be titled with the gesture it is about — "click+drag:"
+  // and "copymode on scroll:" — and every mode can show its own one-line hint next to
+  // its name, so the whole four-by-two space is legible at once instead of one cell at
+  // a time. The cost is a click to change a mode; the cyclers stay for the keyboard and
+  // for anything that still wants to step.
+  _mouseMenu() {
+    const cur = { mouse: normalizeMouse(this.mouseMode), scroll: normalizeScroll(this.scrollMode) };
+    const group = (kind, title, order, metaMap, apply) => html`
+      <div class="mtitle">${title}</div>
+      ${order.map((m) => html`
+        <button
+          class="mitem"
+          data-kind=${kind}
+          data-mode=${m}
+          @click=${() => apply(m)}
+        >
+          <span class="mark">${cur[kind] === m ? '✓' : ''}</span>
+          <span class="mtext"><b>${metaMap[m].name}</b><span class="mhint">${metaMap[m].hint}</span></span>
+        </button>
+      `)}
+    `;
+    return html`
+      <div class="label-backdrop" @click=${() => { this.mouseMenuOpen = false; }}></div>
+      <div class="label-menu mouse-menu" @click=${(e) => e.stopPropagation()}>
+        ${group('mouse', 'click+drag:', MOUSE_ORDER, MOUSE_META, (m) => this.setMouseMode(m))}
+        ${group('scroll', 'copymode on scroll:', SCROLL_ORDER, SCROLL_META, (m) => this.setScrollMode(m))}
+      </div>
+    `;
   }
 
   // Toggle the save-buffer dropdown. On open, clear any stale result banner and
@@ -1365,20 +1450,17 @@ class WebtmuxToolbar extends LitElement {
           </div>
         ` : ''}
       </div>
-      <button
-        class="tbtn text"
-        aria-label="Scroll-wheel mode"
-        @mouseenter=${(e) => this._tipEnter(e, scrollTooltip(normalizeScroll(this.scrollMode)))}
-        @mouseleave=${() => this._tipLeave()}
-        @click=${() => { this._tipLeave(); this.cycleScroll(); }}
-      >${(SCROLL_META[normalizeScroll(this.scrollMode)] || SCROLL_META['adaptive-probe']).label}</button>
-      <button
-        class="tbtn text"
-        aria-label="Mouse click and drag mode"
-        @mouseenter=${(e) => this._tipEnter(e, mouseTooltip(normalizeMouse(this.mouseMode)))}
-        @mouseleave=${() => this._tipLeave()}
-        @click=${() => { this._tipLeave(); this.cycleMouse(); }}
-      >${(MOUSE_META[normalizeMouse(this.mouseMode)] || MOUSE_META['adaptive-probe']).label}</button>
+      <div class="mouse-wrap">
+        <button
+          class="tbtn text ${this.mouseMenuOpen ? 'on' : ''}"
+          aria-label="Mouse capture — click+drag and scroll-wheel modes"
+          @mouseenter=${(e) => this._tipEnter(e, mouseCaptureTooltip(
+            normalizeMouse(this.mouseMode), normalizeScroll(this.scrollMode)))}
+          @mouseleave=${() => this._tipLeave()}
+          @click=${() => { this._tipLeave(); this.mouseMenuOpen = !this.mouseMenuOpen; }}
+        >🖱 ${modeName(MOUSE_META, normalizeMouse(this.mouseMode))}/${modeName(SCROLL_META, normalizeScroll(this.scrollMode))} ▾</button>
+        ${this.mouseMenuOpen ? this._mouseMenu() : ''}
+      </div>
       ${this.panes.length > 1 ? html`
         <div
           class="dots"

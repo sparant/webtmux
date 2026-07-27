@@ -1,5 +1,5 @@
-// Verification driver for the mouse click/drag mode toggle ("sel app / buf / auto
-// / auto+"). The claim under test cannot be checked from source or from node: it is
+// Verification driver for the mouse click/drag mode (app / buf / auto / auto+ under
+// "click+drag:" in the toolbar's mouse-capture dropdown). The claim under test cannot be checked from source or from node: it is
 // that a click-and-drag SELECTS TEXT over a program that has grabbed the mouse,
 // which depends on how xterm 5.5 actually routes a re-dispatched press.
 //
@@ -103,18 +103,42 @@ async function clickOn(row, frac) {
   await sleep(400);   // longer than HOLD_MS, so a swallowed press has resolved
 }
 
-// Cycle the "sel" button until it reads `want`. Second .tbtn.text in the toolbar.
+// Pick `want` out of the mouse-capture dropdown. The two mode buttons became one
+// button with a menu, so this opens it, clicks the row for the mode by its data-mode
+// attribute, and closes it again by clicking the backdrop.
 // Also leaves copy mode: selecting now enters it, so without this each section
 // would inherit the previous one's mode and test something other than it means to.
 async function setMouseMode(want) {
-  for (let i = 0; i < 5; i++) {
-    if (await mouseMode() === want) { await normalMode(); return true; }
-    await toolbar((el, rr) => { rr.querySelectorAll('.tbtn.text')[1].click(); });
+  if (await mouseMode() !== want) {
+    await openMouseMenu();
+    await toolbar((el, rr, w) => {
+      const row = rr.querySelector(`.mouse-menu .mitem[data-kind="mouse"][data-mode="${w}"]`);
+      if (row) row.click();
+    }, want);
     await sleep(200);
+    await closeMouseMenu();
   }
   await normalMode();
   return await mouseMode() === want;
 }
+
+// The dropdown's trigger is the only .tbtn.text left in the toolbar.
+async function openMouseMenu() {
+  const open = await toolbar((el, rr) => !!rr.querySelector('.mouse-menu'));
+  if (!open) await toolbar((el, rr) => { rr.querySelector('.tbtn.text').click(); });
+  await sleep(150);
+  return await toolbar((el, rr) => !!rr.querySelector('.mouse-menu'));
+}
+
+// Via the backdrop, which is the affordance a user has — it is scoped to .mouse-wrap
+// so it can never pick up the recents menu's identically-classed backdrop.
+async function closeMouseMenu() {
+  await toolbar((el, rr) => { rr.querySelector('.mouse-wrap .label-backdrop')?.click(); });
+  await sleep(150);
+}
+
+// The closed trigger's own text — it shows both current modes, click+drag first.
+const triggerText = () => toolbar((el, rr) => rr.querySelector('.tbtn.text').textContent);
 
 // Back to a pane in normal mode with nothing highlighted.
 async function normalMode() {
@@ -135,9 +159,21 @@ async function main() {
   await page.goto(URL, { waitUntil: 'domcontentloaded' });
   await sleep(4000);
 
-  check('the toolbar has a second mode button', await toolbar((el, rr) => rr.querySelectorAll('.tbtn.text').length) === 2);
+  check('the two mode buttons are now ONE mouse-capture button',
+    await toolbar((el, rr) => rr.querySelectorAll('.tbtn.text').length) === 1);
   check('it defaults to auto+', await mouseMode() === 'adaptive-probe', `got ${await mouseMode()}`);
-  check('its label says so', (await toolbar((el, rr) => rr.querySelectorAll('.tbtn.text')[1].textContent)).includes('auto+'));
+  check('its label says so', (await triggerText()).includes('auto+'));
+  check('its dropdown lists both gestures, four modes each', await (async () => {
+    await openMouseMenu();
+    const n = await toolbar((el, rr) => ({
+      mouse: rr.querySelectorAll('.mouse-menu .mitem[data-kind="mouse"]').length,
+      scroll: rr.querySelectorAll('.mouse-menu .mitem[data-kind="scroll"]').length,
+      titles: [...rr.querySelectorAll('.mouse-menu .mtitle')].map((t) => t.textContent),
+    }));
+    await closeMouseMenu();
+    return n.mouse === 4 && n.scroll === 4
+      && n.titles.includes('click+drag:') && n.titles.includes('copymode on scroll:');
+  })());
 
   // Quiet pane to work in, with a wide line of known text to drag across.
   await typeLine('clear; printf "SELECTME-%s\\n" AAAA BBBB CCCC DDDD EEEE FFFF');
@@ -261,8 +297,7 @@ async function main() {
   await sleep(4000);
   check('the mode survives a reload (it rides the shared renderer pref)',
     await mouseMode() === 'adaptive-mode', `after reload: ${await mouseMode()}`);
-  check('and the toolbar label came back with it',
-    (await toolbar((el, rr) => rr.querySelectorAll('.tbtn.text')[1].textContent)).includes('auto'));
+  check('and the toolbar label came back with it', (await triggerText()).includes('auto'));
 
   // ---- 9. the hold path — a press held still is handed over, not swallowed ---
   // This is the path the "Illegal invocation" timer bug silently disabled.

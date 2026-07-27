@@ -157,20 +157,20 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
 
 ### Phase 5 — One "mouse" dropdown replaces the two mode buttons (P1, item 4)
 
-- [ ] **P1** 5.1 Toolbar: replace the two `.tbtn.text` buttons with a single
+- [x] **P1** 5.1 Toolbar: replace the two `.tbtn.text` buttons with a single
       `🖱 mouse ▾` button + a `.label-menu`-style dropdown (backdrop + outside-click close,
       matching the Recent ▾ / save menus).
-- [ ] **P1** 5.2 Two titled groups inside — **"click+drag:"** and **"copymode on scroll:"** —
+- [x] **P1** 5.2 Two titled groups inside — **"click+drag:"** and **"copymode on scroll:"** —
       each listing all four modes as rows with a ✓ on the current one and its one-line hint
       (the text the tooltip used to have to carry alone). Reuse `SCROLL_META` / `MOUSE_META`
       so there is still one source for the names and hints.
-- [ ] **P1** 5.3 Keep the current pair visible on the closed button (e.g. `🖱 auto+/auto+`)
+- [x] **P1** 5.3 Keep the current pair visible on the closed button (e.g. `🖱 auto+/auto+`)
       so the toolbar still answers "what mode am I in" without a click, and keep the hover
       tooltip (both `modeTooltip`s, one hint).
-- [ ] **P1** 5.4 Update `README.md:51` and `README.md:129`, and
+- [x] **P1** 5.4 Update `README.md:51` and `README.md:129`, and
       `screenshots/harness/verify-mousemode.js` (it drives the old button) so the
       documentation and the driver match the new control.
-- [ ] **P1** 5.5 `make check-js`; commit.
+- [x] **P1** 5.5 `make check-js`; commit.
 
 ### Phase 6 — Sidebar mode row: two toggles on one line (P1, item 5)
 
@@ -220,7 +220,7 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
 | Phase 2 linked-window ack | ✅ |
 | Phase 3 Exposé filter | ✅ |
 | Phase 4 paste-trim | ✅ |
-| Phase 5 mouse dropdown | ⬜ |
+| Phase 5 mouse dropdown | ✅ |
 | Phase 6 sidebar row | ⬜ |
 | Phase 7 verify | ⬜ |
 | Phase 8 land | ⬜ |
