@@ -74,7 +74,11 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
 
 ---
 
-## Phase D1 — High value, low risk
+## Phase D1 — High value, low risk ✅ COMPLETE
+
+*Outcome: three unmaintained dependencies gone and the two maintained ones current.
+go.mod went from 7 direct + 6 indirect to **4 direct + 3 indirect**. `--help` is
+byte-identical apart from the one intentionally removed `--config` row.*
 
 - [x] **P0** D1.1 Create the worktree. *(5 min)*
 
@@ -152,9 +156,20 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
       pty, it left. creack/pty v1.1.24 dropped the dependency, so the bump removed an
       indirect module rather than updating one. `--help` unchanged.*
 
-- [ ] **P0** D1.6 Verify: `make test`, `go vet ./...`, `make build`, then boot and exercise
+- [x] **P0** D1.6 Verify: `make test`, `go vet ./...`, `make build`, then boot and exercise
       a real session — a websocket connection and a pty are the two things D1.5 could break.
       Confirm the binary still links statically. *(30 min)*
+
+      *Done, all green. `make test` + `go vet` + `make build` pass; `file ./webtmux` reports
+      **statically linked**. A real webtmux was then booted on a real tmux session inside
+      the container and driven by a purpose-written client
+      (`/workspace/tmp/webtmux-verify/`): basic auth 401s an anonymous request; a websocket
+      connection completes the webtty handshake and **a shell command typed through it is
+      echoed back out of the pty** — gorilla v1.5.3 and creack/pty v1.1.24 exercised
+      together, live. The new gzip middleware served `split-manager.js` at
+      **93,366 → 30,874 bytes (67% saved)**, byte-identical to the plain response after
+      decompression, with a JavaScript `Content-Type` (not `x-gzip`), and correctly left
+      the 875-byte `webtmux.js` uncompressed.*
 
 ---
 
