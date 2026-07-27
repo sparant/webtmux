@@ -2,15 +2,17 @@ package utils
 
 import (
 	"fmt"
-	"github.com/fatih/structs"
 	"reflect"
 	"strconv"
 )
 
 func ApplyDefaultValues(struct_ interface{}) (err error) {
-	o := structs.New(struct_)
+	fields, err := structFields(struct_)
+	if err != nil {
+		return err
+	}
 
-	for _, field := range o.Fields() {
+	for _, field := range fields {
 		defaultValue := field.Tag("default")
 		if defaultValue == "" {
 			continue

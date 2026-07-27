@@ -125,7 +125,7 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
       `Accept-Ranges` must be dropped, and 204/304/**206** must not be compressed. Covered
       by `server/gzip_test.go` — 8 tests, the first Go tests this package has ever had.*
 
-- [ ] **P1** D1.4 **Drop `fatih/structs`** (no release since 2018). Five call sites across
+- [x] **P1** D1.4 **Drop `fatih/structs`** (no release since 2018). Five call sites across
       `utils/flags.go` (4) and `utils/default.go` (1), all reflecting over the Options
       structs to read `flagName`/`default`/`hcl` tags. `utils/flags.go` **already imports
       `reflect`**, so this is rewriting five call sites against a package the file already
@@ -133,6 +133,15 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
 
       Covered by existing tests plus a strong end-to-end check: every flag must still appear
       in `--help` with the same name, shorthand, and default. Diff `--help` before and after.
+
+      *Done. **`--help` is byte-identical** across the change. The `structs` surface used
+      (`Name`/`Tag`/`Kind`/`Value`/`Set`/field lookup) is reimplemented in
+      `utils/structfields.go`, keeping the same method shape so the call sites did not
+      change library and shape at once. **Deviation:** `ApplyFlags` now returns an `error`
+      — reflect cannot write through a non-pointer, so the mistake `structs` used to
+      swallow per-field is now reported once, up front; `main.go` exits on it.
+      `utils/flags_test.go` adds 7 tests (the package had none) pinning tag→flag name,
+      shorthand, `GOTTY_*` env var, default, and cross-struct routing.*
 
 - [ ] **P1** D1.5 **Bump `gorilla/websocket` → v1.5.3 and `creack/pty` → v1.1.24.** Both
       are 2020-era pins on actively maintained projects; `x/sys` moves with pty. No API

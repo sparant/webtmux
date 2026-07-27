@@ -50,7 +50,9 @@ func main() {
 			exit(fmt.Errorf(msg), 1)
 		}
 
-		utils.ApplyFlags(cliFlags, flagMappings, c, appOptions, backendOptions)
+		if err := utils.ApplyFlags(cliFlags, flagMappings, c, appOptions, backendOptions); err != nil {
+			exit(err, 3)
+		}
 
 		if appOptions.Quiet {
 			log.SetFlags(0)

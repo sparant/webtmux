@@ -4,7 +4,6 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/fatih/structs"
 	"github.com/urfave/cli/v2"
 )
 
@@ -12,8 +11,11 @@ func GenerateFlags(options ...interface{}) (flags []cli.Flag, mappings map[strin
 	mappings = make(map[string]string)
 
 	for _, struct_ := range options {
-		o := structs.New(struct_)
-		for _, field := range o.Fields() {
+		fields, err := structFields(struct_)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, field := range fields {
 			flagName := field.Tag("flagName")
 			if flagName == "" {
 				continue
@@ -66,25 +68,18 @@ func ApplyFlags(
 	mappingHint map[string]string,
 	c *cli.Context,
 	options ...interface{},
-) {
-	objects := make([]*structs.Struct, len(options))
-	for i, struct_ := range options {
-		objects[i] = structs.New(struct_)
+) error {
+	fields, err := fieldsByName(options...)
+	if err != nil {
+		return err
 	}
 
 	for flagName, fieldName := range mappingHint {
 		if !c.IsSet(flagName) {
 			continue
 		}
-		var field *structs.Field
-		var ok bool
-		for _, o := range objects {
-			field, ok = o.FieldOk(fieldName)
-			if ok {
-				break
-			}
-		}
-		if field == nil {
+		field, ok := fields[fieldName]
+		if !ok {
 			continue
 		}
 		var val interface{}
@@ -95,7 +90,13 @@ func ApplyFlags(
 			val = c.Bool(flagName)
 		case reflect.Int:
 			val = c.Int(flagName)
+		default:
+			// GenerateFlags records the mapping before it knows the kind, so a
+			// tagged field of some other type reaches here with no flag behind
+			// it. Setting from a nil value would panic.
+			continue
 		}
 		field.Set(val)
 	}
+	return nil
 }
