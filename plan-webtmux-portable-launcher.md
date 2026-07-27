@@ -1059,6 +1059,17 @@ every restart (now torn down on exit, and reclaimed at startup when a previous
 run died abnormally); and `--fresh` is required in the ETXTBSY test, or the
 launcher correctly adopts instead of deploying and the test passes vacuously.
 
-Suite result: **52 passed, 0 failed, 4 skipped** (3.15e deferred; 3.16b opt-in
-via `WTL_LONG=1`; one offline check falls back to a proxy-blocking variant
-because the container has no `unshare`).
+Two more found while finishing: `--auth` never printed its password (nobody
+could get in, since browsers no longer accept `user:pass@host` URLs), and the
+password it used *was* the secret URL path — so anyone who learned the URL
+already had it and basic auth added nothing on the shared box it exists for.
+
+Suite result: **56 passed, 0 failed, 4 skipped** (3.15e deferred behind
+`WTL_RELEASE_REPO`; 3.16b opt-in via `WTL_LONG=1`; one offline check falls back
+to a proxy-blocking variant because the container has no `unshare`).
+
+**3.16b ran separately and passed:** a connection left idle for 1800s did not
+drop once — `ServerAliveInterval` doing its preventive job. Caveat worth
+recording: the rig's docker network has no NAT idle timeout, so this proves the
+launcher does not drop a connection on its own; the NAT class of drop can only
+be exercised on a real link (3.21).
