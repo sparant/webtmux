@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -46,6 +47,7 @@ type options struct {
 	auth       bool
 	forceCopy  bool
 	arch       string
+	tmuxPath   string
 	verbose    bool
 	showVer    bool
 	fresh      bool
@@ -78,6 +80,7 @@ func parseArgs(argv []string) (*options, error) {
 	fs.BoolVar(&o.auth, "auth", false, "keep webtmux's basic auth on (for shared multi-user boxes)")
 	fs.BoolVar(&o.forceCopy, "force-copy", false, "push the binary even if the target already has this build")
 	fs.StringVar(&o.arch, "arch", "", "override the probed architecture (uname -m form, e.g. aarch64)")
+	fs.StringVar(&o.tmuxPath, "tmux-path", "", "absolute path to tmux on the target (skips the probe's search)")
 	fs.BoolVar(&o.verbose, "verbose", false, "echo ssh command lines and say which binary source won")
 	fs.BoolVar(&o.showVer, "version", false, "print the launcher version and exit")
 	fs.BoolVar(&o.fresh, "fresh", false, "ignore a running webtmux and start our own")
@@ -160,7 +163,7 @@ func run(ctx context.Context, o *options) error {
 		ssh.Shutdown(ctx)
 	}
 
-	p, err := runProbe(ctx, ssh, o.arch)
+	p, err := runProbe(ctx, ssh, o.arch, o.tmuxPath)
 	if err != nil {
 		return err
 	}
@@ -250,7 +253,7 @@ func launch(ctx context.Context, o *options, ssh *sshRunner, p *probe, cfg *targ
 		out:       os.Stdout,
 		noBrowser: o.noBrowser,
 		remoteCmd: func() string {
-			return remoteCommand(dep, cfg, session, o)
+			return remoteCommand(dep, cfg, session, p.TmuxPath, o)
 		},
 		onPortCollision: func() int {
 			p, err := randomHighPort()
@@ -290,8 +293,16 @@ func launch(ctx context.Context, o *options, ssh *sshRunner, p *probe, cfg *targ
 // itself (server/handlers.go), creating the header map when absent, so the
 // split-view channel works without it; the flag gates only client-supplied
 // request headers.
-func remoteCommand(dep *deployment, cfg *targetConfig, session string, o *options) string {
+func remoteCommand(dep *deployment, cfg *targetConfig, session string, tmuxPath string, o *options) string {
 	var b strings.Builder
+	// Put tmux's directory on PATH rather than threading its absolute path
+	// through. The attach script calls bare `tmux`, and so does webtmux's own
+	// layout controller (pkg/tmux: exec.Command("tmux", …)) — and the remote
+	// command runs in a non-interactive shell whose PATH never saw the user's rc
+	// files. One PATH prefix fixes both without either of them knowing.
+	if dir := path.Dir(tmuxPath); tmuxPath != "" && dir != "." && dir != "/" {
+		fmt.Fprintf(&b, "PATH=%s:$PATH ", shellQuote(dir))
+	}
 	fmt.Fprintf(&b, "WEBTMUX_SESSION=%s ", shellQuote(session))
 	if o.auth {
 		// When a credential is passed it goes through the environment, never

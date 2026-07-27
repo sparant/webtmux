@@ -69,8 +69,12 @@ done
 echo "== cross-compiling webtmux into builds/ and building the launcher"
 # cross-compile depends on clean, which wipes builds/ — so the launcher must be
 # built after it, not before.
+# safe.directory: the checkout is owned by a different uid than the build
+# container's root, and `go build` stamps VCS info by default — without this it
+# fails with "error obtaining VCS status" after a successful compile.
 docker run --rm -v "$REPO":/src -v wtl-gomod:/go/pkg/mod -w /src wtl-client:test \
-  sh -c 'make cross-compile && make launcher-dev' >/dev/null
+  sh -c 'git config --global --add safe.directory /src
+         make cross-compile && make launcher-dev' >/dev/null
 
 RUNARGS=(--rm --name "$CLIENT_C" --network "$NET"
          -v "$REPO":/src -v "$WORK":/keys -v wtl-gomod:/go/pkg/mod

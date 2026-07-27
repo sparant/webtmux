@@ -161,3 +161,20 @@ func TestProbeMatchesContentAddressedProcessNames(t *testing.T) {
 		t.Error("the pgrep-less fallback must use the same prefix rule")
 	}
 }
+
+// "no tmux on the target" is the worst possible thing to say to someone who is
+// sitting in tmux on that target — which is what a bare non-interactive PATH
+// causes. The probe must look harder before concluding it.
+func TestProbeFindsTmuxOffTheBarePath(t *testing.T) {
+	for _, want := range []string{"/usr/local/bin/tmux", "/opt/homebrew/bin/tmux", "$HOME/bin/tmux", "-lc 'command -v tmux'"} {
+		if !strings.Contains(probeScript, want) {
+			t.Errorf("probe does not look for tmux at %s", want)
+		}
+	}
+	// The session list has to use the discovered tmux too, or a tmux off the
+	// bare PATH silently makes every box look like it has no sessions — and the
+	// launcher would report "creating session" over an existing one.
+	if !strings.Contains(probeScript, `"$wtl_tmux" list-sessions`) {
+		t.Error("the session list still calls bare tmux")
+	}
+}

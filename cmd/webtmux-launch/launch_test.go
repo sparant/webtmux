@@ -11,7 +11,7 @@ func TestRemoteCommandShape(t *testing.T) {
 	p := &probe{Home: "/home/dev", Platform: "linux-amd64", TmuxPath: "/usr/bin/tmux"}
 	dep := planDeploy(p, strings.Repeat("a", 64))
 	cfg := &targetConfig{LocalPort: 1234, RemotePort: 9999, Secret: "s3cr3t"}
-	cmd := remoteCommand(dep, cfg, "main", &options{})
+	cmd := remoteCommand(dep, cfg, "main", "/usr/local/bin/tmux", &options{})
 
 	// WEBTMUX_SESSION is not optional: detectTmuxSession() parses -s/-t out of
 	// argv only when the command IS tmux, and a wrapper script hides them, so
@@ -41,6 +41,12 @@ func TestRemoteCommandShape(t *testing.T) {
 			t.Errorf("command lacks %q: %s", want, cmd)
 		}
 	}
+	// tmux's directory goes on PATH: the attach script calls bare `tmux`, and so
+	// does webtmux's own layout controller — and the remote command runs in a
+	// non-interactive shell whose PATH never saw the user's rc files.
+	if !strings.Contains(cmd, "PATH='/usr/local/bin':$PATH") {
+		t.Errorf("tmux's directory is not on PATH: %s", cmd)
+	}
 	// WEBTMUX_SOCKET must stay unset — empty means tmux's default socket, which
 	// is what a native install wants.
 	if strings.Contains(cmd, "WEBTMUX_SOCKET") {
@@ -54,7 +60,7 @@ func TestAuthModeUsesEnvNotArgv(t *testing.T) {
 	p := &probe{Home: "/home/dev"}
 	dep := planDeploy(p, strings.Repeat("b", 64))
 	cfg := &targetConfig{LocalPort: 1, RemotePort: 2, Secret: "urlsecret", Password: "pw"}
-	cmd := remoteCommand(dep, cfg, "main", &options{auth: true})
+	cmd := remoteCommand(dep, cfg, "main", "/usr/bin/tmux", &options{auth: true})
 	if strings.Contains(cmd, "-c ") || strings.Contains(cmd, "--credential") {
 		t.Errorf("credential must not appear in argv: %s", cmd)
 	}
@@ -75,7 +81,7 @@ func TestAuthModeUsesEnvNotArgv(t *testing.T) {
 func TestTrailingArgsReachTheAttachScript(t *testing.T) {
 	dep := planDeploy(&probe{Home: "/h"}, strings.Repeat("c", 64))
 	cfg := &targetConfig{Secret: "x"}
-	cmd := remoteCommand(dep, cfg, "main", &options{tmuxArgs: []string{"htop", "-d", "5"}})
+	cmd := remoteCommand(dep, cfg, "main", "/usr/bin/tmux", &options{tmuxArgs: []string{"htop", "-d", "5"}})
 	if !strings.Contains(cmd, "'htop' '-d' '5' &") {
 		t.Errorf("trailing args lost: %s", cmd)
 	}

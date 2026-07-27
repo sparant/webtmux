@@ -17,6 +17,12 @@ BUILDS="$REPO/builds"
 LAUNCH="$BUILDS/webtmux-launch"
 export GOFLAGS="${GOFLAGS:-}"
 
+# The checkout is owned by a different uid than this container's root, and
+# `go build` stamps VCS info by default — without this exception the rebuild and
+# `make launcher` steps below fail with "error obtaining VCS status" AFTER a
+# successful compile, which reads as a launcher bug rather than a git one.
+git config --global --add safe.directory "$REPO" 2>/dev/null || true
+
 pass=0; fail=0; skipped=0
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
 no()   { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail+1)); }

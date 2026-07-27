@@ -41,11 +41,33 @@ p OS "$(uname -s)"
 p ARCH "$(uname -m)"
 p HOME "$HOME"
 p USER "$(id -un 2>/dev/null)"
-p TMUX "$(command -v tmux 2>/dev/null || true)"
-p TMUXVER "$(tmux -V 2>/dev/null || true)"
+wtl_tmux="$(command -v tmux 2>/dev/null || true)"
+if [ -z "$wtl_tmux" ]; then
+  # A non-interactive ssh session reads NO shell rc files, so its PATH is the
+  # bare system default — a tmux in /usr/local/bin, a Homebrew/pkgsrc prefix, a
+  # snap, or ~/bin is invisible here even though the user's interactive login
+  # finds it. Look in the usual places before concluding tmux is absent, because
+  # "install tmux" is a maddening thing to be told about a box you are running
+  # tmux on right now.
+  for wtl_c in /usr/bin/tmux /bin/tmux /usr/local/bin/tmux /opt/homebrew/bin/tmux \
+               /opt/local/bin/tmux /usr/pkg/bin/tmux /snap/bin/tmux \
+               "$HOME/bin/tmux" "$HOME/.local/bin/tmux"; do
+    if [ -x "$wtl_c" ]; then wtl_tmux="$wtl_c"; break; fi
+  done
+fi
+if [ -z "$wtl_tmux" ]; then
+  # Last resort: ask a LOGIN shell, which does read the rc files that set PATH.
+  # Its output can carry rc-file chatter, so take the last line that looks like
+  # an absolute path.
+  wtl_tmux="$(${SHELL:-/bin/sh} -lc 'command -v tmux' 2>/dev/null | grep '^/' | tail -1)"
+fi
+p TMUX "$wtl_tmux"
+if [ -n "$wtl_tmux" ]; then p TMUXVER "$("$wtl_tmux" -V 2>/dev/null || true)"; fi
 p DISTRO "$(. /etc/os-release 2>/dev/null; echo "${ID:-}")"
 for f in $(ls -t "$HOME/.cache/webtmux" 2>/dev/null); do p CACHE "$f"; done
-tmux list-sessions -F '#{session_name}' 2>/dev/null | while read -r s; do p SESSION "$s"; done
+if [ -n "$wtl_tmux" ]; then
+  "$wtl_tmux" list-sessions -F '#{session_name}' 2>/dev/null | while read -r s; do p SESSION "$s"; done
+fi
 p LINGER "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || true)"
 p KILLUSER "$(grep -hs '^[[:space:]]*KillUserProcesses' /etc/systemd/logind.conf /etc/systemd/logind.conf.d/*.conf 2>/dev/null | tail -1)"
 p SELFPIDNS "$(readlink /proc/self/ns/pid 2>/dev/null || true)"
@@ -74,7 +96,7 @@ done
 `
 
 // runProbe executes the probe and parses it.
-func runProbe(ctx context.Context, r *sshRunner, archOverride string) (*probe, error) {
+func runProbe(ctx context.Context, r *sshRunner, archOverride, tmuxOverride string) (*probe, error) {
 	out, errOut, err := r.Run(ctx, probeScript)
 	if err != nil {
 		return nil, fmt.Errorf("probe failed: %v\n%s", err, strings.TrimSpace(errOut))
@@ -82,6 +104,9 @@ func runProbe(ctx context.Context, r *sshRunner, archOverride string) (*probe, e
 	p := parseProbe(out)
 	if archOverride != "" {
 		p.Arch = archOverride
+	}
+	if tmuxOverride != "" {
+		p.TmuxPath = tmuxOverride
 	}
 	if p.OS == "" || p.Arch == "" {
 		return nil, fmt.Errorf("probe returned no platform information\n%s", strings.TrimSpace(out))
@@ -92,7 +117,14 @@ func runProbe(ctx context.Context, r *sshRunner, archOverride string) (*probe, e
 	}
 	p.Platform = plat
 	if p.TmuxPath == "" {
-		return nil, fmt.Errorf("no tmux on the target\n(install it: %s)", tmuxInstallHint(p.DistroID))
+		// Say what was actually searched. A non-interactive ssh session has a
+		// bare PATH, so "no tmux" can mean "tmux is somewhere unusual" — and
+		// being told to install tmux on a box you are using tmux on right now is
+		// maddening.
+		return nil, fmt.Errorf("no tmux found on the target\n"+
+			"(searched $PATH for a non-interactive shell, the usual prefixes, and a login shell)\n"+
+			"if it is installed somewhere unusual: --tmux-path /path/to/tmux\n"+
+			"if it really is missing: %s", tmuxInstallHint(p.DistroID))
 	}
 	if p.Home == "" {
 		return nil, fmt.Errorf("probe could not determine $HOME on the target")
