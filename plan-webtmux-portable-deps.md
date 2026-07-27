@@ -173,7 +173,11 @@ byte-identical apart from the one intentionally removed `--config` row.*
 
 ---
 
-## Phase D2 — Larger, optional
+## Phase D2 — Larger, optional ✅ COMPLETE
+
+*Outcome: **16 modules → 3, with no indirect dependencies at all.** Every remaining
+dependency — `urfave/cli/v3`, `gorilla/websocket`, `creack/pty` — is maintained, current,
+and load-bearing.*
 
 - [x] **P2** D2.1 **Drop `pkg/errors`** (archived 2021) in favour of stdlib. 58 call sites:
       26 `Wrapf`, 21 `Wrap`, 9 `New`, 2 `Errorf`, across 8 files. Mechanical but wide.
@@ -196,7 +200,7 @@ byte-identical apart from the one intentionally removed `--config` row.*
       cannot fire. The sentinel comparisons at `server/handlers.go:105` still work — those
       errors are returned unwrapped.*
 
-- [ ] **P2** D2.2 **Migrate `urfave/cli/v2` → `v3`** to shed `go-md2man`, `blackfriday`,
+- [x] **P2** D2.2 **Migrate `urfave/cli/v2` → `v3`** to shed `go-md2man`, `blackfriday`,
       and `sanitized_anchor_name`. Breaking API change across `main.go` and
       `utils/flags.go`. Only worth doing after D1 and D2.1, when it is the last thing
       standing between the project and a four-module tree. *(2-3 hrs)*
@@ -204,6 +208,29 @@ byte-identical apart from the one intentionally removed `--config` row.*
       The alternative — dropping `urfave/cli` for stdlib `flag` — is **not** recommended:
       the reflection-driven flag generation and the `GOTTY_*` env-var mapping would both
       have to be hand-rolled.
+
+      *Done — **the tree is now 3 modules with zero indirect dependencies**, one better
+      than the plan's target of 4. API changes: `cli.App` → `cli.Command`,
+      `func(*cli.Context) error` → `func(context.Context, *cli.Command) error`,
+      `EnvVars: []string{…}` → `Sources: cli.EnvVars(…)`, `app.Run(os.Args)` →
+      `cmd.Run(ctx, os.Args)`.*
+
+      *🔴 **The migration's real hazard was not in the API at all.** v2 stopped parsing
+      flags at the first positional argument; **v3 by default parses them anywhere**. That
+      breaks the primary invocation of this program —
+      `webtmux -w tmux new-session -A -s main` — because tmux's `-A` is then read as a
+      webtmux flag: `flag provided but not defined: -A`. It compiles, it passes every unit
+      test, and it fails on the first real launch. Caught by booting the binary, not by the
+      test suite. **`StopOnNthArg: 1` restores v2's rule exactly.**
+      `main_test.go` now pins it (4 tests, verified to fail with the real error when the
+      line is removed); `newRootCommand` was extracted from `main` so they can.*
+
+      *Two intentional user-visible changes: `--help` shows type placeholders
+      (`--port string` rather than `--port value`) and the usage line now reads
+      `webtmux [global options] <command> [<arguments...>]` — v3 prints `ArgsUsage`
+      verbatim where v2 synthesised it. Every flag, alias, default and `GOTTY_*` variable
+      is unchanged. An unknown flag now exits **1** instead of **0**: v2's return value was
+      discarded, so "Incorrect Usage" printed and the process reported success.*
 
 ---
 

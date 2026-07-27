@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 )
 
 func GenerateFlags(options ...interface{}) (flags []cli.Flag, mappings map[string]string, err error) {
@@ -37,14 +37,14 @@ func GenerateFlags(options ...interface{}) (flags []cli.Flag, mappings map[strin
 					Name:    flagName,
 					Value:   field.Value().(string),
 					Usage:   flagDescription,
-					EnvVars: []string{envName},
+					Sources: cli.EnvVars(envName),
 					Aliases: aliases,
 				})
 			case reflect.Bool:
 				flags = append(flags, &cli.BoolFlag{
 					Name:        flagName,
 					Usage:       flagDescription,
-					EnvVars:     []string{envName},
+					Sources:     cli.EnvVars(envName),
 					Aliases:     aliases,
 					DefaultText: field.Tag("default"),
 				})
@@ -53,7 +53,7 @@ func GenerateFlags(options ...interface{}) (flags []cli.Flag, mappings map[strin
 					Name:    flagName,
 					Value:   field.Value().(int),
 					Usage:   flagDescription,
-					EnvVars: []string{envName},
+					Sources: cli.EnvVars(envName),
 					Aliases: aliases,
 				})
 			}
@@ -66,7 +66,7 @@ func GenerateFlags(options ...interface{}) (flags []cli.Flag, mappings map[strin
 func ApplyFlags(
 	flags []cli.Flag,
 	mappingHint map[string]string,
-	c *cli.Context,
+	cmd *cli.Command,
 	options ...interface{},
 ) error {
 	fields, err := fieldsByName(options...)
@@ -75,7 +75,7 @@ func ApplyFlags(
 	}
 
 	for flagName, fieldName := range mappingHint {
-		if !c.IsSet(flagName) {
+		if !cmd.IsSet(flagName) {
 			continue
 		}
 		field, ok := fields[fieldName]
@@ -85,11 +85,11 @@ func ApplyFlags(
 		var val interface{}
 		switch field.Kind() {
 		case reflect.String:
-			val = c.String(flagName)
+			val = cmd.String(flagName)
 		case reflect.Bool:
-			val = c.Bool(flagName)
+			val = cmd.Bool(flagName)
 		case reflect.Int:
-			val = c.Int(flagName)
+			val = cmd.Int(flagName)
 		default:
 			// GenerateFlags records the mapping before it knows the kind, so a
 			// tagged field of some other type reaches here with no flag behind

@@ -1,9 +1,11 @@
 package utils
 
 import (
+	"context"
+	"strings"
 	"testing"
 
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 )
 
 // Flag generation is reflection over struct tags, so a mistake in it does not
@@ -102,14 +104,14 @@ func TestGenerateFlags(t *testing.T) {
 	if len(addr.Aliases) != 1 || addr.Aliases[0] != "a" {
 		t.Errorf("address aliases = %v, want [a] from flagSName", addr.Aliases)
 	}
-	if len(addr.EnvVars) != 1 || addr.EnvVars[0] != "GOTTY_ADDRESS" {
-		t.Errorf("address env vars = %v, want [GOTTY_ADDRESS]", addr.EnvVars)
+	if !sourcesInclude(addr.Sources, "GOTTY_ADDRESS") {
+		t.Errorf("address sources = %v, want the GOTTY_ADDRESS environment variable", addr.Sources)
 	}
 
 	// A hyphenated flag becomes an underscored, upper-cased env var.
 	sig := byName["close-signal"].(*cli.IntFlag)
-	if len(sig.EnvVars) != 1 || sig.EnvVars[0] != "GOTTY_CLOSE_SIGNAL" {
-		t.Errorf("close-signal env vars = %v, want [GOTTY_CLOSE_SIGNAL]", sig.EnvVars)
+	if !sourcesInclude(sig.Sources, "GOTTY_CLOSE_SIGNAL") {
+		t.Errorf("close-signal sources = %v, want the GOTTY_CLOSE_SIGNAL environment variable", sig.Sources)
 	}
 
 	// A flag with no flagSName gets no alias at all, rather than an empty one.
@@ -155,16 +157,17 @@ func TestApplyFlagsWritesOnlySetFlagsAcrossStructs(t *testing.T) {
 	}
 
 	var applyErr error
-	app := &cli.App{
+	cmd := &cli.Command{
+		Name:  "test",
 		Flags: flags,
-		Action: func(c *cli.Context) error {
-			applyErr = ApplyFlags(flags, mappings, c, primary, secondary)
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			applyErr = ApplyFlags(flags, mappings, cmd, primary, secondary)
 			return nil
 		},
 	}
 	// --address and --close-signal are set; --port and --verbose are not.
-	if err := app.Run([]string{"test", "--address", "127.0.0.1", "--close-signal", "9"}); err != nil {
-		t.Fatalf("app.Run: %v", err)
+	if err := cmd.Run(context.Background(), []string{"test", "--address", "127.0.0.1", "--close-signal", "9"}); err != nil {
+		t.Fatalf("cmd.Run: %v", err)
 	}
 	if applyErr != nil {
 		t.Fatalf("ApplyFlags: %v", applyErr)
@@ -185,13 +188,20 @@ func TestApplyFlagsWritesOnlySetFlagsAcrossStructs(t *testing.T) {
 }
 
 func TestApplyFlagsRejectsNonPointer(t *testing.T) {
-	app := &cli.App{Action: func(c *cli.Context) error {
-		if err := ApplyFlags(nil, map[string]string{}, c, primaryOptions{}); err == nil {
+	cmd := &cli.Command{Name: "test", Action: func(_ context.Context, cmd *cli.Command) error {
+		if err := ApplyFlags(nil, map[string]string{}, cmd, primaryOptions{}); err == nil {
 			t.Error("want an error for a non-pointer, got nil")
 		}
 		return nil
 	}}
-	if err := app.Run([]string{"test"}); err != nil {
+	if err := cmd.Run(context.Background(), []string{"test"}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// v3 replaced the flat EnvVars []string field with a chain of pluggable value
+// sources, so checking that a flag reads its GOTTY_* variable means looking for
+// that source by its string form rather than indexing a slice.
+func sourcesInclude(chain cli.ValueSourceChain, envName string) bool {
+	return strings.Contains(chain.String(), envName)
 }
