@@ -119,19 +119,21 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
 
 ### Phase 3 — Exposé status filter (P1, item 2)
 
-- [ ] **P1** 3.1 New pure helper (`resources/js/expose-filter.js` or extend `stoplight.js`):
+- [x] **P1** 3.1 *(landed in `stoplight.js`, not a new module — the filter names ARE the
+      stoplight's vocabulary and splitting them would let "idle" and "waiting for work to do"
+      drift apart)* Pure helper:
       `STATUS_FILTERS` (`all` / `working` / `idle` / `attention`) + `matchesStatus(working,
       filter)`, plus a `node --test` file. `attention` = amber `'2'`; `idle` = red `'0'`;
       `working` = green `'1'`. Decide and document where "not reporting" (`''`) lands — it is
       NOT idle (idle is a claim the window made), so it shows only under `all`.
-- [ ] **P1** 3.2 Render a third segmented control in the Exposé header (`.sort` pattern,
+- [x] **P1** 3.2 Render a third segmented control in the Exposé header (`.sort` pattern,
       label "Show"), persisted as `@wt_state.expose.statusFilter`, adopted on remote change
       like `sort`/`density`.
-- [ ] **P1** 3.3 Apply it in `_visibleEntries()` (before the type-ahead terms) using the
+- [x] **P1** 3.3 Apply it in `_visibleEntries()` (before the type-ahead terms) using the
       `_working` map the tiles already read, and make the header's "N of M" count and the
       empty-grid message tell the truth when the filter — not the query — is what's hiding
       things.
-- [ ] **P1** 3.4 Rebuild the grid on a filter change (membership changed → `_rebuild`, not
+- [x] **P1** 3.4 Rebuild the grid on a filter change (membership changed → `_rebuild`, not
       an in-place refresh). Run the JS suite; commit.
 
 ### Phase 4 — Paste-trim in the rename input (P1, item 3)
@@ -213,7 +215,7 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
 | Phase 0 setup | ✅ |
 | Phase 1 MRU order | ✅ |
 | Phase 2 linked-window ack | ✅ |
-| Phase 3 Exposé filter | ⬜ |
+| Phase 3 Exposé filter | ✅ |
 | Phase 4 paste-trim | ⬜ |
 | Phase 5 mouse dropdown | ⬜ |
 | Phase 6 sidebar row | ⬜ |
