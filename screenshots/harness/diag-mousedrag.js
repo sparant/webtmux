@@ -12,8 +12,8 @@ const URL = 'http://localhost:8090/';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const COMBOS = [];
-for (const mode of ['1000', '1002', '1003']) {
-  for (const repaint of ['inplace', 'scroll']) COMBOS.push({ mode, repaint });
+for (const mode of ['1003']) {
+  for (const repaint of ['inplace', 'scroll', 'fullscroll']) COMBOS.push({ mode, repaint });
 }
 
 let page;
@@ -105,8 +105,10 @@ async function runCombo({ mode, repaint }) {
   const copy = await unit((u) => u.inCopyMode);
   await unit(() => { clearInterval(window.__poll); window.__d?.dispose?.(); });
 
-  const ok = /CTME-CCCC/.test(sel || '');
-  console.log(`\n=== mouse ${mode} / repaint ${repaint}: ${ok ? 'SELECTION OK' : '*** SELECTION LOST ***'}`);
+  const got = (sel || '').match(/SELECTME-(\w+)|CTME-(\w+)/);
+  const marker = got ? (got[1] || got[2]) : '(none)';
+  const ok = marker === 'CCCC';
+  console.log(`\n=== mouse ${mode} / repaint ${repaint}: ${ok ? 'OK (CCCC)' : `*** WRONG/LOST: got ${marker} ***`}`);
   console.log(`    final sel=${JSON.stringify(sel)} inCopyMode=${copy}`);
   for (const e of events) console.log(`    ${e}`);
 }

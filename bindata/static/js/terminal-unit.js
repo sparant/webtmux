@@ -445,6 +445,11 @@ export class TerminalUnit {
       return true; // Let xterm.js handle other keys
     });
 
+    // The selection guard's primary trigger: entering copy mode can wipe a drag's
+    // selection, and this fires in the same tick as that wipe — early enough to put
+    // it back before the pane repaints under the anchor. See _guardSelection.
+    this.terminal.onSelectionChange(() => this._onSelectionChange());
+
     this.terminal.onData((data) => {
       // While a hover preview borrows this terminal, the screen shows ANOTHER
       // window but keyboard focus (and this handler) still belong to the region's
@@ -833,6 +838,9 @@ export class TerminalUnit {
         lastX: e.clientX, lastY: e.clientY,
         detail: e.detail, verdict, live, dragging: false, selecting: false,
         done: false, reasserts: 0,
+        // What the anchor was pointing AT, so a repair can follow the line if the
+        // pane scrolls underneath it — see _anchorY.
+        anchorText: this._lineText(this._rowAtY(e.clientY)),
       };
       document.addEventListener('mousemove', onDocMove, true);
       document.addEventListener('mouseup', onDocUp, true);
@@ -965,31 +973,58 @@ export class TerminalUnit {
   // switches to, which is why this only bites on some TUIs.
   //
   // Nothing can be done about the clear (it is inside xterm, and the mode change is
-  // legitimate), so the selection is re-asserted after it: for a short window, if
-  // the highlight has gone while a drag is or was under way, it is re-created from
-  // the remembered ANCHOR to wherever the pointer has reached. Repairing rather
-  // than delaying the first anchor keeps the highlight immediate in the common
-  // case, and the window bounds it to the transition rather than leaving a
-  // permanent watcher on the selection.
+  // legitimate), so the selection is re-asserted after it, from the remembered
+  // ANCHOR to wherever the pointer has reached.
+  //
+  // WHEN it is re-asserted is the whole game, because the anchor is a PIXEL and a
+  // pixel only means a line until the pane redraws. Repairing from a 40ms poll put
+  // the redraw that follows the mode change INSIDE the gap: the selection was
+  // rebuilt against content that had already scrolled, so it landed a line or two
+  // off — usually the line above. Doing it from xterm's own selection-change event
+  // instead means the repair runs in the same tick as the clear, with the screen
+  // exactly as it was when the press was judged. Everything after that is xterm's
+  // problem again, and it handles it: once a selection exists, xterm keeps its
+  // buffer coordinates correct across scrolls and trims. The poll survives only as
+  // a backstop, at a coarse interval, for a clear that somehow fires no event.
   SELECTION_GUARD_MS = 800;
   SELECTION_REASSERT_MAX = 6;
+  SELECTION_BACKSTOP_MS = 150;
 
   _guardSelection(press) {
     if (this._selGuard) { clearTimeout(this._selGuard); this._selGuard = null; }
-    const deadline = Date.now() + this.SELECTION_GUARD_MS;
+    this._selGuardPress = press;
+    this._selGuardUntil = Date.now() + this.SELECTION_GUARD_MS;
     const tick = () => {
       this._selGuard = null;
-      if (this.destroyed || !press.selecting) return;
-      // A drag with nowhere to go has nothing to restore, and re-anchoring on it
-      // would loop until the deadline for no reason.
-      const moved = press.lastX !== press.x || press.lastY !== press.y;
-      if (moved && !this.terminal?.getSelection() && press.reasserts < this.SELECTION_REASSERT_MAX) {
-        press.reasserts++;
-        this._reassertSelection(press);
+      if (this.destroyed || this._selGuardPress !== press) return;
+      this._repairSelection();
+      if (Date.now() < this._selGuardUntil) {
+        this._selGuard = setTimeout(tick, this.SELECTION_BACKSTOP_MS);
+      } else {
+        this._selGuardPress = null;
       }
-      if (Date.now() < deadline) this._selGuard = setTimeout(tick, 40);
     };
-    this._selGuard = setTimeout(tick, 40);
+    this._selGuard = setTimeout(tick, this.SELECTION_BACKSTOP_MS);
+  }
+
+  // xterm says the selection changed. If it just went empty inside a guard window,
+  // put it back NOW — synchronously, before the pane can repaint underneath it.
+  _onSelectionChange() {
+    if (this._restoringSelection) return;
+    if (!this._selGuardPress || Date.now() > this._selGuardUntil) return;
+    this._repairSelection();
+  }
+
+  _repairSelection() {
+    const press = this._selGuardPress;
+    if (!press || !press.selecting) return;
+    // A drag with nowhere to go has nothing to restore, and re-anchoring on it
+    // would loop for the whole window for no reason.
+    if (press.lastX === press.x && press.lastY === press.y) return;
+    if (press.reasserts >= this.SELECTION_REASSERT_MAX) return;
+    if (this.terminal?.getSelection()) return;   // still there — nothing to repair
+    press.reasserts++;
+    this._reassertSelection(press);
   }
 
   // Re-create the selection from the anchor to the pointer's latest position.
@@ -997,14 +1032,79 @@ export class TerminalUnit {
   // the whole reason we are here, so whether the modifier is needed may have
   // flipped since. If the button has already been released, the synthetic gesture
   // has to be closed with a mouseup or xterm stays mid-drag.
+  // Viewport row under a client y, and the y at the middle of a viewport row.
+  _rowAtY(y) {
+    const el = this._xtermScreen();
+    const rows = this.terminal?.rows || 0;
+    if (!el || !rows) return -1;
+    const box = el.getBoundingClientRect();
+    if (!box.height) return -1;
+    return Math.floor(((y - box.top) / box.height) * rows);
+  }
+
+  _yForRow(row) {
+    const el = this._xtermScreen();
+    const rows = this.terminal?.rows || 0;
+    if (!el || !rows) return null;
+    const box = el.getBoundingClientRect();
+    return box.top + ((row + 0.5) / rows) * box.height;
+  }
+
+  _lineText(row) {
+    const buf = this.terminal?.buffer?.active;
+    const ln = buf?.getLine(buf.viewportY + row);
+    return ln ? ln.translateToString(true) : '';
+  }
+
+  // Where the anchor LINE is now. A pixel only names a line until the pane scrolls,
+  // and a streaming program (Claude Code prints constantly, and xterm here keeps no
+  // scrollback of its own — tmux owns that — so every printed line moves the buffer)
+  // can scroll several times during the round trip that wipes the selection. Re-
+  // anchoring on the raw pixel then rebuilds the selection one or two lines off,
+  // which is what "it selects the line above" is.
+  //
+  // So the anchor's line CONTENT is remembered with it, and if that content has
+  // moved a little, the repair follows it. Only a small search: past a few lines
+  // this stops being the same gesture, and selecting nothing beats selecting
+  // something the user never pointed at.
+  ANCHOR_SEARCH_ROWS = 4;
+
+  _anchorY(press) {
+    const fallback = press.y;
+    if (!press.anchorText) return fallback;
+    const row = this._rowAtY(press.y);
+    if (row < 0) return fallback;
+    if (this._lineText(row) === press.anchorText) return fallback;   // hasn't moved
+    for (let d = 1; d <= this.ANCHOR_SEARCH_ROWS; d++) {
+      for (const r of [row - d, row + d]) {
+        if (r < 0 || r >= (this.terminal?.rows || 0)) continue;
+        if (this._lineText(r) === press.anchorText) {
+          const y = this._yForRow(r);
+          return y === null ? fallback : y;
+        }
+      }
+    }
+    return fallback;
+  }
+
   _reassertSelection(press) {
     const mods = this._mouseTracking() ? forceSelectionModifier(IS_MAC) : {};
-    this._dispatchPress(press, mods);
-    this._dispatchPress(press, { buttons: 1 },
-      { x: press.lastX, y: press.lastY, type: 'mousemove' });
-    if (press.done) {
-      this._dispatchPress(press, { buttons: 0 },
-        { x: press.lastX, y: press.lastY, type: 'mouseup' });
+    const anchorY = this._anchorY(press);
+    // The drag end moves with the same scroll, by the same number of rows.
+    const endY = press.lastY + (anchorY - press.y);
+    // Flagged so the selection-change events this very repair produces don't
+    // re-enter _onSelectionChange and repair the repair.
+    this._restoringSelection = true;
+    try {
+      this._dispatchPress(press, mods, { y: anchorY });
+      this._dispatchPress(press, { buttons: 1 },
+        { x: press.lastX, y: endY, type: 'mousemove' });
+      if (press.done) {
+        this._dispatchPress(press, { buttons: 0 },
+          { x: press.lastX, y: endY, type: 'mouseup' });
+      }
+    } finally {
+      this._restoringSelection = false;
     }
   }
 
@@ -1337,6 +1437,7 @@ export class TerminalUnit {
     // does not take those with it.
     try { this._releaseGesture?.(); } catch (e) {}
     if (this._selGuard) { clearTimeout(this._selGuard); this._selGuard = null; }
+    this._selGuardPress = null;
     if (this.resizeObserver) { try { this.resizeObserver.disconnect(); } catch (e) {} }
     if (this.ws) { try { this.ws.onclose = null; this.ws.close(); } catch (e) {} }
     if (this.terminal) { try { this.terminal.dispose(); } catch (e) {} }
