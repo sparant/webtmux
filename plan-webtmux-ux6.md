@@ -84,7 +84,7 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
 - [x] **P0** 0.1 Create worktree `/workspace/webtmux-ux6` on `feat/ux6-recents-expose-mouse`.
 - [x] **P0** 0.2 Write this plan into the worktree and commit it.
 
-### Phase 1 — ⌘⌥L / MRU walk survives a reload (P0, item 1)
+### Phase 1 ✅ — ⌘⌥L / MRU walk survives a reload (P0, item 1)
 
 - [x] **P0** 1.1 New import-free `resources/js/mru-order.js`: `buildMruOrder({placements,
       captures, recents, accessed, currentId, currentSession, occupied})` → deduped
@@ -102,7 +102,7 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
       because no layout has arrived yet, do nothing (as today) rather than half-cycling.
 - [x] **P0** 1.5 Run the JS suite; commit.
 
-### Phase 2 — A linked window is acknowledged once, everywhere (P0, item 6)
+### Phase 2 ✅ — A linked window is acknowledged once, everywhere (P0, item 6)
 
 - [x] **P0** 2.1 `work-alerts.js`: `mark()` gains a pre-pass computing the set of window
       **ids** that are on screen (`active`) or back to green; clearing keys off that set so
@@ -117,7 +117,7 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
       id, so deleting both keys at once is all the surfaces needed.
 - [x] **P0** 2.4 Run the JS suite; commit.
 
-### Phase 3 — Exposé status filter (P1, item 2)
+### Phase 3 ✅ — Exposé status filter (P1, item 2)
 
 - [x] **P1** 3.1 *(landed in `stoplight.js`, not a new module — the filter names ARE the
       stoplight's vocabulary and splitting them would let "idle" and "waiting for work to do"
@@ -136,7 +136,7 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
 - [x] **P1** 3.4 Rebuild the grid on a filter change (membership changed → `_rebuild`, not
       an in-place refresh). Run the JS suite; commit.
 
-### Phase 4 — Paste-trim in the rename input (P1, item 3)
+### Phase 4 ✅ — Paste-trim in the rename input (P1, item 3)
 
 - [x] **P1** 4.1 New import-free `resources/js/paste-name.js`: `trimPastedName(text)` →
       basename after the last `/`, minus a trailing extension
@@ -155,7 +155,7 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
       nothing.
 - [x] **P1** 4.4 Run the JS suite; commit.
 
-### Phase 5 — One "mouse" dropdown replaces the two mode buttons (P1, item 4)
+### Phase 5 ✅ — One "mouse" dropdown replaces the two mode buttons (P1, item 4)
 
 - [x] **P1** 5.1 Toolbar: replace the two `.tbtn.text` buttons with a single
       `🖱 mouse ▾` button + a `.label-menu`-style dropdown (backdrop + outside-click close,
@@ -172,7 +172,7 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
       documentation and the driver match the new control.
 - [x] **P1** 5.5 `make check-js`; commit.
 
-### Phase 6 — Sidebar mode row: two toggles on one line (P1, item 5)
+### Phase 6 ✅ — Sidebar mode row: two toggles on one line (P1, item 5)
 
 - [x] **P1** 6.1 Put the overlay and pin toggles side by side in `.mode-row` (a flex row that
       wraps), abbreviated to fit the collapsed panel width: `▣ mount` / `⇔ float` and
@@ -184,7 +184,7 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
 - [x] **P1** 6.3 Keep "✕ Close this region" full-width beneath (it is destructive and should
       not sit shoulder-to-shoulder with two harmless toggles). `make check-js`; commit.
 
-### Phase 7 — Verify
+### Phase 7 ✅ — Verify
 
 - [x] **P0** 7.1 `make sync-assets`; confirm `resources/js` and `bindata/static/js` are
       identical; commit both trees.
@@ -210,7 +210,7 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
 
 ### Phase 8 — Land
 
-- [ ] **P0** 8.1 Mark every phase complete in this plan; commit in the worktree.
+- [x] **P0** 8.1 Mark every phase complete in this plan; commit in the worktree.
 - [ ] **P0** 8.2 `scripts/git-merge-worktree.sh /workspace/webtmux-ux6 --no-ff` (retry on a
       moved target; never force).
 - [ ] **P0** 8.3 Confirm `git merge-base --is-ancestor <sha> local-main`.
@@ -231,8 +231,10 @@ path — item 1 reads the recency map, never rewrites it — so the two do not c
 | Phase 5 mouse dropdown | ✅ |
 | Phase 6 sidebar row | ✅ |
 | Phase 7 verify | ✅ |
-| Phase 8 land | ⬜ |
+| Phase 8 land | 🔄 |
 
 ## Next Steps
 
-Execute Phase 1.
+All six items implemented and verified in-container. Remaining: merge to `local-main`
+(Phase 8) and then a HOST container rebuild + live verify — the real webtmux container
+bind-mounts the host tmux socket, so it can only be deployed from the host.
