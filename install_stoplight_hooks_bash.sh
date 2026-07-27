@@ -51,6 +51,31 @@ if [[ -n "$TMUX" && -z "$__wt_hooks_installed" && -z "$WT_STOPLIGHT_SUPPRESS" ]]
     return 1
   }
 
+  # EVERY write names the pane it came from. A bare `tmux set -w @wt_working …`
+  # does NOT mean "the window I am running in": with no -t, tmux resolves the
+  # target from the CURRENT window of the session it picks for this command
+  # client — i.e. the window being LOOKED at, not the window this shell lives in.
+  #
+  # The two coincide only while the pane is on screen, which is exactly why the
+  # bug hid: watch a long command and the dot behaves perfectly. Switch away and
+  # every write goes to the wrong window — the finishing red lands on whatever you
+  # switched TO (reddening a window that is still working, and flashing it at you),
+  # while the window that actually finished never leaves green, so the one signal
+  # the stoplight exists to give — "the thing you walked away from is done" — is
+  # the one signal it could never deliver.
+  #
+  # $TMUX_PANE is the pane's own id (%N), exported by tmux into every pane; tmux
+  # resolves a pane target to its window. It is read LIVE rather than captured at
+  # source time because a pane can be moved between windows (break-pane/join-pane)
+  # and the id follows the pane, where a captured window id would go stale.
+  #
+  # No fallback when it is somehow unset: a write that cannot say which window it
+  # is about is not a weaker signal, it is a false one about some other window.
+  __wt_set() {
+    [[ -n "$TMUX_PANE" ]] || return
+    tmux set -w -t "$TMUX_PANE" @wt_working "$1" 2>/dev/null
+  }
+
   __wt_preexec() {
     [[ -n "$COMP_LINE" ]] && return                 # skip during completion
     [[ "$BASH_COMMAND" == "$PROMPT_COMMAND" ]] && return
@@ -58,15 +83,15 @@ if [[ -n "$TMUX" && -z "$__wt_hooks_installed" && -z "$WT_STOPLIGHT_SUPPRESS" ]]
     __wt_delegates_status "$BASH_COMMAND" && return # something else owns it now
     __wt_is_exit "$BASH_COMMAND" && return          # leaving is not work
     __wt_running=1
-    tmux set -w @wt_working 1 2>/dev/null           # start work -> green
+    __wt_set 1                                      # start work -> green
   }
   __wt_precmd() {
-    tmux set -w @wt_working 0 2>/dev/null           # stop work -> red
+    __wt_set 0                                      # stop work -> red
     __wt_running=
   }
   # However the shell ends — exit, EOF, or a signal — hand the window back red
   # rather than stranding it in whatever colour it happened to be.
-  __wt_on_exit() { tmux set -w @wt_working 0 2>/dev/null; }
+  __wt_on_exit() { __wt_set 0; }
   trap '__wt_preexec' DEBUG
   trap '__wt_on_exit' EXIT
   PROMPT_COMMAND="__wt_precmd${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
