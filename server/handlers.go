@@ -382,11 +382,20 @@ func (server *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/javascript")
 	// no-store so a rebuild's new build id is never served from cache.
 	w.Header().Set("Cache-Control", "no-store")
+	// webtmux_webgl seeds the renderer preference for a client that has never
+	// expressed one. It is a default, not an override: a stored preference in
+	// the shared tmux UI state wins. Before this the --enable-webgl flag was
+	// read by nothing, so it advertised a setting it could not deliver.
+	webgl := "false"
+	if server.options.EnableWebGL {
+		webgl = "true"
+	}
 	lines := []string{
 		"var gotty_term = 'xterm';",
 		"var gotty_ws_query_args = '" + server.options.WSQueryArgs + "';",
 		"var webtmux_build = '" + BuildCommit + "';",
 		"var webtmux_built = '" + BuildTime + "';",
+		"var webtmux_webgl = " + webgl + ";",
 	}
 
 	w.Write([]byte(strings.Join(lines, "\n")))

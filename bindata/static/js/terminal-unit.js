@@ -8,7 +8,9 @@
 // pair of DOM elements: the div xterm opens into, and its sidebar component.
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { WebglAddon } from '@xterm/addon-webgl';
+// @xterm/addon-webgl is NOT imported here — see the renderer block in init().
+// It is 104 KB and the WebGL renderer is opt-in, so it is loaded with a dynamic
+// import() only when someone has actually opted in.
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { CaptureCache } from './capture-cache.js';
 import { CopyModeArbiter, layoutModeWins } from './copy-mode.js';
@@ -320,12 +322,29 @@ export class TerminalUnit {
     // to be installed. Correctness beats the WebGL throughput here, so we default to
     // the DOM renderer and make WebGL strictly opt-in (StateStore renderer.webgl)
     // for anyone who wants the GPU path and has a font stack that covers their glyphs.
-    if (stateStore.section('renderer').webgl === true) {
-      try {
-        this.terminal.loadAddon(new WebglAddon());
-      } catch (e) {
-        console.warn('WebGL addon not supported:', e);
-      }
+    //
+    // Because it is opt-in, the addon is fetched with a dynamic import() rather
+    // than a static one at the top of the file: at 104 KB it was the largest
+    // thing every page load downloaded for a renderer almost nobody enables.
+    // The importmap entry in index.html resolves import() identically.
+    //
+    // Deliberately NOT awaited. init() is called from the constructor, so it
+    // cannot be async, and everything below this block — fit, focus, the resize
+    // observer, input handling — must be wired synchronously. xterm accepts an
+    // addon on an already-open terminal, so the DOM renderer simply draws until
+    // the fetch lands and WebGL takes over.
+    //
+    // A stored preference wins; the server's --enable-webgl only seeds clients
+    // that have never chosen. (Before that seed existed the flag was read by
+    // nothing, so it advertised a renderer it could not select.)
+    const rendererPrefs = stateStore.section('renderer');
+    const wantsWebgl = rendererPrefs.webgl === undefined
+      ? (typeof window !== 'undefined' && window.webtmux_webgl === true)
+      : rendererPrefs.webgl === true;
+    if (wantsWebgl) {
+      import('@xterm/addon-webgl')
+        .then(({ WebglAddon }) => this.terminal.loadAddon(new WebglAddon()))
+        .catch((e) => console.warn('WebGL addon not supported:', e));
     }
 
     // Fit terminal and focus

@@ -32,8 +32,15 @@ type Options struct {
 	Height              int    `hcl:"height" flagName:"height" flagDescribe:"Static height of the screen, 0(default) means dynamically resize" default:"0"`
 	WSOrigin            string `hcl:"ws_origin" flagName:"ws-origin" flagDescribe:"A regular expression that matches origin URLs to be accepted by WebSocket. No cross origin requests are acceptable by default" default:""`
 	WSQueryArgs         string `hcl:"ws_query_args" flagName:"ws-query-args" flagDescribe:"Querystring arguments to append to the websocket instantiation" default:""`
-	EnableWebGL         bool   `hcl:"enable_webgl" flagName:"enable-webgl" flagDescribe:"Enable WebGL renderer" default:"true"`
-	Quiet               bool   `hcl:"quiet" flagName:"quiet" flagDescribe:"Don't log" default:"false"`
+	// Seeds the browser's renderer preference; it does not force it. A client
+	// that has already chosen (the choice is persisted in the shared tmux UI
+	// state) keeps its choice. Default false: the DOM renderer is the correct
+	// one for most people because it does native font fallback and WebGL does
+	// not — see the renderer block in resources/js/terminal-unit.js. This flag
+	// defaulted to true and was read by nothing at all until it was wired to
+	// config.js, so flipping the default changes no observed behaviour.
+	EnableWebGL bool `hcl:"enable_webgl" flagName:"enable-webgl" flagDescribe:"Default new clients to the WebGL renderer instead of the DOM one (faster, but no system font fallback)" default:"false"`
+	Quiet       bool `hcl:"quiet" flagName:"quiet" flagDescribe:"Don't log" default:"false"`
 
 	TitleVariables map[string]interface{}
 }

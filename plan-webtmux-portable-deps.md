@@ -234,14 +234,14 @@ and load-bearing.*
 
 ---
 
-## Phase D3 — Browser dependencies
+## Phase D3 — Browser dependencies ✅ COMPLETE
 
 One browser dependency is ~104 KB and is **not used by default**. This applies whether or
 not Stage 1 (vendoring) ever runs — today the 104 KB is fetched from jsdelivr on every
 page load; after vendoring it would be 24% of a ~431 KB embedded payload. Either way it
 is downloaded for nothing.
 
-- [ ] **P0** D3.1 **Make `@xterm/addon-webgl` (104 KB) a dynamic import.** It is
+- [x] **P0** D3.1 **Make `@xterm/addon-webgl` (104 KB) a dynamic import.** It is
       *statically* imported at `resources/js/terminal-unit.js:11` but only conditionally
       constructed at `:246` — `if (stateStore.section('renderer').webgl === true)`. WebGL
       is **strictly opt-in**: the DOM renderer is the default because it does native font
@@ -266,16 +266,44 @@ is downloaded for nothing.
       after Stage 1 repoints that entry at a local file, so this change is independent of
       whether vendoring ever happens.
 
-- [ ] **P1** D3.2 **Reconcile the dead `EnableWebGL` server option.**
+      *Done — **but not with the snippet above.** `init()` is called from the constructor,
+      so it cannot be `async` and no caller could await it; awaiting mid-`init()` would
+      also defer the fit, the focus, the resize observer and all input handling behind a
+      network round trip. Instead the import is fired and **not awaited**:
+      `import(...).then(({WebglAddon}) => this.terminal.loadAddon(new WebglAddon()))`.
+      xterm accepts an addon on an already-open terminal, so the DOM renderer draws until
+      the fetch lands. That dissolves risk 4 rather than mitigating it.*
+
+      *Verified in a real headless Chromium against a live server: on a default load the
+      browser makes **no request for `addon-webgl` at all** and the DOM renderer is in
+      use; with the renderer opted in the addon is fetched, **the WebGL renderer actually
+      takes over** (canvas replaces `.xterm-rows`), and there are no page errors.*
+
+- [x] **P1** D3.2 **Reconcile the dead `EnableWebGL` server option.**
       `server/options.go:35` still declares `enable-webgl` with `default:"true"`, but the
       frontend ignores it entirely and defaults to the DOM renderer. The flag lies. Either
       wire it to seed `stateStore`, or delete it and its `GOTTY_ENABLE_WEBGL` env var.
       *(25 min)*
 
-- [ ] **P2** D3.3 Consider inlining `@xterm/addon-fit` (1.8 KB). It is roughly 30 lines of
+      *Done — **wired, not deleted.** Deleting was the smaller change but the worse one:
+      before this, `renderer.webgl` could only be turned on by a legacy
+      `localStorage['webtmux-webgl']` key that exists solely for a one-time migration, so
+      the WebGL renderer had no supported way to be enabled at all. `config.js` now emits
+      `var webtmux_webgl = <bool>` and `terminal-unit.js` uses it **only when the client
+      has no stored preference** — a seed, not an override, so a persisted choice still
+      wins. **The default flips `true` → `false`**, which changes no observed behaviour
+      (nothing read the flag), and `true` would have turned the documented
+      glyph-rendering bug on for everyone. The usage text now says what the flag does.*
+
+- [x] **P2** D3.3 Consider inlining `@xterm/addon-fit` (1.8 KB). It is roughly 30 lines of
       arithmetic over character cell size. Low value — listed only so the audit is
       complete. Probably **decline**: it is tiny, and hand-maintained copies of upstream
       code rot. *(20 min)*
+
+      *Considered and **declined**, as the task anticipated. 1.8 KB is 0.4% of the payload,
+      and `FitAddon` reads xterm internals (`_core._renderService.dimensions`) that are not
+      public API — a hand-copied version would break silently on an xterm upgrade, which is
+      a worse failure than the one it saves. `@xterm/addon-fit` stays.*
 
 **Keep without question:** `lit` (~18 KB, backs all six components and ~53.6 KB of
 `css``` templates — removing it means rewriting the entire component layer),
