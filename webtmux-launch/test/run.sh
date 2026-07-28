@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Stand up the launcher's throwaway test rig and run the end-to-end suite.
 #
-#   test/launcher/run.sh            # build everything and run the suite
-#   test/launcher/run.sh --shell    # drop into the client container instead
-#   test/launcher/run.sh --keep     # leave the containers running afterwards
+#   webtmux-launch/test/run.sh            # build everything and run the suite
+#   webtmux-launch/test/run.sh --shell    # drop into the client container instead
+#   webtmux-launch/test/run.sh --keep     # leave the containers running afterwards
 #
 # Two containers on a private network: a "Mac" (Go toolchain + ssh + curl) that
 # runs webtmux-launch, and a target that has only sshd and tmux — no Go, no
@@ -12,7 +12,7 @@
 set -euo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-HERE="$REPO/test/launcher"
+HERE="$REPO/webtmux-launch/test"
 NET=wtl-net
 TARGET_C=wtl-target
 CLIENT_C=wtl-client
@@ -74,7 +74,7 @@ echo "== cross-compiling webtmux into builds/ and building the launcher"
 # fails with "error obtaining VCS status" after a successful compile.
 docker run --rm -v "$REPO":/src -v wtl-gomod:/go/pkg/mod -w /src wtl-client:test \
   sh -c 'git config --global --add safe.directory /src
-         make cross-compile && make launcher-dev' >/dev/null
+         make cross-compile && make -C webtmux-launch dev' >/dev/null
 
 RUNARGS=(--rm --name "$CLIENT_C" --network "$NET"
          -v "$REPO":/src -v "$WORK":/keys -v wtl-gomod:/go/pkg/mod
@@ -98,4 +98,4 @@ if [ "$MODE" = shell ]; then
 fi
 
 echo "== running the suite"
-docker run "${RUNARGS[@]}" bash -c "mkdir -p ~/.ssh && printf '%s' '$SSHCONF' > ~/.ssh/config && bash /src/test/launcher/e2e.sh"
+docker run "${RUNARGS[@]}" bash -c "mkdir -p ~/.ssh && printf '%s' '$SSHCONF' > ~/.ssh/config && bash /src/webtmux-launch/test/e2e.sh"

@@ -134,9 +134,9 @@ step "3.15c split-view: two regions, two grouped sessions"
 # ---------------------------------------------------------------------------
 U=$(url_from /tmp/run2.log)
 WS="ws://${U#http://}"; WS="${WS%/}/ws"
-( cd "$REPO" && go run ./test/launcher/wsclient -url "$WS" -session web-alpha -dwell 6s >/tmp/ws1.out 2>/tmp/ws1.err ) &
+( cd "$REPO" && go run ./webtmux-launch/test/wsclient -url "$WS" -session web-alpha -dwell 6s >/tmp/ws1.out 2>/tmp/ws1.err ) &
 w1=$!
-( cd "$REPO" && go run ./test/launcher/wsclient -url "$WS" -session web-beta  -dwell 6s >/tmp/ws2.out 2>/tmp/ws2.err ) &
+( cd "$REPO" && go run ./webtmux-launch/test/wsclient -url "$WS" -session web-beta  -dwell 6s >/tmp/ws2.out 2>/tmp/ws2.err ) &
 w2=$!
 sleep 4
 SESS=$(rsh "tmux list-sessions -F '#{session_name}' 2>/dev/null" | sort | tr '\n' ' ')
@@ -446,16 +446,16 @@ fi
 kill_launcher "$pid"
 
 # make launcher-dev works with no env var at all; make launcher does not.
-( cd "$REPO" && make launcher-dev >/tmp/mk.log 2>&1 ) || { no "make launcher-dev failed"; tail -5 /tmp/mk.log; }
+( cd "$REPO/webtmux-launch" && make dev >/tmp/mk.log 2>&1 ) || { no "make -C webtmux-launch dev failed"; tail -5 /tmp/mk.log; }
 reset_target
 pid=$( (unset WEBTMUX_LAUNCH_SOURCE; launch_bg /tmp/devbuild.log) )
 if wait_for /tmp/devbuild.log 'ready: http' 60; then
-  ok "make launcher-dev deploys with nothing exported"
+  ok "make -C webtmux-launch dev deploys with nothing exported"
 else
   no "launcher-dev build needs an env var"; tail -5 /tmp/devbuild.log
 fi
 kill_launcher "$pid"
-( cd "$REPO" && make launcher >/tmp/mkr.log 2>&1 ) || { no "make launcher failed"; tail -5 /tmp/mkr.log; }
+( cd "$REPO/webtmux-launch" && make release >/tmp/mkr.log 2>&1 ) || { no "make -C webtmux-launch release failed"; tail -5 /tmp/mkr.log; }
 if [ -x "$BUILDS/webtmux-launch-linux-amd64" ]; then
   out=$(timeout 25 env -u WEBTMUX_LAUNCH_SOURCE "$BUILDS/webtmux-launch-linux-amd64" --no-browser "$TARGET" 2>&1)
   # There is no release yet: assert the ATTEMPT, not its success.
@@ -506,8 +506,8 @@ if [ -z "${WTL_RELEASE_REPO:-}" ]; then
 else
   OWNER=${WTL_RELEASE_REPO%%/*}; NAME=${WTL_RELEASE_REPO##*/}
   VER=${WTL_RELEASE_VERSION:-v0.1.0}
-  ( cd "$REPO" && make launcher LAUNCHER_REPO_OWNER="$OWNER" LAUNCHER_REPO_NAME="$NAME" \
-      LAUNCHER_WEBTMUX_VERSION="$VER" >/tmp/mkrel.log 2>&1 ) || no "make launcher failed"
+  ( cd "$REPO/webtmux-launch" && make release REPO_OWNER="$OWNER" REPO_NAME="$NAME" \
+      WEBTMUX_VERSION="$VER" >/tmp/mkrel.log 2>&1 ) || no "make release failed"
   REL="$BUILDS/webtmux-launch-linux-amd64"
   rel() { timeout 60 env -u WEBTMUX_LAUNCH_SOURCE "$REL" --no-browser --verbose "$@" "$TARGET" 2>&1; }
 

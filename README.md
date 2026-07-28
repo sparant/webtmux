@@ -387,7 +387,7 @@ or racing read — **not** an authenticity check like the release's published
 `SHA256SUMS`. That is the right trade for your own build output, and it is why
 the source must always be configured explicitly and is never auto-detected.
 
-The end-to-end suite (`test/launcher/run.sh`) stands up a throwaway
+The end-to-end suite (`make -C webtmux-launch e2e`) stands up a throwaway
 sshd+tmux container and exercises probe, deploy, tunnel, adopt, split-view,
 durability and reconnect against it — entirely offline.
 

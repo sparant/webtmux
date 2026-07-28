@@ -3,3 +3,6 @@ builds/
 *.gif
 *.ai
 plan-*.md
+# The launcher is a separate program that shares only this module; webtmux's
+# image build neither compiles nor ships it.
+webtmux-launch/

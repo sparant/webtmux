@@ -9,7 +9,7 @@ import (
 // readTarget returns the recipe lines of one make target.
 func readTarget(t *testing.T, name string) string {
 	t.Helper()
-	b, err := os.ReadFile("../../Makefile")
+	b, err := os.ReadFile("Makefile")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,11 +38,11 @@ func readTarget(t *testing.T, name string) string {
 // someone else's computer, which is exactly why it is asserted rather than
 // eyeballed.
 func TestReleaseBuildHasNoDefaultSource(t *testing.T) {
-	if strings.Contains(readTarget(t, "launcher"), "main.DefaultSource") {
-		t.Error("make launcher must leave main.DefaultSource empty")
+	if strings.Contains(readTarget(t, "release"), "main.DefaultSource") {
+		t.Error("make release must leave main.DefaultSource empty")
 	}
-	if !strings.Contains(readTarget(t, "launcher-dev"), "main.DefaultSource") {
-		t.Error("make launcher-dev must bake in a local source — that is its whole point")
+	if !strings.Contains(readTarget(t, "dev"), "main.DefaultSource") {
+		t.Error("make dev must bake in a local source — that is its whole point")
 	}
 }
 
@@ -50,19 +50,19 @@ func TestReleaseBuildHasNoDefaultSource(t *testing.T) {
 // webtmux as a prerequisite. That is what makes a webtmux fix reach every
 // launcher already in the field with no launcher release at all.
 func TestLauncherBuildHasNoWebtmuxPrerequisite(t *testing.T) {
-	b, err := os.ReadFile("../../Makefile")
+	b, err := os.ReadFile("Makefile")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, line := range strings.Split(string(b), "\n") {
-		if strings.HasPrefix(line, "launcher:") || strings.HasPrefix(line, "launcher-dev:") {
+		if strings.HasPrefix(line, "release:") || strings.HasPrefix(line, "dev:") {
 			if deps := strings.TrimSpace(strings.SplitN(line, ":", 2)[1]); deps != "" {
 				t.Errorf("%s should have no prerequisites, has %q", line, deps)
 			}
 		}
 	}
 	// The embedded-payload design is gone; its .dockerignore line must go too.
-	di, err := os.ReadFile("../../.dockerignore")
+	di, err := os.ReadFile("../.dockerignore")
 	if err != nil {
 		t.Fatal(err)
 	}

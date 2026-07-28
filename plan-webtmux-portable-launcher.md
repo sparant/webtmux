@@ -1019,6 +1019,23 @@ version-pinning, no socket mount, and no uid/gid matching.
   set; the flag gates only *client-supplied* request headers
   (`server/handlers.go:96`). 3.15c verifies this live.
 
+### Layout change, post-merge (2026-07-28)
+
+The launcher moved from `cmd/webtmux-launch/` to **`webtmux-launch/`** at the
+repo root, with its rig at `webtmux-launch/test/` and its own `Makefile`. `cmd/`
+is a Go convention, not a requirement, and the user asked for one self-contained
+directory. Nothing depended on the old path.
+
+**The only shared thing is the Go module** (`go.mod`/`go.sum`): the launcher
+imports no `webtmux/*` package and uses the standard library alone, so it adds
+no dependency and `go test ./...` still covers it. The root `Makefile` keeps
+`launcher` / `launcher-dev` as one-line delegations.
+
+One trap this rename created and fixed: the artifact `Dockerfile` exported with
+`COPY --from=build /src/webtmux-* /`, and a top-level `webtmux-launch/`
+**directory** matches that glob. The build product now moves to `/out/` first,
+and `webtmux-launch/` is in `.dockerignore`.
+
 ### Residuals — deliberately not done
 
 - **Risk 12's cold-start detection of interactive auth** (warn once that every

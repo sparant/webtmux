@@ -24,8 +24,12 @@ COPY . /src
 # args — command-line make vars override the Makefile's git-describe defaults.
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
       make build VERSION="$VERSION" GIT_COMMIT="$GIT_COMMIT" \
- && mv webtmux "webtmux-$TARGETOS-$TARGETARCH"
+ && mkdir -p /out && mv webtmux "/out/webtmux-$TARGETOS-$TARGETARCH"
 
 # Export-only stage: the build product is a file, so emit a file, not an image.
+# The product moves to a dedicated /out first because a glob over /src would
+# also match SOURCE paths that happen to start with "webtmux-" — the
+# webtmux-launch/ directory being exactly that. Exporting from a directory that
+# contains nothing but build products cannot develop that problem again.
 FROM scratch AS artifact
-COPY --from=build /src/webtmux-* /
+COPY --from=build /out/ /

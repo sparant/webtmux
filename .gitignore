@@ -26,6 +26,6 @@ Thumbs.db
 /webtmux-test
 /screenshots/verify/
 
-# Throwaway ssh key + state for test/launcher/run.sh. Inside the repo because
+# Throwaway ssh key + state for webtmux-launch/test/run.sh. Inside the repo because
 # the test daemon can only bind-mount paths under the workspace.
 /.launcher-rig/
