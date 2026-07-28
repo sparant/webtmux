@@ -49,9 +49,11 @@ publicity, not safety.
 | 1. container → Mac | `sync-all-repos.sh` | **current branch only**, no tags — see Risk 8 | automatic, continuous loop on the host |
 | 2. Mac → GitHub | `git push` from the bare, or a `post-receive` hook | `local-main` only, by choice — see 0.4 | manual (or automatic if you install the hook in 0.7) |
 
-**The two legs deliberately carry different scope.** The Mac is a *full backup* — all 13
-branches, including WIP. GitHub is a *publication* — `local-main` only. Do not let the WIP
-branches leak onto a public fork just because they exist on the Mac.
+**The two legs deliberately carry different scope.** The Mac is a *full backup* — every
+branch the working repo has. GitHub is a *publication* — `local-main` only. Today those
+happen to coincide (the repo carries just `local-main` and `main` since the 2026-07-27
+branch cleanup), but the distinction is the standing rule: if WIP branches reappear, they
+belong on the Mac and **not** on a public fork.
 
 ### How the current state arose
 
@@ -136,26 +138,31 @@ concurrent agents, so doc revisions go through a worktree and
       **It must be public** — that is what lets the launcher download Release assets
       without a token (see 0.8).
 
-- [ ] **P0** 0.2 **Complete the Mac backup before restructuring anything.** *(10 min)*
+- [x] **P0** 0.2 **~~Complete the Mac backup before restructuring anything.~~
+      DISCHARGED 2026-07-28 — nothing to do.** *(0 min)*
 
-      **Why first:** the chain makes the Mac the hub, and the hub is currently incomplete.
-      Only `local-main` and `main` are on it; the other **11 branches exist nowhere but
-      this container**. Their commits are safe (every one is an ancestor of `local-main`,
-      which is on the Mac), but the branch *labels* — and with them the identity of the 8
-      live worktrees — are not. Promote a hub to load-bearing only once it is whole.
+      *Kept as a numbered step rather than deleted, so the surrounding cross-references stay
+      valid and the reasoning is not silently lost.*
 
-      ```bash
-      bash ~/Projects/claude_run_me_4471.sh            # dry run — shows the plan
-      bash ~/Projects/claude_run_me_4471.sh --apply
-      ```
+      **What this step was for:** the chain makes the Mac the hub, and at the time of
+      writing the hub was incomplete — `local-main` and `main` were on it, but 11 other
+      branches existed nowhere except this container. Their *commits* were safe (each tip
+      was an ancestor of `local-main`, which was on the Mac); the *labels* were not.
 
-      Additive only: no `--mirror`, no `--force`, no re-clone, worktrees untouched. It also
-      sets upstream tracking on each branch, so future drift becomes visible in
-      `git branch -vv` instead of silent.
+      **Why it no longer applies:** on 2026-07-27 those 11 branches were deleted locally as
+      part of a merged-branch cleanup. Every tip was verified reachable from `local-main`
+      first, so no content was lost — the labels were the only casualty, and they were
+      exactly what this step existed to preserve. With the branches gone, the hub holds
+      everything the working repo holds, and the gap this step closed no longer exists.
 
-      **Run it before 0.6**, not after. It addresses the Mac as `origin`, which is true now
-      and stays true under the chain — but would have been wrong under the old
-      hub-and-spoke design, and the habit is worth keeping.
+      **The general lesson survives in Risk 8:** leg 1 pushes only the current branch, so
+      *any* future branch will drift unbacked the same way. That is a standing property of
+      `sync-all-repos.sh`, not a one-off, and it is the reason to keep long-lived work on
+      `local-main` rather than on side branches.
+
+      *(`claude_run_me_4471.sh` was written for this step. It is now redundant with leg 1
+      rather than harmful — it would simply push `local-main` and `main`, which sync already
+      does.)*
 
 - [ ] **P0** 0.3 **Give the *Mac* GitHub credentials.** *(15 min)*
 
@@ -214,7 +221,7 @@ concurrent agents, so doc revisions go through a worktree and
       cloning gets upstream's code with none of the fork's work.
 
       Keep the branch **name** `local-main`. Renaming to `main` would be tidier, but the
-      live worktrees (`/workspace/webtmux-*`) and the deploy path all reference it, and
+      deploy path and the container build both reference it, and
       the container builds from it. Not worth the disruption. (`local-main` *is* a
       fast-forward of `main`, so `local-main:main` would be a clean push if you ever change
       your mind — but do not, for the reasons above.)
@@ -402,11 +409,14 @@ produce conflicts across most of the frontend for very little gain.
 3. **Accidental PR against `chrismccord/webtmux`** → the one real cost of forking. The
    GitHub PR UI defaults the base repo to upstream. `--push upstream DISABLED` (0.6) stops
    command-line pushes but *cannot* stop a web-UI PR; check the base repo dropdown.
-4. **Renaming `local-main` to `main`** would break the live worktrees and the deploy path.
-   Explicitly declined in 0.4.
+4. **Renaming `local-main` to `main`** would break the deploy path and the container
+   build, both of which reference the branch by name. Explicitly declined in 0.4.
+   *(Before 2026-07-27 this also would have orphaned 8 linked worktrees; those are gone,
+   so the remaining objection is the deploy path alone — weaker, but still sufficient.)*
 5. **Repo size:** history carries ~48 MB of packed binary blobs from the committed-`builds/`
    era, so clones start heavy. `builds/` is already untracked (the build/run split), so it
-   no longer grows. No history rewrite — it would break the live worktrees.
+   no longer grows. No history rewrite — it would invalidate every clone and force the
+   Mac bare to be rebuilt, for a one-off saving.
 6. **A private fork would break the launcher** — every launcher would need a GitHub token.
    Confirmed public in 0.8.
 7. **Dropbox-hosted bare repo is now load-bearing.** Under the chain the Mac bare is the
@@ -420,8 +430,10 @@ produce conflicts across most of the frontend for very little gain.
 8. **Leg 1 pushes the current branch only, and no tags.** `sync-all-repos.sh:199` runs
    `git push --no-verify "$remote" "$branch"` — one branch, no `--tags`, no
    `--follow-tags`. Two consequences:
-   - Any branch you are not standing on drifts unbacked. This is how the 11 branches in
-     0.2 accumulated; `-u` tracking now makes the drift *visible* but does not push it.
+   - Any branch you are not standing on drifts unbacked. This is how 11 branches came to
+     exist only in the container by 2026-07-27 (see the discharged 0.2). They were merged
+     and deleted rather than backed up, which resolved that instance — but the mechanism is
+     unchanged and will do the same to the next side branch.
    - **Tags never traverse leg 1 automatically** — which Stage 2 depends on, since a
      release needs its tag on GitHub. See "Publishing a release along the chain".
 9. **Mac-side GitHub credentials are a single point of failure for leg 2** and are

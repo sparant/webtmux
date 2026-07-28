@@ -35,7 +35,7 @@ pass — see Revision history)*, each its own subplan and worktree:
 | Order | Stage | Subplan | Role |
 |---|---|---|---|
 | 1st | D | `plan-webtmux-portable-deps.md` | **Minimize dependencies first**, so every later stage is working against a smaller surface. 16 modules → 4; three unmaintained packages with one call site each. Cheapest here: D2.2 (urfave/cli v2→v3) costs far less *before* the launcher is written against v2's API. |
-| 2nd | 0 | `plan-webtmux-portable-fork.md` | **User-executed.** Fork `chrismccord/webtmux` on GitHub — the canonical origin, and the host the launcher downloads from. |
+| 2nd | 0 | `plan-webtmux-portable-fork.md` | **User-executed.** Fork `chrismccord/webtmux` on GitHub — the public home and the host the launcher downloads from. It is *not* the working repo's `origin`; that stays the Mac bare (chain topology). |
 | 3rd | 2 | `plan-webtmux-portable-release.md` | Semver tags + **GitHub Releases** publishing — the distribution channel for people who aren't you. *(No longer blocks Stage 3; see the local-source note below.)* |
 | 4th | 3 | `plan-webtmux-portable-launcher.md` | **The actual deliverable.** Gets the right webtmux for the target platform — from a GitHub Release, or from a local build directory — and installs it over SSH. |
 | 5th | 1 | `plan-webtmux-portable-vendor.md` | **Optional.** Removes the runtime CDN dependency and drops ~2.6 MB of dead assets. No longer required — air-gap support is a nice-to-have, not a goal. **Gated on the build/run split — satisfied `af969d2`.** |
@@ -120,7 +120,8 @@ embedded FS — so this requires **zero Makefile and zero Go changes**. A top-le
   dirty the tree on every build. Releases cost one `gh release create` per release
   (user-executed — the agent has no GitHub access). Target machines are unaffected either
   way, since the Mac does the downloading. History keeps the old pre-split blobs (sunk
-  cost, no rewrite: it would break the live worktrees).
+  cost, no rewrite: it would invalidate every clone and force the Mac bare to be
+  rebuilt).
 - **The launcher fetches instead of embedding** *(added 2026-07-26, second pass; revised
   2026-07-27)*. Costs a network round-trip on first deploy to a given platform (cached
   thereafter). Buys decoupled release cadences, a launcher that stays ~5 MB, and no
@@ -224,14 +225,25 @@ Detail lives in the subplans. This is the roll-up.
 
 ### Phase 0 — GitHub fork · `plan-webtmux-portable-fork.md` *(user-executed)*
 
+*(Rewritten 2026-07-27 for the **chain** topology — `container --sync-all-repos--> Mac bare
+--> GitHub`. The GitHub fork is a publishing mirror hanging off the Mac bare, **not** the
+working repo's `origin`. Renumbered to 0.1–0.10; see the subplan's "Topology" section.)*
+
 - [ ] **P0** 0.1 **Fork `chrismccord/webtmux`** on GitHub (the Fork button)
-- [ ] **P0** 0.2 Push `local-main`; set it as GitHub's default branch
-- [ ] **P0** 0.3 Delete any tags inherited from upstream (they poison `git describe --tags`)
-- [ ] **P0** 0.4 Repoint `origin`; `git remote set-url --push upstream DISABLED`
-- [ ] **P1** 0.5 Keep or retire the Dropbox/SSH bare repo
-- [ ] **P0** 0.6 Confirm the fork is **public** (unauthenticated Release downloads)
-- [ ] **P1** 0.7 Preserve `LICENSE`; the fork badge supplies attribution
-- [ ] **P0** 0.8 Verify the gate passes
+- [x] **P0** 0.2 ~~Complete the Mac backup first~~ — **discharged 2026-07-28**, the 11
+      unbacked branches were merged into `local-main` and deleted
+- [ ] **P0** 0.3 Give the **Mac** GitHub credentials — leg 2 originates there, not on the host
+- [ ] **P0** 0.4 Add the `github` remote **on the Mac bare** and push `local-main`; set it
+      as GitHub's default branch
+- [ ] **P0** 0.5 Delete any tags inherited from upstream (they poison `git describe --tags`)
+- [ ] **P0** 0.6 Leave the working repo's `origin` on the Mac and add **no** GitHub remote
+      (a remote named `github` sorts ahead of `origin` and silently redirects the backup);
+      `git remote set-url --push upstream DISABLED`
+- [ ] **P1** 0.7 Optionally automate leg 2 with a `post-receive` hook on the bare
+- [ ] **P0** 0.8 Confirm the fork is **public** (unauthenticated Release downloads)
+- [ ] **P1** 0.9 Preserve `LICENSE`; the fork badge supplies attribution
+- [ ] **P0** 0.10 Verify the chain end to end (both legs; the gate is now the *inverse* of
+      the pre-2026-07-27 one — `origin` must be the **Mac**)
 
 ### Phase 1 — Remove the runtime CDN dependency · `plan-webtmux-portable-vendor.md` *(OPTIONAL, last)*
 
@@ -320,7 +332,7 @@ exists in this container, so the CSS cascade cannot be executed here. Ranked:
 
 1. Execute Stage D (`plan-webtmux-portable-deps.md`) — first, so everything downstream is
    built against a smaller surface.
-2. User executes Stage 0 (`plan-webtmux-portable-fork.md`): fork, push, confirm public.
+2. User executes Stage 0 (`plan-webtmux-portable-fork.md`): fork, push **from the Mac bare**, confirm public.
 3. Execute Stage 2 (`plan-webtmux-portable-release.md`) — publishes `v0.1.0`, which is
    what the launcher will fetch.
 4. Execute Stage 3 (`plan-webtmux-portable-launcher.md`) — the deliverable.

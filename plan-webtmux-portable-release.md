@@ -271,7 +271,8 @@ a release needs committing after the build. Tag the release commit, build *from 
   rebuild — that decoupling is the whole point of the launcher fetching rather than
   embedding. Include `webtmux-launch-*` assets only when the launcher actually changed.
 - History already carries ~48 MB of packed pre-split binary blobs. **Sunk cost — leave
-  it.** A history rewrite would break the live worktrees and every clone.
+  it.** A history rewrite would invalidate every clone and force the Mac bare to be
+  rebuilt.
 
 ---
 
