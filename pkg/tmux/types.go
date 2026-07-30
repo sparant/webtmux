@@ -35,7 +35,7 @@ type Layout struct {
 	// AllWorking maps EVERY tmux window_id (across ALL sessions) to its @wt_working
 	// value ("1"/"0"/"2"/""), read once per refresh via `list-windows -a`. Windows above
 	// only covers the attached session `sess`, so a window living in another session
-	// (e.g. a claude-editors window while this region views services) would otherwise
+	// (e.g. an `editors` window while this region views `services`) would otherwise
 	// have no status. Recent-tab dots read from this so each window's light reflects
 	// its OWN @wt_working regardless of which session is currently focused.
 	AllWorking map[string]string `json:"allWorking,omitempty"`

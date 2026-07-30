@@ -3,7 +3,7 @@
 // "Save on the machine tmux runs on" quietly assumes webtmux and tmux share a
 // filesystem. They often don't: webtmux commonly runs in a container whose only
 // window onto the host is the tmux control socket, so tmux reports a pane
-// directory like /home/nathan/Projects that the process doing the write cannot
+// directory like /home/you/Projects that the process doing the write cannot
 // see. The old hint stated the rule ("relative paths save in the focused pane's
 // current directory") as though it always held, and the first sign that it
 // didn't was an open(2) error naming a directory the user has a shell sitting in.
@@ -40,7 +40,7 @@ export function saveHint(info) {
       level: 'warn',
       text: 'webtmux runs in a container and does not know a directory it shares with the machine '
         + 'tmux runs on, so a file saved now could vanish with the container. Name one above — a path '
-        + 'as webtmux sees it (e.g. /workspace), mounted from outside — and it will be remembered. '
+        + 'as webtmux sees it (e.g. /data), mounted from outside — and it will be remembered. '
         + '"Download to browser" needs no directory at all.',
     };
   }

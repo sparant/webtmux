@@ -679,8 +679,8 @@ func (c *Controller) RefreshLayout() error {
 
 	// Global @wt_working across ALL sessions, keyed by window_id, plus the window
 	// DIRECTORY those ids refer to. The per-session Windows list above only covers
-	// `sess`, so a window in another session (e.g. a claude-editors window while this
-	// region views services) would carry no status and its recent-tab dot would go
+	// `sess`, so a window in another session (e.g. an `editors` window while this
+	// region views `services`) would carry no status and its recent-tab dot would go
 	// blank/stale as the focus roams between sessions. One `list-windows -a` makes
 	// every window's light foreground-independent — and, since the fork is already
 	// happening, carries the session/index/name that make such a window NAVIGABLE

@@ -13,20 +13,20 @@ import (
 // which one is missing what.
 
 func TestPathMapRewritesOnBoundaries(t *testing.T) {
-	maps := parsePathMap("/home/nathan/Projects=/workspace, /var/log=/logs")
+	maps := parsePathMap("/home/you/Projects=/workspace, /var/log=/logs")
 
-	got, ok := applyPathMap(maps, "/home/nathan/Projects/webtmux/out.txt")
+	got, ok := applyPathMap(maps, "/home/you/Projects/webtmux/out.txt")
 	if !ok || got != "/workspace/webtmux/out.txt" {
 		t.Fatalf("prefix rewrite = %q (%v), want /workspace/webtmux/out.txt", got, ok)
 	}
 	// The prefix itself maps.
-	if got, ok := applyPathMap(maps, "/home/nathan/Projects"); !ok || got != "/workspace" {
+	if got, ok := applyPathMap(maps, "/home/you/Projects"); !ok || got != "/workspace" {
 		t.Fatalf("bare prefix = %q (%v), want /workspace", got, ok)
 	}
 	// A path that merely STARTS WITH the same characters must not match — the
 	// whole point of a prefix map is that it follows directory boundaries.
-	if got, ok := applyPathMap(maps, "/home/nathan/Projects-old/x"); ok {
-		t.Fatalf("boundary violation: /home/nathan/Projects-old/x mapped to %q", got)
+	if got, ok := applyPathMap(maps, "/home/you/Projects-old/x"); ok {
+		t.Fatalf("boundary violation: /home/you/Projects-old/x mapped to %q", got)
 	}
 	// Unmapped paths pass through untouched.
 	if got, ok := applyPathMap(maps, "/etc/hosts"); ok || got != "/etc/hosts" {
@@ -35,8 +35,8 @@ func TestPathMapRewritesOnBoundaries(t *testing.T) {
 }
 
 func TestPathMapPrefersTheLongestMatch(t *testing.T) {
-	maps := parsePathMap("/home=/h,/home/nathan/Projects=/workspace")
-	got, _ := applyPathMap(maps, "/home/nathan/Projects/a.txt")
+	maps := parsePathMap("/home=/h,/home/you/Projects=/workspace")
+	got, _ := applyPathMap(maps, "/home/you/Projects/a.txt")
 	if got != "/workspace/a.txt" {
 		t.Fatalf("longest-match = %q, want /workspace/a.txt", got)
 	}
@@ -81,16 +81,16 @@ func TestTildeExpandsToTheConfiguredHome(t *testing.T) {
 // a path that plainly exists in their own shell.
 func TestMissingDirectoryIsExplainedNotJustReported(t *testing.T) {
 	env := SaveEnv{
-		PaneDir:   "/home/nathan/Projects",
+		PaneDir:   "/home/you/Projects",
 		BaseDir:   t.TempDir(),
 		Container: true,
 	}
-	_, err := resolveSavePath(env, "/home/nathan/Projects/services-13.txt")
+	_, err := resolveSavePath(env, "/home/you/Projects/services-13.txt")
 	if err == nil {
 		t.Fatal("expected an error for a directory that does not exist here")
 	}
 	msg := err.Error()
-	for _, want := range []string{"/home/nathan/Projects", "container", env.BaseDir, "Download to browser"} {
+	for _, want := range []string{"/home/you/Projects", "container", env.BaseDir, "Download to browser"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error message is missing %q:\n  %s", want, msg)
 		}
@@ -99,10 +99,10 @@ func TestMissingDirectoryIsExplainedNotJustReported(t *testing.T) {
 
 func TestTypedHostPathIsMappedRatherThanFailing(t *testing.T) {
 	server := t.TempDir()
-	t.Setenv("WEBTMUX_PATH_MAP", "/home/nathan/Projects="+server)
+	t.Setenv("WEBTMUX_PATH_MAP", "/home/you/Projects="+server)
 
 	env := SaveEnv{BaseDir: server, Home: server}
-	got, err := resolveSavePath(env, "/home/nathan/Projects/out.txt")
+	got, err := resolveSavePath(env, "/home/you/Projects/out.txt")
 	if err != nil {
 		t.Fatalf("a mapped host path should resolve, got: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestContainerWithNoSharedDirectoryRefusesToSave(t *testing.T) {
 	t.Setenv("WEBTMUX_SAVE_DIR", "")
 	t.Setenv("WEBTMUX_IN_CONTAINER", "1")
 
-	env := describeSaveEnv("/home/nathan/Projects", "")
+	env := describeSaveEnv("/home/you/Projects", "")
 	if !env.Blocked || env.BaseDir != "" {
 		t.Fatalf("expected a blocked env with no base dir, got %+v", env)
 	}
@@ -180,7 +180,7 @@ func TestAUserChosenDirectoryUnblocksAContainer(t *testing.T) {
 	t.Setenv("WEBTMUX_SAVE_DIR", "")
 	t.Setenv("WEBTMUX_IN_CONTAINER", "1")
 
-	env := describeSaveEnv("/home/nathan/Projects", mounted)
+	env := describeSaveEnv("/home/you/Projects", mounted)
 	if env.Blocked || env.Chosen != mounted || env.ChosenError != "" {
 		t.Fatalf("a valid chosen dir should unblock saving: %+v", env)
 	}
@@ -216,7 +216,7 @@ func TestABadChosenDirectoryIsReportedNotSubstituted(t *testing.T) {
 	t.Setenv("WEBTMUX_IN_CONTAINER", "1")
 
 	for _, bad := range []string{"/definitely/not/mounted", "workspace"} {
-		env := describeSaveEnv("/home/nathan/Projects", bad)
+		env := describeSaveEnv("/home/you/Projects", bad)
 		if env.ChosenError == "" {
 			t.Fatalf("%q should have been rejected: %+v", bad, env)
 		}
@@ -242,7 +242,7 @@ func TestTildeIsRefusedInAContainerWithNoDeclaredHome(t *testing.T) {
 	t.Setenv("WEBTMUX_PATH_MAP", "")
 	t.Setenv("WEBTMUX_IN_CONTAINER", "1")
 
-	env := describeSaveEnv("/home/nathan/Projects", mounted)
+	env := describeSaveEnv("/home/you/Projects", mounted)
 	if env.Home != "" {
 		t.Fatalf("a container with no WEBTMUX_HOME has no ~: %+v", env)
 	}
@@ -264,7 +264,7 @@ func TestDeclaringASaveDirUnblocksAContainer(t *testing.T) {
 	t.Setenv("WEBTMUX_SAVE_DIR", saves)
 	t.Setenv("WEBTMUX_IN_CONTAINER", "1")
 
-	env := describeSaveEnv("/home/nathan/Projects", "")
+	env := describeSaveEnv("/home/you/Projects", "")
 	if env.Blocked {
 		t.Fatalf("WEBTMUX_SAVE_DIR should unblock saving: %+v", env)
 	}
@@ -312,9 +312,9 @@ func TestDescribeSaveEnvFallsBackWhenThePaneDirIsInvisible(t *testing.T) {
 
 func TestDescribeSaveEnvReportsAMappedPaneDir(t *testing.T) {
 	server := t.TempDir()
-	t.Setenv("WEBTMUX_PATH_MAP", "/home/nathan/Projects="+server)
+	t.Setenv("WEBTMUX_PATH_MAP", "/home/you/Projects="+server)
 
-	env := describeSaveEnv("/home/nathan/Projects", "")
+	env := describeSaveEnv("/home/you/Projects", "")
 	if !env.PaneVisible || !env.Mapped || env.BaseDir != server {
 		t.Fatalf("mapping should make the pane dir visible: %+v", env)
 	}
@@ -467,7 +467,7 @@ func TestABlockedEnvRefusesAbsolutePathsToo(t *testing.T) {
 	t.Setenv("WEBTMUX_SAVE_DIR", "")
 	t.Setenv("WEBTMUX_IN_CONTAINER", "1")
 
-	env := describeSaveEnv("/home/nathan/Projects", "")
+	env := describeSaveEnv("/home/you/Projects", "")
 	if !env.Blocked {
 		t.Fatalf("expected a blocked env: %+v", env)
 	}

@@ -24,11 +24,11 @@ const BASE = {
   placements: [
     { id: '@1', session: 'services' },
     { id: '@2', session: 'services' },
-    { id: '@7', session: 'claude-editors' },
+    { id: '@7', session: 'editors' },
     { id: '@8', session: 'pi-editors' },
   ],
   recents: [
-    { id: '@7', session: 'claude-editors' },
+    { id: '@7', session: 'editors' },
     { id: '@2', session: 'services' },
     { id: '@1', session: 'services' },
   ],
@@ -36,8 +36,8 @@ const BASE = {
 };
 
 test('a saved view in ANOTHER session is restored, session and all', () => {
-  const view = resolveRestoreView({ ...BASE, saved: { windowId: '@7', session: 'claude-editors' } });
-  assert.deepEqual(view, { id: '@7', session: 'claude-editors' },
+  const view = resolveRestoreView({ ...BASE, saved: { windowId: '@7', session: 'editors' } });
+  assert.deepEqual(view, { id: '@7', session: 'editors' },
     'the window is not in the pane\'s own list — the saved session is what makes it reachable');
 });
 
@@ -66,7 +66,7 @@ test('a saved window whose session was never recorded is honored only HERE', () 
   // It falls through to the most-recent-tab fallback (rule 2) instead.
   assert.deepEqual(
     resolveRestoreView({ ...BASE, saved: { windowId: '@8', session: null } }),
-    { id: '@7', session: 'claude-editors' },
+    { id: '@7', session: 'editors' },
   );
 });
 
@@ -74,9 +74,9 @@ test('a saved view that is gone falls back to the most recent surviving tab', ()
   // The window was closed (or its session killed) while the browser was away.
   const view = resolveRestoreView({
     ...BASE,
-    saved: { windowId: '@99', session: 'claude-editors' },
+    saved: { windowId: '@99', session: 'editors' },
   });
-  assert.deepEqual(view, { id: '@7', session: 'claude-editors' },
+  assert.deepEqual(view, { id: '@7', session: 'editors' },
     '@7 is the most recently accessed placement that still exists');
 });
 
@@ -84,14 +84,14 @@ test('a killed session falls back too, even when the window id survives elsewher
   // @2 still exists in services, but the saved view claimed it in a session that is
   // gone. That exact placement is unrestorable, so the fallback runs.
   const view = resolveRestoreView({ ...BASE, saved: { windowId: '@2', session: 'gone' } });
-  assert.deepEqual(view, { id: '@7', session: 'claude-editors' });
+  assert.deepEqual(view, { id: '@7', session: 'editors' });
 });
 
 test('the fallback skips windows another pane already shows', () => {
   const view = resolveRestoreView({
     ...BASE,
     saved: { windowId: '@99', session: 'services' },
-    occupied: ['@7'],                       // a split region has claude-editors:@7
+    occupied: ['@7'],                       // a split region has editors:@7
   });
   assert.deepEqual(view, { id: '@2', session: 'services' }, 'next most recent, not a duplicate');
 });
@@ -100,7 +100,7 @@ test('a saved view another pane already shows is refused, not mirrored', () => {
   // Rule 2 of the navigation model: a window is visible in at most one pane.
   const view = resolveRestoreView({
     ...BASE,
-    saved: { windowId: '@7', session: 'claude-editors' },
+    saved: { windowId: '@7', session: 'editors' },
     occupied: ['@7'],
   });
   assert.deepEqual(view, { id: '@2', session: 'services' });
@@ -126,10 +126,10 @@ test('the fallback ranks by recency, not by strip order', () => {
     recents: [                              // strip order deliberately oldest-first
       { id: '@1', session: 'services' },
       { id: '@2', session: 'services' },
-      { id: '@7', session: 'claude-editors' },
+      { id: '@7', session: 'editors' },
     ],
   });
-  assert.deepEqual(view, { id: '@7', session: 'claude-editors' });
+  assert.deepEqual(view, { id: '@7', session: 'editors' });
 });
 
 test('a recents entry for a window in a session that no longer holds it is skipped', () => {
@@ -172,9 +172,9 @@ test('navigating away marks the passed-through boot window seen', () => {
 
 test('a cross-session restore hops, still suppressing the boot window', () => {
   const plan = planRestoreLanding({
-    view: { id: '@7', session: 'claude-editors' }, bootId: '@1', session: 'services',
+    view: { id: '@7', session: 'editors' }, bootId: '@1', session: 'services',
   });
-  assert.deepEqual(plan, { markSeen: '@1', nav: { id: '@7', session: 'claude-editors', hop: true } });
+  assert.deepEqual(plan, { markSeen: '@1', nav: { id: '@7', session: 'editors', hop: true } });
 });
 
 test('a linked window restored to its OTHER session must NOT be marked seen', () => {
@@ -182,9 +182,9 @@ test('a linked window restored to its OTHER session must NOT be marked seen', ()
   // new session) read as "no change" and swallow the access that restore must record.
   // The hop's intermediate layout is covered by _navSuppress in the caller instead.
   const plan = planRestoreLanding({
-    view: { id: '@1', session: 'claude-editors' }, bootId: '@1', session: 'services',
+    view: { id: '@1', session: 'editors' }, bootId: '@1', session: 'services',
   });
-  assert.deepEqual(plan, { markSeen: null, nav: { id: '@1', session: 'claude-editors', hop: true } });
+  assert.deepEqual(plan, { markSeen: null, nav: { id: '@1', session: 'editors', hop: true } });
 });
 
 test('planRestoreLanding is total for no input at all', () => {
@@ -203,7 +203,7 @@ test('no server directory: fall back to the pane\'s own session list', () => {
   // honored; the fallback then sees only this session's tabs and picks the most recent
   // of those, which is still better than sitting on the attach window.
   assert.deepEqual(
-    resolveRestoreView({ ...BASE, placements: [], saved: { windowId: '@7', session: 'claude-editors' } }),
+    resolveRestoreView({ ...BASE, placements: [], saved: { windowId: '@7', session: 'editors' } }),
     { id: '@2', session: 'services' },
   );
   // With nothing here worth returning to either, the pane is left alone.
@@ -211,8 +211,8 @@ test('no server directory: fall back to the pane\'s own session list', () => {
     resolveRestoreView({
       ...BASE,
       placements: [],
-      recents: [{ id: '@7', session: 'claude-editors' }],
-      saved: { windowId: '@7', session: 'claude-editors' },
+      recents: [{ id: '@7', session: 'editors' }],
+      saved: { windowId: '@7', session: 'editors' },
     }),
     null,
   );

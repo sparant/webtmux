@@ -655,7 +655,7 @@ is missing the directory rather than surfacing a raw `open` error.
 When webtmux is containerized and no shared directory is known, it does not
 guess: a container's own filesystem is always writable, so saving there would
 report success for a file that dies with the container. Instead the dropdown
-**asks** — "name a directory as webtmux sees it (e.g. `/workspace`), mounted from
+**asks** — "name a directory as webtmux sees it (e.g. `/data`), mounted from
 outside" — checks that it exists and is writable, and remembers it (in the shared
 tmux UI state, so every client on that server gets the answer). A remembered
 directory that later disappears re-opens the question rather than silently
@@ -669,7 +669,7 @@ saving a text file needs. Four environment variables adjust the resolution:
 
 | Variable               | Effect                                                                                                                                                                                                                                                                                                                   |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `WEBTMUX_PATH_MAP`     | `host=server[,host2=server2]` prefix rewrites, applied to the pane's directory and to absolute paths you type — e.g. `/home/you/Projects=/workspace`                                                                                                                                                                     |
+| `WEBTMUX_PATH_MAP`     | `host=server[,host2=server2]` prefix rewrites, applied to the pane's directory and to absolute paths you type — e.g. `/home/you/Projects=/data`                                                                                                                                                                     |
 | `WEBTMUX_SAVE_DIR`     | Declares a **shared** directory and enables server-side saving in a container; relative saves land here when the pane's own directory isn't visible. Created if missing. Outside a container this defaults to `$HOME`, then the process's working directory. A directory the user names in the dropdown takes precedence |
 | `WEBTMUX_HOME`         | What `~` expands to. Unset inside a container, `~` is refused rather than expanded to the image's own home                                                                                                                                                                                                               |
 | `WEBTMUX_IN_CONTAINER` | `1`/`0` to override container auto-detection, which only affects the _wording_ of the explanation                                                                                                                                                                                                                        |

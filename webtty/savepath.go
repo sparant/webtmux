@@ -5,10 +5,10 @@ package webtty
 // The complication is that webtmux and tmux need not share a filesystem. The
 // deployment this was written against runs webtmux in a container whose ONLY
 // host mount is the tmux control socket, so tmux truthfully reports a pane
-// directory like /home/nathan/Projects that simply does not exist for the
+// directory like /home/you/Projects that simply does not exist for the
 // process doing the write. Resolving a relative path against it produced
 //
-//     open /home/nathan/Projects/services-13-webtmux.txt: no such file or directory
+//     open /home/you/Projects/services-13-webtmux.txt: no such file or directory
 //
 // — an error about a path the user never typed, naming a directory they can see
 // in their own shell. The path wasn't wrong; the two sides were looking at
@@ -22,7 +22,7 @@ package webtty
 //
 //	WEBTMUX_PATH_MAP  host=server[,host2=server2]  prefix rewrites applied to the
 //	                  pane directory AND to any absolute path you type, so
-//	                  /home/nathan/Projects can resolve to /host-home/Projects.
+//	                  /home/you/Projects can resolve to /host-home/Projects.
 //	WEBTMUX_SAVE_DIR  where relative saves land when the pane's directory isn't
 //	                  visible here. Created if missing. Defaults to $HOME, then
 //	                  the process's own working directory.
@@ -173,7 +173,7 @@ func configuredPathMap() []pathMapping {
 }
 
 // applyPathMap rewrites p under the longest matching prefix. Matching is on path
-// BOUNDARIES: /home/nathan must not match /home/nathanx.
+// BOUNDARIES: /home/you must not match /home/youx.
 func applyPathMap(maps []pathMapping, p string) (string, bool) {
 	best := -1
 	for i, m := range maps {

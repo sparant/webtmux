@@ -63,7 +63,7 @@ has landed first.
       the resolved list and its origin, `WT_STOPLIGHT_VERBOSE=1` prints it at shell start, and
       `test/stoplight-hooks.sh` now asserts all three configurations (env-set, site-file,
       explicitly-empty) against the same command.*
-- [ ] P1 Personal-string scrub sweep (decision 3 second bullet) — comments/placeholders
+- [x] P1 Personal-string scrub sweep (decision 3 second bullet) — comments/placeholders
       only, no behavior; JS + Go grep sweep with `grep -a`. ~30m, Sonnet.
 
 ### Phase 2 — the PR-branch builder (P0)

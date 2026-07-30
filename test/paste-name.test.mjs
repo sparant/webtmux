@@ -30,7 +30,7 @@ test('a trailing slash means a directory, not an empty name', () => {
 
 test('a plain word is left exactly as it is', () => {
   assert.equal(trimPastedName('claude'), 'claude');
-  assert.equal(trimPastedName('Dominion-wq'), 'Dominion-wq');
+  assert.equal(trimPastedName('web-01'), 'web-01');
 });
 
 test('a dotted NAME keeps its dots — only a short trailing suffix is a suffix', () => {

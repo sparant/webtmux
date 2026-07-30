@@ -1119,7 +1119,7 @@ export class SplitManager {
     }
     // Global @wt_working for EVERY window id, regardless of which session each region
     // is attached to. Each region's `layout.windows` only lists ITS OWN session, so a
-    // window in another session (a claude-editors tab while this region views services)
+    // window in another session (an `editors` tab while this region views `services`)
     // had no status and its dot flipped blank/stale as focus roamed. `allWorking` is
     // the server's `list-windows -a` snapshot (same on every layout); merge across
     // regions so it's populated even before the focused region's first layout arrives.

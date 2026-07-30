@@ -132,7 +132,7 @@ func TestTypedPathIntoAnInvisibleDirectoryFailsWithAnExplanation(t *testing.T) {
 	t.Setenv("WEBTMUX_IN_CONTAINER", "1")
 	wt, m := saveHarness(t, cwd)
 
-	if err := wt.handleTmuxMessage(TmuxSavePaneFile, []byte(`{"windowId":"@0","path":"/home/nathan/Projects/services-13.txt"}`)); err != nil {
+	if err := wt.handleTmuxMessage(TmuxSavePaneFile, []byte(`{"windowId":"@0","path":"/home/you/Projects/services-13.txt"}`)); err != nil {
 		t.Fatalf("handleTmuxMessage: %v", err)
 	}
 	var res saveResultFrame
@@ -145,7 +145,7 @@ func TestTypedPathIntoAnInvisibleDirectoryFailsWithAnExplanation(t *testing.T) {
 	if strings.Contains(res.Error, "no such file or directory") {
 		t.Errorf("still leaking the raw open(2) error: %s", res.Error)
 	}
-	for _, want := range []string{"/home/nathan/Projects", "container", "Download to browser"} {
+	for _, want := range []string{"/home/you/Projects", "container", "Download to browser"} {
 		if !strings.Contains(res.Error, want) {
 			t.Errorf("error is missing %q:\n  %s", want, res.Error)
 		}
