@@ -12,6 +12,11 @@ BUILD_OPTIONS = -ldflags "-s -w -X main.Version=$(VERSION) -X webtmux/server.Bui
 OUTPUT_DIR = ./builds
 BINARY_NAME = webtmux
 DOCKER_PLATFORM ?= linux/amd64
+# Where releases are published. `gh` normally infers this from a git remote, but
+# it cannot here: this checkout's only writable remote is a private SSH host, not
+# a GitHub one, so `gh release create` without --repo fails with "none of the git
+# remotes point to a known GitHub host". Override for a different fork.
+RELEASE_REPO ?= sparant/webtmux
 
 # Platforms to build for (PTY not supported on Windows)
 PLATFORMS = \
@@ -170,6 +175,7 @@ release-binaries: cross-compile checksums
 	@echo ""
 	@echo "Built $(VERSION). Publish (user-executed — the agent has no GitHub auth):"
 	@echo "  gh release create $(VERSION) builds/webtmux-* builds/SHA256SUMS \\"
+	@echo "     --repo $(RELEASE_REPO) \\"
 	@echo "     --title 'webtmux $(VERSION)' --notes-file release-notes.md"
 
 # Create release archives (tarballs under builds/dist/). Predates the move to

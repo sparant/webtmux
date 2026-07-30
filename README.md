@@ -744,7 +744,11 @@ make release-binaries
 ```
 
 `release-binaries` stops there and prints the `gh release create` command; run it
-yourself after looking at the assets. Two rules the launcher depends on:
+yourself after looking at the assets. The printed command passes
+`--repo $(RELEASE_REPO)` because `gh` cannot infer the target from a remote in
+every checkout — override `RELEASE_REPO` if you publish to a different fork.
+
+Two rules the launcher depends on:
 
 - **Upload `SHA256SUMS` as its own asset.** The launcher fetches it before deciding
   whether to download a 12 MB binary; without it that cheap path is gone.
