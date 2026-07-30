@@ -107,10 +107,12 @@ has landed first.
       driver posed all 16 flows — recents, stoplights, sidebar, split, Exposé, capture,
       preview/PiP, hover, copy/scroll, save, shortcuts, rendering, build chip, state
       persistence — DONE all ok.*
-- [ ] P0 Mark complete; merge `harden-prep` via the lock wrapper; tick subplan D and the
+- [x] P0 Mark complete; merge `harden-prep` via the lock wrapper; tick subplan D and the
       master plan completion list. ~15m.
-      *Left to the parent session by instruction: this agent does not merge `harden-prep`
-      and does not edit the master plan.*
+      Merged to local-main as `a33f4fd`; worktree and branch removed. `pr/upstream` then
+      regenerated from the merged local-main (`ddb02c6`) so it derives from the
+      integration branch rather than from `harden-prep`: 37 files, 11,818 deletions,
+      Go + JS + hooks + `make build` all green on the stripped tree.
 
 ## Non-goals
 

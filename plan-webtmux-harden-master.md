@@ -27,7 +27,7 @@ Each subplan declares its own worktree off `/workspace/` and merges through
 | A | `plan-webtmux-harden-state.md` | Frontend @wt_state sync protocol: cold-cache clobber, recents signature poisoning, rev divergence, flush loss, per-server cache, recency pruning | [x] merged `2341dd7` |
 | B | `plan-webtmux-harden-guards.md` | Backend write authority: permitWrite gating matrix, savepath confinement, cross-session mutation fallbacks, capture fan-out cap | [x] merged `5a83b7c` |
 | C | `plan-webtmux-harden-parse.md` | Backend robustness: controller identity-field races, comma/pipe field parsing, exact `-t` targeting, ws read limits | [x] merged `477310b` |
-| D | `plan-webtmux-harden-prep.md` | Upstream-PR branch: strip plan files/builds/dead gotty bundle, genericize stoplight installer, scrub personal-environment strings | [ ] gated on A+B+C |
+| D | `plan-webtmux-harden-prep.md` | Upstream-PR branch: strip plan files/builds/dead gotty bundle, genericize stoplight installer, scrub personal-environment strings | [x] merged `a33f4fd` |
 
 ## Ordering rationale
 
@@ -70,6 +70,37 @@ non-primary units — smaller UX items from the review's low tier; revisit after
 - [x] A merged to local-main, plan marked complete
 - [x] B merged to local-main, plan marked complete
 - [x] C merged to local-main, plan marked complete
-- [ ] D executed; `pr/upstream` branch exists and builds clean
-- [ ] Memory note `webtmux-review-deferred-findings` updated to point here / pruned
-- [ ] CLEANUP mode: retire this plan set
+- [x] D executed; `pr/upstream` branch exists and builds clean — `ddb02c6`, regenerated
+      from the merged local-main by `scripts/make-upstream-pr.sh`
+- [x] Memory note `webtmux-review-deferred-findings` updated to point here / pruned
+- [x] CLEANUP mode: retire this plan set — this commit marks the set complete; the
+      deletion follows immediately after, and these merge commits are the record
+      (`2341dd7` A, `477310b` C, `5a83b7c` B, `a33f4fd` D)
+
+## Outcome
+
+All four subplans merged to `local-main` on 2026-07-30. Each was verified before merge:
+JS suite 203 → 253 tests, `go vet` + `go test -race` green, `make check-js` /
+`sync-assets` / `test-hooks`, and a real-browser Playwright driver per subplan
+(`screenshots/harness/verify-state-sync.js`, `verify-parse.js`, `verify-guards.js`).
+Subplan A's driver was also run against the pre-fix commit and failed exactly the three
+checks describing the bug, so the harness is not vacuous.
+
+Deviations that changed the design, all decided during execution and documented in the
+subplan files before deletion:
+
+- **C:** tmux's `=name` exact-match is not universal — target-pane commands need `=name:`
+  and `set-option -t` accepts neither (targets `#{session_id}` instead). Following the
+  plan literally would have broken copy mode, scroll and the session-identity read.
+- **C:** the plan's "`enumSep` NUL approach already in the codebase" did not exist;
+  session-id indirection is the workable form of that intent.
+- **B:** there was no "existing toolbar error toast" to surface refusals on — a transient
+  toolbar notice was added, and only deliberate refusals (`tmux.ErrRefused`) reach the
+  client, so ordinary tmux races stay logged-and-silent.
+- **D:** the delegate patterns went to a repo site file (`scripts/stoplight-delegates.env.sh`,
+  sourced only when `WT_STOPLIGHT_DELEGATES` is unset) rather than to a host bashrc line,
+  so the live host keeps working without a manual edit. The Dockerfile `js-build` stage
+  the plan meant to strip no longer exists.
+
+Still open, deliberately: the review's low-tier UX items listed under "Explicitly out of
+scope" above.
