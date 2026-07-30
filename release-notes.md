@@ -28,6 +28,35 @@ attaching to one:
   It installs webtmux on the target over SSH and supervises the tunnel; the target
   needs only `ssh` and `tmux`.
 
+## Authority and hardening
+
+Most of the features above were built assuming a trusted browser on a loopback
+port. This release closes the gaps that assumption left, because the launcher now
+makes remote use ordinary:
+
+- **`-w` (read-only) means watch again.** It gated exactly one thing — keystrokes
+  reaching the pty — while everything the browser learned to ask for afterwards
+  (select/kill/rename a window, switch or kill a session, rewrite the shared UI
+  state, write a file on the machine tmux runs on) arrived with no authority check.
+  A read-only server handed any authenticated client the whole tmux server plus a
+  filesystem write primitive. Every client→server message is now classified once
+  and enforced before dispatch; view-only is the set that changes nothing another
+  client can observe.
+- **Saving a pane buffer is confined to declared directories.** An absolute path
+  was honored as typed and a relative one could climb out with `../`. A resolved
+  path must now land inside a directory somebody actually named as a destination,
+  with symlinks resolved on both sides. A save also never replaces an existing file
+  without asking.
+- **tmux commands no longer guess.** Every mutation targets an exact window or
+  session, listings put machine-readable fields first so an arbitrary window name
+  cannot break parsing, identity reads are keyed by format rather than position,
+  and websocket reads and capture fan-out are bounded.
+- **The UI state protocol converges.** Concurrent browsers adopt the server's copy
+  per section instead of overwriting each other.
+
+Read-only is still not a sandbox — it is a browser-facing authority boundary. Bind
+loopback and tunnel over SSH, as the install steps below do.
+
 ## Install
 
 Binaries are release assets, one per platform, named `webtmux-<os>-<arch>`. The
