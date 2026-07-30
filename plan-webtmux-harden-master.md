@@ -26,7 +26,7 @@ Each subplan declares its own worktree off `/workspace/` and merges through
 |---|---------|-------|--------|
 | A | `plan-webtmux-harden-state.md` | Frontend @wt_state sync protocol: cold-cache clobber, recents signature poisoning, rev divergence, flush loss, per-server cache, recency pruning | [x] merged `2341dd7` |
 | B | `plan-webtmux-harden-guards.md` | Backend write authority: permitWrite gating matrix, savepath confinement, cross-session mutation fallbacks, capture fan-out cap | [ ] not started |
-| C | `plan-webtmux-harden-parse.md` | Backend robustness: controller identity-field races, comma/pipe field parsing, exact `-t` targeting, ws read limits | [ ] not started |
+| C | `plan-webtmux-harden-parse.md` | Backend robustness: controller identity-field races, comma/pipe field parsing, exact `-t` targeting, ws read limits | [x] merged `477310b` |
 | D | `plan-webtmux-harden-prep.md` | Upstream-PR branch: strip plan files/builds/dead gotty bundle, genericize stoplight installer, scrub personal-environment strings | [ ] gated on A+B+C |
 
 ## Ordering rationale
@@ -69,7 +69,7 @@ non-primary units — smaller UX items from the review's low tier; revisit after
 
 - [x] A merged to local-main, plan marked complete
 - [ ] B merged to local-main, plan marked complete
-- [ ] C merged to local-main, plan marked complete
+- [x] C merged to local-main, plan marked complete
 - [ ] D executed; `pr/upstream` branch exists and builds clean
 - [ ] Memory note `webtmux-review-deferred-findings` updated to point here / pruned
 - [ ] CLEANUP mode: retire this plan set

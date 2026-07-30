@@ -159,9 +159,11 @@ wrapper buffers unbounded input pre-check. Mechanical, well-testable hardening.
       `recentTrimName` pref (on by default) drops everything before the first
       space — the same rule that renders "claude Dominion" as "Dominion". The name
       in the strip's data is whole; the driver checks both for what they are.
-- [ ] P0 Mark complete, merge via the lock wrapper, tick subplan C in the master plan. ~15m.
-      Plan marked complete here; the MERGE and the master-plan tick are the parent
-      session's (subplan B is gated on it).
+- [x] P0 Mark complete, merge via the lock wrapper, tick subplan C in the master plan. ~15m.
+      Merged to local-main as `477310b`; worktree and branch removed. The one
+      predicted conflict (`controller.go`, subplan A's `serverIdentity` vs this
+      plan's `sessionNamesByID` at the same insertion point) was resolved
+      keep-both in the worktree first, so the integration merge itself was clean.
       **Merge preflight (done, read-only — `git merge-tree` against the local-main
       that now carries subplan A):** exactly ONE conflicting file,
       `pkg/tmux/controller.go`, and exactly one hunk in it — A's
