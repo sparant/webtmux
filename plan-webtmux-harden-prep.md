@@ -68,13 +68,29 @@ has landed first.
 
 ### Phase 2 — the PR-branch builder (P0)
 
-- [ ] P0 `scripts/make-upstream-pr.sh`: recreate `pr/upstream` from local-main; strip
+- [x] P0 `scripts/make-upstream-pr.sh`: recreate `pr/upstream` from local-main; strip
       paths per decision 2 (with the portable-release conditional); verify by building:
       `make check-js` + Go build in golang:1.23 docker on the stripped tree (catches a
       stripped file something still references). ~45m, Opus.
-- [ ] P1 Draft `PR-DESCRIPTION.md` (kept on local-main, consumed manually): feature
+      *Done. Two of decision 2's four strip targets turned out to be no-ops and are
+      reported as such by the script rather than dropped: `builds/` is already untracked
+      (`plan-webtmux-portable-release.md` landed), and the Dockerfile's `js-build` stage no
+      longer exists — the build/run split replaced it with a `golang:1.23-bookworm` builder
+      and a `FROM scratch AS artifact` export, neither of which touches `js/`. So the
+      gotty strip is the bundle plus the webpack project only. Added to the list:
+      `scripts/` (fork tooling + the machine-specific delegate list) and
+      `PR-DESCRIPTION.md`. The "claude-costs-style local files" clause is implemented as a
+      leak CHECK that fails the run, not a delete — a local file appearing in the base
+      wants a human. Verification widened beyond the plan's `check-js` + Go build to the
+      full JS suite, the hook suite (the stripped tree is the only place the empty
+      delegate default is exercised) and a sync-assets no-op assertion.*
+- [x] P1 Draft `PR-DESCRIPTION.md` (kept on local-main, consumed manually): feature
       summary reusing the README's "What this fork adds" groups, the warts note
       (decision 4), CDN note (decision 5), test instructions. ~35m, Sonnet.
+      *Decision 5 applies as written — `plan-webtmux-portable-vendor.md` has NOT landed and
+      `resources/index.html` still loads tailwind/xterm/lit from CDN, so it is a note, not a
+      change. Warts list gained one the plan did not name: the README's Extended WebSocket
+      Protocol table has drifted from `webtty/message_types.go`.*
 
 ### Phase 3 — verify & land (P0)
 
