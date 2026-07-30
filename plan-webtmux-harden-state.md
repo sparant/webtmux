@@ -118,7 +118,7 @@ sync protocol converge.
       13/13 PASS. NEGATIVE CONTROL: the same driver against the pre-fix commit
       (c287fb8) fails exactly 3 checks — B's cold boot writes `regions: []` over A's
       split, B never converges, and B wipes A's preview set. The harness is not vacuous.
-- [ ] P0 Mark plan complete, commit in worktree, merge via
+- [x] P0 Mark plan complete, commit in worktree, merge via
       `scripts/git-merge-worktree.sh /workspace/webtmux-harden-state --target local-main --no-ff --remove`;
       tick subplan A in the master plan on local-main. ~15m.
-      Worktree work is complete and committed; the merge is the parent session's.
+      Merged to local-main as `2341dd7`; worktree and branch removed.
