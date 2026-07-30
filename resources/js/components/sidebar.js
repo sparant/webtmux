@@ -83,6 +83,12 @@ class WebtmuxSidebar extends LitElement {
     // was flashing about has to be findable here the moment you arrive. Replaced
     // wholesale on every refresh (lit re-renders on identity), never mutated.
     alerts: { type: Object },
+    // This webtmux was started without `-w`: every control in here changes tmux
+    // (selecting a window moves the shared console, never mind new/kill/rename/
+    // drag), so on a read-only server the sidebar becomes what it already half is
+    // — a list. Reflected to a `readonly` attribute for the CSS below; set by the
+    // SplitManager from the connect handshake (see write-guard.js).
+    readOnly: { type: Boolean, reflect: true, attribute: 'readonly' },
   };
 
   // TIP_CSS is appended so the stoplight hint here is the same hint, after the
@@ -98,6 +104,23 @@ class WebtmuxSidebar extends LitElement {
       padding: 12px;
       overflow-y: auto;
       transition: width 0.2s, padding 0.2s;
+    }
+
+    /* ---- read-only mode (server started without -w) ------------------------
+       Every actionable row here drives a tmux mutation, so all of them go inert:
+       the window/session tabs (select, switch, new), the hover kill/unlink ×,
+       and the drags they carry (reorder, link). The list, the filter, the
+       stoplights and the hover previews all keep working — which is the whole
+       point of a read-only viewer. */
+    :host([readonly]) .session-tab,
+    :host([readonly]) .window-tab,
+    :host([readonly]) .kill { opacity: 0.45; pointer-events: none; }
+    .ro-note {
+      display: block;
+      margin-top: 6px;
+      color: #f2c774;
+      font-size: 10.5px;
+      line-height: 1.4;
     }
 
     /* Overlay ("hover") mode: float over the right of the terminal instead of
@@ -583,6 +606,7 @@ class WebtmuxSidebar extends LitElement {
     this.previewWindow = '';
     this.previewSession = '';
     this.alerts = null;      // WorkAlerts.snapshot(), pushed by the SplitManager
+    this.readOnly = false;   // set from the connect handshake (see write-guard.js)
     this._revealRow = '';    // pending revealWindow() scroll target
     this._revealSess = '';   // …and the session whose row it is (tree view)
     this._revealTries = 0;   // renders left to find it in before giving up
@@ -908,8 +932,17 @@ class WebtmuxSidebar extends LitElement {
       <div class="session-info">
         Session: ${this.layout.sessionBase || this.layout.sessionName}<br>
         ${this.layout.windows?.length || 0} windows
+        ${this._roNote()}
       </div>
     `;
+  }
+
+  // The one line that explains a sidebar full of inert rows. Sits in the footer
+  // both views already render, so neither view has to grow a banner.
+  _roNote() {
+    if (!this.readOnly) return '';
+    return html`<span class="ro-note">Read-only server (started without -w) — windows and
+      sessions can be watched here, not changed.</span>`;
   }
 
   // ---- the flat view: every session on the server, its windows beneath it -------
@@ -933,6 +966,7 @@ class WebtmuxSidebar extends LitElement {
         Session: ${this.layout.sessionBase || this.layout.sessionName}<br>
         ${tree.length} session${tree.length === 1 ? '' : 's'} · ${total} window${total === 1 ? '' : 's'}${
           this._searchWords.length ? ' matching' : ''}
+        ${this._roNote()}
       </div>
     `;
   }

@@ -23,6 +23,7 @@ import {
   normalizeMouseMode, resolvePress, needsForcedSelection, forceSelectionModifier,
   movedEnough, leaveCopyModeFirst, PressArbiter,
 } from './mouse-mode.js';
+import { writeAuthority, READ_ONLY_NOTICE } from './write-guard.js';
 
 // Protocol message types (must match Go constants)
 export const MSG = {
@@ -1276,6 +1277,14 @@ export class TerminalUnit {
           this.terminal.options.fontSize = prefs.fontSize;
           this.fitAddon.fit();
         }
+        // This connection's write authority (webtty/authority.go). Absent only
+        // from a server older than the gate, where everything was permitted — so
+        // an omitted field must NOT be read as read-only, or a new bundle against
+        // an old binary would grey out a UI that works.
+        if (prefs.permitWrite !== undefined) {
+          writeAuthority.set(prefs.permitWrite !== false);
+          if (this.onWriteAuthority) this.onWriteAuthority(prefs.permitWrite !== false);
+        }
         break;
 
       case MSG.SetReconnect:
@@ -1341,6 +1350,16 @@ export class TerminalUnit {
   // StateStore cannot: a persisted change handed to a closed socket is simply gone,
   // and the store has to know to keep holding it rather than mark it written.
   sendMessage(type, payload = '') {
+    // A server without `-w` drops mutating messages at its own gate
+    // (webtty/authority.go). Refusing here too is not belt-and-braces for
+    // security — the server is the boundary — it is what makes the refusal
+    // VISIBLE: the frame never leaves, the caller learns it failed, and the
+    // notice below says why once rather than the UI optimistically painting a
+    // tmux server that did not move.
+    if (!writeAuthority.allows(type)) {
+      this._noteReadOnly();
+      return false;
+    }
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       // Tick the toolbar's activity spinner for anything that drives tmux (the
       // callback debounces, so a burst is one increment).
@@ -1350,6 +1369,16 @@ export class TerminalUnit {
     }
     console.warn('WebSocket not ready, state:', this.ws?.readyState);
     return false;
+  }
+
+  // Surface the read-only refusal, throttled: a keystroke, a wheel spin and the
+  // 500ms state flush all end up here, and a banner per frame is noise. One
+  // notice every few seconds is enough to explain a dead-feeling UI.
+  _noteReadOnly() {
+    const now = Date.now();
+    if (this._roNoticeAt && now - this._roNoticeAt < 4000) return;
+    this._roNoticeAt = now;
+    if (this.onNotice) this.onNotice(READ_ONLY_NOTICE);
   }
 
   // ----- preview hold -----------------------------------------------------------

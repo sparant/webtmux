@@ -23,6 +23,7 @@ import {
   STATUS_FILTERS, normalizeStatusFilter, matchesStatus,
 } from '../stoplight.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
+import { READ_ONLY_NOTICE } from '../write-guard.js';
 
 const N_MAX_TILES = 24;
 const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css';
@@ -164,6 +165,11 @@ class WebtmuxExpose extends LitElement {
       gap: 16px;
       align-content: start;
     }
+    /* Read-only server: the tiles are a gallery, not a switcher — clicking one
+       would ask tmux to select a window, which is refused. Dim them; everything
+       else in the overlay (search, sort, the live thumbnails) still works. */
+    :host([readonly]) .tile { opacity: 0.55; }
+
     :host([density='2']) .grid {
       grid-template-columns: repeat(2, 1fr);
       grid-auto-rows: max(200px, calc((100vh - 120px) / 2));
@@ -819,6 +825,14 @@ class WebtmuxExpose extends LitElement {
   // ---- interaction ------------------------------------------------------------
 
   _selectWindow(windowId, session = '') {
+    // A read-only server refuses select-window (it moves the shared console), so
+    // the tiles are a gallery, not a switcher. Explain rather than navigate to a
+    // region that then fails to change. The tiles are greyed for this too — this
+    // guard also covers the keyboard path (Enter on the cursor tile).
+    if (this.manager?.readOnly) {
+      this.manager?.showNotice?.(READ_ONLY_NOTICE);
+      return;
+    }
     // Same navigation path as the toolbar recent-strip: jump to the region that
     // already shows it, or switch the focused region's session if the window lives
     // elsewhere, else select it here (optimistic paint happens in selectWindow). The

@@ -36,6 +36,7 @@ import { saveOkText } from './save-target.js';
 import { IS_MAC } from './os.js';
 import { stateStore } from './state-store.js';
 import { clientStore } from './client-store.js';
+import { READ_ONLY_NOTICE } from './write-guard.js';
 
 export class SplitManager {
   constructor(container) {
@@ -145,6 +146,46 @@ export class SplitManager {
     this._restoreSplitState();
   }
 
+  // --- write authority ----------------------------------------------------------
+  // A webtmux started without `-w` refuses everything that would change tmux or
+  // write a file (webtty/authority.go). The browser is told at connect; this is
+  // what it does with the answer.
+  //
+  // Two halves, and both are needed. The `readonly` ATTRIBUTE on each overlay
+  // greys its mutating controls out, so a viewer isn't hunting for the click that
+  // works — nothing here is a security measure, the server already refused. And
+  // the shared StateStore is put in read-only mode: @wt_state is a tmux write, so
+  // a viewer's UI arrangement stays in their own browser instead of being queued
+  // forever against a server that will never accept it.
+  applyWriteAuthority(permit) {
+    const ro = permit === false;
+    if (this._readOnly === ro) return;
+    this._readOnly = ro;
+    for (const el of [this.toolbar, this.sidebar, this.expose, this.pip]) {
+      el?.toggleAttribute?.('readonly', ro);
+    }
+    if (this.toolbar) this.toolbar.readOnly = ro;
+    if (this.sidebar) this.sidebar.readOnly = ro;
+    stateStore.setReadOnly(ro);
+    if (ro) this.showNotice(READ_ONLY_NOTICE);
+  }
+
+  // Is this connection read-only? Read by the surfaces that build their controls
+  // imperatively (Exposé tiles) rather than from a template.
+  get readOnly() { return !!this._readOnly; }
+
+  // One transient line in the toolbar. Used for the read-only refusal and for the
+  // controller's "refuse, don't guess" errors (TmuxError) — the two cases where an
+  // action did nothing for a reason the user cannot see in the terminal.
+  showNotice(text) {
+    if (!this.toolbar || !text) return;
+    this.toolbar.notice = String(text);
+    clearTimeout(this._noticeTimer);
+    this._noticeTimer = setTimeout(() => {
+      if (this.toolbar) this.toolbar.notice = '';
+    }, 6000);
+  }
+
   // Short, sanitized, unique-ish grouped session name (server also sanitizes).
   genSessionName() {
     const rnd = Math.random().toString(36).slice(2, 8);
@@ -188,6 +229,13 @@ export class SplitManager {
     unit.onTmuxActivity = () => this.pulseTmuxActivity();
     // …and losing/regaining the socket recolors it — see _refreshConnection.
     unit.onConnectionChange = () => this._refreshConnection();
+    // The server's write authority, learned from the preferences frame at connect
+    // (webtty/authority.go). Every region's connection carries the same answer;
+    // applying it from whichever arrives first is idempotent.
+    unit.onWriteAuthority = (permit) => this.applyWriteAuthority(permit);
+    // A refused control (read-only) explains itself once in the toolbar rather
+    // than looking broken.
+    unit.onNotice = (text) => this.showNotice(text);
     // Route this unit's capture replies into the shared cache, and give the unit
     // read access for optimistic paint on window switch.
     unit.captureCache = this.captureCache;

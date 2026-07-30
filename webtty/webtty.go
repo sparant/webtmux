@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 )
 
@@ -28,6 +29,13 @@ type WebTTY struct {
 
 	bufferSize int
 	writeMutex sync.Mutex
+
+	// blockedMu guards blockedLogged: the set of message types this connection
+	// has already refused for want of `-w`. A read-only browser re-sends the same
+	// blocked message on every poll/gesture, so logging each one would bury the
+	// log; one line per type per connection says everything the operator needs.
+	blockedMu     sync.Mutex
+	blockedLogged map[byte]bool
 
 	// Tmux controller for tmux-specific operations
 	tmuxCtrl TmuxController
@@ -157,9 +165,12 @@ func (wt *WebTTY) sendInitializeMessage() error {
 		}
 	}
 
-	if wt.masterPrefs != nil {
-		err := wt.masterWrite(append([]byte{SetPreferences}, wt.masterPrefs...))
-		if err != nil {
+	// Preferences are ALWAYS sent now, even when the operator configured none:
+	// they carry `permitWrite`, and the browser has to learn this connection's
+	// authority to grey out the controls it may not use. A read-only viewer that
+	// is not told is a viewer clicking things that silently do nothing.
+	for _, prefs := range wt.preferencesFrames() {
+		if err := wt.masterWrite(append([]byte{SetPreferences}, prefs...)); err != nil {
 			return fmt.Errorf("failed to set preferences: %w", err)
 		}
 	}
@@ -173,6 +184,35 @@ func (wt *WebTTY) sendInitializeMessage() error {
 	}
 
 	return nil
+}
+
+// preferencesFrames are the SetPreferences payloads to send at init: whatever the
+// operator configured (WithMasterPreferences), plus this connection's
+// `permitWrite`.
+//
+// Normally that is ONE frame — the flag merged into the configured object — so
+// the browser applies the whole preference set at once. If the configured value
+// is not a JSON object (nothing in this repo sets one, but the option takes
+// `any`) it is passed through verbatim and the authority flag rides in a second
+// frame: a strange preferences value must never cost the browser the one field
+// it needs to know what it may do.
+func (wt *WebTTY) preferencesFrames() [][]byte {
+	permit, _ := json.Marshal(wt.permitWrite)
+	own := []byte(`{"permitWrite":` + string(permit) + `}`)
+
+	if len(wt.masterPrefs) == 0 {
+		return [][]byte{own}
+	}
+	merged := map[string]json.RawMessage{}
+	if err := json.Unmarshal(wt.masterPrefs, &merged); err != nil {
+		return [][]byte{wt.masterPrefs, own}
+	}
+	merged["permitWrite"] = permit
+	data, err := json.Marshal(merged)
+	if err != nil {
+		return [][]byte{wt.masterPrefs, own}
+	}
+	return [][]byte{data}
 }
 
 func (wt *WebTTY) handleSlaveReadEvent(data []byte) error {
@@ -202,12 +242,22 @@ func (wt *WebTTY) handleMasterReadEvent(data []byte) error {
 		return errors.New("unexpected zero length read from master")
 	}
 
+	// The write-authority gate. Enforced HERE, once, before any handler runs, so
+	// that no future message type can reach tmux or the filesystem by being added
+	// to handleTmuxMessage and nowhere else. See authority.go for the matrix.
+	//
+	// Blocked messages are dropped, not fatal: returning an error from here unwinds
+	// Run -> processWSConn, whose `defer slave.Close()` SIGHUPs the pane's tmux
+	// client ([lost tty]). A read-only browser whose optimistic UI sends one
+	// forbidden click must not lose its terminal over it — it is told the mode at
+	// init and greys those controls out anyway.
+	if !wt.permitWrite && requiresWrite(data[0]) {
+		wt.logBlocked(data[0])
+		return nil
+	}
+
 	switch data[0] {
 	case Input:
-		if !wt.permitWrite {
-			return nil
-		}
-
 		if len(data) <= 1 {
 			return nil
 		}
@@ -272,6 +322,29 @@ func (wt *WebTTY) handleMasterReadEvent(data []byte) error {
 	}
 
 	return nil
+}
+
+// logBlocked reports the first refusal of each message type on this connection.
+//
+// Input is deliberately silent: it arrives once per keystroke, so a read-only
+// viewer resting a finger on a key would write the log a line at a time, and
+// "clients cannot type" is what the flag has always meant — it needs no notice.
+// Everything else is a control the browser offered and the server refused, which
+// is worth exactly one line saying which flag turns it on.
+func (wt *WebTTY) logBlocked(msgType byte) {
+	if msgType == Input {
+		return
+	}
+	wt.blockedMu.Lock()
+	defer wt.blockedMu.Unlock()
+	if wt.blockedLogged == nil {
+		wt.blockedLogged = map[byte]bool{}
+	}
+	if wt.blockedLogged[msgType] {
+		return
+	}
+	wt.blockedLogged[msgType] = true
+	log.Printf("read-only server: refusing %q messages from this client (start webtmux with -w to permit writes)", msgType)
 }
 
 type argResizeTerminal struct {

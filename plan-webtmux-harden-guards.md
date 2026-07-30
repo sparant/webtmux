@@ -53,13 +53,13 @@ authority lines and enforces them.
 
 ## Phases
 
-### Phase 1 — permitWrite (P0)
+### Phase 1 — permitWrite (P0) — complete
 
-- [ ] P0 Gating matrix in `webtty/webtty.go`/`tmux.go` per decision 1 + table test
+- [x] P0 Gating matrix in `webtty/webtty.go`/`tmux.go` per decision 1 + table test
       enumerating every message type against both modes (test fails if a future message
       type is added without classifying it — use an exhaustive switch over the const
       list). ~45m, Opus.
-- [ ] P1 `permitWrite` in the init message; frontend disables mutating controls
+- [x] P1 `permitWrite` in the init message; frontend disables mutating controls
       (toolbar/sidebar/Exposé actions, save-to-server option) in read-only mode. ~45m, Sonnet.
 
 ### Phase 2 — savepath (P0)

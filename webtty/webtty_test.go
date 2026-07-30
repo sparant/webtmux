@@ -16,9 +16,13 @@ func TestInitialization(t *testing.T) {
 	mMaster, _, _, cancel := prepareSUT(t, &wg)
 	defer cancel()
 
-	// Check that the initialization happens as expected
+	// Check that the initialization happens as expected. The preferences frame is
+	// part of every handshake now — it carries this connection's write authority
+	// (see authority.go), which the browser needs whether or not the operator
+	// configured any preferences of their own.
 	checkNextMsgType(t, mMaster.gottyToMasterReader, SetWindowTitle)
 	checkNextMsgType(t, mMaster.gottyToMasterReader, SetBufferSize)
+	checkNextMsgType(t, mMaster.gottyToMasterReader, SetPreferences)
 }
 
 func TestInitializationWithPreferences(t *testing.T) {
@@ -45,6 +49,7 @@ func TestInitializationWithReconnect(t *testing.T) {
 	checkNextMsgType(t, mMaster.gottyToMasterReader, SetWindowTitle)
 	checkNextMsgType(t, mMaster.gottyToMasterReader, SetBufferSize)
 	checkNextMsgType(t, mMaster.gottyToMasterReader, SetReconnect)
+	checkNextMsgType(t, mMaster.gottyToMasterReader, SetPreferences)
 }
 
 func TestWriteFromSlaveCommand(t *testing.T) {
@@ -57,6 +62,7 @@ func TestWriteFromSlaveCommand(t *testing.T) {
 	// Check that the initialization happens as expected
 	checkNextMsgType(t, mMaster.gottyToMasterReader, SetWindowTitle)
 	checkNextMsgType(t, mMaster.gottyToMasterReader, SetBufferSize)
+	checkNextMsgType(t, mMaster.gottyToMasterReader, SetPreferences)
 
 	// Simulate the slave (the process being run by GoTTY)
 	// echoing "foobar"
@@ -94,9 +100,10 @@ func TestWriteFromFrontend(t *testing.T) {
 	mMaster, mSlave, _, cancel := prepareSUT(t, &wg, WithPermitWrite())
 	defer cancel()
 
-	// Absorb initialization messages
+	// Absorb initialization messages (title, buffer size, preferences)
 	checkNextMsgType(t, mMaster.gottyToMasterReader, SetWindowTitle)
 	checkNextMsgType(t, mMaster.gottyToMasterReader, SetBufferSize)
+	checkNextMsgType(t, mMaster.gottyToMasterReader, SetPreferences)
 
 	// simulate input from frontend...
 	message := []byte("1hello\n") // line buffered canonical mode
@@ -120,9 +127,10 @@ func TestPing(t *testing.T) {
 	mMaster, _, _, cancel := prepareSUT(t, &wg)
 	defer cancel()
 
-	// Absorb initialization messages
+	// Absorb initialization messages (title, buffer size, preferences)
 	checkNextMsgType(t, mMaster.gottyToMasterReader, SetWindowTitle)
 	checkNextMsgType(t, mMaster.gottyToMasterReader, SetBufferSize)
+	checkNextMsgType(t, mMaster.gottyToMasterReader, SetPreferences)
 
 	// ping
 	message := []byte("2\n") // line buffered canonical mode
@@ -154,9 +162,10 @@ func TestResizeTerminal(t *testing.T) {
 	mMaster, mSlave, _, cancel := prepareSUT(t, &wg)
 	defer cancel()
 
-	// Absorb initialization messages
+	// Absorb initialization messages (title, buffer size, preferences)
 	checkNextMsgType(t, mMaster.gottyToMasterReader, SetWindowTitle)
 	checkNextMsgType(t, mMaster.gottyToMasterReader, SetBufferSize)
+	checkNextMsgType(t, mMaster.gottyToMasterReader, SetPreferences)
 
 	message := []byte(`3{"Columns": 1234, "Rows": 2345}` + "\n") // line buffered canonical mode
 
