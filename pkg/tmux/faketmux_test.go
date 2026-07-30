@@ -187,6 +187,16 @@ func (f *fakeServer) run(args ...string) (string, error) {
 
 	case "show-options":
 		return state, nil
+
+	case "new-session":
+		// `-P -F` asks tmux to print something about the session it just made; the
+		// controller uses it to learn the session id it will then target exactly.
+		if hasFlag(args, "-P") {
+			return renderFormat(flagValue(args, "-F"), map[string]string{
+				"session_id":   "$77",
+				"session_name": flagValue(args, "-s"),
+			}) + "\n", nil
+		}
 	}
 	return "", nil
 }

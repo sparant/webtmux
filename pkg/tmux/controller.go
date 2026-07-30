@@ -406,14 +406,24 @@ func (c *Controller) regroupOnto(base string) error {
 	defer c.setIdent(func(id *identState) { id.regrouping = false })
 
 	newName := fmt.Sprintf("web-h%d", time.Now().UnixNano()%1000000000)
-	if _, err := c.runTmux("new-session", "-d", "-t", exactSession(base), "-s", newName); err != nil {
+	// -P -F takes the new session's #{session_id} back. That id is the ONLY exact
+	// way to name it to set-option, which accepts neither `=name` nor `=name:`; it
+	// also spares kill-session a prefix match against a sibling web-h session
+	// whose generated name happens to extend this one's. Falling back to the name
+	// keeps the previous behaviour if tmux prints nothing.
+	out, err := c.runTmux("new-session", "-d", "-t", exactSession(base), "-s", newName, "-P", "-F", "#{session_id}")
+	if err != nil {
 		return err
+	}
+	newTarget := strings.TrimSpace(out)
+	if newTarget == "" {
+		newTarget = newName
 	}
 	if err := c.switchOurClient(newName); err != nil {
-		c.runTmux("kill-session", "-t", exactSession(newName)) // couldn't move the client — clean up
+		c.runTmux("kill-session", "-t", newTarget) // couldn't move the client — clean up
 		return err
 	}
-	c.runTmux("set-option", "-t", exactSession(newName), "destroy-unattached", "on")
+	c.runTmux("set-option", "-t", newTarget, "destroy-unattached", "on")
 	c.setIdent(func(id *identState) {
 		id.baseSession = newName // discovery target + fallback now points at the fresh group
 		id.groupBase = base      // the logical session this pane now views
@@ -485,7 +495,7 @@ func (c *Controller) Start() error {
 	name := c.ident().sessionName
 	exists := false
 	for i := 0; i < 20; i++ {
-		if _, err := c.runTmux("has-session", "-t", "="+name); err == nil {
+		if _, err := c.runTmux("has-session", "-t", exactSession(name)); err == nil {
 			exists = true
 			break
 		}
@@ -538,7 +548,7 @@ func (c *Controller) RefreshLayout() error {
 	c.selfHeal(sess)
 	sess = c.session()
 	// Get session info
-	sessionOut, err := c.runTmux("display-message", "-t", exactSession(sess), "-p", sessionIdentFormat)
+	sessionOut, err := c.runTmux("display-message", "-t", exactPaneOf(sess), "-p", sessionIdentFormat)
 	if err != nil {
 		return err
 	}
@@ -663,7 +673,7 @@ func (c *Controller) SelectWindow(windowID string) error {
 
 	target := windowID // last-resort fallback: bare @id (single-session correctness)
 	if ok {
-		target = fmt.Sprintf("%s:%d", c.session(), idx)
+		target = exactWindow(c.session(), idx)
 	}
 
 	if _, err := c.runTmux("select-window", "-t", target); err != nil {
@@ -692,7 +702,9 @@ func (c *Controller) windowIndex(windowID string) (int, bool) {
 // RenameWindow renames a window by id. tmux disables automatic-rename for a
 // manually-renamed window, so the name sticks.
 func (c *Controller) RenameWindow(windowID, name string) error {
-	_, err := c.runTmux("rename-window", "-t", windowID, name)
+	// `--` so a name the user began with '-' is a NAME, not a flag. Window ids are
+	// already exact tmux targets, so `-t` needs no `=`.
+	_, err := c.runTmux("rename-window", "-t", windowID, "--", name)
 	if err != nil {
 		return err
 	}
@@ -740,7 +752,7 @@ func (c *Controller) windowOrderAndPos(windowID string) ([]int, int) {
 // That is one extra `list-windows` fork per such action, which is nothing next to
 // how rare the action is; the pane's own session keeps using the cache (below).
 func (c *Controller) sessionWindowOrder(session, windowID string) ([]int, int, int) {
-	out, err := c.runTmux("list-windows", "-t", session, "-F", "#{window_index} #{window_id}")
+	out, err := c.runTmux("list-windows", "-t", exactSession(session), "-F", "#{window_index} #{window_id}")
 	if err != nil {
 		return nil, -1, -1
 	}
@@ -837,8 +849,8 @@ func (c *Controller) MoveWindow(windowID string, targetPos int, session string) 
 
 func (c *Controller) swapWindows(sess string, a, b int) error {
 	_, err := c.runTmux("swap-window",
-		"-s", fmt.Sprintf("%s:%d", sess, a),
-		"-t", fmt.Sprintf("%s:%d", sess, b))
+		"-s", exactWindow(sess, a),
+		"-t", exactWindow(sess, b))
 	return err
 }
 
@@ -911,7 +923,7 @@ func (c *Controller) SplitPane(horizontal bool) error {
 	if horizontal {
 		flag = "-h"
 	}
-	_, err := c.runTmux("split-window", "-t", c.session(), flag)
+	_, err := c.runTmux("split-window", "-t", exactPaneOf(c.session()), flag)
 	if err != nil {
 		return err
 	}
@@ -932,7 +944,7 @@ func (c *Controller) ClosePane(paneID string) error {
 // EnterCopyMode enters copy mode on the active pane. Idempotent: tmux accepts
 // `copy-mode` on a pane that is already in it (exit 0, no-op).
 func (c *Controller) EnterCopyMode() error {
-	_, err := c.runTmux("copy-mode", "-t", c.session())
+	_, err := c.runTmux("copy-mode", "-t", exactPaneOf(c.session()))
 	return err
 }
 
@@ -951,7 +963,7 @@ func (c *Controller) EnterCopyMode() error {
 // `-q` quits the mode if there is one and exits 0 if there isn't (verified on
 // tmux 3.6), which is the idempotence every caller here actually wants.
 func (c *Controller) ExitCopyMode() error {
-	_, err := c.runTmux("copy-mode", "-q", "-t", c.session())
+	_, err := c.runTmux("copy-mode", "-q", "-t", exactPaneOf(c.session()))
 	return err
 }
 
@@ -984,10 +996,11 @@ func (c *Controller) RefreshClient() error {
 // line, so a fast wheel spin was dozens of processes and dozens of chances for
 // one of them to fail.
 func (c *Controller) ScrollUp(lines int) error {
-	if _, err := c.runTmux("copy-mode", "-t", c.session()); err != nil {
+	sess := exactPaneOf(c.session())
+	if _, err := c.runTmux("copy-mode", "-t", sess); err != nil {
 		return err
 	}
-	_, err := c.runTmux("send-keys", "-t", c.session(), "-N", strconv.Itoa(lines), "-X", "scroll-up")
+	_, err := c.runTmux("send-keys", "-t", sess, "-N", strconv.Itoa(lines), "-X", "scroll-up")
 	return err
 }
 
@@ -1000,7 +1013,7 @@ func (c *Controller) ScrollUp(lines int) error {
 // means the exact opposite. `if -F` evaluates the format and runs the command
 // under the same target in one tmux invocation, exiting 0 either way.
 func (c *Controller) ScrollDown(lines int) error {
-	_, err := c.runTmux("if-shell", "-F", "-t", c.session(), "#{pane_in_mode}",
+	_, err := c.runTmux("if-shell", "-F", "-t", exactPaneOf(c.session()), "#{pane_in_mode}",
 		fmt.Sprintf("send-keys -N %d -X scroll-down", lines))
 	return err
 }
@@ -1018,7 +1031,7 @@ func (c *Controller) NewWindow(session string) error {
 	if target == "" {
 		target = c.session()
 	}
-	_, err := c.runTmux("new-window", "-t", target)
+	_, err := c.runTmux("new-window", "-t", exactSession(target))
 	if err != nil {
 		return err
 	}
@@ -1044,7 +1057,7 @@ func (c *Controller) KillSession(sessionName string) error {
 	if sessionName == "" {
 		return nil
 	}
-	if _, err := c.runTmux("kill-session", "-t", sessionName); err != nil {
+	if _, err := c.runTmux("kill-session", "-t", exactSession(sessionName)); err != nil {
 		return err
 	}
 	c.RefreshLayout()
@@ -1065,9 +1078,9 @@ func (c *Controller) LinkWindow(windowID, targetSession string) error {
 		return nil
 	}
 	idx := c.nextWindowIndex(targetSession)
-	target := targetSession
+	target := exactSession(targetSession)
 	if idx >= 0 {
-		target = fmt.Sprintf("%s:%d", targetSession, idx)
+		target = exactWindow(targetSession, idx)
 	}
 	if _, err := c.runTmux("link-window", "-s", windowID, "-t", target); err != nil {
 		return err
@@ -1107,7 +1120,7 @@ func (c *Controller) UnlinkWindow(windowID string, session string) error {
 	if !ok || base == "" {
 		return fmt.Errorf("unlink-window: window %s not found in session %q", windowID, base)
 	}
-	if _, err := c.runTmux("unlink-window", "-t", fmt.Sprintf("%s:%d", base, idx)); err != nil {
+	if _, err := c.runTmux("unlink-window", "-t", exactWindow(base, idx)); err != nil {
 		return err
 	}
 	c.RefreshLayout()
@@ -1127,7 +1140,7 @@ func (c *Controller) logicalSession() string {
 
 // windowInSession reports whether windowID is already linked into session.
 func (c *Controller) windowInSession(windowID, session string) bool {
-	out, err := c.runTmux("list-windows", "-t", session, "-F", "#{window_id}")
+	out, err := c.runTmux("list-windows", "-t", exactSession(session), "-F", "#{window_id}")
 	if err != nil {
 		return false
 	}
@@ -1142,7 +1155,7 @@ func (c *Controller) windowInSession(windowID, session string) bool {
 // nextWindowIndex returns one past the highest window index in session (a free
 // slot to link into), or -1 if it can't be read.
 func (c *Controller) nextWindowIndex(session string) int {
-	out, err := c.runTmux("list-windows", "-t", session, "-F", "#{window_index}")
+	out, err := c.runTmux("list-windows", "-t", exactSession(session), "-F", "#{window_index}")
 	if err != nil {
 		return -1
 	}
@@ -1273,11 +1286,17 @@ func parseSessionEmptiness(out string, rows []sessionRow) map[string]bool {
 // RenameSession renames a session. tmux keys sessions by name, so this targets the
 // logical name the client sends (the base session; grouped web-* shadows keep
 // their own names and are unaffected).
+//
+// `-t =old` is what makes this safe: with a prefix-matched target, renaming a
+// stale "dev" happily renames "dev-2" instead — and the user is then looking at a
+// session that silently changed name under them. `--` lets the NEW name start
+// with '-' (tmux takes it as a positional argument, which would otherwise parse
+// as flags and fail with an unrelated "unknown option" message).
 func (c *Controller) RenameSession(oldName, newName string) error {
 	if oldName == "" || newName == "" {
 		return nil
 	}
-	if _, err := c.runTmux("rename-session", "-t", oldName, newName); err != nil {
+	if _, err := c.runTmux("rename-session", "-t", exactSession(oldName), "--", newName); err != nil {
 		return err
 	}
 	c.RefreshLayout()
@@ -1312,11 +1331,31 @@ func exactSession(name string) string {
 	return "=" + name
 }
 
-// exactWindow renders `session:index` as an exact-match window target (`=session:index`),
-// the form the A.1 spike confirmed tmux accepts (cmd-find strips the `=` from the
-// session half before resolving it).
+// exactWindow renders `session:index` as an exact-match window target
+// (`=session:index`).
 func exactWindow(session string, index int) string {
 	return fmt.Sprintf("%s:%d", exactSession(session), index)
+}
+
+// exactPaneOf renders "the active pane of the current window of this session" as
+// an exact-match TARGET-PANE: `=session:`.
+//
+// The trailing colon is load-bearing and was measured, not assumed (tmux 3.2a):
+// a bare `=name` is rejected by every command whose -t is a target-pane —
+// split-window, copy-mode and send-keys fail with "can't find pane: =name", and
+// display-message does something worse, expanding its whole format to the empty
+// string with exit status 0. With the colon tmux resolves the session half
+// exactly (`=dev-:` refuses to match "dev-2") and then takes its current
+// window's active pane, which is what every one of these callers means.
+//
+// `set-option -t` accepts NEITHER form ("no such session: =name") — the one
+// session-targeting command that has no exact syntax at all. Its single caller
+// here targets the session by #{session_id} instead; see regroupOnto.
+func exactPaneOf(session string) string {
+	if session == "" {
+		return ""
+	}
+	return "=" + session + ":"
 }
 
 // runTmux executes a tmux command with the given arguments through the

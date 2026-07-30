@@ -244,10 +244,17 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 		return wt.afterCmd("new session", wt.tmuxCtrl.NewSession())
 
 	case TmuxRenameSession:
-		// payload = "<oldName> <new name>"; session names have no spaces, so split
-		// on the first space and keep the rest as the (possibly-spaced) new name.
+		// payload = "<oldName>\x00<newName>".
+		//
+		// The only tmux payload with a user-typed string in FRONT, so it is the only
+		// one that can't delimit on the first space: this used to take the first
+		// token as the target, which meant renaming a session called "my project"
+		// aimed at "my" — and tmux resolves a session target by prefix, so that is a
+		// silent rename of whichever session starts with it. tmux forbids NUL in a
+		// session name, so a NUL is the one separator neither half can contain.
+		// A payload without one is dropped rather than guessed at.
 		s := string(payload)
-		idx := strings.IndexByte(s, ' ')
+		idx := strings.IndexByte(s, 0)
 		if idx < 0 {
 			return nil
 		}

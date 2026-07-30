@@ -101,7 +101,8 @@ func TestTmuxCommandFailureNeverEndsTheConnection(t *testing.T) {
 		// the session being reordered / unlinked from.
 		{"move window in another session", TmuxMoveWindow, "@3 2 editors"},
 		{"new session", TmuxNewSession, ""},
-		{"rename session", TmuxRenameSession, "old new"},
+		{"rename session", TmuxRenameSession, "old\x00new"},
+		{"rename session with no separator", TmuxRenameSession, "old new"},
 		{"kill window", TmuxKillWindow, "@3"},
 		{"kill session", TmuxKillSession, "scratch"},
 		{"link window", TmuxLinkWindow, "@3 services"},

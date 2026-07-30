@@ -98,12 +98,44 @@ wrapper buffers unbounded input pre-check. Mechanical, well-testable hardening.
       on `session_name`: it is already final-slot safe, and dropping an unnameable
       id there would UNDERCOUNT links, turning the sidebar's × from unlink to kill.
 
-### Phase 3 — targeting & transport (P1)
+### Phase 3 — targeting & transport (P1) — COMPLETE
 
-- [ ] P1 Exact `-t =name` sweep over destructive ops + leading-`-` policy + tests
+- [x] P1 Exact `-t =name` sweep over destructive ops + leading-`-` policy + tests
       (fake-runner asserts the literal argv). ~40m, Sonnet.
-- [ ] P1 `RenameSession` NUL-delimited payload (server + client + both test suites). ~35m, Sonnet.
-- [ ] P1 Bounded reads (decision 4) in `server/ws_wrapper.go` + `server/handlers.go`. ~30m, Sonnet.
+      **Decision 3 needed correcting against a live tmux (3.2a) — `=` is NOT
+      universal, and the plan's "already used by `Start()`" generalisation does not
+      hold.** Measured (probe scripts, since retired):
+      * session targets (`has-session`, `kill-session`, `rename-session`,
+        `switch-client`, `new-session -t`, `new-window -t`, `link-window -t`,
+        `unlink-window -t`, `select-window`, `swap-window`, `list-windows -t`,
+        `list-clients -t`) take `=name` / `=name:index`. Verified exact:
+        `switch-client -c tty -t dev-` moves the client to `dev-2` and exits 0,
+        `-t =dev-` refuses.
+      * target-PANE commands (`split-window`, `copy-mode`, `send-keys`, `if-shell`,
+        `display-message`) REJECT `=name` — "can't find pane: =name" — and
+        `display-message` fails silently, expanding its whole format to "" with
+        exit 0. They take `=name:` (session resolved exactly, then its current
+        window's active pane). Hence the second helper, `exactPaneOf`.
+      * `set-option -t` accepts NEITHER form ("no such session: =name"). Its one
+        caller (regroupOnto) now targets `#{session_id}`, taken from a `-P -F` on
+        the `new-session` that just created the session.
+      Leading-`-` policy: `--` where tmux takes the name as a positional argument
+      (`rename-session`, `rename-window` — both verified), and a refusal with an
+      honest message for `new-session -s`, where the name is an OPTION ARGUMENT
+      and tmux swallows a `--` as the name itself.
+      Tests: `pkg/tmux/controller_targets_test.go` asserts the literal argv per
+      command plus a sweep that no recorded `-t` names a session in bare form.
+- [x] P1 `RenameSession` NUL-delimited payload (server + client + both test suites). ~35m, Sonnet.
+      New import-free `resources/js/tmux-payloads.js` holds the encoder (the rest
+      of `terminal-unit.js` can't load under node), `webtty/tmux.go` decodes, a
+      payload without a NUL is dropped rather than guessed at. `make sync-assets`
+      run so `bindata/static/js/` carries both files.
+- [x] P1 Bounded reads (decision 4) in `server/ws_wrapper.go` + `server/handlers.go`. ~30m, Sonnet.
+      `webtty.DefaultBufferSize` exported so the transport ceiling and the buffer
+      size cannot drift; `newWSWrapper` arms `SetReadLimit`, `Read` copies through
+      an `io.LimitReader(reader, len(p)+1)`, and the pre-auth `conn.ReadMessage`
+      gets the limit before the handshake read. `server/ws_wrapper_test.go` drives
+      a real gorilla connection for all four cases.
 
 ### Phase 4 — verify & land (P0)
 
