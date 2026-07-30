@@ -51,9 +51,18 @@ has landed first.
 
 ### Phase 1 — genericize on local-main (P0)
 
-- [ ] P0 Stoplight installer parameterization (`WT_STOPLIGHT_DELEGATES`) + move our
+- [x] P0 Stoplight installer parameterization (`WT_STOPLIGHT_DELEGATES`) + move our
       patterns to the environment side (`scripts/webtmux-container/` or bashrc snippet —
       verify the live host setup keeps working); README hook section updated to match. ~45m, Opus.
+      *Done. Deviation from "an env line in our own bashrc": the agent cannot edit the host,
+      and an empty upstream default would have silently stopped delegation there. So the
+      patterns ship as `scripts/stoplight-delegates.env.sh`, which the installer sources ONLY
+      when `WT_STOPLIGHT_DELEGATES` is unset (environment still wins) and which
+      `make-upstream-pr.sh` strips — upstream keeps the empty default, the live host keeps
+      working with no bashrc edit at all. Loudness per the brief: `wt_stoplight_status` names
+      the resolved list and its origin, `WT_STOPLIGHT_VERBOSE=1` prints it at shell start, and
+      `test/stoplight-hooks.sh` now asserts all three configurations (env-set, site-file,
+      explicitly-empty) against the same command.*
 - [ ] P1 Personal-string scrub sweep (decision 3 second bullet) — comments/placeholders
       only, no behavior; JS + Go grep sweep with `grep -a`. ~30m, Sonnet.
 
