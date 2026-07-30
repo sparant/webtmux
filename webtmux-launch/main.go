@@ -59,6 +59,11 @@ type options struct {
 
 	target   string
 	tmuxArgs []string
+
+	// platformHint is filled in from the probe before the source is resolved.
+	// The "beside the launcher" fallback needs to know which asset name to look
+	// for, and that is not known until the target has been probed.
+	platformHint string
 }
 
 func usage(fs *flag.FlagSet) func() {
@@ -135,16 +140,12 @@ func main() {
 }
 
 func run(ctx context.Context, o *options) error {
-	// Resolve the source ONCE, at startup, before the probe and before any SSH.
-	// Everything downstream talks only to the Source interface: that is what
-	// keeps the release backend a different Digest/Open pair rather than a
-	// different code path through the launcher.
-	src, why, err := resolveSource(o, os.Getenv, filepath.Join(homeDir(), ".cache", "webtmux-launch"))
-	if err != nil {
+	// Validate an explicitly configured source BEFORE any SSH. Full resolution
+	// has to wait for the probe (the "beside the launcher" fallback needs the
+	// target's platform), but a typo'd directory should fail in milliseconds
+	// rather than after a round trip.
+	if err := validateSourceConfig(o, os.Getenv); err != nil {
 		return err
-	}
-	if o.verbose {
-		fmt.Printf("binary source: %s selected by %s\n", src.Kind(), why)
 	}
 
 	ssh := newSSHRunner(o.target, o.verbose)
@@ -167,73 +168,117 @@ func run(ctx context.Context, o *options) error {
 	if err != nil {
 		return err
 	}
+	o.platformHint = p.Platform
 	if o.verbose {
 		fmt.Printf("target: %s %s (%s), tmux %s, home %s\n", p.OS, p.Arch, p.Platform,
 			strings.TrimPrefix(p.TmuxVer, "tmux "), p.Home)
 	}
-
 	if err := cfg.ensure(o.localPort, o.remotePort); err != nil {
 		return err
 	}
 
-	// Mode selection: adoption is triggered purely by "an instance is already
-	// running" — never by detecting a durability problem, which is orthogonal
-	// and only changes what gets reported.
-	var adopted *instance
+	ask := newChooser()
+
+	// --- steps 1 and 2: an already-running webtmux wins, and several means ask.
+	//
+	// Adoption is triggered purely by "an instance is already running" — never
+	// by detecting a durability problem, which is orthogonal and only changes
+	// what gets reported.
 	if !o.fresh {
-		adopted, err = chooseInstance(p.Instances, o.remotePort)
+		adopted, err := pickInstance(p.Instances, o.remotePort, ask)
 		if err != nil {
 			return err
 		}
+		if adopted != nil {
+			return adopt(ctx, o, ssh, p, cfg, adopted)
+		}
 	}
-	if adopted == nil && o.adoptOnly {
+	if o.adoptOnly {
 		return fmt.Errorf("no webtmux is running on %s and --adopt-only was given", o.target)
 	}
 
-	if adopted != nil {
-		return adopt(ctx, o, ssh, p, cfg, src, adopted)
-	}
-	return launch(ctx, o, ssh, p, cfg, src)
-}
-
-// launch is the primary path: the launcher works on a machine that has never
-// seen webtmux — no config, no pre-deployed binary, no systemd unit.
-func launch(ctx context.Context, o *options, ssh *sshRunner, p *probe, cfg *targetConfig, src Source) error {
-	digest, err := src.Digest(p.Platform)
+	// --- step 3: nothing running, so decide which tmux session to attach to.
+	session, existed, err := pickSession(o.session, p, ask)
 	if err != nil {
 		return err
+	}
+	if existed {
+		fmt.Printf("attaching to existing session %q\n", session)
+	} else {
+		fmt.Printf("creating session %q\n", session)
+	}
+
+	// --- step 4: and only now does a binary matter.
+	return launch(ctx, o, ssh, p, cfg, session)
+}
+
+// resolveBinary is step 4: what should the remote command actually exec?
+//
+// Reusing a webtmux already on the target is checked FIRST because it is both
+// the cheapest outcome (no transfer, no download, no local read) and the one the
+// user is most likely to have arranged deliberately by installing webtmux there.
+// It is gated on the version matching what this launcher expects — an unknown
+// build is not a saving, it is a debugging session six months from now.
+func resolveBinary(ctx context.Context, o *options, ssh *sshRunner, p *probe) (*deployment, error) {
+	if !o.forceCopy && p.WebtmuxPath != "" && webtmuxVersionMatches(p.WebtmuxVer, o.webtmuxVersion) {
+		dep := planDeploy(p, "")
+		dep.SkipBinary = true
+		dep.BinaryPath = p.WebtmuxPath
+		fmt.Printf("using the webtmux already on the target: %s (%s)\n", p.WebtmuxPath, versionToken(p.WebtmuxVer))
+		return dep, nil
+	}
+	if p.WebtmuxPath != "" && o.verbose {
+		fmt.Printf("target has %s (%s), which is not %s — fetching the expected build\n",
+			p.WebtmuxPath, versionToken(p.WebtmuxVer), o.webtmuxVersion)
+	}
+
+	src, why, err := resolveSource(o, os.Getenv, filepath.Join(homeDir(), ".cache", "webtmux-launch"))
+	if err != nil {
+		return nil, err
+	}
+	if o.verbose {
+		fmt.Printf("binary source: %s selected by %s\n", src.Kind(), why)
+	}
+	digest, err := src.Digest(p.Platform)
+	if err != nil {
+		return nil, err
 	}
 	fmt.Println(sourceLine(src, p.Platform, digest))
 	if w := staleSourceWarning(src, p.Platform); w != "" {
 		fmt.Println(w)
 	}
-
 	// --webtmux-binary cannot check the file matches the target's platform, so
 	// a mismatch would surface as a bare "Exec format error" after a full
 	// transfer. Catch it locally, naming both architectures.
 	if fs, ok := src.(*fileSource); ok {
 		if err := checkBinaryArch(fs.file, p.Platform); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	dep := planDeploy(p, digest)
 	if err := dep.run(ctx, ssh, p, src, o.forceCopy); err != nil {
-		return err
+		return nil, err
 	}
 	switch {
+	case dep.FetchedRemotely:
+		fmt.Printf("target downloaded it: %s\n", dep.BinaryPath)
 	case dep.Copied:
 		fmt.Printf("deployed: %s\n", dep.BinaryPath)
 	case o.verbose:
 		fmt.Printf("already present: %s (no transfer)\n", dep.BinaryPath)
 	}
+	return dep, nil
+}
 
-	session := chooseSession(o.session, p.Sessions)
-	if contains(p.Sessions, session) {
-		fmt.Printf("attaching to existing session %q\n", session)
-	} else {
-		fmt.Printf("creating session %q\n", session)
+// launch is the primary path: the launcher works on a machine that has never
+// seen webtmux — no config, no pre-deployed binary, no systemd unit.
+func launch(ctx context.Context, o *options, ssh *sshRunner, p *probe, cfg *targetConfig, session string) error {
+	dep, err := resolveBinary(ctx, o, ssh, p)
+	if err != nil {
+		return err
 	}
+
 	// Base session creation is its own one-shot command, run BEFORE webtmux
 	// starts, so the session's durability never depends on anything the
 	// supervised process does.
@@ -354,23 +399,29 @@ func tieToConnection(cmd string) string {
 // session creation and launch entirely — the launcher's whole job becomes the
 // tunnel plus the browser, and teardown removes only our own tunnel. Getting
 // that backwards would destroy the very persistence the user set up.
-func adopt(ctx context.Context, o *options, ssh *sshRunner, p *probe, cfg *targetConfig, src Source, inst *instance) error {
-	// The build comparison needs only Source.Digest, so adopt mode never pulls
-	// 12 MB over the network and never reads the local binary either.
+func adopt(ctx context.Context, o *options, ssh *sshRunner, p *probe, cfg *targetConfig, inst *instance) error {
+	// The build comparison is BEST EFFORT and never blocks adoption. Adopting is
+	// step 1 of the priority order and must stay the cheap path: if no source is
+	// configured, or the release is unreachable, the right answer is to say the
+	// build is unknown and carry on connecting — not to fail on the way to a
+	// process that is already running perfectly well.
+	//
+	// It needs only Source.Digest, so even when it does run it never pulls 12 MB
+	// and never reads the local binary.
+	digest, srcDesc, err := bestEffortDigest(o, p)
 	match := ""
-	digest, err := src.Digest(p.Platform)
 	switch {
 	case err != nil:
-		match = "unknown (" + err.Error() + ")"
+		match = "not compared (" + err.Error() + ")"
 	case inst.ExeSHA == "":
 		match = "unknown (could not read /proc/" + fmt.Sprint(inst.PID) + "/exe)"
 	case inst.ExeSHA == digest:
-		match = "matches " + src.Kind() + " " + short12(digest)
+		match = "matches " + srcDesc + " " + short12(digest)
 	case inst.Containerized:
-		match = "differs from " + src.Kind() + " " + short12(digest) + " — expected: /proc/<pid>/exe is the container's binary"
+		match = "differs from " + srcDesc + " " + short12(digest) + " — expected: /proc/<pid>/exe is the container's binary"
 	default:
-		match = "differs from " + src.Kind() + " " + short12(digest) +
-			" — adopting a webtmux that is not the build in " + src.Location(p.Platform)
+		match = "differs from " + srcDesc + " " + short12(digest) +
+			" — adopting a webtmux that is not the build this launcher would install"
 	}
 	for _, line := range inst.report(match) {
 		fmt.Println(line)
@@ -403,20 +454,18 @@ func adopt(ctx context.Context, o *options, ssh *sshRunner, p *probe, cfg *targe
 	return sup.run(ctx)
 }
 
-// chooseSession implements the "attach if present, create durably if not"
-// default. With no --session and exactly one existing session, prefer it over
-// the literal name "main" — the box has already told us what it calls things.
-func chooseSession(want string, existing []string) string {
-	if want != "" {
-		return want
+// bestEffortDigest answers "what would this launcher install?" without ever
+// being a reason to fail. Used only to annotate an adoption.
+func bestEffortDigest(o *options, p *probe) (digest, describe string, err error) {
+	src, _, err := resolveSource(o, os.Getenv, filepath.Join(homeDir(), ".cache", "webtmux-launch"))
+	if err != nil {
+		return "", "", err
 	}
-	if len(existing) == 1 {
-		return existing[0]
+	d, err := src.Digest(p.Platform)
+	if err != nil {
+		return "", "", err
 	}
-	if contains(existing, "main") || len(existing) == 0 {
-		return "main"
-	}
-	return "main"
+	return d, src.Kind(), nil
 }
 
 func contains(list []string, s string) bool {

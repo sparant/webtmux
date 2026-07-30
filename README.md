@@ -324,6 +324,17 @@ systemd unit. The `<ssh-target>` is passed to `ssh` verbatim, so
 `~/.ssh/config` aliases, `user@host` forms and `ProxyJump` bastions all work,
 and you get one auth prompt for the whole session.
 
+**How it decides what to connect to**, in order:
+
+1. **A webtmux already running on the target wins.** Exactly one: it adopts that,
+   and nothing is deployed or started.
+2. **Several running** — it asks which, listing port, session and uptime. With no
+   terminal (a script) it refuses rather than guessing, and names `--remote-port`.
+3. **None running** — it attaches to an existing tmux session; several sessions
+   means the same question, answerable up front with `--session`. No sessions at
+   all: it creates one.
+4. **Only then does a binary matter** — see "Which webtmux gets installed" below.
+
 If a webtmux is **already running** on that box, the launcher adopts it —
 tunnel only, nothing deployed, nothing started, and quitting the launcher leaves
 your long-lived instance running. Otherwise it starts its own, and that one is
@@ -356,9 +367,25 @@ Useful flags:
 | `--webtmux-version vX.Y.Z\|latest` | which release to install                                                    |
 | `--verbose`                        | echo the ssh command lines and say which binary source won                  |
 
-**Which webtmux gets installed.** The launcher carries no webtmux payload; it
-downloads the matching release asset and pushes it down the SSH connection it
-already has open. The version is **pinned** at build time (currently `v0.1.0`)
+**Which webtmux gets installed.** The launcher carries no webtmux payload. It
+looks, in order:
+
+1. **A webtmux already on the target**, reused when `--version` matches what this
+   launcher expects — the cheapest outcome, and usually one you installed
+   deliberately. A version it cannot confirm (a `dev` build, or `latest`) is
+   never reused: an unknown build is not a saving.
+2. **A directory you configured** — `--webtmux-source <dir>`, or
+   `$WEBTMUX_LAUNCH_SOURCE`. If the asset for that platform is missing there,
+   that is an **error**, never a silent fall back to downloading.
+3. **A binary sitting next to the launcher itself**, so an unzipped directory of
+   downloaded assets works with no flags at all.
+4. **The GitHub release.** The target downloads it directly when it has
+   `curl`/`wget` — that skips pushing ~12 MB through the SSH connection, and the
+   sha256 is verified *on the target* before the binary is installed. A box with
+   no egress falls back automatically to being fed over the connection the
+   launcher already has, so **a target still never strictly needs internet.**
+
+The version is **pinned** at build time (currently `v0.1.0`)
 rather than tracking latest, so a launcher you have been using does not upgrade
 your remote out from under you mid-session — `--webtmux-version` overrides.
 Binaries land content-addressed under `~/.cache/webtmux/webtmux-<sha>`, so a
