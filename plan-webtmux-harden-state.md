@@ -48,13 +48,19 @@ sync protocol converge.
 
 ## Phases
 
-### Phase 1 — harness first (P0)
+### Phase 1 — harness first (P0) — complete
 
-- [ ] P0 Extend `test/state-store.test.mjs` with failing tests for decisions 1, 3, 4, 5
+- [x] P0 Extend `test/state-store.test.mjs` with failing tests for decisions 1, 3, 4, 5
       (fake ws send fn; simulate two stores sharing a fake tmux blob). ~40m, Sonnet.
-- [ ] P0 New `test/state-adopt.test.mjs`: cold-cache scenario — store B with empty cache
+      Decision 6 got tests here too (a fake localStorage, installed per test).
+      Three EXISTING tests had to gain a `firstPush(store)` line: they wrote without
+      ever calling `load()`, which decision 1 now (correctly) refuses.
+- [x] P0 New `test/state-adopt.test.mjs`: cold-cache scenario — store B with empty cache
       must adopt A's split/pip blob, and B's first navigation must not write `regions: []`.
       Drive via extracted pure logic (see Phase 2 extraction). ~40m, Opus.
+      The extraction is `SplitPersistence`/`splitSignature` in split-state.js, the split
+      section's answer to `RecentsPersistence`. pip is covered by the store-level gate
+      (it has no pure half to extract — its state IS the live xterm tile set).
 
 ### Phase 2 — StateStore core (P0)
 
