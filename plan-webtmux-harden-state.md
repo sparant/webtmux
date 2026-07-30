@@ -82,17 +82,28 @@ sync protocol converge.
       500ms refresh does not pay for it. Verified against real tmux 3.3a, not just the
       sanitizer table.
 
-### Phase 3 — consumers (P0)
+### Phase 3 — consumers (P0) — complete
 
-- [ ] P0 `split`: gate `_persistSplitState` and the boot-time eager persist on
+- [x] P0 `split`: gate `_persistSplitState` and the boot-time eager persist on
       `loadedOnce`; add remote adopt (re-run `_restoreSplitState` from the first remote
       blob when un-touched); mark `_userTouched` on any real navigation/region change. ~45m, Opus.
-- [ ] P0 `pip`: same treatment for `restoreState`/`_persist`; drop the unconditional
+      Both guards moved into `SplitPersistence`; `_restoreSplitState` split into a
+      read + `_applySplitView(view, {boot})`, which the adopt reuses (tearing the
+      extra regions down first — reached only when untouched, so nothing is lost).
+      Touch points: `addUnit` (extra region), `removeUnit`, `goToWindowIn` at the
+      commit point — all via `_touchSplit()`, which ignores restore-driven changes.
+- [x] P0 `pip`: same treatment for `restoreState`/`_persist`; drop the unconditional
       boot `_persist()` ("so its rev is current" — that rationale is the bug). ~30m, Sonnet.
-- [ ] P0 `recents`: persist-only-on-accepted-write (`_sig` on success), microtask-deferred
+      `restoreState` now RECONCILES (`_applyPersisted`) instead of only adding, because
+      the adopted blob can hold fewer windows than the cache did.
+- [x] P0 `recents`: persist-only-on-accepted-write (`_sig` on success), microtask-deferred
       refresh in the remote-adopt subscriber; regression test: prune-during-adopt converges
       in one round trip (kills the dead-tab-resurrection loop). ~40m, Sonnet.
-- [ ] P1 `recent` recency pruning + cap (decision 7) in capture-cache.js + test. ~30m, Sonnet.
+- [x] P1 `recent` recency pruning + cap (decision 7) in capture-cache.js + test. ~30m, Sonnet.
+      Pure `pruneRecency()` + a `gone` tombstone map persisted beside `windows`; fed from
+      the primary unit's `layout.allWindows` on each push. Recency bumps recorded before
+      the first push are replayed on top of the adopted blob rather than written from
+      the cache (same rule 1 problem, smaller blast radius).
 
 ### Phase 4 — verify & land (P0)
 

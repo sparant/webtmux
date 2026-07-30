@@ -30,7 +30,7 @@ import { HoverPreview } from './hover-preview.js';
 import { WorkAlerts, hiddenAlerts, alertOf } from './work-alerts.js';
 import { clampRecentsMax, RecentsPersistence } from './recents-strip.js';
 import { buildMruOrder } from './mru-order.js';
-import { readSplitState } from './split-state.js';
+import { SplitPersistence } from './split-state.js';
 import { resolveRestoreView, planRestoreLanding } from './restore-view.js';
 import { saveOkText } from './save-target.js';
 import { IS_MAC } from './os.js';
@@ -102,8 +102,12 @@ export class SplitManager {
     // Must exist before addUnit() below: that path reaches _refreshToolbar (and so
     // _persistRecents) while the strip is still empty and unrestored.
     this._recents = new RecentsPersistence(stateStore, 'recentTabs', this.recentsMax);
-    // Same no-write-before-first-read rule for the 'split' section; set true once
-    // _restoreSplitState has read the blob.
+    // Same no-write-before-first-read rule for the 'split' section, plus the
+    // shared one (nothing before the tmux server's own blob has been seen) and the
+    // adopt/touched bookkeeping — all of it in SplitPersistence, which is testable
+    // without a DOM. `_splitRestored` mirrors its read flag for the per-client
+    // focusedIndex write in focus(), which is not part of the shared section.
+    this._split = new SplitPersistence(stateStore, 'split');
     this._splitRestored = false;
     // Which WINDOWS — every window on the server, not just the five in the strip —
     // are flashing for attention because their stoplight dropped out of green while
@@ -205,7 +209,10 @@ export class SplitManager {
     this._equalizeRegions();   // a fresh region joins as an equal split, clearing any prior drag
     this.focus(unit);
     this._refitSoon();
-    if (!primary) this._persistSplitState();  // region count changed → shared 'split'
+    if (!primary) {
+      this._touchSplit();                  // a new region is this client's own arrangement
+      this._persistSplitState();           // region count changed → shared 'split'
+    }
     return unit;
   }
 
@@ -241,19 +248,32 @@ export class SplitManager {
   // shared blob rather than ClientStore. Restoring it re-selects the base session's
   // current window, which moves the console too; that is the accepted trade for the
   // main region remembering where you were. Per-client width/focus stay in ClientStore.
-  _persistSplitState() {
-    // Nothing may be written before _restoreSplitState has read (see
-    // RecentsPersistence in recents-strip.js for the bug this prevents: a write
-    // during construction clobbers the saved value, and the restore then reads back
-    // its own empty write).
-    if (!this._splitRestored || this._restoringSplit) return;
-    const regions = this.units.slice(1).map((u) => this._viewOf(u));
+  // The whole saved view: the extra regions plus the primary's own pair.
+  _splitView() {
     const primary = this._viewOf(this.units[0]);
-    stateStore.patchSection('split', {
-      regions,
+    return {
+      regions: this.units.slice(1).map((u) => this._viewOf(u)),
       primaryWindowId: primary.windowId,
       primarySession: primary.session,
-    });
+    };
+  }
+
+  // Publish the current view. Both write guards live in SplitPersistence (see
+  // split-state.js): nothing before this client has READ the section, and nothing
+  // before the first layout push has told us what the tmux server actually holds.
+  // The second one is what stops a browser opening for the first time from
+  // publishing its empty cache over everyone else's split.
+  _persistSplitState() {
+    if (this._restoringSplit) return false;
+    return this._split.persist(this._splitView());
+  }
+
+  // The user has arranged THIS client's split by hand — navigated a region, added
+  // one, closed one. From here the shared blob no longer re-applies itself over the
+  // top (see _adoptSplitState); adopting after a deliberate act would yank the view
+  // out from under them. Restore-driven changes are not touches, hence the guard.
+  _touchSplit() {
+    if (!this._restoringSplit) this._split.markTouched();
   }
 
   // A region's saveable view: the window it shows (or is on its way to) plus the
@@ -265,9 +285,9 @@ export class SplitManager {
   //     Reading the session off that layout would save a pair that cannot be honored,
   //     so the pending _targetSession — the session we asked for — is used instead.
   // A region recreated by _restoreSplitState has neither yet, only the view it is
-  // waiting to land on; without that branch the rev-refresh write at the end of
-  // _restoreSplitState would replace every saved region view with the null a
-  // freshly-created region has until its first layout arrives.
+  // waiting to land on; without that branch any persist that happens between the
+  // region being created and its first layout arriving would replace every saved
+  // region view with a null.
   _viewOf(unit) {
     if (!unit) return { windowId: null, session: null };
     if (unit._restoreWindowId) {
@@ -292,45 +312,15 @@ export class SplitManager {
   // Defensive: a stale/absent view just leaves that region on its default (handled
   // in _onUnitLayout via _applyRestoreTarget); no saved regions => a no-op.
   _restoreSplitState() {
-    // Read BEFORE anything can write (see _persistSplitState's guard). readSplitState
+    // Read BEFORE anything can write (SplitPersistence enforces that). readSplitState
     // also owns the rule that `regions` excludes the primary — see split-state.js.
-    const {
-      regions: list,
-      primaryWindowId: savedPrimary,
-      primarySession: savedPrimarySession,
-    } = readSplitState(stateStore.section('split'));
-
-    // The main region's last view. Claimed first so that if a stale blob names the
-    // same window for the primary and an extra region, the primary wins deterministically
-    // rather than by whichever layout happens to arrive first. Absent on blobs written
-    // before this was persisted — the primary then just stays on whatever window the
-    // base session is currently showing, i.e. the old console-driven behavior.
-    if (savedPrimary && this.units[0]) {
-      this.units[0]._restoreWindowId = savedPrimary;
-      this.units[0]._restoreSession = savedPrimarySession;
-    }
+    const saved = this._split.restore();
 
     // Every read of the blob is done, so writes are safe from here on. Region
     // creation below is covered separately by _restoringSplit.
     this._splitRestored = true;
 
-    if (list.length) {
-      this._restoringSplit = true;
-      try {
-        for (const view of list) {
-          const unit = this.addUnit({});
-          if (view.windowId) {
-            unit._restoreWindowId = view.windowId;
-            unit._restoreSession = view.session;
-          } else {
-            unit._autoPickPending = true;   // no saved window → MRU auto-pick
-          }
-        }
-      } finally {
-        this._restoringSplit = false;
-      }
-      this._persistSplitState();   // refresh the shared blob's rev to match reality
-    }
+    this._applySplitView(saved, { boot: true });
 
     // Per-client widths (applied AFTER regions exist; _equalizeRegions cleared them).
     const widths = clientStore.get('splitWidths', null);
@@ -343,6 +333,60 @@ export class SplitManager {
     // Per-client focused region.
     const fi = clientStore.get('focusedIndex', 0);
     if (Number.isInteger(fi) && this.units[fi]) this.focus(this.units[fi]);
+
+    // ADOPT, DON'T RESTORE-ONCE. Everything above came out of this browser's own
+    // localStorage cache, which on a first-ever visit is empty and on a stale one is
+    // wrong. The tmux server's copy is the shared truth, and it lands one layout push
+    // later — so re-apply from it, unless the user has already arranged this client's
+    // split by hand in the meantime.
+    stateStore.onFirstLoad(() => this._adoptSplitState());
+  }
+
+  // Put a saved view on screen. At boot the extra regions don't exist yet, so this
+  // creates them. On an ADOPT the current ones are torn down first — reached only
+  // when the user hasn't touched this client's split, so nothing of theirs is lost.
+  //
+  // The primary's view is claimed before the extras so that a stale blob naming the
+  // same window twice resolves deterministically in the primary's favour rather than
+  // by whichever layout happens to arrive first. A view with no primaryWindowId
+  // (blobs written before it was persisted) leaves the primary on whatever window
+  // the base session is showing — the old console-driven behavior.
+  _applySplitView(view, { boot = false } = {}) {
+    const list = (view && view.regions) || [];
+    if (!boot && !list.length && this.units.length === 1 && !view.primaryWindowId) return;
+    this._restoringSplit = true;
+    try {
+      if (!boot) {
+        for (const u of this.units.slice(1)) this.removeUnit(u);
+      }
+      if (view && view.primaryWindowId && this.units[0]) {
+        this.units[0]._restoreWindowId = view.primaryWindowId;
+        this.units[0]._restoreSession = view.primarySession;
+      }
+      for (const v of list) {
+        const unit = this.addUnit({});
+        if (v.windowId) {
+          unit._restoreWindowId = v.windowId;
+          unit._restoreSession = v.session;
+        } else {
+          unit._autoPickPending = true;   // no saved window → MRU auto-pick
+        }
+      }
+    } finally {
+      this._restoringSplit = false;
+    }
+  }
+
+  // Re-apply the split from the authoritative blob (decision 2). A no-op when the
+  // server agrees with what we already show, and when the user has taken over.
+  _adoptSplitState() {
+    const view = this._split.adopt();
+    if (!view) return;
+    this._applySplitView(view);
+    // The region COUNT may have changed, so this client's saved widths no longer
+    // describe anything; add/remove already re-equalized, so record that.
+    this._persistWidths();
+    this._refitSoon();
   }
 
   removeUnit(unit) {
@@ -372,6 +416,7 @@ export class SplitManager {
     this._equalizeRegions();   // remaining regions re-split evenly
     this.focus(this.units[Math.min(idx, this.units.length - 1)] || this.units[0]);
     this._refitSoon();
+    this._touchSplit();              // closing a region is this client's own arrangement
     this._persistSplitState();       // region count changed → shared 'split'
     this._persistWidths();           // regions re-equalized → drop stale per-client widths
   }
@@ -425,6 +470,13 @@ export class SplitManager {
     // sequence restarts at 1) can't have a stale cached rev suppress the new
     // server's real blob. Absent from older servers => the legacy single key.
     if (unit.primary) stateStore.load(unit.layout && unit.layout.state, unit.layout && unit.layout.serverStart);
+
+    // The same push carries the server-wide window DIRECTORY, which is the only
+    // thing that can tell the recency store that a window it still ranks no longer
+    // exists. Fed from the primary alone (the directory is identical on every unit).
+    if (unit.primary && unit.layout?.allWindows?.length) {
+      this.captureCache.noteLiveWindows(new Set(unit.layout.allWindows.map((w) => w.id)));
+    }
 
     if (unit === this.focusedUnit) this._pushLayout(unit);
     else this._pushDisabled();   // another region moved -> refresh what's occupied
@@ -771,7 +823,14 @@ export class SplitManager {
       const next = this._recents.adopt();
       if (!next) return;                // echo of our own write, or another section
       this.recentWindows = next;
-      this._refreshToolbar();
+      // OUT of the apply, deliberately. This subscriber runs inside StateStore's
+      // _applying guard, which swallows every write — and the refresh is not just a
+      // render: it PRUNES tabs whose window has died (_pruneDeletedRecents) and has
+      // to publish that. Swallowed, the prune happened locally and never reached the
+      // blob, so the next push handed the dead tab straight back and the two clients
+      // traded it forever. A microtask is the smallest possible delay that lands
+      // after the apply has finished.
+      queueMicrotask(() => this._refreshToolbar());
     });
 
     if (this.recentWindows.length) this._refreshToolbar();
@@ -1219,6 +1278,9 @@ export class SplitManager {
       if (!session || !u.layout || session === curSession) return; // unreachable
       u.switchSession(session);
     }
+    // A deliberate navigation: from here the shared blob stops re-applying itself
+    // over this client's view (see _adoptSplitState).
+    this._touchSplit();
     // Claim BOTH halves of the view we're switching to: the window (so no other pane
     // grabs it mid-flight) and the session (so a save mid-hop records where we're
     // going — see _viewOf).

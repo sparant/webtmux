@@ -276,3 +276,55 @@ test('the full boot order restores the strip end to end', async () => {
   assert.deepEqual(restored.map((e) => [e.id, e.name]), [['@1', '@1'], ['@2', 'editors']],
     'the strip survives the boot sequence that used to erase it');
 });
+
+// --- the swallowed-write hazard ----------------------------------------------
+//
+// The second half of the same lifecycle bug. persist() is called from
+// _refreshToolbar, and _refreshToolbar is ALSO what runs when another client's blob
+// is adopted — inside StateStore's _applying guard, which swallows every write. If
+// persist recorded its new signature anyway, the change would be remembered as
+// published and never attempted again. The visible symptom was a tab for a window
+// that had been killed coming back on every push: the client pruned it, the prune
+// was swallowed, the blob still held it, and the next push handed it straight back.
+
+test('a persist the store swallows is retried, not remembered as published', () => {
+  const store = new StateStore();
+  store.load(undefined);
+  const p = new RecentsPersistence(store);
+  p.restore();
+
+  let swallowed = null;
+  store.subscribe(() => { if (swallowed === null) swallowed = p.persist([entry('@1')]); });
+  store.load(JSON.stringify({ v: 1, rev: 5, unrelated: 1 }));
+
+  assert.equal(swallowed, false, 'the mid-apply write is refused');
+  assert.equal(p.persist([entry('@1')]), true, 'and the same change is written on the retry');
+  assert.deepEqual(store.section('recentTabs').windows.map((e) => e.id), ['@1']);
+});
+
+test('a prune during an adopt converges in one round trip', async () => {
+  const store = new StateStore();
+  let wire = null;
+  store.setSender((json) => { wire = json; return true; });
+  store.load(undefined);
+  const p = new RecentsPersistence(store);
+  p.restore();
+
+  // Another client publishes a strip holding a window that has since been killed.
+  store.load(JSON.stringify({
+    v: 1, rev: 9, recentTabs: { windows: [entry('@1'), entry('@dead')] },
+  }));
+  const adopted = p.adopt();
+  assert.deepEqual(adopted.map((e) => e.id), ['@1', '@dead']);
+
+  // _refreshToolbar (deferred out of the apply by the SplitManager) prunes the dead
+  // tab and persists. This is the write that used to be swallowed.
+  assert.equal(p.persist(adopted.filter((e) => e.id !== '@dead')), true);
+  await delay(500);
+  assert.deepEqual(JSON.parse(wire).recentTabs.windows.map((e) => e.id), ['@1'],
+    'the prune reaches tmux');
+
+  // …and the echo of it does not resurrect the dead tab.
+  store.load(wire);
+  assert.equal(p.adopt(), null, 'nothing left to adopt — the two agree');
+});
