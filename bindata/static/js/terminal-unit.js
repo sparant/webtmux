@@ -23,6 +23,7 @@ import {
   normalizeMouseMode, resolvePress, needsForcedSelection, forceSelectionModifier,
   movedEnough, leaveCopyModeFirst, PressArbiter,
 } from './mouse-mode.js';
+import { writeAuthority, READ_ONLY_NOTICE } from './write-guard.js';
 
 // Protocol message types (must match Go constants)
 export const MSG = {
@@ -64,6 +65,11 @@ export const MSG = {
   TmuxLayoutUpdate: '7',
   TmuxModeUpdate: '9',
   TmuxCaptureData: 'A',
+  // A command webtmux REFUSED to send, with the reason. Not the same thing as a
+  // tmux command that failed (those are routine races the layout push repairs and
+  // are never sent here) — this is "I could not tell which object you meant, so I
+  // did nothing", which looks exactly like a broken button unless it is said.
+  TmuxError: 'B',
   TmuxSaveResult: 'C',
   TmuxSaveInfo: 'D',
 };
@@ -1276,6 +1282,14 @@ export class TerminalUnit {
           this.terminal.options.fontSize = prefs.fontSize;
           this.fitAddon.fit();
         }
+        // This connection's write authority (webtty/authority.go). Absent only
+        // from a server older than the gate, where everything was permitted — so
+        // an omitted field must NOT be read as read-only, or a new bundle against
+        // an old binary would grey out a UI that works.
+        if (prefs.permitWrite !== undefined) {
+          writeAuthority.set(prefs.permitWrite !== false);
+          if (this.onWriteAuthority) this.onWriteAuthority(prefs.permitWrite !== false);
+        }
         break;
 
       case MSG.SetReconnect:
@@ -1321,6 +1335,14 @@ export class TerminalUnit {
         }
         break;
 
+      case MSG.TmuxError:
+        // Surfaced in the toolbar (see SplitManager.showNotice) rather than
+        // swallowed: nothing changed, so the layout push that follows looks
+        // identical to the one before it and says nothing at all.
+        console.warn('tmux refused:', payload);
+        if (this.onNotice) this.onNotice(payload);
+        break;
+
       case MSG.TmuxSaveInfo:
         // Answer to "where would a save land?" — routed to the toolbar's save
         // dropdown so it can say so before anything is written.
@@ -1341,6 +1363,16 @@ export class TerminalUnit {
   // StateStore cannot: a persisted change handed to a closed socket is simply gone,
   // and the store has to know to keep holding it rather than mark it written.
   sendMessage(type, payload = '') {
+    // A server without `-w` drops mutating messages at its own gate
+    // (webtty/authority.go). Refusing here too is not belt-and-braces for
+    // security — the server is the boundary — it is what makes the refusal
+    // VISIBLE: the frame never leaves, the caller learns it failed, and the
+    // notice below says why once rather than the UI optimistically painting a
+    // tmux server that did not move.
+    if (!writeAuthority.allows(type)) {
+      this._noteReadOnly();
+      return false;
+    }
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       // Tick the toolbar's activity spinner for anything that drives tmux (the
       // callback debounces, so a burst is one increment).
@@ -1350,6 +1382,16 @@ export class TerminalUnit {
     }
     console.warn('WebSocket not ready, state:', this.ws?.readyState);
     return false;
+  }
+
+  // Surface the read-only refusal, throttled: a keystroke, a wheel spin and the
+  // 500ms state flush all end up here, and a banner per frame is noise. One
+  // notice every few seconds is enough to explain a dead-feeling UI.
+  _noteReadOnly() {
+    const now = Date.now();
+    if (this._roNoticeAt && now - this._roNoticeAt < 4000) return;
+    this._roNoticeAt = now;
+    if (this.onNotice) this.onNotice(READ_ONLY_NOTICE);
   }
 
   // ----- preview hold -----------------------------------------------------------
@@ -1708,10 +1750,12 @@ export class TerminalUnit {
   // directory. The outcome comes back as a TmuxSaveResult -> onSaveResult.
   // `dir` is the save directory the user picked in the dropdown (see
   // save-target.js); the server validates it and may still refuse.
-  sendSavePaneFile(windowId, path, dir = '') {
+  // `overwrite` is the answer to the server's "that file already exists"
+  // refusal, which it never assumes: a save into a taken name comes back as a
+  // question (see savepath.go) and only a request carrying this replaces the file.
+  sendSavePaneFile(windowId, path, dir = '', overwrite = false) {
     if (!this.isConnected()) return false;
-    this.sendMessage(MSG.TmuxSavePaneFile, JSON.stringify({ windowId, path, dir }));
-    return true;
+    return this.sendMessage(MSG.TmuxSavePaneFile, JSON.stringify({ windowId, path, dir, overwrite }));
   }
 
   // Ask where a save for this window WOULD land — which directory a relative path

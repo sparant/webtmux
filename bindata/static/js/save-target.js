@@ -102,3 +102,22 @@ export function saveOkText(path, info) {
   }
   return `Saved: ${p}`;
 }
+
+// Turn a TmuxSaveResult into the dropdown's banner: {state, text, path}.
+//
+// Three states, not two. "That file already exists" is the only save failure the
+// user can answer where they are standing — the suggested filename is built from
+// the session and window name, so re-saving the same window collides every time —
+// so it gets its own state and the dropdown renders an Overwrite button for it.
+//
+// The distinction comes from the reply's `exists` FLAG, never from reading the
+// error text: a UI that recognizes failures by their English breaks the first
+// time a message is reworded.
+export function saveResultBanner(res) {
+  if (!res) return { state: 'err', text: 'Save failed', path: '' };
+  if (res.ok) return { state: 'ok', text: saveOkText(res.path, res.env), path: res.path || '' };
+  if (res.exists) {
+    return { state: 'confirm', text: res.error || 'That file already exists. Overwrite it?', path: res.path || '' };
+  }
+  return { state: 'err', text: res.error || 'Save failed', path: res.path || '' };
+}

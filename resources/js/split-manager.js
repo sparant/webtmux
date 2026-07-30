@@ -32,10 +32,11 @@ import { clampRecentsMax, RecentsPersistence } from './recents-strip.js';
 import { buildMruOrder } from './mru-order.js';
 import { SplitPersistence } from './split-state.js';
 import { resolveRestoreView, planRestoreLanding } from './restore-view.js';
-import { saveOkText } from './save-target.js';
+import { saveResultBanner } from './save-target.js';
 import { IS_MAC } from './os.js';
 import { stateStore } from './state-store.js';
 import { clientStore } from './client-store.js';
+import { READ_ONLY_NOTICE } from './write-guard.js';
 
 export class SplitManager {
   constructor(container) {
@@ -145,6 +146,46 @@ export class SplitManager {
     this._restoreSplitState();
   }
 
+  // --- write authority ----------------------------------------------------------
+  // A webtmux started without `-w` refuses everything that would change tmux or
+  // write a file (webtty/authority.go). The browser is told at connect; this is
+  // what it does with the answer.
+  //
+  // Two halves, and both are needed. The `readonly` ATTRIBUTE on each overlay
+  // greys its mutating controls out, so a viewer isn't hunting for the click that
+  // works — nothing here is a security measure, the server already refused. And
+  // the shared StateStore is put in read-only mode: @wt_state is a tmux write, so
+  // a viewer's UI arrangement stays in their own browser instead of being queued
+  // forever against a server that will never accept it.
+  applyWriteAuthority(permit) {
+    const ro = permit === false;
+    if (this._readOnly === ro) return;
+    this._readOnly = ro;
+    for (const el of [this.toolbar, this.sidebar, this.expose, this.pip]) {
+      el?.toggleAttribute?.('readonly', ro);
+    }
+    if (this.toolbar) this.toolbar.readOnly = ro;
+    if (this.sidebar) this.sidebar.readOnly = ro;
+    stateStore.setReadOnly(ro);
+    if (ro) this.showNotice(READ_ONLY_NOTICE);
+  }
+
+  // Is this connection read-only? Read by the surfaces that build their controls
+  // imperatively (Exposé tiles) rather than from a template.
+  get readOnly() { return !!this._readOnly; }
+
+  // One transient line in the toolbar. Used for the read-only refusal and for the
+  // controller's "refuse, don't guess" errors (TmuxError) — the two cases where an
+  // action did nothing for a reason the user cannot see in the terminal.
+  showNotice(text) {
+    if (!this.toolbar || !text) return;
+    this.toolbar.notice = String(text);
+    clearTimeout(this._noticeTimer);
+    this._noticeTimer = setTimeout(() => {
+      if (this.toolbar) this.toolbar.notice = '';
+    }, 6000);
+  }
+
   // Short, sanitized, unique-ish grouped session name (server also sanitizes).
   genSessionName() {
     const rnd = Math.random().toString(36).slice(2, 8);
@@ -188,6 +229,13 @@ export class SplitManager {
     unit.onTmuxActivity = () => this.pulseTmuxActivity();
     // …and losing/regaining the socket recolors it — see _refreshConnection.
     unit.onConnectionChange = () => this._refreshConnection();
+    // The server's write authority, learned from the preferences frame at connect
+    // (webtty/authority.go). Every region's connection carries the same answer;
+    // applying it from whichever arrives first is idempotent.
+    unit.onWriteAuthority = (permit) => this.applyWriteAuthority(permit);
+    // A refused control (read-only) explains itself once in the toolbar rather
+    // than looking broken.
+    unit.onNotice = (text) => this.showNotice(text);
     // Route this unit's capture replies into the shared cache, and give the unit
     // read access for optimistic paint on window switch.
     unit.captureCache = this.captureCache;
@@ -967,14 +1015,27 @@ export class SplitManager {
   // user-typed `path`. Unlike savePaneBuffer (a browser download), the server does
   // the capture + write itself and resolves a relative path against the pane's own
   // working directory. The outcome arrives via onSaveResult (toolbar feedback).
-  savePaneBufferToPath(path) {
+  savePaneBufferToPath(path, overwrite = false) {
     const u = this.focusedUnit;
     const id = u?.layout?.activeWindowId;
     if (!id || !u) return;
     const p = String(path || '').trim();
     if (!p) return;
+    // Remember what was asked for: the server refuses an existing file on the
+    // first ask, and answering "Overwrite" has to re-send the SAME path rather
+    // than re-read an input the user may have clicked away from.
+    this._lastSaveRequest = { windowId: id, path: p, unit: u };
     if (this.toolbar) this.toolbar.saveStatus = { state: 'saving', text: 'Saving…' };
-    u.sendSavePaneFile(id, p, this.saveDir());
+    u.sendSavePaneFile(id, p, this.saveDir(), overwrite);
+  }
+
+  // "Overwrite" in the save dropdown: re-send the refused request with the answer
+  // attached. Bound to the request that was refused, not to the input box.
+  confirmOverwriteSave() {
+    const req = this._lastSaveRequest;
+    if (!req || !req.unit) return;
+    if (this.toolbar) this.toolbar.saveStatus = { state: 'saving', text: 'Saving…' };
+    req.unit.sendSavePaneFile(req.windowId, req.path, this.saveDir(), true);
   }
 
   // Ask the server where a save for the FOCUSED window would land. Called when the
@@ -1018,17 +1079,17 @@ export class SplitManager {
     // The reply carries the environment it was resolved against; keep it so the
     // banner and the hint below it can't tell different stories.
     if (res && res.env && res.env.baseDir) this.toolbar.saveInfo = res.env;
-    if (res && res.ok) {
-      this.toolbar.saveStatus = { state: 'ok', text: saveOkText(res.path, res.env) };
-      setTimeout(() => {
-        if (this.toolbar && this.toolbar.saveStatus?.state === 'ok') {
-          this.toolbar.saveOpen = false;
-          this.toolbar.saveStatus = null;
-        }
-      }, 1800);
-    } else {
-      this.toolbar.saveStatus = { state: 'err', text: (res && res.error) || 'Save failed' };
-    }
+    // Three outcomes, not two: 'confirm' is "that file already exists", which the
+    // dropdown answers in place with an Overwrite button. See save-target.js.
+    const banner = saveResultBanner(res);
+    this.toolbar.saveStatus = { state: banner.state, text: banner.text };
+    if (banner.state !== 'ok') return;
+    setTimeout(() => {
+      if (this.toolbar && this.toolbar.saveStatus?.state === 'ok') {
+        this.toolbar.saveOpen = false;
+        this.toolbar.saveStatus = null;
+      }
+    }, 1800);
   }
 
   _refreshToolbar() {

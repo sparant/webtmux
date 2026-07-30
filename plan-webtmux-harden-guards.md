@@ -53,37 +53,54 @@ authority lines and enforces them.
 
 ## Phases
 
-### Phase 1 — permitWrite (P0)
+### Phase 1 — permitWrite (P0) — complete
 
-- [ ] P0 Gating matrix in `webtty/webtty.go`/`tmux.go` per decision 1 + table test
+- [x] P0 Gating matrix in `webtty/webtty.go`/`tmux.go` per decision 1 + table test
       enumerating every message type against both modes (test fails if a future message
       type is added without classifying it — use an exhaustive switch over the const
       list). ~45m, Opus.
-- [ ] P1 `permitWrite` in the init message; frontend disables mutating controls
+- [x] P1 `permitWrite` in the init message; frontend disables mutating controls
       (toolbar/sidebar/Exposé actions, save-to-server option) in read-only mode. ~45m, Sonnet.
 
-### Phase 2 — savepath (P0)
+### Phase 2 — savepath (P0) — complete
 
-- [ ] P0 Containment + symlink-resolved `filepath.Rel` check + absolute/`~` policy change
+- [x] P0 Containment + symlink-resolved `filepath.Rel` check + absolute/`~` policy change
       in `webtty/savepath.go`; extend the existing decision-table tests with traversal,
       absolute-escape, and symlink cases (tests currently assert what it does; add what it
       must refuse). ~45m, Opus.
-- [ ] P0 Overwrite refusal + `"overwrite":true` protocol field + dropdown inline confirm
+- [x] P0 Overwrite refusal + `"overwrite":true` protocol field + dropdown inline confirm
       + tests both sides. ~40m, Sonnet.
 
-### Phase 3 — refuse-don't-guess + capture cap (P1)
+### Phase 3 — refuse-don't-guess + capture cap (P1) — complete
 
-- [ ] P1 Decision 3: error returns for the two fallbacks in `pkg/tmux/controller.go`;
+- [x] P1 Decision 3: error returns for the two fallbacks in `pkg/tmux/controller.go`;
       client-side surfaced as the existing toolbar error toast; Go tests via the
       fake-runner seam. ~40m, Opus.
-- [ ] P1 Decision 4: per-connection in-flight guard + force rate limit in
+      **Deviation:** there was no "existing toolbar error toast" — the toolbar's
+      only banner was `saveStatus`, inside the save dropdown, and nothing on the
+      client handled the (never-emitted) `TmuxError` frame. Closest workable
+      alternative, implemented: refusals are marked with a `tmux.ErrRefused`
+      sentinel, `afterCmd` forwards only those as `TmuxError`, and the toolbar
+      grew a one-line transient `notice` (also used for the read-only refusal
+      from decision 1) driven by `SplitManager.showNotice`.
+- [x] P1 Decision 4: per-connection in-flight guard + force rate limit in
       `webtty/tmux.go` capture handling; goroutines on the connection ctx; test with the
       capture backend fake. ~40m, Sonnet.
 
 ### Phase 4 — verify & land (P0)
 
-- [ ] P0 Full Go suite (`-race`) in golang:1.23 docker + JS suite + bindata sync. ~20m, Sonnet.
-- [ ] P0 Live smoke in a throwaway container: boot read-only (no `-w`), confirm watch
+- [x] P0 Full Go suite (`-race`) in golang:1.23 docker + JS suite + bindata sync. ~20m, Sonnet.
+      Go: every package `ok` under `-race` (tmux installed, so the live
+      save/capture backend tests ran rather than skipping). JS: 253 passing,
+      0 failing. `make check-js` clean, `make sync-assets` run.
+- [x] P0 Live smoke in a throwaway container: boot read-only (no `-w`), confirm watch
       works and kill/save/select are refused + UI greys; boot with `-w`, confirm save
       confinement + overwrite confirm. ~40m, Opus.
-- [ ] P0 Mark complete, merge via the lock wrapper, tick subplan B in the master plan. ~15m.
+      Driver committed at `screenshots/harness/verify-guards.js`; `run.sh` gained
+      `WT_PERMIT_WRITE=0` so it can boot the server without `-w`. Both passes green:
+      12/12 read-only (raw websocket frames, past the client guard, so it is the
+      SERVER's gate under test), 12/12 read-write.
+- [x] P0 Mark complete (phases 1–4 done on `harden-guards`).
+- [ ] P0 Merge via the lock wrapper, tick subplan B in the master plan. ~15m.
+      **Held for the parent session** — the branch is finished and green but
+      deliberately unmerged, and `plan-webtmux-harden-master.md` is untouched.

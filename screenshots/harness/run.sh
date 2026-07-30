@@ -18,9 +18,16 @@ bash /src/screenshots/harness/boot-tmux.sh
 pkill -f webtmux-test 2>/dev/null || true
 sleep 1
 
+# WT_PERMIT_WRITE=0 boots the server WITHOUT -w — the read-only mode the
+# write-authority guards exist for. Any other value (default) keeps -w, which is
+# what every other driver here needs.
+WRITE_FLAG="-w"
+[ "${WT_PERMIT_WRITE:-1}" = "0" ] && WRITE_FLAG=""
+
 start_server() {
   export WEBTMUX_SOCKET=/tmp/wt.sock WEBTMUX_SESSION=dev
-  /src/webtmux-test -w -p 8090 -a 0.0.0.0 --reconnect -c wt:wt /src/screenshots/harness/attach.sh \
+  # shellcheck disable=SC2086 # WRITE_FLAG is deliberately unquoted: empty = absent
+  /src/webtmux-test $WRITE_FLAG -p 8090 -a 0.0.0.0 --reconnect -c wt:wt /src/screenshots/harness/attach.sh \
     > /tmp/webtmux.log 2>&1 &
   SVPID=$!
 }

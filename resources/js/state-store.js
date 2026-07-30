@@ -144,6 +144,7 @@ export class StateStore {
     this._writeTimer = null;
     this._everReceived = false; // seen at least one layout push?
     this._seededFromRemote = false;
+    this._readOnly = false;     // server started without -w (see setReadOnly)
 
     this.appliedRev = 0;        // highest rev we've adopted (remote or our own writes)
     this.lastWrittenRev = 0;
@@ -184,6 +185,37 @@ export class StateStore {
     }
   }
 
+  // Read-only mode: this webtmux server was started without `-w`, so TmuxSetState
+  // is refused (webtty/authority.go) and @wt_state is not ours to write.
+  //
+  // The store does NOT simply keep failing to send. Rule 4 would then hold every
+  // change dirty forever, and every reconnect would re-attempt a write that can
+  // never land. Instead the shared blob becomes read-only in the literal sense:
+  // remote blobs are still adopted (a watcher sees the same arrangement everyone
+  // else does), local UI changes still apply and still persist in this browser's
+  // OFFLINE CACHE, and nothing is ever sent. A viewer can arrange their own
+  // sidebar; they just cannot publish it.
+  setReadOnly(ro) {
+    const next = !!ro;
+    if (next === this._readOnly) return;
+    this._readOnly = next;
+    if (next) {
+      // Anything queued for the server is now un-sendable. Drop the send state —
+      // the patches are already applied to this.state and cached — rather than
+      // replaying them on top of every adopt for the life of the tab.
+      clearTimeout(this._writeTimer);
+      this._writeTimer = null;
+      this._pending = [];
+      this._sentRev = 0;
+      this._sentCount = 0;
+      this._pendingSend = false;
+      this._dirty = false;
+      this._writeCache();
+    } else if (this._dirty || this._pending.length) {
+      this._scheduleWrite();
+    }
+  }
+
   // Wire the transport (primary unit's ws). If a seed/local change is already
   // pending, flush it now that we can actually send.
   setSender(fn) {
@@ -200,6 +232,7 @@ export class StateStore {
   resync() {
     this._sentRev = 0;
     this._sentCount = 0;
+    if (this._readOnly) return;
     if (this._dirty || this._pendingSend || this._pending.length) {
       this._pendingSend = false;
       this._scheduleWrite();
@@ -426,6 +459,14 @@ export class StateStore {
   // burned on a write nobody received.
   _flush() {
     this._writeTimer = null;
+    // Read-only: the change lives on locally (state + offline cache) but never
+    // goes out, and no rev is claimed for a write nobody will ever see.
+    if (this._readOnly) {
+      this._pending = [];
+      this._dirty = false;
+      this._writeCache();
+      return false;
+    }
     if (!this._send) { this._pendingSend = true; return false; }
     // Rule 1: never write over a blob we have not read.
     if (!this.loadedOnce) { this._pendingSend = true; return false; }

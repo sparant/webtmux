@@ -22,6 +22,7 @@ import { workClass, workLabel, workTip } from '../stoplight.js';
 import { ALERT_CSS, alertClass, alertTip } from '../alert-flash.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
 import { saveHint } from '../save-target.js';
+import { READ_ONLY_NOTICE } from '../write-guard.js';
 import { copyText } from '../clipboard.js';
 import { SCROLL_MODES as SCROLL_ORDER, normalizeScrollMode as normalizeScroll } from '../terminal-unit.js';
 import { MOUSE_MODES as MOUSE_ORDER, normalizeMouseMode as normalizeMouse } from '../mouse-mode.js';
@@ -220,6 +221,14 @@ class WebtmuxToolbar extends LitElement {
     // for saveStatus, by the SplitManager when a server-side save resolves.
     saveOpen: { type: Boolean },
     saveStatus: { type: Object },
+    // This webtmux was started without `-w` (see write-guard.js). Reflected to a
+    // `readonly` attribute so :host([readonly]) can grey out the controls that
+    // would change tmux, and rendered as a badge — a viewer who is told is not a
+    // viewer hunting for the click that works.
+    readOnly: { type: Boolean, reflect: true, attribute: 'readonly' },
+    // One transient line of explanation (read-only refusals, and the controller's
+    // "refuse, don't guess" errors). '' = nothing to say. Set by the SplitManager.
+    notice: { type: String },
     // Where a save would land, as the server describes it (a SaveEnv; see
     // webtty/savepath.go). Requested when the dropdown opens and rendered as its
     // hint line, so an invisible pane directory is disclosed before a failed save
@@ -598,6 +607,57 @@ class WebtmuxToolbar extends LitElement {
     .save-status.saving { background: #14233f; color: #9fc4ff; }
     .save-status.ok { background: #103524; color: #6ee7a8; border: 1px solid #1f6b45; }
     .save-status.err { background: #3a1420; color: #ff9db0; border: 1px solid #7a2438; }
+    /* "The file is already there" is the one save error the user can answer in
+       place, so it gets a button rather than just a sentence. */
+    .save-status.confirm { background: #33260f; color: #f2c774; border: 1px solid #7a5a24; }
+    .save-confirm { display: flex; gap: 6px; margin-top: 6px; }
+    .save-confirm button {
+      background: #7a2438;
+      color: #fff;
+      border: 1px solid #a33;
+      border-radius: 5px;
+      padding: 4px 10px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .save-confirm button.cancel { background: #2a2f3f; color: #ccc; border-color: #0f3460; }
+
+    /* ---- read-only mode (server started without -w) ------------------------
+       Two visible effects. The badge SAYS so, once, next to the build chip; the
+       rules below grey out every control that would change tmux — the recent-tab
+       switcher (a select-window moves the shared console), copy mode, and the
+       whole "save on the machine tmux runs on" half of the save dropdown. The
+       controls that only rearrange this browser (split, Exposé, preview, mouse
+       mode, sidebar toggle) stay live: read-only is about tmux, not about the UI. */
+    .ro-badge {
+      flex: 0 0 auto;
+      background: #33260f;
+      color: #f2c774;
+      border: 1px solid #7a5a24;
+      border-radius: 5px;
+      padding: 3px 7px;
+      font-size: 10.5px;
+      letter-spacing: 0.04em;
+      cursor: default;
+    }
+    :host([readonly]) .tabs,
+    :host([readonly]) .mode { opacity: 0.45; pointer-events: none; }
+    :host([readonly]) .save-ro { color: #f2c774; font-size: 11px; line-height: 1.4; }
+    /* The transient explanation line (read-only refusals, controller refusals).
+       Sits in the bar itself so it is visible wherever the click happened. */
+    .notice {
+      flex: 1 1 auto;
+      min-width: 0;
+      background: #33260f;
+      color: #f2c774;
+      border: 1px solid #7a5a24;
+      border-radius: 5px;
+      padding: 3px 8px;
+      font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
 
     /* Picture-in-Picture toggle (left of the sidebar toggle). Highlights when on.
        The ◳ glyph reads as an inset in the upper-right — the PiP's default corner. */
@@ -858,6 +918,8 @@ class WebtmuxToolbar extends LitElement {
     this.saveStatus = null;  // transient save result banner (see properties)
     this.saveInfo = null;    // server's "where would this land?" answer
     this._editingDir = false; // save-directory row open for editing (see _saveDirRow)
+    this.readOnly = false;   // set from the connect handshake (see write-guard.js)
+    this.notice = '';        // transient explanation line
     this.previewWindow = ''; // window the shared hover preview is showing
     this.labelMenuOpen = false;
     this.dragKey = '';
@@ -1128,6 +1190,13 @@ class WebtmuxToolbar extends LitElement {
     this.manager?.savePaneBufferToPath(path);
   }
 
+  // The answer to "that file already exists". Re-sends the refused REQUEST (the
+  // manager kept it) rather than re-reading the input, which the user may have
+  // edited or scrolled away from since.
+  _confirmOverwrite() {
+    this.manager?.confirmOverwriteSave();
+  }
+
   disconnectedCallback() {
     super.disconnectedCallback();
     clearTimeout(this._buildTipTimer);
@@ -1337,6 +1406,17 @@ class WebtmuxToolbar extends LitElement {
           @click=${() => this._copyBuild()}
         >⬢ ${this.build}</button>
       ` : ''}
+      ${this.readOnly ? html`
+        <span
+          class="ro-badge"
+          role="img"
+          aria-label="Read-only server"
+          @mouseenter=${(e) => this._tipEnter(e, READ_ONLY_NOTICE
+            + '\nWatching, capture, hover previews and the save-to-browser download all still work.')}
+          @mouseleave=${() => this._tipLeave()}
+        >READ-ONLY</span>
+      ` : ''}
+      ${this.notice ? html`<div class="notice" title=${this.notice}>${this.notice}</div>` : ''}
       <button
         class="tbtn"
         aria-label="Keyboard shortcuts"
@@ -1432,21 +1512,35 @@ class WebtmuxToolbar extends LitElement {
             <button class="save-item" @click=${() => this._saveToBrowser()}>⤓&nbsp; Download to browser</button>
             <div class="save-sep"></div>
             <div class="save-label">Save on the machine tmux runs on</div>
-            ${this._saveDirRow()}
-            <div class="save-row">
-              <input
-                class="save-path"
-                type="text"
-                spellcheck="false"
-                autocomplete="off"
-                ?disabled=${this._askingForDir()}
-                placeholder=${this._askingForDir() ? 'name a directory first' : '~/out.txt or ./out.txt'}
-                @keydown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); this._saveToPath(); } e.stopPropagation(); }}
-              >
-              <button class="save-go" ?disabled=${this._askingForDir()} @click=${() => this._saveToPath()}>Save</button>
-            </div>
-            ${this._saveHint()}
-            ${this.saveStatus ? html`<div class="save-status ${this.saveStatus.state}">${this.saveStatus.text}</div>` : ''}
+            ${this.readOnly ? html`
+              <div class="save-ro">Not available — this server is read-only (started without -w),
+                so it will not write files. "Download to browser" needs nothing from the server
+                and still works.</div>
+            ` : html`
+              ${this._saveDirRow()}
+              <div class="save-row">
+                <input
+                  class="save-path"
+                  type="text"
+                  spellcheck="false"
+                  autocomplete="off"
+                  ?disabled=${this._askingForDir()}
+                  placeholder=${this._askingForDir() ? 'name a directory first' : '~/out.txt or ./out.txt'}
+                  @keydown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); this._saveToPath(); } e.stopPropagation(); }}
+                >
+                <button class="save-go" ?disabled=${this._askingForDir()} @click=${() => this._saveToPath()}>Save</button>
+              </div>
+              ${this._saveHint()}
+            `}
+            ${this.saveStatus ? html`
+              <div class="save-status ${this.saveStatus.state}">${this.saveStatus.text}</div>
+              ${this.saveStatus.state === 'confirm' ? html`
+                <div class="save-confirm">
+                  <button @click=${() => this._confirmOverwrite()}>Overwrite</button>
+                  <button class="cancel" @click=${() => { this.saveStatus = null; }}>Cancel</button>
+                </div>
+              ` : ''}
+            ` : ''}
           </div>
         ` : ''}
       </div>

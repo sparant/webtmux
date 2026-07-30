@@ -56,10 +56,11 @@ func nextFrame(t *testing.T, m *captureMaster, want byte) []byte {
 }
 
 type saveResultFrame struct {
-	OK    bool    `json:"ok"`
-	Path  string  `json:"path"`
-	Error string  `json:"error"`
-	Env   SaveEnv `json:"env"`
+	OK     bool    `json:"ok"`
+	Path   string  `json:"path"`
+	Error  string  `json:"error"`
+	Exists bool    `json:"exists"`
+	Env    SaveEnv `json:"env"`
 }
 
 func TestSaveWritesIntoThePaneDirectoryWhenItIsVisible(t *testing.T) {
@@ -247,5 +248,89 @@ func TestSaveInfoDescribesTheSameDestinationTheSaveWouldUse(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("save-info left files behind: %v", entries)
+	}
+}
+
+// The whole overwrite round trip against a real tmux: a save into a name that is
+// already taken is REFUSED and flagged, and the same request carrying the user's
+// answer goes through. The suggested filename is derived from the session and
+// window name, so two saves of one window collide by construction — this is the
+// common case, not the exotic one, and it used to destroy the earlier file
+// without a word.
+func TestSaveRefusesToOverwriteUntilAsked(t *testing.T) {
+	cwd := t.TempDir()
+	t.Setenv("WEBTMUX_PATH_MAP", "")
+	t.Setenv("WEBTMUX_SAVE_DIR", "")
+	wt, m := saveHarness(t, cwd)
+
+	target := filepath.Join(cwd, "out.txt")
+	if err := os.WriteFile(target, []byte("PRECIOUS"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := wt.handleTmuxMessage(TmuxSavePaneFile, []byte(`{"windowId":"@0","path":"out.txt"}`)); err != nil {
+		t.Fatalf("handleTmuxMessage: %v", err)
+	}
+	var res saveResultFrame
+	if err := json.Unmarshal(nextFrame(t, m, TmuxSaveResult), &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if res.OK {
+		t.Fatal("the save replaced an existing file without asking")
+	}
+	if !res.Exists {
+		t.Errorf("the refusal must be FLAGGED as an overwrite question, not just phrased as one: %+v", res)
+	}
+	if res.Path != target {
+		t.Errorf("the reply should name the file in question: %+v", res)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "PRECIOUS" {
+		t.Fatalf("the existing file was modified anyway: %q", got)
+	}
+
+	// The user answers.
+	if err := wt.handleTmuxMessage(TmuxSavePaneFile,
+		[]byte(`{"windowId":"@0","path":"out.txt","overwrite":true}`)); err != nil {
+		t.Fatalf("handleTmuxMessage: %v", err)
+	}
+	if err := json.Unmarshal(nextFrame(t, m, TmuxSaveResult), &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !res.OK {
+		t.Fatalf("an explicit overwrite was still refused: %s", res.Error)
+	}
+	if got, _ := os.ReadFile(target); string(got) == "PRECIOUS" {
+		t.Error("overwrite:true did not actually replace the file")
+	}
+}
+
+// Containment, end to end: the resolver refuses and nothing is written.
+func TestSaveRefusesAPathOutsideTheAllowedDirectories(t *testing.T) {
+	cwd := t.TempDir()
+	outside := t.TempDir()
+	t.Setenv("WEBTMUX_PATH_MAP", "")
+	t.Setenv("WEBTMUX_SAVE_DIR", "")
+	t.Setenv("WEBTMUX_IN_CONTAINER", "1") // no implicit $HOME/cwd roots
+	t.Setenv("WEBTMUX_HOME", "")
+	wt, m := saveHarness(t, cwd)
+
+	req, _ := json.Marshal(map[string]string{
+		"windowId": "@0", "path": filepath.Join(outside, "stolen.txt"),
+	})
+	if err := wt.handleTmuxMessage(TmuxSavePaneFile, req); err != nil {
+		t.Fatalf("handleTmuxMessage: %v", err)
+	}
+	var res saveResultFrame
+	if err := json.Unmarshal(nextFrame(t, m, TmuxSaveResult), &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if res.OK {
+		t.Fatal("a path outside every declared directory was written")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "stolen.txt")); err == nil {
+		t.Fatal("the file was created despite the refusal")
+	}
+	if !strings.Contains(res.Error, cwd) {
+		t.Errorf("the refusal should name what IS allowed: %s", res.Error)
 	}
 }

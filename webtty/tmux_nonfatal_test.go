@@ -3,7 +3,11 @@ package webtty
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"webtmux/pkg/tmux"
 )
@@ -23,44 +27,136 @@ import (
 
 // failCtrl is a TmuxController whose every operation fails, like a tmux server
 // rejecting commands aimed at state that has moved on.
+//
+// It also COUNTS the operations that would have mutated something. That is what
+// the write-authority tests (authority_test.go) read: "did anything reach tmux?"
+// is the whole question there, and it has to be asked of the mutating surface
+// only — RefreshLayout/GetLayout run on every path, including the view-only ones.
 type failCtrl struct {
 	layout    *tmux.Layout
 	refreshed int
+	calls     int      // mutating operations attempted
+	seen      []string // …and their names, for a readable failure
+	repainted int      // RefreshClient calls (view-only, counted separately)
 }
 
 var errNope = errors.New("tmux command failed: exit status 1")
 
-func (c *failCtrl) GetLayout() *tmux.Layout              { return c.layout }
-func (c *failCtrl) RefreshLayout() error                 { c.refreshed++; return errNope }
-func (c *failCtrl) SelectPane(string) error              { return errNope }
-func (c *failCtrl) SelectWindow(string) error            { return errNope }
-func (c *failCtrl) SwitchSession(string) error           { return errNope }
-func (c *failCtrl) RenameWindow(string, string) error    { return errNope }
-func (c *failCtrl) MoveWindow(string, int, string) error { return errNope }
-func (c *failCtrl) NewSession() error                    { return errNope }
-func (c *failCtrl) RenameSession(string, string) error   { return errNope }
-func (c *failCtrl) KillWindow(string) error              { return errNope }
-func (c *failCtrl) KillSession(string) error             { return errNope }
-func (c *failCtrl) LinkWindow(string, string) error      { return errNope }
-func (c *failCtrl) UnlinkWindow(string, string) error    { return errNope }
-func (c *failCtrl) SplitPane(bool) error                 { return errNope }
-func (c *failCtrl) ClosePane(string) error               { return errNope }
-func (c *failCtrl) SetGlobalOption(string, string) error { return errNope }
-func (c *failCtrl) EnterCopyMode() error                 { return errNope }
-func (c *failCtrl) ExitCopyMode() error                  { return errNope }
-func (c *failCtrl) RefreshClient() error                 { return errNope }
-func (c *failCtrl) ScrollUp(int) error                   { return errNope }
-func (c *failCtrl) ScrollDown(int) error                 { return errNope }
-func (c *failCtrl) NewWindow(string) error               { return errNope }
-func (c *failCtrl) Events() <-chan tmux.Event            { return nil }
+// note records one attempted mutation and returns the canned failure.
+func (c *failCtrl) note(what string) error {
+	c.calls++
+	c.seen = append(c.seen, what)
+	return errNope
+}
 
-// recordMaster is a PTY master that accepts and keeps every frame.
-type recordMaster struct{ frames [][]byte }
+func (c *failCtrl) GetLayout() *tmux.Layout   { return c.layout }
+func (c *failCtrl) RefreshLayout() error      { c.refreshed++; return errNope }
+func (c *failCtrl) Events() <-chan tmux.Event { return nil }
+
+// RefreshClient repaints THIS pane's own screen; it is view-only (see
+// authority.go), so it is counted apart from the mutations.
+func (c *failCtrl) RefreshClient() error { c.repainted++; return errNope }
+
+func (c *failCtrl) SelectPane(string) error              { return c.note("select-pane") }
+func (c *failCtrl) SelectWindow(string) error            { return c.note("select-window") }
+func (c *failCtrl) SwitchSession(string) error           { return c.note("switch-client") }
+func (c *failCtrl) RenameWindow(string, string) error    { return c.note("rename-window") }
+func (c *failCtrl) MoveWindow(string, int, string) error { return c.note("move-window") }
+func (c *failCtrl) NewSession() error                    { return c.note("new-session") }
+func (c *failCtrl) RenameSession(string, string) error   { return c.note("rename-session") }
+func (c *failCtrl) KillWindow(string) error              { return c.note("kill-window") }
+func (c *failCtrl) KillSession(string) error             { return c.note("kill-session") }
+func (c *failCtrl) LinkWindow(string, string) error      { return c.note("link-window") }
+func (c *failCtrl) UnlinkWindow(string, string) error    { return c.note("unlink-window") }
+func (c *failCtrl) SplitPane(bool) error                 { return c.note("split-window") }
+func (c *failCtrl) ClosePane(string) error               { return c.note("kill-pane") }
+func (c *failCtrl) SetGlobalOption(string, string) error { return c.note("set-option") }
+func (c *failCtrl) EnterCopyMode() error                 { return c.note("copy-mode") }
+func (c *failCtrl) ExitCopyMode() error                  { return c.note("copy-mode -q") }
+func (c *failCtrl) ScrollUp(int) error                   { return c.note("scroll-up") }
+func (c *failCtrl) ScrollDown(int) error                 { return c.note("scroll-down") }
+func (c *failCtrl) NewWindow(string) error               { return c.note("new-window") }
+
+// countingCapture is a CaptureProvider that records every call and can be made to
+// block inside one, so a test can observe a SECOND request arriving while the
+// first is still in flight (see capture_cap_test.go).
+type countingCapture struct {
+	mu      sync.Mutex
+	cond    *sync.Cond
+	calls   []captureCall
+	block   chan struct{} // when non-nil, CaptureWindows waits on it
+	paneDir string
+	err     error
+}
+
+type captureCall struct {
+	ids   []string
+	force bool
+}
+
+func (c *countingCapture) CaptureWindows(ids []string, force bool) ([]tmux.CaptureEntry, error) {
+	c.mu.Lock()
+	if c.cond == nil {
+		c.cond = sync.NewCond(&c.mu)
+	}
+	c.calls = append(c.calls, captureCall{ids: append([]string(nil), ids...), force: force})
+	c.cond.Broadcast()
+	block, err := c.block, c.err
+	c.mu.Unlock()
+	if block != nil {
+		<-block
+	}
+	if err != nil {
+		return nil, err
+	}
+	return []tmux.CaptureEntry{{WindowID: "@0", Cols: 80, Rows: 24, ANSI: []byte("hi")}}, nil
+}
+
+func (c *countingCapture) PaneCurrentPath(string) (string, error) { return c.paneDir, nil }
+
+func (c *countingCapture) snapshot() []captureCall {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]captureCall(nil), c.calls...)
+}
+
+// wait blocks until at least n calls have been recorded (or the test times out),
+// which is how an assertion synchronizes with the capture goroutine.
+func (c *countingCapture) wait(t *testing.T, n int) []captureCall {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if got := c.snapshot(); len(got) >= n {
+			return got
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d capture calls after 5s, wanted %d", len(c.snapshot()), n)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// recordMaster is a PTY master that accepts and keeps every frame. Guarded,
+// because capture replies are written from their own goroutine while a test is
+// reading — the race detector is the point of the mutex, not contention.
+type recordMaster struct {
+	mu     sync.Mutex
+	frames [][]byte
+}
 
 func (m *recordMaster) Read(p []byte) (int, error) { select {} } // never called (no Run)
 func (m *recordMaster) Write(p []byte) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.frames = append(m.frames, append([]byte(nil), p...))
 	return len(p), nil
+}
+
+// sent returns a copy of everything written so far.
+func (m *recordMaster) sent() [][]byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([][]byte(nil), m.frames...)
 }
 
 func newFailingWebTTY(t *testing.T, layout *tmux.Layout) (*WebTTY, *recordMaster, *failCtrl) {
@@ -127,10 +223,11 @@ func TestTmuxCommandFailureNeverEndsTheConnection(t *testing.T) {
 // modeUpdate returns the inCopyMode of the last TmuxModeUpdate frame written.
 func modeUpdate(t *testing.T, m *recordMaster) bool {
 	t.Helper()
-	for i := len(m.frames) - 1; i >= 0; i-- {
-		if m.frames[i][0] == TmuxModeUpdate {
+	frames := m.sent()
+	for i := len(frames) - 1; i >= 0; i-- {
+		if frames[i][0] == TmuxModeUpdate {
 			var st tmux.ModeState
-			if err := json.Unmarshal(m.frames[i][1:], &st); err != nil {
+			if err := json.Unmarshal(frames[i][1:], &st); err != nil {
 				t.Fatalf("unmarshal mode update: %v", err)
 			}
 			return st.InCopyMode
@@ -165,4 +262,58 @@ func TestCopyModeReplyReportsTmuxNotTheRequest(t *testing.T) {
 	if got := modeUpdate(t, m2); got {
 		t.Error("reported in-copy-mode though the command failed and tmux says otherwise")
 	}
+}
+
+// A REFUSAL is the one command failure the browser hears about. tmux saying no is
+// a race the next layout push repairs; a refusal is the controller declining to
+// guess which object a command would hit, so nothing will change and the layout
+// push looks identical to the one before it. Silence there is indistinguishable
+// from a broken button.
+func TestARefusalIsReportedToTheClient(t *testing.T) {
+	wt, m, _ := newFailingWebTTY(t, &tmux.Layout{})
+	wt.permitWrite = true
+	wt.SetTmuxController(&refuseCtrl{failCtrl: failCtrl{layout: &tmux.Layout{}}})
+
+	if err := wt.handleTmuxMessage(TmuxSelectWindow, []byte("@3")); err != nil {
+		t.Fatalf("a refusal must not tear the connection down: %v", err)
+	}
+	var got string
+	for _, f := range m.sent() {
+		if f[0] == TmuxError {
+			got = string(f[1:])
+		}
+	}
+	if got == "" {
+		t.Fatal("the refusal was swallowed; the user sees a button that does nothing")
+	}
+	if strings.Contains(got, "refused:") {
+		t.Errorf("the sentinel's prefix leaked into the user-facing message: %q", got)
+	}
+	if !strings.Contains(got, "@3") {
+		t.Errorf("the message should name what could not be identified: %q", got)
+	}
+}
+
+// …and an ORDINARY tmux failure still is not: those happen routinely (a window
+// closed between the click and the command) and the layout push already corrects
+// the UI. A banner per race would be noise.
+func TestAnOrdinaryFailureIsNotReportedToTheClient(t *testing.T) {
+	wt, m, _ := newFailingWebTTY(t, &tmux.Layout{})
+	wt.permitWrite = true
+	if err := wt.handleTmuxMessage(TmuxKillWindow, []byte("@3")); err != nil {
+		t.Fatalf("handleTmuxMessage: %v", err)
+	}
+	for _, f := range m.sent() {
+		if f[0] == TmuxError {
+			t.Fatalf("an ordinary tmux failure raised a banner: %q", f[1:])
+		}
+	}
+}
+
+// refuseCtrl refuses instead of failing — the "can't identify which object this
+// would hit" case (see pkg/tmux.ErrRefused).
+type refuseCtrl struct{ failCtrl }
+
+func (c *refuseCtrl) SelectWindow(id string) error {
+	return fmt.Errorf("%w: %s is not in this pane's window list", tmux.ErrRefused, id)
 }

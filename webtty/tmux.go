@@ -2,12 +2,15 @@ package webtty
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"webtmux/pkg/tmux"
 )
@@ -115,11 +118,30 @@ func (wt *WebTTY) SendTmuxModeUpdate(inCopyMode bool) error {
 // did (its optimistic update was wrong, and staying wrong is how the NEXT
 // impossible command gets sent), and keep the connection. Only a genuine I/O
 // failure writing to the master — the connection is already gone — is fatal.
+// One exception to "log it and move on": a REFUSAL. tmux saying no is a race the
+// layout push repairs, and the user sees the UI correct itself. A refusal is the
+// controller declining to guess which object a command would hit — nothing raced,
+// nothing will change, and the layout push therefore shows exactly what it showed
+// before. Without a word, that is indistinguishable from a broken button. So a
+// refusal also goes to the browser as a TmuxError, which the toolbar shows as one
+// line of explanation.
 func (wt *WebTTY) afterCmd(what string, err error) error {
 	if err != nil {
 		log.Printf("tmux %s failed (ignored, pane kept): %v", what, err)
+		if errors.Is(err, tmux.ErrRefused) {
+			wt.sendTmuxError(err)
+		}
 	}
 	return wt.SendTmuxLayout()
+}
+
+// sendTmuxError tells the browser why an action did nothing. Best-effort: the
+// message is an explanation, never the thing that costs the user their pane.
+func (wt *WebTTY) sendTmuxError(err error) {
+	msg := strings.TrimPrefix(err.Error(), "refused: ")
+	if werr := wt.masterWrite(append([]byte{TmuxError}, []byte(msg)...)); werr != nil {
+		log.Printf("failed to send tmux error to client: %v", werr)
+	}
 }
 
 // handleTmuxMessage handles tmux-specific messages from the client.
@@ -343,6 +365,89 @@ func scrollLines(payload []byte) int {
 	return lines
 }
 
+// ---- capture fan-out ------------------------------------------------------------
+//
+// A capture request forks `capture-pane` once per window. The client asks on a
+// poll AND on every hover, Exposé open, PiP tick and optimistic paint, and each
+// request used to spawn its own goroutine unconditionally: nothing bounded how
+// many of those could be in flight at once on one connection, and `force:true`
+// walked straight past the store's TTL coalescing, which is the only thing that
+// makes the polling affordable. A client that asks faster than tmux answers —
+// a wedged tmux, or simply a slow one — accumulates goroutines and forks without
+// limit, and the connection that "just watches" becomes the expensive one.
+//
+// Two limits, both per connection:
+//
+//   • ONE in-flight CaptureWindows at a time. A request that arrives while one is
+//     running is dropped rather than queued: the running call is fetching the same
+//     buffers from the same server-global store, its reply goes to this same
+//     connection, and the client re-asks on its next 500ms tick anyway. Dropping
+//     IS the coalescing.
+//   • `force` (the TTL bypass) is allowed at most once per window per 500ms. Past
+//     that the request still runs — it just takes the cached buffer, which is what
+//     the TTL was for.
+
+// forceWindow bounds the force rate limit's bookkeeping. The key set is window
+// ids seen on this connection; a server with more live windows than this loses
+// only the rate limit's memory of the oldest, never correctness.
+const forceLimitMax = 512
+
+// forceInterval is the minimum gap between two TTL-bypassing captures of one
+// window on one connection.
+const forceInterval = 500 * time.Millisecond
+
+// captureLimiter is the per-connection state behind both limits above.
+type captureLimiter struct {
+	mu        sync.Mutex
+	inFlight  bool
+	lastForce map[string]time.Time
+}
+
+// begin claims the single in-flight slot. false = another capture is running.
+func (l *captureLimiter) begin() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.inFlight {
+		return false
+	}
+	l.inFlight = true
+	return true
+}
+
+func (l *captureLimiter) end() {
+	l.mu.Lock()
+	l.inFlight = false
+	l.mu.Unlock()
+}
+
+// allowForce decides whether this request may bypass the store's TTL. `ids` is
+// the requested window set ("" stands for the all-windows request, which is one
+// key of its own). A force is granted only if EVERY named window is outside its
+// interval, so one hot window cannot drag the whole set past the cache.
+func (l *captureLimiter) allowForce(ids []string, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.lastForce == nil {
+		l.lastForce = map[string]time.Time{}
+	}
+	keys := ids
+	if len(keys) == 0 {
+		keys = []string{""} // the all-windows request
+	}
+	for _, k := range keys {
+		if last, ok := l.lastForce[k]; ok && now.Sub(last) < forceInterval {
+			return false
+		}
+	}
+	if len(l.lastForce) >= forceLimitMax {
+		l.lastForce = map[string]time.Time{}
+	}
+	for _, k := range keys {
+		l.lastForce[k] = now
+	}
+	return true
+}
+
 // handleCaptureRequest parses {windows, force}, refreshes the requested capture
 // buffers via the shared store, and streams back a TmuxCaptureData frame. The
 // capture runs in a goroutine so a slow tmux fork never blocks this connection's
@@ -371,17 +476,29 @@ func (wt *WebTTY) handleCaptureRequest(payload []byte) error {
 	if len(req.Windows) > 0 {
 		_ = json.Unmarshal(req.Windows, &ids)
 	}
-	force := req.Force
+	force := req.Force && wt.captures.allowForce(ids, time.Now())
 	// An all-windows request yields the COMPLETE current placement set, so the reply
 	// is tagged `full`: the client may then prune any cached window/placement absent
 	// from it (a closed window, or a session a window was unlinked from). A targeted
 	// request only speaks about the windows it named, so it is never full.
 	full := len(ids) == 0
 
+	if !wt.captures.begin() {
+		return nil // coalesced onto the capture already running for this connection
+	}
+	ctx := wt.connCtx()
 	go func() {
+		defer wt.captures.end()
 		entries, err := wt.captureProvider.CaptureWindows(ids, force)
 		if err != nil {
 			log.Printf("capture failed: %v", err)
+			return
+		}
+		// The connection may have gone while tmux was forking. Nothing downstream
+		// would be wrong about sending anyway — masterWrite just errors — but the
+		// marshalling below is a screenful of base64 per window, and a torn-down
+		// connection should stop costing anything the moment it is torn down.
+		if ctx != nil && ctx.Err() != nil {
 			return
 		}
 		wires := make([]tmux.CaptureWire, 0, len(entries))
@@ -454,49 +571,74 @@ func (wt *WebTTY) handleSavePaneFile(payload []byte) error {
 		Path     string `json:"path"`
 		// Dir: the user-chosen save directory in force (see handleSaveInfo).
 		Dir string `json:"dir"`
+		// Overwrite is the answer to the "that file already exists" question. A
+		// save NEVER replaces an existing file on the first ask: the suggested
+		// filename is derived from the session/window name, so two saves of the
+		// same window collide by construction, and the previous one used to
+		// disappear without a word. Absent/false = refuse and ask.
+		Overwrite bool `json:"overwrite"`
 	}
 	if err := json.Unmarshal(payload, &req); err != nil {
-		return wt.sendSaveResult(false, "", "invalid save request", SaveEnv{})
+		return wt.sendSaveResult(saveOutcome{Error: "invalid save request"})
 	}
 	if strings.TrimSpace(req.Path) == "" {
-		return wt.sendSaveResult(false, "", "no path given", SaveEnv{})
+		return wt.sendSaveResult(saveOutcome{Error: "no path given"})
 	}
 	if wt.captureProvider == nil {
-		return wt.sendSaveResult(false, "", "saving is unavailable (not a tmux session)", SaveEnv{})
+		return wt.sendSaveResult(saveOutcome{Error: "saving is unavailable (not a tmux session)"})
 	}
-	entries, err := wt.captureProvider.CaptureWindows([]string{req.WindowID}, true)
-	if err != nil || len(entries) == 0 {
-		return wt.sendSaveResult(false, "", "could not capture the pane buffer", SaveEnv{})
-	}
-	text := cleanPaneText(entries[0].ANSI)
 	// Relative paths land in the pane's own working directory when webtmux can SEE
 	// it; when it can't (the container case), describeSaveEnv picks a directory
 	// that exists here and the reply says so rather than the save silently
 	// landing somewhere the user never named. See savepath.go.
 	paneDir, _ := wt.captureProvider.PaneCurrentPath(req.WindowID)
 	env := describeSaveEnv(paneDir, req.Dir)
+	// Resolve BEFORE capturing: a refused path (outside the allowlist, or an
+	// existing file the user has not agreed to replace) should cost a `capture-pane`
+	// fork and a screen's worth of text for nothing.
 	resolved, err := resolveSavePath(env, req.Path)
 	if err != nil {
-		return wt.sendSaveResult(false, "", err.Error(), env)
+		return wt.sendSaveResult(saveOutcome{Error: err.Error(), Env: env})
 	}
+	if !req.Overwrite && targetExists(resolved) {
+		return wt.sendSaveResult(saveOutcome{
+			Path: resolved, Error: existsMessage(resolved), Exists: true, Env: env,
+		})
+	}
+	entries, err := wt.captureProvider.CaptureWindows([]string{req.WindowID}, true)
+	if err != nil || len(entries) == 0 {
+		return wt.sendSaveResult(saveOutcome{Error: "could not capture the pane buffer", Env: env})
+	}
+	text := cleanPaneText(entries[0].ANSI)
 	if err := os.WriteFile(resolved, []byte(text), 0o644); err != nil {
-		return wt.sendSaveResult(false, resolved, writeErrorMessage(resolved, err), env)
+		return wt.sendSaveResult(saveOutcome{
+			Path: resolved, Error: writeErrorMessage(resolved, err), Env: env,
+		})
 	}
 	log.Printf("saved pane %s buffer -> %s (%d bytes)", req.WindowID, resolved, len(text))
-	return wt.sendSaveResult(true, resolved, "", env)
+	return wt.sendSaveResult(saveOutcome{OK: true, Path: resolved, Env: env})
+}
+
+// saveOutcome is the TmuxSaveResult payload.
+//
+// `exists` is a field rather than a phrase the browser has to recognize in
+// `error`: it is the one failure the user can answer in place ("Overwrite?"),
+// and a UI that decides that by matching on English breaks the first time the
+// sentence is reworded.
+type saveOutcome struct {
+	OK     bool    `json:"ok"`
+	Path   string  `json:"path"`
+	Error  string  `json:"error"`
+	Exists bool    `json:"exists"`
+	Env    SaveEnv `json:"env"`
 }
 
 // sendSaveResult reports a TmuxSavePaneFile outcome to the browser. The SaveEnv
 // rides along so the browser can explain a surprising destination in the same
 // breath as reporting success ("saved HERE, because your pane's directory isn't
 // visible to webtmux") instead of leaving the user to wonder.
-func (wt *WebTTY) sendSaveResult(ok bool, path, errMsg string, env SaveEnv) error {
-	data, err := json.Marshal(struct {
-		OK    bool    `json:"ok"`
-		Path  string  `json:"path"`
-		Error string  `json:"error"`
-		Env   SaveEnv `json:"env"`
-	}{OK: ok, Path: path, Error: errMsg, Env: env})
+func (wt *WebTTY) sendSaveResult(res saveOutcome) error {
+	data, err := json.Marshal(res)
 	if err != nil {
 		return fmt.Errorf("failed to marshal save result: %w", err)
 	}

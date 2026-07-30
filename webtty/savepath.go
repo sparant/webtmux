@@ -348,11 +348,122 @@ func describeSaveEnv(paneDir, chosen string) SaveEnv {
 	return env
 }
 
-// resolveSavePath turns a user-typed path into an absolute one on THIS machine.
+// ---- containment ---------------------------------------------------------------
+//
+// Resolution alone decides where a save LANDS; containment decides whether that
+// destination was ever on offer. Without it, "save this pane's buffer" is a
+// write-anywhere primitive: an absolute path went through as typed, and a
+// relative one could climb out of the base directory with `../../..`. On a server
+// where the operator has deliberately shared exactly one directory, that is the
+// difference between a feature and a hole — and the client asking is not
+// necessarily this repo's browser.
+//
+// So the final path must sit under a directory somebody NAMED as a save
+// destination. The roots are the same facts the SaveEnv is already built from,
+// which is what keeps the rule explainable: the place a relative save resolves
+// to, the directory the user chose in the dropdown, the operator's
+// WEBTMUX_SAVE_DIR, the `~` in force, and — outside a container, where webtmux
+// and tmux share a filesystem — the server's own home and working directory.
+//
+// Matching is on the SYMLINK-RESOLVED parent, not on string prefixes: a symlink
+// inside an allowed directory pointing anywhere at all would otherwise satisfy a
+// prefix test while writing somewhere else entirely.
+
+// saveRoots is the allowlist a resolved path must fall inside. Nonexistent
+// entries are dropped: a root that isn't there can't contain anything, and
+// keeping it would only make the refusal message longer.
+func saveRoots(env SaveEnv) []string {
+	var roots []string
+	seen := map[string]bool{}
+	add := func(d string) {
+		if d == "" || seen[d] || !dirExists(d) {
+			return
+		}
+		seen[d] = true
+		roots = append(roots, d)
+	}
+	// Where a relative save actually goes — the pane's own directory when webtmux
+	// can see it (possibly via WEBTMUX_PATH_MAP), else the fallback.
+	add(env.BaseDir)
+	add(env.Chosen)
+	add(configuredSaveDir())
+	add(env.Home)
+	if !env.Container {
+		// Outside a container the two sides share a filesystem, so the process's own
+		// home and cwd are real places the user can reach — the historical default.
+		if cwd, err := os.Getwd(); err == nil {
+			add(cwd)
+		}
+	}
+	return roots
+}
+
+// realDir resolves symlinks in a directory path. "" when it cannot be resolved,
+// which callers treat as "not a usable root / not contained".
+func realDir(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return ""
+	}
+	return resolved
+}
+
+// underRoot reports whether dir (already symlink-resolved) is root or below it.
+// filepath.Rel rather than strings.HasPrefix: "/data" must not contain
+// "/database", and a `..` that walks back out has to be visible as one.
+func underRoot(dir, root string) bool {
+	rel, err := filepath.Rel(root, dir)
+	if err != nil {
+		return false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return !filepath.IsAbs(rel)
+}
+
+// contained reports whether a resolved FILE path may be written: its existing
+// parent directory, with symlinks resolved, must lie inside one of the roots.
+func contained(target string, roots []string) bool {
+	dir := realDir(filepath.Dir(target))
+	if dir == "" {
+		return false
+	}
+	for _, r := range roots {
+		if rr := realDir(r); rr != "" && underRoot(dir, rr) {
+			return true
+		}
+	}
+	return false
+}
+
+// outsideMessage explains a refusal in terms of what IS on offer. It has to name
+// the directories, because "outside the allowed directories" is unactionable
+// when the reader cannot see which ones those are — they are a property of how
+// webtmux was started, not of anything on their screen.
+func outsideMessage(resolved string, roots []string) string {
+	if len(roots) == 0 {
+		return blockedMessage()
+	}
+	return fmt.Sprintf("%s is outside the directories webtmux may write to (%s). "+
+		"Save inside one of them, name a different directory in the save dropdown, "+
+		`or set WEBTMUX_SAVE_DIR; "Download to browser" always works.`,
+		resolved, strings.Join(roots, ", "))
+}
+
+// resolveSavePath turns a user-typed path into an absolute one on THIS machine,
+// and refuses it unless it lands inside a directory somebody named as a save
+// destination (see saveRoots).
+//
 // `~`/`~/…` expand to the server's home; a relative path resolves against
 // env.BaseDir; an absolute path is honored as typed — but every result goes
 // through the same prefix mapping, so typing the host path you can see in your
-// own shell lands in its mapped equivalent here rather than failing.
+// own shell lands in its mapped equivalent here rather than failing, and then
+// through the same containment check, so neither `~` nor an absolute path is a
+// way around it.
 //
 // The parent directory is checked up front so the failure is described in the
 // vocabulary of the two filesystems ("that directory doesn't exist HERE, and
@@ -363,19 +474,15 @@ func resolveSavePath(env SaveEnv, path string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("enter a file name")
 	}
-	// Nowhere shared to write: a bare name (or ~) has no honest destination, so
-	// refuse instead of inventing one inside the image. An ABSOLUTE path is still
-	// allowed through — someone who mounted a directory and typed its path knows
-	// something webtmux can't infer, and the dir-exists check below still guards it.
-	if env.Blocked && !filepath.IsAbs(path) && !strings.HasPrefix(path, "~") {
+	// Nowhere shared to write: no path of any shape has an honest destination.
+	// Absolute paths used to be waved through here on the theory that someone who
+	// mounted a directory knows something webtmux can't infer — but the save
+	// dropdown is now how they say so (env.Chosen), and it is checked. An
+	// unchecked absolute path is just the containment hole with a rationale.
+	if env.Blocked {
 		return "", fmt.Errorf("%s", blockedMessage())
 	}
 	if path == "~" || strings.HasPrefix(path, "~/") {
-		// Blocked first: "there is nowhere to save at all" outranks "~ is the wrong
-		// home", because it is the bigger fact and the one with the fix in it.
-		if env.Blocked {
-			return "", fmt.Errorf("%s", blockedMessage())
-		}
 		if env.Home == "" {
 			// `~` on which machine? Not this one's — see serverHome.
 			return "", fmt.Errorf("~ has no meaning here: webtmux's own home is inside its container, "+
@@ -399,7 +506,35 @@ func resolveSavePath(env SaveEnv, path string) (string, error) {
 	if !dirExists(dir) {
 		return "", fmt.Errorf("%s", missingDirMessage(env, dir))
 	}
+	roots := saveRoots(env)
+	if !contained(resolved, roots) {
+		return "", fmt.Errorf("%s", outsideMessage(resolved, roots))
+	}
+	// A pre-existing symlink AT the target is followed by the write, so it can
+	// point straight out of the allowlist the parent just satisfied. Resolve it
+	// and require the real destination to be contained too. (Only the existing
+	// case: a name that isn't there yet cannot be a symlink.)
+	if link, err := filepath.EvalSymlinks(resolved); err == nil && link != resolved {
+		if !contained(link, roots) {
+			return "", fmt.Errorf("%s is a symlink to %s, which is outside the directories "+
+				"webtmux may write to (%s)", resolved, link, strings.Join(roots, ", "))
+		}
+	}
 	return resolved, nil
+}
+
+// targetExists reports whether a save would overwrite something. Lstat, not Stat:
+// a dangling symlink is still a name that is taken, and the write would follow it.
+func targetExists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
+}
+
+// existsMessage is the one save error the user can answer in place, so it is
+// phrased as a question rather than a verdict — the dropdown turns it into an
+// Overwrite button (see save-target.js).
+func existsMessage(path string) string {
+	return fmt.Sprintf("%s already exists. Overwrite it?", path)
 }
 
 // blockedMessage is what a save gets when webtmux has no directory it shares
