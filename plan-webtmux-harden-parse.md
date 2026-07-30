@@ -49,32 +49,127 @@ wrapper buffers unbounded input pre-check. Mechanical, well-testable hardening.
 
 ## Phases
 
-### Phase 1 — races (P0)
+### Phase 1 — races (P0) — COMPLETE
 
-- [ ] P0 `identMu` + snapshot accessors + call-site sweep (`SwitchSession`,
+- [x] P0 `identMu` + snapshot accessors + call-site sweep (`SwitchSession`,
       `regroupOnto`, `discoverClient`, `SetClient`, `session()`, `selfHeal`); single-flight
       regroup. ~45m, Opus.
-- [ ] P0 A `-race` test that actually exercises it: fake-runner controller with a
+      Landed as `identState` (the six fields plus the `regrouping` latch) behind
+      `Controller.identMu`, reached only through `ident()`/`setIdent()`. A refused
+      regroup returns `errRegroupInFlight` (webtty logs a failed tmux command
+      without tearing the connection down).
+- [x] P0 A `-race` test that actually exercises it: fake-runner controller with a
       RefreshLayout loop racing SwitchSession/SetClient (the review noted `-race` passes
       only because no test crosses goroutines). ~40m, Opus.
+      `pkg/tmux/controller_race_test.go`, on a new fake-tmux seam
+      (`newControllerWithRunner` + `pkg/tmux/faketmux_test.go`, which RENDERS the
+      `-F` format the code asks for rather than hard-coding a line, so a field
+      reorder is exercised instead of re-baselined). Verified the test really
+      witnesses the bug: with the mutex removed it reports `WARNING: DATA RACE`
+      on `regroupOnto` vs `selfHeal`.
 
-### Phase 2 — parsing (P0)
+### Phase 2 — parsing (P0) — COMPLETE
 
-- [ ] P0 Migrate per-session window rows (decision 2) + tests with `,`/`|` in names. ~40m, Sonnet.
-- [ ] P0 Migrate pane rows (`pane_current_command`/`pane_title` last) + tests. ~35m, Sonnet.
-- [ ] P1 `sessionEmptiness` + `parseAllWindows` session-name hardening + tests
+- [x] P0 Migrate per-session window rows (decision 2) + tests with `,`/`|` in names. ~40m, Sonnet.
+      `windowsFormat` (`window_id|window_index|window_active|@wt_working|window_name`)
+      + `parseWindowRows`. Also swept the pane's OWN identity read, which was
+      `display-message -p "#{session_id},#{session_name}"` parsed with a plain
+      `Split` — a session called `a, b` reported itself as `a`; now
+      `sessionIdentFormat` + `parseSessionIdent`.
+- [x] P0 Migrate pane rows (`pane_current_command`/`pane_title` last) + tests. ~35m, Sonnet.
+      `panesFormat` + `parsePaneRows`. Note on decision 2: a pane row has TWO
+      user-controlled fields and neither has an id form (they ARE the data), so
+      the residual is stated rather than removed — `pane_title` (which really does
+      carry `|`, from shell prompt titles) takes the last slot, and a `|` in a
+      process comm name can still bleed into the title but never into the geometry.
+- [x] P1 `sessionEmptiness` + `parseAllWindows` session-name hardening + tests
       (the `|`-in-session-name caveat the code comment already admits). ~35m, Sonnet.
+      Both rows now carry `#{session_id}` and resolve the name from the same
+      refresh's `list-sessions`, which removes the caveat instead of restating it.
+      Deviation from decision 2's wording: it offers "the `enumSep` NUL approach
+      already in the codebase" as the fallback for a row with two names — there is
+      no such approach (`enumSep` is `|`; the comment beside it explains that tmux
+      sanitizes control bytes in `-F` output, so NUL is impossible). The id
+      indirection is the workable form of the same intent.
+      Scope note: decision 2 says "any format where a session name is non-final",
+      so `capture.go`'s `EnumerateWindows` — session_name in field 1 of 7, i.e. the
+      worst instance in the tree — was migrated too, at the cost of one extra
+      `list-sessions` fork per enumeration. `windowLinkCounts` is deliberately left
+      on `session_name`: it is already final-slot safe, and dropping an unnameable
+      id there would UNDERCOUNT links, turning the sidebar's × from unlink to kill.
 
-### Phase 3 — targeting & transport (P1)
+### Phase 3 — targeting & transport (P1) — COMPLETE
 
-- [ ] P1 Exact `-t =name` sweep over destructive ops + leading-`-` policy + tests
+- [x] P1 Exact `-t =name` sweep over destructive ops + leading-`-` policy + tests
       (fake-runner asserts the literal argv). ~40m, Sonnet.
-- [ ] P1 `RenameSession` NUL-delimited payload (server + client + both test suites). ~35m, Sonnet.
-- [ ] P1 Bounded reads (decision 4) in `server/ws_wrapper.go` + `server/handlers.go`. ~30m, Sonnet.
+      **Decision 3 needed correcting against a live tmux (3.2a) — `=` is NOT
+      universal, and the plan's "already used by `Start()`" generalisation does not
+      hold.** Measured (probe scripts, since retired):
+      * session targets (`has-session`, `kill-session`, `rename-session`,
+        `switch-client`, `new-session -t`, `new-window -t`, `link-window -t`,
+        `unlink-window -t`, `select-window`, `swap-window`, `list-windows -t`,
+        `list-clients -t`) take `=name` / `=name:index`. Verified exact:
+        `switch-client -c tty -t dev-` moves the client to `dev-2` and exits 0,
+        `-t =dev-` refuses.
+      * target-PANE commands (`split-window`, `copy-mode`, `send-keys`, `if-shell`,
+        `display-message`) REJECT `=name` — "can't find pane: =name" — and
+        `display-message` fails silently, expanding its whole format to "" with
+        exit 0. They take `=name:` (session resolved exactly, then its current
+        window's active pane). Hence the second helper, `exactPaneOf`.
+      * `set-option -t` accepts NEITHER form ("no such session: =name"). Its one
+        caller (regroupOnto) now targets `#{session_id}`, taken from a `-P -F` on
+        the `new-session` that just created the session.
+      Leading-`-` policy: `--` where tmux takes the name as a positional argument
+      (`rename-session`, `rename-window` — both verified), and a refusal with an
+      honest message for `new-session -s`, where the name is an OPTION ARGUMENT
+      and tmux swallows a `--` as the name itself.
+      Tests: `pkg/tmux/controller_targets_test.go` asserts the literal argv per
+      command plus a sweep that no recorded `-t` names a session in bare form.
+- [x] P1 `RenameSession` NUL-delimited payload (server + client + both test suites). ~35m, Sonnet.
+      New import-free `resources/js/tmux-payloads.js` holds the encoder (the rest
+      of `terminal-unit.js` can't load under node), `webtty/tmux.go` decodes, a
+      payload without a NUL is dropped rather than guessed at. `make sync-assets`
+      run so `bindata/static/js/` carries both files.
+- [x] P1 Bounded reads (decision 4) in `server/ws_wrapper.go` + `server/handlers.go`. ~30m, Sonnet.
+      `webtty.DefaultBufferSize` exported so the transport ceiling and the buffer
+      size cannot drift; `newWSWrapper` arms `SetReadLimit`, `Read` copies through
+      an `io.LimitReader(reader, len(p)+1)`, and the pre-auth `conn.ReadMessage`
+      gets the limit before the handshake read. `server/ws_wrapper_test.go` drives
+      a real gorilla connection for all four cases.
 
 ### Phase 4 — verify & land (P0)
 
-- [ ] P0 Full Go suite `-race` in golang:1.23 docker + JS suite + bindata sync;
+- [x] P0 Full Go suite `-race` in golang:1.23 docker + JS suite + bindata sync;
       live smoke: window named `a, b | c` renders and navigates correctly everywhere
       (sidebar, recents, Exposé, stoplights). ~40m, Sonnet.
+      * `go vet ./... && go test -race -count=1 ./...` — every package ok.
+      * `node --test test/` — 208 pass, 0 fail (baseline 203; +5 from
+        `test/tmux-payloads.test.mjs`).
+      * `make check-js` clean, `make sync-assets` run.
+      * Live: `screenshots/harness/verify-parse.js` (new committed driver, run with
+        `DRIVER=verify-parse.js`) — a window named `a, b | c` inside a session named
+        `ops | staging`, driven in a real chromium against a real tmux. 17/17
+        checks: window row (name/index/active/@wt_working), pane geometry, the
+        server-wide directory, the session list + emptiness, the pane's own
+        identity after a switch, the sidebar row + its stoplight + click-to-select
+        (with tmux agreeing), the recents strip, Exposé tiles and placements, an
+        end-to-end session rename over the NUL payload, and `killSession("proj")`
+        leaving `proj-2` alone.
+      One finding, not a defect: the recents strip LABEL shows `b | c`, because the
+      `recentTrimName` pref (on by default) drops everything before the first
+      space — the same rule that renders "claude Dominion" as "Dominion". The name
+      in the strip's data is whole; the driver checks both for what they are.
 - [ ] P0 Mark complete, merge via the lock wrapper, tick subplan C in the master plan. ~15m.
+      Plan marked complete here; the MERGE and the master-plan tick are the parent
+      session's (subplan B is gated on it).
+      **Merge preflight (done, read-only — `git merge-tree` against the local-main
+      that now carries subplan A):** exactly ONE conflicting file,
+      `pkg/tmux/controller.go`, and exactly one hunk in it — A's
+      `serverStartFormat`/`serverIdentity` block and this branch's
+      `sessionNamesByID` were inserted at the same point. Resolution is keep both.
+      Everything else auto-merges, `resources/js/terminal-unit.js` included. The
+      resolved tree was built and run: `go vet` + `go test -race ./...` all green
+      and `node --test test/` 237/0. A's `#{start_time}` read is a TARGETLESS
+      `display-message`, so it is unaffected by the `=name:` rule; the only
+      adjustment that needed making on this side was selecting the identity read
+      by its format instead of by position, which is committed here.

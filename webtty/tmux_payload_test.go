@@ -19,7 +19,15 @@ type recCtrl struct {
 	unlinkID      string
 	unlinkSess    string
 	newWindowSess string
+	renameOld     string
+	renameNew     string
 	calls         int
+}
+
+func (c *recCtrl) RenameSession(oldName, newName string) error {
+	c.renameOld, c.renameNew = oldName, newName
+	c.calls++
+	return nil
 }
 
 func (c *recCtrl) MoveWindow(id string, pos int, session string) error {
@@ -126,6 +134,46 @@ func TestUnlinkWindowPayloadCarriesTheSession(t *testing.T) {
 		if ctrl.unlinkID != tc.id || ctrl.unlinkSess != tc.session {
 			t.Errorf("%q parsed as (%q, %q); want (%q, %q)",
 				tc.payload, ctrl.unlinkID, ctrl.unlinkSess, tc.id, tc.session)
+		}
+	}
+}
+
+// Rename-session is the only payload whose FIRST field is user-typed, so it is
+// the only one the "machine field first, one user string last" rule can't save.
+// It is NUL-delimited (tmux forbids NUL in a session name); the old form split on
+// the first space, which turned a rename of "my project" into a rename aimed at
+// "my" — and the server resolves a session target by PREFIX, so that hit whatever
+// session started with it, with no error anywhere.
+func TestRenameSessionPayloadIsNULDelimited(t *testing.T) {
+	cases := []struct{ payload, old, fresh string }{
+		{"old\x00new", "old", "new"},
+		{"my project\x00my other project", "my project", "my other project"},
+		{"a, b | c\x00-dashed | name", "a, b | c", "-dashed | name"},
+		{"dev\x00", "dev", ""},
+	}
+	for _, tc := range cases {
+		wt, ctrl := newRecordingWebTTY(t)
+		if err := wt.handleTmuxMessage(TmuxRenameSession, []byte(tc.payload)); err != nil {
+			t.Fatalf("%q: %v", tc.payload, err)
+		}
+		if ctrl.renameOld != tc.old || ctrl.renameNew != tc.fresh || ctrl.calls != 1 {
+			t.Errorf("%q parsed as (%q, %q) calls=%d; want (%q, %q)",
+				tc.payload, ctrl.renameOld, ctrl.renameNew, ctrl.calls, tc.old, tc.fresh)
+		}
+	}
+}
+
+func TestRenameSessionPayloadWithoutTheSeparatorIsDropped(t *testing.T) {
+	// The old space form, or anything else unstructured. Guessing at it is what
+	// produced the wrong-session rename, so it is dropped — the browser and the
+	// server ship from the same bundle, so there is no old client to serve.
+	for _, payload := range []string{"old new", "old", "", "   "} {
+		wt, ctrl := newRecordingWebTTY(t)
+		if err := wt.handleTmuxMessage(TmuxRenameSession, []byte(payload)); err != nil {
+			t.Fatalf("%q: %v", payload, err)
+		}
+		if ctrl.calls != 0 {
+			t.Errorf("%q was executed as (%q, %q)", payload, ctrl.renameOld, ctrl.renameNew)
 		}
 	}
 }

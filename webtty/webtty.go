@@ -38,6 +38,19 @@ type WebTTY struct {
 	captureProvider CaptureProvider
 }
 
+// DefaultBufferSize bounds a SINGLE client->server message (wsWrapper.Read
+// errors, tearing down the connection, if a message exceeds it) and the
+// server->client output chunk size. The old 1024 default meant any paste over
+// ~760 raw bytes (base64 inflates 4/3) dropped the WebSocket and lost the input.
+// The client now chunks input well under this, so this is headroom + fewer output
+// frames.
+//
+// Exported because the SERVER has to arm the same ceiling on the websocket itself
+// (SetReadLimit), one layer below this one, and the two must not drift: a
+// transport limit under the buffer size would tear down connections carrying
+// messages webtty is perfectly willing to accept.
+const DefaultBufferSize = 128 * 1024
+
 // New creates a new instance of WebTTY.
 // masterConn is a connection to the PTY master,
 // typically it's a websocket connection to a client.
@@ -51,12 +64,7 @@ func New(masterConn Master, slave Slave, options ...Option) (*WebTTY, error) {
 		columns:     0,
 		rows:        0,
 
-		// bufferSize bounds a SINGLE client->server message (wsWrapper.Read errors,
-		// tearing down the connection, if a message exceeds it) and the server->client
-		// output chunk size. The old 1024 default meant any paste over ~760 raw bytes
-		// (base64 inflates 4/3) dropped the WebSocket and lost the input. The client
-		// now chunks input well under this, so this is headroom + fewer output frames.
-		bufferSize: 128 * 1024,
+		bufferSize: DefaultBufferSize,
 		decoder:    &NullCodec{},
 	}
 

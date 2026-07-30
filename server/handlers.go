@@ -113,6 +113,14 @@ func (server *Server) generateHandleWS(ctx context.Context, cancel context.Cance
 }
 
 func (server *Server) processWSConn(ctx context.Context, conn *websocket.Conn, headers map[string][]string) error {
+	// Bound the read BEFORE the first read. The auth handshake below is the very
+	// first message on the connection and it happens while the client is still
+	// anonymous, so without a limit an unauthenticated peer can make the server
+	// buffer a message of any size it likes. gorilla defaults to unlimited; the
+	// ceiling is webtty's message size, which every legitimate frame fits inside
+	// (see wsWrapper, which re-arms the same value for the session proper).
+	conn.SetReadLimit(webtty.DefaultBufferSize)
+
 	typ, initLine, err := conn.ReadMessage()
 	if err != nil {
 		return fmt.Errorf("failed to authenticate websocket connection: %w", err)
@@ -204,7 +212,7 @@ func (server *Server) processWSConn(ctx context.Context, conn *websocket.Conn, h
 	if server.options.Height > 0 {
 		opts = append(opts, webtty.WithFixedRows(server.options.Height))
 	}
-	tty, err := webtty.New(&wsWrapper{conn}, slave, opts...)
+	tty, err := webtty.New(newWSWrapper(conn, webtty.DefaultBufferSize), slave, opts...)
 	if err != nil {
 		return fmt.Errorf("failed to create webtty: %w", err)
 	}

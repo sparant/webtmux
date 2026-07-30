@@ -1,24 +1,63 @@
 package tmux
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 )
 
-// fakeTmux records calls and returns canned output for list-windows / capture-pane.
+// fakeTmux records calls and returns canned output for list-windows /
+// list-sessions / capture-pane.
+//
+// listOut holds rows stated with the session NAME, because that is what the test
+// is about; the fake substitutes the session ID on the way out, exactly as tmux
+// would, and answers the `list-sessions` the store now runs to translate them
+// back. Keeping the fixture in names is what lets a test put a '|' in one.
 type fakeTmux struct {
-	listOut     string
+	listOut     [][]string
 	captureOut  string
 	listCalls   int
 	captureArgs [][]string
+}
+
+// sessionIDs assigns "$0", "$1", … to the distinct session names in listOut, in
+// first-appearance order. Deterministic, so list-windows and list-sessions agree.
+func (f *fakeTmux) sessionIDs() (map[string]string, []string) {
+	ids := map[string]string{}
+	var order []string
+	for _, r := range f.listOut {
+		if _, ok := ids[r[1]]; !ok {
+			ids[r[1]] = fmt.Sprintf("$%d", len(order))
+			order = append(order, r[1])
+		}
+	}
+	return ids, order
 }
 
 func (f *fakeTmux) run(args ...string) (string, error) {
 	switch args[0] {
 	case "list-windows":
 		f.listCalls++
-		return f.listOut, nil
+		ids, _ := f.sessionIDs()
+		var lines []string
+		for _, r := range f.listOut {
+			row := append([]string(nil), r...)
+			row[1] = ids[r[1]]
+			lines = append(lines, strings.Join(row, enumSep))
+		}
+		return strings.Join(lines, "\n"), nil
+	case "list-sessions":
+		ids, order := f.sessionIDs()
+		format := flagValue(args, "-F")
+		var lines []string
+		for _, name := range order {
+			lines = append(lines, renderFormat(format, map[string]string{
+				"session_id": ids[name], "session_name": name, "session_windows": "1",
+				"session_attached": "1", "session_grouped": "0", "session_group": "",
+			}))
+		}
+		return strings.Join(lines, "\n"), nil
 	case "capture-pane":
 		f.captureArgs = append(f.captureArgs, args)
 		return f.captureOut, nil
@@ -26,14 +65,10 @@ func (f *fakeTmux) run(args ...string) (string, error) {
 	return "", nil
 }
 
-// buildList renders list-windows rows in the enumSep-delimited format the store
-// parses. Each row: windowID, session, index, paneID, cols, rows, name.
-func buildList(rows ...[]string) string {
-	var lines []string
-	for _, r := range rows {
-		lines = append(lines, strings.Join(r, enumSep))
-	}
-	return strings.Join(lines, "\n")
+// buildList collects list-windows rows. Each row: windowID, session NAME, index,
+// paneID, cols, rows, window name.
+func buildList(rows ...[]string) [][]string {
+	return rows
 }
 
 func TestEnumerateWindowsDedupsByWindowID(t *testing.T) {
@@ -142,6 +177,54 @@ func TestEnumerateWindowsKeepsWebOnlyWindow(t *testing.T) {
 	}
 	if len(wins) != 1 || wins[0].WindowID != "@9" {
 		t.Fatalf("expected 1 fallback placement for a web-only window, got %+v", wins)
+	}
+}
+
+func TestEnumerateWindowsSurvivesSeparatorsInBothNames(t *testing.T) {
+	// The row carries the session as #{session_id}, so BOTH user-typed strings on
+	// the line can contain the separator. With session_name in the line, "ops |
+	// staging" shifted index/pane_id/cols/rows by one field each: the tile lost its
+	// geometry and capture-pane was aimed at "0" instead of "%10".
+	f := &fakeTmux{listOut: buildList(
+		[]string{"@5", "ops | staging", "2", "%10", "80", "24", "a, b | c"},
+	)}
+	s := newCaptureStoreWithRunner(f.run, time.Now)
+
+	wins, err := s.EnumerateWindows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wins) != 1 {
+		t.Fatalf("expected 1 placement, got %+v", wins)
+	}
+	w := wins[0]
+	if w.SessionName != "ops | staging" || w.Name != "a, b | c" ||
+		w.Index != 2 || w.PaneID != "%10" || w.Cols != 80 || w.Rows != 24 {
+		t.Errorf("separators corrupted the placement: %+v", w)
+	}
+}
+
+func TestEnumerateWindowsDropsUnnameableSessions(t *testing.T) {
+	// A session that `list-sessions` doesn't know about (created a moment later)
+	// cannot be labelled or switched to, so its placement is left out rather than
+	// tiled under a raw "$7".
+	f := &fakeTmux{listOut: buildList(
+		[]string{"@5", "services", "0", "%10", "80", "24", "build"},
+	)}
+	f2 := &fakeTmux{listOut: f.listOut}
+	s := newCaptureStoreWithRunner(func(args ...string) (string, error) {
+		if args[0] == "list-sessions" {
+			return "", nil // the listing raced us
+		}
+		return f2.run(args...)
+	}, time.Now)
+
+	wins, err := s.EnumerateWindows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wins) != 0 {
+		t.Errorf("want no placements when no session can be named, got %+v", wins)
 	}
 }
 

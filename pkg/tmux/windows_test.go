@@ -3,26 +3,37 @@ package tmux
 import "testing"
 
 // `list-windows -a -F allWindowsFormat` fixture, in the shape a real tmux emits:
-// window_id | @wt_working | session_name | window_index | window_name.
+// window_id | session_id | window_index | @wt_working | window_name.
 //
-// It covers the four things the parse has to get right at once — an unset
-// @wt_working, a window LINKED into two sessions (two placements, different
-// indexes), the web-* grouped shadow a split adds, and a window name containing the
-// field separator.
-const allWindowsFixture = `@0||services|0|shell
-@1|1|services|1|claude Dominion
-@2|2|services|2|claude llmrefine
-@1|1|editors|4|claude Dominion
-@1|1|web-abc123|1|claude Dominion
-@0||web-abc123|0|shell
-@7|0|editors|5|build | test
+// It covers the things the parse has to get right at once — an unset @wt_working,
+// a window LINKED into two sessions (two placements, different indexes), the web-*
+// grouped shadow a split adds, a window name containing the field separator, and a
+// SESSION name containing it (which is why the session rides as an id: only one
+// user-typed string can hold the final slot).
+const allWindowsFixture = `@0|$0|0||shell
+@1|$0|1|1|claude Dominion
+@2|$0|2|2|claude llmrefine
+@1|$1|4|1|claude Dominion
+@1|$9|1|1|claude Dominion
+@0|$9|0||shell
+@7|$1|5|0|build | test
+@8|$2|0|1|a, b | c
 `
 
+// The `list-sessions` half of the same refresh: $0 services, $1 editors, $9 the
+// split's grouped shadow, $2 a session someone named with the separator in it.
+var allWindowsSessions = []sessionRow{
+	{id: "$0", name: "services"},
+	{id: "$1", name: "editors"},
+	{id: "$9", name: "web-abc123", grouped: true},
+	{id: "$2", name: "ops | staging"},
+}
+
 func TestParseAllWindowsStatus(t *testing.T) {
-	working, _ := parseAllWindows(allWindowsFixture)
+	working, _ := parseAllWindows(allWindowsFixture, allWindowsSessions)
 	// Every window on the server gets a light, including the ones in sessions no
 	// region is attached to — that is the whole point of the -a listing.
-	for id, want := range map[string]string{"@0": "", "@1": "1", "@2": "2", "@7": "0"} {
+	for id, want := range map[string]string{"@0": "", "@1": "1", "@2": "2", "@7": "0", "@8": "1"} {
 		if got, ok := working[id]; !ok || got != want {
 			t.Errorf("working[%s] = %q (present=%v), want %q", id, got, ok, want)
 		}
@@ -30,10 +41,10 @@ func TestParseAllWindowsStatus(t *testing.T) {
 }
 
 func TestParseAllWindowsDirectory(t *testing.T) {
-	_, refs := parseAllWindows(allWindowsFixture)
-	// The two web-* rows are dropped (they mirror services), leaving five placements.
-	if len(refs) != 5 {
-		t.Fatalf("want 5 placements, got %d: %+v", len(refs), refs)
+	_, refs := parseAllWindows(allWindowsFixture, allWindowsSessions)
+	// The two web-* rows are dropped (they mirror services), leaving six placements.
+	if len(refs) != 6 {
+		t.Fatalf("want 6 placements, got %d: %+v", len(refs), refs)
 	}
 	for _, r := range refs {
 		if r.Session == "web-abc123" {
@@ -50,7 +61,7 @@ func TestParseAllWindowsLinkedWindowKeepsBothPlacements(t *testing.T) {
 	// @1 lives in services (index 1) and editors (index 4). The attention arrow
 	// navigates BY placement — collapsing these would make one of the two
 	// unreachable, and would label the survivor with the wrong window number.
-	_, refs := parseAllWindows(allWindowsFixture)
+	_, refs := parseAllWindows(allWindowsFixture, allWindowsSessions)
 	seen := map[string]int{}
 	for _, r := range refs {
 		if r.ID == "@1" {
@@ -65,17 +76,40 @@ func TestParseAllWindowsLinkedWindowKeepsBothPlacements(t *testing.T) {
 func TestParseAllWindowsNameWithSeparator(t *testing.T) {
 	// window_name is last precisely so a '|' typed (or scripted) into it lands inside
 	// the final field instead of shifting every machine field before it.
-	_, refs := parseAllWindows(allWindowsFixture)
-	last := refs[len(refs)-1]
-	if last.ID != "@7" || last.Name != "build | test" || last.Index != 5 {
-		t.Errorf("separator in a window name broke the row: %+v", last)
+	_, refs := parseAllWindows(allWindowsFixture, allWindowsSessions)
+	var got WindowRef
+	for _, r := range refs {
+		if r.ID == "@7" {
+			got = r
+		}
+	}
+	if got.Name != "build | test" || got.Index != 5 || got.Session != "editors" {
+		t.Errorf("separator in a window name broke the row: %+v", got)
+	}
+}
+
+func TestParseAllWindowsSessionNameWithSeparator(t *testing.T) {
+	// The row carries #{session_id}, so a '|' in the SESSION name — the second
+	// user-typed string on the line, which cannot also have the last slot — reaches
+	// the directory whole instead of shifting the index and eating the window name.
+	// A window called "a, b | c" in a session called "ops | staging" is the case
+	// that used to corrupt both.
+	_, refs := parseAllWindows(allWindowsFixture, allWindowsSessions)
+	var got WindowRef
+	for _, r := range refs {
+		if r.ID == "@8" {
+			got = r
+		}
+	}
+	if got.Session != "ops | staging" || got.Name != "a, b | c" || got.Index != 0 {
+		t.Errorf("separator in a session name broke the row: %+v", got)
 	}
 }
 
 func TestParseAllWindowsSkipsShortRows(t *testing.T) {
 	// A truncated row is dropped rather than half-parsed: a WindowRef with a blank
 	// session is a navigation target that goes nowhere.
-	working, refs := parseAllWindows("@0|1|services\n@1|1|services|1|ok\n")
+	working, refs := parseAllWindows("@0|$0|1\n@1|$0|1|1|ok\n", allWindowsSessions)
 	if len(refs) != 1 || refs[0].ID != "@1" {
 		t.Errorf("want only the well-formed row, got %+v", refs)
 	}
@@ -84,8 +118,22 @@ func TestParseAllWindowsSkipsShortRows(t *testing.T) {
 	}
 }
 
+func TestParseAllWindowsUnknownSessionKeepsTheLightDropsThePlacement(t *testing.T) {
+	// A session created between `list-sessions` and `list-windows -a` can't be
+	// named. Its window still has a status (the light doesn't depend on knowing
+	// where it lives), but it must not enter the directory, which exists to be
+	// navigated to.
+	working, refs := parseAllWindows("@4|$77|0|2|fresh\n", allWindowsSessions)
+	if working["@4"] != "2" {
+		t.Errorf("status for an unnamed session's window = %q, want 2", working["@4"])
+	}
+	if len(refs) != 0 {
+		t.Errorf("want no placements for an unresolvable session, got %+v", refs)
+	}
+}
+
 func TestParseAllWindowsEmpty(t *testing.T) {
-	working, refs := parseAllWindows("")
+	working, refs := parseAllWindows("", allWindowsSessions)
 	if len(working) != 0 || len(refs) != 0 {
 		t.Errorf("empty listing must yield nothing, got %+v / %+v", working, refs)
 	}

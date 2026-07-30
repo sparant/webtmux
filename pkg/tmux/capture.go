@@ -113,10 +113,13 @@ func newCaptureStoreWithRunner(run tmuxRunner, now func() time.Time) *CaptureSto
 
 // enumSep separates fields in the list-windows format. tmux SANITIZES all
 // control bytes (tab, \x1f, \x01, …) to '_' in -F output, so a non-printable
-// separator is impossible — we use '|' and put the only user-arbitrary field
+// separator is impossible — we use '|' and put the only user-arbitrary TEXT field
 // (window_name) LAST, parsed with SplitN, so a '|' typed into a window name
-// can't break the split. session_name is program-generated here and never
-// contains '|'; the remaining fields are @/%-ids and integers.
+// can't break the split. The placement's session rides as #{session_id} ("$3")
+// and is resolved back to a name from a `list-sessions`: it is the row's second
+// user-arbitrary value and only one of the two can hold the final slot, so the
+// one that has a machine-safe id form gives the slot up. The remaining fields
+// are @/%-ids and integers.
 const enumSep = "|"
 const enumFields = 7
 
@@ -134,9 +137,9 @@ const enumFields = 7
 // This is the "every window across all sessions, one tile per placement" source of
 // truth for both Exposé and "all"-window capture requests.
 func (s *CaptureStore) EnumerateWindows() ([]WindowInfo, error) {
-	// Field order: id | session | index | pane_id | cols | rows | name(LAST).
+	// Field order: id | session_id | index | pane_id | cols | rows | name(LAST).
 	format := strings.Join([]string{
-		"#{window_id}", "#{session_name}", "#{window_index}",
+		"#{window_id}", "#{session_id}", "#{window_index}",
 		"#{pane_id}", "#{pane_width}", "#{pane_height}", "#{window_name}",
 	}, enumSep)
 
@@ -144,6 +147,15 @@ func (s *CaptureStore) EnumerateWindows() ([]WindowInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// One extra fork, to turn each row's session_id back into the name the tile is
+	// labelled with and the name a click navigates to. A placement whose session
+	// can't be named is dropped: it could be neither labelled nor switched to.
+	sessOut, err := s.run("list-sessions", "-F", sessionsFormat)
+	if err != nil {
+		return nil, err
+	}
+	sessionNames := sessionNamesByID(parseSessionRows(sessOut))
 
 	// Parse every row first, so we can decide the web-* fallback knowing whether a
 	// window has ANY real-session placement (a real placement may be listed after a
@@ -162,19 +174,23 @@ func (s *CaptureStore) EnumerateWindows() ([]WindowInfo, error) {
 		if len(f) < enumFields {
 			continue
 		}
+		sessionName, ok := sessionNames[f[1]]
+		if !ok {
+			continue
+		}
 		idx, _ := strconv.Atoi(f[2])
 		cols, _ := strconv.Atoi(f[4])
 		rowsN, _ := strconv.Atoi(f[5])
 		info := WindowInfo{
 			WindowID:    f[0],
-			SessionName: f[1],
+			SessionName: sessionName,
 			Index:       idx,
 			Name:        f[6],
 			PaneID:      f[3],
 			Cols:        cols,
 			Rows:        rowsN,
 		}
-		isWeb := isWebShadowName(f[1])
+		isWeb := isWebShadowName(sessionName)
 		if !isWeb {
 			hasReal[f[0]] = true
 		}

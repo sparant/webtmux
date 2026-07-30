@@ -18,6 +18,7 @@ import { copyText } from './clipboard.js';
 import { stateStore } from './state-store.js';
 import { arrowSequence } from './arrow-keys.js';
 import { IS_MAC } from './os.js';
+import { renameSessionPayload } from './tmux-payloads.js';
 import {
   normalizeMouseMode, resolvePress, needsForcedSelection, forceSelectionModifier,
   movedEnough, leaveCopyModeFirst, PressArbiter,
@@ -1583,9 +1584,10 @@ export class TerminalUnit {
   // Rename a session by its (current) logical name. Parity with renameWindow;
   // driven by double-clicking a session tab in the sidebar.
   renameSession(oldName, newName) {
-    // "<oldName> <newName>" — session names have no spaces, so the first space
-    // delimits (server keeps the rest as the possibly-spaced new name).
-    this.sendMessage(MSG.TmuxRenameSession, oldName + ' ' + newName);
+    // "<oldName>\0<newName>" — BOTH halves are user-typed session names, so the
+    // payload needs a separator neither can contain (see tmux-payloads.js). The
+    // old first-space split aimed a rename of "my project" at "my".
+    this.sendMessage(MSG.TmuxRenameSession, renameSessionPayload(oldName, newName));
   }
 
   // Kill a window by id (sidebar hover ×). Grouped sessions share the list, so the
