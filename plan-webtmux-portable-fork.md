@@ -340,7 +340,7 @@ concurrent agents, so doc revisions go through a worktree and
       Publishing still needs an authenticated `gh` **on your side** — all pushes and
       `gh release create` runs are yours; the agent has no GitHub access.
 
-- [ ] **P1** 0.9 **Licence hygiene.** Confirm `LICENSE` is intact and unmodified. The
+- [x] **P1** 0.9 **Licence hygiene.** Confirm `LICENSE` is intact and unmodified. The
       lineage is gotty (yudai) → webtmux (chrismccord) → yours; the licence and its
       copyright lines must be preserved however far the fork diverges. *(5 min)*
 
@@ -350,7 +350,29 @@ concurrent agents, so doc revisions go through a worktree and
       substantially diverged and is not intended to be merged back is still worth adding
       for anyone who finds it.
 
+      *Confirmed 2026-07-29: `LICENSE` is byte-identical to
+      `chrismccord/webtmux@master` (21 lines, MIT, copyright lines intact). The optional
+      "has diverged, not intended to be merged back" README line is **not** written —
+      it is a nicety, not a licence obligation.*
+
 - [ ] **P0** 0.10 **Verify the chain end to end.** *(10 min)*
+
+      **Leg 1 verified 2026-07-29** (all four checks below pass): `origin` is the Mac,
+      `git remote | head -1` is `origin`, there is no `github` remote, and `upstream`'s
+      push URL is `DISABLED`.
+
+      **Leg 2's *outcomes* verified from GitHub instead of the Mac** — the agent has no
+      SSH key for the Mac, so the `ssh` block below is still yours to run. What GitHub
+      shows: the fork is reachable unauthenticated, publishes exactly
+      `refs/heads/local-main` and `refs/heads/main` (**no `refs/remotes/*` junk** — the
+      `--mirror` hazard did not materialise), and carries **no tags**.
+
+      **One live finding:** the fork's `local-main` is at `0d29e7d`, four commits behind
+      this repo's `6b3a6cc`. The cause is not leg 2 — it is leg 1: the working repo has
+      untracked files, and `sync-all-repos.sh` **skips dirty repos entirely**, so the
+      automatic push stopped. Commit or remove the stray files and the chain resumes.
+      Worth knowing generally: *a dirty working repo silently disables the backup*, and
+      the only symptom is a stale Mac and a stale fork.
 
       Each check names the leg it protects.
 
