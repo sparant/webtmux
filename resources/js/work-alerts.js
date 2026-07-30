@@ -114,6 +114,66 @@ export class WorkAlerts {
     return entries;
   }
 
+  // --- surviving a reload ------------------------------------------------------
+  //
+  // Everything above is derived from a SEQUENCE of polls, so it lives only in this
+  // object — and a browser reload destroys it. That made the reload itself act as a
+  // dismissal: you came back to a laptop with several tabs flashing, refreshed to get
+  // the connection back, and the refresh answered the flashes on your behalf. The two
+  // methods below let a caller carry the registry across that gap (see
+  // AlertsPersistence), so a reload restores the connection and nothing else.
+  //
+  // BOTH halves have to travel, and they answer different questions:
+  //   • `alerts` is what is flashing right now — the thing you actually came back to.
+  //   • `prev` is the baseline the NEXT poll is compared against. Without it every
+  //     window reads as "first seen" after a reload, and a window that drops out of
+  //     green during the seconds the page is reloading — or during the sleep that
+  //     made you reload — produces no alert at all, because there is no remembered
+  //     green for it to have dropped from. That is the same missed transition the
+  //     flash exists to catch, so dropping `prev` would leave a hole exactly where
+  //     the bug was.
+  //
+  // The sequence counter travels too: restart it at 0 and a restored alert would
+  // outrank every alert raised after the reload, permanently mis-ordering the
+  // overflow arrow's "here is the latest".
+
+  // A plain JSON-safe snapshot of the whole registry.
+  toJSON() {
+    const split = (key) => {
+      const at = key.indexOf('\x00');
+      return { session: key.slice(0, at), id: key.slice(at + 1) };
+    };
+    return {
+      seq: this._seq,
+      prev: [...this._prev].map(([k, working]) => ({ ...split(k), working })),
+      alerts: [...this._alerts].map(([k, a]) => ({ ...split(k), value: a.value, seq: a.seq })),
+    };
+  }
+
+  // Seed a fresh registry from toJSON() output. Defensive about its input: this comes
+  // back out of browser storage, where anything can have happened to it, and a
+  // half-parsed entry must not take the flash machinery down with it. Unknown alert
+  // values are dropped rather than restored — '' is "stopped reporting", which mark()
+  // treats as neither raise nor clear, and an alert holding it would flash in a colour
+  // no surface has a rule for.
+  restore(saved) {
+    if (!saved || typeof saved !== 'object') return this;
+    for (const e of (Array.isArray(saved.prev) ? saved.prev : [])) {
+      if (!e || !e.id) continue;
+      this._prev.set(WorkAlerts.keyOf(e.session, e.id), String(e.working ?? ''));
+    }
+    for (const e of (Array.isArray(saved.alerts) ? saved.alerts : [])) {
+      if (!e || !e.id) continue;
+      if (e.value !== '0' && e.value !== '2') continue;
+      this._alerts.set(WorkAlerts.keyOf(e.session, e.id), { value: e.value, seq: Number(e.seq) || 0 });
+    }
+    // At least as high as anything restored, so a post-reload raise is still "newer"
+    // even if the saved counter was lost or truncated.
+    this._seq = Number(saved.seq) || 0;
+    for (const a of this._alerts.values()) if (a.seq > this._seq) this._seq = a.seq;
+    return this;
+  }
+
   // A flat, freshly-allocated view of the live alerts — the ONE thing every surface
   // that renders its own list (the recents strip, the sidebar window rows, the
   // preview tiles) reads its flash out of, via alertOf().
@@ -135,6 +195,64 @@ export class WorkAlerts {
       if (!out.has(id)) out.set(id, a.value);
     }
     return out;
+  }
+}
+
+// Keeps a WorkAlerts registry alive across a page reload and a websocket reconnect.
+//
+// WHY THE PER-CLIENT STORE, NOT THE SHARED ONE. Almost everything webtmux persists
+// goes to tmux @wt_state so every browser sees one arrangement. Alerts must not: an
+// alert says "this window changed while YOU were not looking at it", and what you are
+// looking at is a property of THIS browser's regions (SplitManager passes `active` =
+// "some region here is displaying that placement"). Two browsers therefore hold
+// legitimately different answers, and putting one blob between them would make each
+// dismiss the other's flashes — the desktop that has the window on screen would keep
+// clearing the laptop's alert about it, which is precisely the bug this fixes, only
+// harder to see. The per-tab ClientStore (sessionStorage) also has exactly the right
+// lifetime: it survives a reload and a reconnect and dies when the tab closes, and a
+// brand-new tab genuinely has no "while you weren't looking" to report.
+//
+// Kept in this module rather than beside its caller so the whole flash story — the
+// rules and their durability — is testable under `node --test` without a DOM, the
+// same split RecentsPersistence and SplitPersistence follow.
+export class AlertsPersistence {
+  // `store` is the ClientStore singleton; only section()/patchSection() are used, so
+  // a plain object stub works in tests.
+  constructor(store, section = 'alerts') {
+    this.store = store;
+    this.sectionName = section;
+    this._sig = null;
+    this._restored = false;
+  }
+
+  // Seed `alerts` (a WorkAlerts) from the store. Until this has run, persist() is
+  // inert — see the guard note there.
+  restore(alerts) {
+    alerts.restore(this.store.section(this.sectionName).registry);
+    this._sig = JSON.stringify(alerts.toJSON());
+    this._restored = true;
+    return alerts;
+  }
+
+  // Write the registry if it actually changed. Returns whether a write was issued.
+  //
+  // The guard is the same lifecycle invariant RecentsPersistence documents at length,
+  // and it bites the same way here: SplitManager's constructor reaches _refreshToolbar
+  // (via addUnit -> focus) before the restore runs, and a persist there would save the
+  // empty registry over the one we are about to read — turning the reload into the
+  // dismissal all over again, via a different route.
+  //
+  // Called from the same 500ms funnel as everything else in _refreshToolbar, so the
+  // signature check is what keeps it from writing twice a second: alerts only move on
+  // a real transition or an acknowledgement.
+  persist(alerts) {
+    if (!this._restored) return false;
+    const registry = alerts.toJSON();
+    const sig = JSON.stringify(registry);
+    if (sig === this._sig) return false;
+    this._sig = sig;
+    this.store.patchSection(this.sectionName, { registry });
+    return true;
   }
 }
 
