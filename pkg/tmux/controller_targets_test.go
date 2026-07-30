@@ -198,8 +198,18 @@ func TestRefreshLayoutReadsExactly(t *testing.T) {
 	}
 	// display-message is a target-PANE command: with `=dev` tmux expands the whole
 	// format to "" and exits 0, so the layout would report a nameless session.
-	wantArgv(t, lastCall(t, f, "display-message"),
-		"display-message", "-t", "=dev:", "-p", sessionIdentFormat)
+	// Selected by its format rather than by position, because RefreshLayout may run
+	// other display-message calls (e.g. a targetless server-wide query) around it.
+	var ident []string
+	for _, call := range f.argv("display-message") {
+		if flagValue(call, "-p") == sessionIdentFormat {
+			ident = call
+		}
+	}
+	if ident == nil {
+		t.Fatalf("the session identity read never happened: %v", f.argv("display-message"))
+	}
+	wantArgv(t, ident, "display-message", "-t", "=dev:", "-p", sessionIdentFormat)
 	// The per-session window listing is a session target.
 	for _, call := range f.argv("list-windows") {
 		if hasFlag(call, "-a") {

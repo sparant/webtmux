@@ -162,3 +162,14 @@ wrapper buffers unbounded input pre-check. Mechanical, well-testable hardening.
 - [ ] P0 Mark complete, merge via the lock wrapper, tick subplan C in the master plan. ~15m.
       Plan marked complete here; the MERGE and the master-plan tick are the parent
       session's (subplan B is gated on it).
+      **Merge preflight (done, read-only — `git merge-tree` against the local-main
+      that now carries subplan A):** exactly ONE conflicting file,
+      `pkg/tmux/controller.go`, and exactly one hunk in it — A's
+      `serverStartFormat`/`serverIdentity` block and this branch's
+      `sessionNamesByID` were inserted at the same point. Resolution is keep both.
+      Everything else auto-merges, `resources/js/terminal-unit.js` included. The
+      resolved tree was built and run: `go vet` + `go test -race ./...` all green
+      and `node --test test/` 237/0. A's `#{start_time}` read is a TARGETLESS
+      `display-message`, so it is unaffected by the `=name:` rule; the only
+      adjustment that needed making on this side was selecting the identity read
+      by its format instead of by position, which is committed here.
