@@ -43,9 +43,23 @@ authenticated `gh` CLI (or a token) on whatever machine performs the publish —
 has no GitHub access, so every push/publish step here is user-executed** (directly or via
 a `/workspace/claude_run_me_*.sh` host script).
 
+*(Revised 2026-07-29: **the old gate could never pass.** It required this repo's `origin`
+to be a `github.com` URL — true under Stage 0's original hub-and-spoke design, but Stage 0
+was rewritten to a chain in which `origin` deliberately stays the **Mac** and step 0.6
+forbids a `github` remote here at all, because `sync-all-repos.sh` picks its remote with
+`git remote | head -1` and a remote named `github` sorts ahead of `origin` and silently
+redirects the backup. The gate now checks the thing that actually matters — that the
+public fork exists and is fetchable without a token — which is also exactly what the
+launcher depends on.)*
+
 ```bash
-git -C /workspace/webtmux remote get-url origin | grep -q 'github.com' \
-  || { echo "GATE: Stage 0 not done — origin is $(git -C /workspace/webtmux remote get-url origin)"; exit 1; }
+# The fork is reachable and public: an UNAUTHENTICATED request must succeed.
+OWNER=sparant
+curl -sfI "https://github.com/$OWNER/webtmux" >/dev/null \
+  || { echo "GATE: Stage 0 not done — https://github.com/$OWNER/webtmux is not publicly reachable"; exit 1; }
+# And this repo still backs up to the Mac rather than to GitHub (fork-plan 0.6).
+git -C /workspace/webtmux remote get-url origin | grep -q '192\.168\.68\.67' \
+  || { echo "GATE: origin is not the Mac — see fork-plan 0.6"; exit 1; }
 ```
 
 *(A second gate requiring Stage 1 — vendoring — was removed 2026-07-26: air-gap support is
@@ -226,10 +240,25 @@ a release needs committing after the build. Tag the release commit, build *from 
       ./builds/webtmux-linux-amd64 --version            # must say v0.1.0, not dev
       ```
 
-- [ ] **P0** 2.9 **Publish — user-executed.** Push `local-main` + the tag to origin and
-      run the `gh release create` command printed by `release-binaries` (write a
-      `/workspace/claude_run_me_*.sh` script if the publish must happen from the host).
-      *(15 min)*
+- [ ] **P0** 2.9 **Publish — user-executed.** *(15 min)*
+
+      *(Revised 2026-07-29: "push the tag to origin" is not sufficient under the chain.
+      `origin` is the Mac, and `sync-all-repos.sh` pushes the current branch only — no
+      `--tags` — so a tag needs an explicit push on **both** legs.)*
+
+      ```bash
+      # Both hops, with guards and verification at each:
+      /workspace/scripts/webtmux-docker/publish-webtmux-tag.sh v0.1.0 [--dry-run]
+      ```
+
+      That script lives in the infra repo rather than here, because the Mac's address and
+      bare-repo path are local operational knowledge and this fork is public. It refuses to
+      move an existing tag, warns if HEAD is not on `local-main`, uses an explicit refspec
+      on leg 2 (never `--mirror` — the bare carries junk `refs/remotes/*`), and confirms
+      the tag landed on both the Mac and GitHub.
+
+      Then run the `gh release create` command printed by `release-binaries`. **The agent
+      has no GitHub access and no SSH key for the Mac**, so every step here is yours.
 
 - [ ] **P1** 2.10 Verify the documented install path end-to-end from a throwaway
       container: curl the release asset URL **unauthenticated**, `chmod +x`, run
