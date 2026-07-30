@@ -74,3 +74,36 @@ export function resolveRestoreView({
   if (!candidates.length) return null;
   return candidates.sort((a, b) => recency(b.id) - recency(a.id))[0];
 }
+
+// planRestoreLanding — given the resolved view, what should the pane DO, and which
+// window must be marked already-seen so the boot layout is not mistaken for a visit?
+//
+// THE BUG THIS PINS. A pane's first layout after a reload shows whatever window the
+// attach parked it on — for the primary, the base session's current window (typically
+// `services`' window 0). SplitManager's access-note treats "showing a window it
+// wasn't" as a visit, so unless that boot window is marked seen, it lands in the
+// recents strip on every reload — a tab for a window nobody opened. The suppression
+// used to run only on the NAVIGATE path; when the resolution said "stay put" (nothing
+// restorable, or the saved view IS the boot window) nothing was marked, and the boot
+// window leaked into the strip. Staying put must suppress exactly as navigating away
+// does: neither is a user opening a window.
+//
+// The one deliberate exception: a hop to the SAME window id in another session (a
+// linked window restored to its other tab). Marking the id there would swallow the
+// real access the landing layout must record — the landing arrives with the same id,
+// so the seen-check would read it as "no change" (see _applyRestoreTarget's caller).
+//
+// input:
+//   view    {id, session} | null   resolveRestoreView's answer
+//   bootId  string                 the window the pane booted on (layout.activeWindowId)
+//   session string                 the pane's current LOGICAL session
+// -> { markSeen: string|null, nav: {id, session, hop} | null }
+export function planRestoreLanding({ view = null, bootId = null, session = '' } = {}) {
+  if (!view) return { markSeen: bootId, nav: null };
+  const hop = !!view.session && view.session !== session;
+  if (!hop && view.id === bootId) return { markSeen: bootId, nav: null };
+  return {
+    markSeen: view.id !== bootId ? bootId : null,
+    nav: { id: view.id, session: view.session, hop },
+  };
+}

@@ -13,7 +13,7 @@
 // base session puts you. The first two tests are the before/after of exactly that.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveRestoreView } from '../resources/js/restore-view.js';
+import { resolveRestoreView, planRestoreLanding } from '../resources/js/restore-view.js';
 
 // A pane freshly re-attached to the shared base session, with a server holding windows
 // in three sessions. `windows` is deliberately only the base session's list — that
@@ -140,6 +140,55 @@ test('a recents entry for a window in a session that no longer holds it is skipp
     recents: [{ id: '@7', session: 'unlinked-from-here' }, { id: '@2', session: 'services' }],
   });
   assert.deepEqual(view, { id: '@2', session: 'services' });
+});
+
+// --- planRestoreLanding -----------------------------------------------------------
+// THE BUG THESE PIN. The boot window (where the attach parked the pane — for the
+// primary, the base session's current window) leaked into the recents strip on every
+// reload whenever the restore decided to STAY PUT: suppression only ran on the
+// navigate path, so "nothing restorable" and "already there" left the boot window
+// unmarked and SplitManager's access-note recorded it as a visit. services:netdata
+// reappearing in the strip after every reconnect was exactly this.
+
+test('stay-put with nothing restorable still marks the boot window seen', () => {
+  const plan = planRestoreLanding({ view: null, bootId: '@1', session: 'services' });
+  assert.deepEqual(plan, { markSeen: '@1', nav: null },
+    'the pane stays parked, but the parked window was never opened — not a visit');
+});
+
+test('already-there marks the boot window seen instead of recording a visit', () => {
+  const plan = planRestoreLanding({
+    view: { id: '@1', session: 'services' }, bootId: '@1', session: 'services',
+  });
+  assert.deepEqual(plan, { markSeen: '@1', nav: null });
+});
+
+test('navigating away marks the passed-through boot window seen', () => {
+  const plan = planRestoreLanding({
+    view: { id: '@2', session: 'services' }, bootId: '@1', session: 'services',
+  });
+  assert.deepEqual(plan, { markSeen: '@1', nav: { id: '@2', session: 'services', hop: false } });
+});
+
+test('a cross-session restore hops, still suppressing the boot window', () => {
+  const plan = planRestoreLanding({
+    view: { id: '@7', session: 'claude-editors' }, bootId: '@1', session: 'services',
+  });
+  assert.deepEqual(plan, { markSeen: '@1', nav: { id: '@7', session: 'claude-editors', hop: true } });
+});
+
+test('a linked window restored to its OTHER session must NOT be marked seen', () => {
+  // Same id, different session: marking it would make the landing layout (same id,
+  // new session) read as "no change" and swallow the access that restore must record.
+  // The hop's intermediate layout is covered by _navSuppress in the caller instead.
+  const plan = planRestoreLanding({
+    view: { id: '@1', session: 'claude-editors' }, bootId: '@1', session: 'services',
+  });
+  assert.deepEqual(plan, { markSeen: null, nav: { id: '@1', session: 'claude-editors', hop: true } });
+});
+
+test('planRestoreLanding is total for no input at all', () => {
+  assert.deepEqual(planRestoreLanding(), { markSeen: null, nav: null });
 });
 
 test('no server directory: fall back to the pane\'s own session list', () => {
