@@ -270,7 +270,7 @@ An agent lifecycle integration is then just three writes: `1` when work starts, 
 Deploy webtmux as a service on [Sprite](https://sprites.app):
 
 ```bash
-sudo curl -fsSL https://raw.githubusercontent.com/chrismccord/webtmux/main/builds/webtmux-linux-amd64 \
+sudo curl -fsSL https://github.com/sparant/webtmux/releases/latest/download/webtmux-linux-amd64 \
   -o /usr/local/bin/webtmux && \
   sudo chmod +x /usr/local/bin/webtmux && \
   sprite-env services create webtmux \
@@ -278,6 +278,8 @@ sudo curl -fsSL https://raw.githubusercontent.com/chrismccord/webtmux/main/build
     --args '-w,tmux,new-session,-A,-s,main' \
     --http-port 8080
 ```
+
+The binary comes from the latest [GitHub release](https://github.com/sparant/webtmux/releases) of this fork (`builds/` is untracked on `local-main`, so there is no raw-URL download). To build it yourself instead: clone the fork, check out `local-main` (the default branch), and run `make cross-compile` — the binary lands at `builds/webtmux-linux-amd64`.
 
 Replace `user:pass` with your desired credentials.
 
