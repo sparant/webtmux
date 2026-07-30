@@ -141,6 +141,7 @@ test('the strip survives a full write -> tmux -> reload round trip', async () =>
   const a = new StateStore();
   let blob = null;
   a.setSender((json) => { blob = json; });
+  a.load(undefined);   // the first layout push: this tmux server holds no blob yet
   a.patchSection('recentTabs', { windows: [entry('@1'), entry('@2', { name: 'editors' })] });
   await delay(500);
   assert.ok(blob, 'a strip change reaches the wire');
@@ -194,6 +195,7 @@ test('a persist before the first restore cannot clobber the saved strip', () => 
 
 test('persist works normally once restore has run', () => {
   const store = new StateStore();
+  store.load(undefined);   // …and once the server's answer is in (see persist's guards)
   const p = new RecentsPersistence(store);
   p.restore();
 
@@ -203,6 +205,7 @@ test('persist works normally once restore has run', () => {
 
 test('an unchanged strip is not rewritten (the 500ms-refresh write guard)', () => {
   const store = new StateStore();
+  store.load(undefined);
   const p = new RecentsPersistence(store);
   p.restore();
   p.persist([entry('@1')]);
@@ -218,6 +221,7 @@ test('an unchanged strip is not rewritten (the 500ms-refresh write guard)', () =
 
 test('persist only writes the durable fields', () => {
   const store = new StateStore();
+  store.load(undefined);
   const p = new RecentsPersistence(store);
   p.restore();
   p.persist([entry('@1', { active: true, disabled: false, working: '1' })]);
@@ -227,11 +231,19 @@ test('persist only writes the durable fields', () => {
   ]);
 });
 
-test('adopt returns a remote change but ignores the echo of our own write', () => {
+test('adopt returns a remote change but ignores the echo of our own write', async () => {
   const store = new StateStore();
+  let wire = null;
+  store.setSender((json) => { wire = json; return true; });
+  store.load(undefined);
   const p = new RecentsPersistence(store);
   p.restore();
   p.persist([entry('@1')]);
+  // Let the write reach tmux and echo back. A write still sitting in the debounce is
+  // a LOCAL edit the server has never seen, and the store deliberately replays those
+  // on top of anything it adopts — so "our own write" only means this once it lands.
+  await delay(500);
+  store.load(wire);
 
   assert.equal(p.adopt(), null, 'our own write is not re-adopted');
 
@@ -246,6 +258,7 @@ test('the full boot order restores the strip end to end', async () => {
   const a = new StateStore();
   let wire = null;
   a.setSender((json) => { wire = json; });
+  a.load(undefined);
   const pa = new RecentsPersistence(a);
   pa.restore();
   pa.persist([entry('@1'), entry('@2', { name: 'editors' })]);

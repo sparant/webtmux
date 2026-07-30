@@ -29,6 +29,44 @@ var allWindowsFormat = strings.Join([]string{
 	"#{window_id}", "#{@wt_working}", "#{session_name}", "#{window_index}", "#{window_name}",
 }, allWindowsSep)
 
+// The tmux server's own start time — the one thing that names a SERVER INSTANCE
+// rather than a session, a socket path, or a host. Two servers on one socket path
+// (killed and restarted) are different servers and get different values; the same
+// server reached twice gets the same one. That is exactly the identity the browser
+// needs to key its offline @wt_state cache by (see Layout.ServerStart).
+const serverStartFormat = "#{start_time}"
+
+// serverIdentity turns the raw `display-message -p` output into something safe to
+// splice into a localStorage key. It is total, and its failure mode is deliberately
+// "no identity" rather than a guess: the client falls back to its single legacy
+// cache key, which is what every build before this one used.
+//
+// A tmux too old to know #{start_time} leaves the format text unexpanded (or emits
+// nothing), so anything still carrying the format's own punctuation is rejected
+// outright — an identity of "#{start_time}" would be SHARED by every such server,
+// which is worse than having none.
+func serverIdentity(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" || strings.ContainsAny(s, "#{}") {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if b.Len() >= 32 {
+			break
+		}
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '-', r == '_', r == '.':
+			b.WriteRune(r)
+		default:
+			// Older tmux may render a time as a formatted date; keep it usable as a
+			// key instead of discarding a perfectly good (if ugly) identity.
+			b.WriteRune('-')
+		}
+	}
+	return b.String()
+}
+
 // parseAllWindows turns `list-windows -a -F allWindowsFormat` output into the two
 // server-wide views the UI needs: @wt_working keyed by window id, and the placement
 // directory behind Layout.AllWindows.
@@ -90,7 +128,13 @@ type Controller struct {
 	groupBase   string
 
 	layoutCache *Layout
-	layoutMu    sync.RWMutex
+	// serverID is Layout.ServerStart, resolved once and reused: a tmux server's
+	// start time cannot change while it is running, and RefreshLayout runs twice a
+	// second — re-forking tmux for a constant would be a pure tax. Guarded by
+	// layoutMu, like layoutCache, because both are written from RefreshLayout and
+	// read by whoever is serving a client.
+	serverID string
+	layoutMu sync.RWMutex
 
 	eventChan chan Event
 	closeChan chan struct{}
@@ -467,7 +511,22 @@ func (c *Controller) RefreshLayout() error {
 		}
 	}
 
+	// Which tmux SERVER this is, for the client's per-server offline cache key (see
+	// Layout.ServerStart). Resolved once — a running server's start time is fixed —
+	// and only re-attempted while it is still unknown, so the steady state costs
+	// nothing per refresh.
+	c.layoutMu.RLock()
+	serverID := c.serverID
+	c.layoutMu.RUnlock()
+	if serverID == "" {
+		if raw, err := c.runTmux("display-message", "-p", serverStartFormat); err == nil {
+			serverID = serverIdentity(raw)
+		}
+	}
+	layout.ServerStart = serverID
+
 	c.layoutMu.Lock()
+	c.serverID = serverID
 	c.layoutCache = layout
 	c.layoutMu.Unlock()
 

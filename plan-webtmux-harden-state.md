@@ -62,16 +62,25 @@ sync protocol converge.
       section's answer to `RecentsPersistence`. pip is covered by the store-level gate
       (it has no pure half to extract — its state IS the live xterm tile set).
 
-### Phase 2 — StateStore core (P0)
+### Phase 2 — StateStore core (P0) — complete
 
-- [ ] P0 Implement `loadedOnce`/`onFirstLoad`, first-load flush gate, write-success return
+- [x] P0 Implement `loadedOnce`/`onFirstLoad`, first-load flush gate, write-success return
       values, pending-patch replay after adopt, non-OPEN-ws flush hold + `resync()`.
       Keep the file's design-doc comment truthful — update it. ~45m, Opus.
-- [ ] P0 Rev tie-break by content hash (decision 4); store the applied-content hash beside
-      `appliedRev`. ~30m, Opus.
-- [ ] P1 Server identity in the cache key (decision 6): Go `Layout.ServerStart` from
+      `TerminalUnit.sendMessage` now RETURNS whether it sent (that is what "non-OPEN ws"
+      looks like from the store's side), and the primary unit calls `stateStore.resync()`
+      on ws open. `RecentsPersistence.persist` gained the same `loadedOnce` guard as
+      `SplitPersistence` — without it a boot-time `persist([])` is recorded as a pending
+      patch and replayed straight over the adopted blob.
+- [x] P0 Rev tie-break by content hash (decision 4); store the applied-content hash beside
+      `appliedRev`. ~30m, Opus. Key-sorted render + FNV-1a, rev/v excluded, so two
+      clients serializing the same content in different key order still see an echo.
+- [x] P1 Server identity in the cache key (decision 6): Go `Layout.ServerStart` from
       `display-message -p '#{start_time}'` (or the existing layout format), JS cache-key
       suffix, fallback path. Go test + JS test. ~40m, Sonnet.
+      Resolved once per controller (a running server's start time cannot change), so the
+      500ms refresh does not pay for it. Verified against real tmux 3.3a, not just the
+      sanitizer table.
 
 ### Phase 3 — consumers (P0)
 

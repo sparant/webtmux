@@ -59,3 +59,99 @@ export function readSplitState(section) {
     primarySession: str(s.primarySession),
   };
 }
+
+// Stable content signature for a saved split view. Everything a restore would act
+// on is in it — the region COUNT (how many panes to recreate), each region's
+// (session, window) pair, and the primary's own pair — and nothing else, so the
+// 500ms refresh tick can ask "did this really change?" for the price of one string.
+export function splitSignature(view) {
+  const v = view || {};
+  const regions = Array.isArray(v.regions) ? v.regions : [];
+  return JSON.stringify([
+    regions.map((r) => [(r && r.windowId) || null, (r && r.session) || null]),
+    v.primaryWindowId || null,
+    v.primarySession || null,
+  ]);
+}
+
+// Owns the 'split' section's half of the shared blob — the same three jobs
+// RecentsPersistence does for the strip, for the same reasons (see recents-strip.js):
+// a write guard, a change signature, and the rule that NOTHING MAY BE WRITTEN
+// BEFORE THE FIRST READ.
+//
+// The split section has a second, worse version of that hazard, and it is the one
+// this class was extracted for. The strip's guard only had to survive the local
+// constructor order; the split's has to survive a browser opening for the FIRST
+// TIME. Such a browser's offline cache is empty, so it restores "no split", and the
+// eager re-persist that follows region creation writes `regions: []` into state that
+// is SHARED with every other browser on that tmux server. Last-writer-wins accepts
+// it, and the split someone arranged in another window disappears — from a client
+// that never had one. Hence the second guard, `store.loadedOnce`: no write until the
+// authoritative blob (or its absence) has been seen, and an untouched section adopts
+// what the server holds instead of overwriting it.
+//
+// Deliberately free of DOM/lit dependencies, like RecentsPersistence, so `node --test`
+// can drive the real boot order against it (split-manager.js imports lit and never
+// loads under the test harness).
+export class SplitPersistence {
+  // `store` is the StateStore singleton — only .section()/.patchSection()/.loadedOnce
+  // are used, so a plain stub works in tests.
+  constructor(store, section = 'split') {
+    this.store = store;
+    this.sectionName = section;
+    this._sig = null;
+    this._restored = false;
+    this._touched = false;
+  }
+
+  // Read the persisted view. Until this has run, persist() is inert.
+  restore() {
+    const view = readSplitState(this.store.section(this.sectionName));
+    this._sig = splitSignature(view);
+    this._restored = true;
+    return view;
+  }
+
+  // The user has arranged this client's split by hand (navigated, split, or closed a
+  // region). From here on the server's copy is no longer allowed to re-apply itself
+  // over the top — adopting would yank the view out from under someone who acted.
+  markTouched() {
+    this._touched = true;
+  }
+
+  get touched() {
+    return this._touched;
+  }
+
+  // Write the view if it actually changed AND writing is allowed yet. Returns
+  // whether a write was issued. The signature only advances on an ACCEPTED write:
+  // recording it for one the store swallowed would remember the change as published
+  // and never write it again.
+  persist(view) {
+    if (!this._restored) return false;        // no write before the first read
+    if (!this.store.loadedOnce) return false; // …and none before the server's answer
+    const sig = splitSignature(view);
+    if (sig === this._sig) return false;      // unchanged: do not bump the blob's rev
+    const v = view || {};
+    const ok = this.store.patchSection(this.sectionName, {
+      regions: (Array.isArray(v.regions) ? v.regions : [])
+        .map((r) => ({ windowId: (r && r.windowId) || null, session: (r && r.session) || null })),
+      primaryWindowId: v.primaryWindowId || null,
+      primarySession: v.primarySession || null,
+    });
+    if (ok) this._sig = sig;
+    return ok;
+  }
+
+  // Re-read after the authoritative blob arrived (or another client wrote). Returns
+  // the view to apply, or null when there is nothing to do: the user has touched this
+  // client's split, or the blob still matches what we hold.
+  adopt() {
+    if (this._touched) return null;
+    const view = readSplitState(this.store.section(this.sectionName));
+    const sig = splitSignature(view);
+    if (sig === this._sig) return null;
+    this._sig = sig;
+    return view;
+  }
+}

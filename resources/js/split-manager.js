@@ -420,7 +420,11 @@ export class SplitManager {
     // Shared visual state rides every layout push (layout.state === @wt_state). Feed
     // it from the primary unit only — the blob is identical across units, so one
     // authority avoids redundant applies. StateStore ignores echoes of our own write.
-    if (unit.primary) stateStore.load(unit.layout && unit.layout.state);
+    // The serverStart half is the tmux SERVER's identity: it keys the browser's
+    // offline cache, so a socket swap (or a killed-and-restarted server, whose rev
+    // sequence restarts at 1) can't have a stale cached rev suppress the new
+    // server's real blob. Absent from older servers => the legacy single key.
+    if (unit.primary) stateStore.load(unit.layout && unit.layout.state, unit.layout && unit.layout.serverStart);
 
     if (unit === this.focusedUnit) this._pushLayout(unit);
     else this._pushDisabled();   // another region moved -> refresh what's occupied
