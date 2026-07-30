@@ -68,12 +68,35 @@ wrapper buffers unbounded input pre-check. Mechanical, well-testable hardening.
       witnesses the bug: with the mutex removed it reports `WARNING: DATA RACE`
       on `regroupOnto` vs `selfHeal`.
 
-### Phase 2 — parsing (P0)
+### Phase 2 — parsing (P0) — COMPLETE
 
-- [ ] P0 Migrate per-session window rows (decision 2) + tests with `,`/`|` in names. ~40m, Sonnet.
-- [ ] P0 Migrate pane rows (`pane_current_command`/`pane_title` last) + tests. ~35m, Sonnet.
-- [ ] P1 `sessionEmptiness` + `parseAllWindows` session-name hardening + tests
+- [x] P0 Migrate per-session window rows (decision 2) + tests with `,`/`|` in names. ~40m, Sonnet.
+      `windowsFormat` (`window_id|window_index|window_active|@wt_working|window_name`)
+      + `parseWindowRows`. Also swept the pane's OWN identity read, which was
+      `display-message -p "#{session_id},#{session_name}"` parsed with a plain
+      `Split` — a session called `a, b` reported itself as `a`; now
+      `sessionIdentFormat` + `parseSessionIdent`.
+- [x] P0 Migrate pane rows (`pane_current_command`/`pane_title` last) + tests. ~35m, Sonnet.
+      `panesFormat` + `parsePaneRows`. Note on decision 2: a pane row has TWO
+      user-controlled fields and neither has an id form (they ARE the data), so
+      the residual is stated rather than removed — `pane_title` (which really does
+      carry `|`, from shell prompt titles) takes the last slot, and a `|` in a
+      process comm name can still bleed into the title but never into the geometry.
+- [x] P1 `sessionEmptiness` + `parseAllWindows` session-name hardening + tests
       (the `|`-in-session-name caveat the code comment already admits). ~35m, Sonnet.
+      Both rows now carry `#{session_id}` and resolve the name from the same
+      refresh's `list-sessions`, which removes the caveat instead of restating it.
+      Deviation from decision 2's wording: it offers "the `enumSep` NUL approach
+      already in the codebase" as the fallback for a row with two names — there is
+      no such approach (`enumSep` is `|`; the comment beside it explains that tmux
+      sanitizes control bytes in `-F` output, so NUL is impossible). The id
+      indirection is the workable form of the same intent.
+      Scope note: decision 2 says "any format where a session name is non-final",
+      so `capture.go`'s `EnumerateWindows` — session_name in field 1 of 7, i.e. the
+      worst instance in the tree — was migrated too, at the cost of one extra
+      `list-sessions` fork per enumeration. `windowLinkCounts` is deliberately left
+      on `session_name`: it is already final-slot safe, and dropping an unnameable
+      id there would UNDERCOUNT links, turning the sidebar's × from unlink to kill.
 
 ### Phase 3 — targeting & transport (P1)
 

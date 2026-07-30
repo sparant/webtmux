@@ -12,27 +12,47 @@ import (
 	"time"
 )
 
-// The server-wide `list-windows -a` behind Layout.AllWorking + Layout.AllWindows.
+// Every tmux -F format in this package follows one rule, because tmux SANITIZES
+// control bytes to '_' in -F output (so a non-printable separator is impossible —
+// see enumSep): fields are separated by '|', the MACHINE fields (@/%/$ ids,
+// integers, flags) come first, the user-controlled TEXT comes last, and the line is
+// split with SplitN capped at the field count so anything the user typed — '|'
+// included — stays inside the final field instead of shifting every field after it.
 //
-// TWO fields here are user-arbitrary — session_name and window_name — and only one
-// can go last, so the more dangerous of the two takes that slot: window names are
-// routinely set by tools ("claude Dominion-wq | review"), session names are typed
-// once by hand. window_name last + SplitN means a '|' in a window name lands
-// harmlessly inside the final field. (Session names carry the same small exposure
-// they already do in capture.go's EnumerateWindows, which lists them mid-line too;
-// tmux sanitizes control bytes in -F output, so a non-printable separator is not an
-// option — see enumSep.)
+// Where a row would need TWO user-controlled fields, the second one is replaced by
+// the object's tmux ID and resolved back to a name from a listing we already have.
+// That is what `#{session_id}` is doing here: the placement directory needs the
+// session a window lives in, and a session named "a | b" alongside a window named
+// "c | d" cannot both go last.
 const allWindowsSep = "|"
 const allWindowsFields = 5
 
 var allWindowsFormat = strings.Join([]string{
-	"#{window_id}", "#{@wt_working}", "#{session_name}", "#{window_index}", "#{window_name}",
+	"#{window_id}", "#{session_id}", "#{window_index}", "#{@wt_working}", "#{window_name}",
 }, allWindowsSep)
+
+// sessionNamesByID indexes an already-parsed `list-sessions` by tmux session id
+// ("$3"), the machine-safe stand-in for a session NAME inside a delimited row.
+func sessionNamesByID(rows []sessionRow) map[string]string {
+	byID := make(map[string]string, len(rows))
+	for _, r := range rows {
+		byID[r.id] = r.name
+	}
+	return byID
+}
 
 // parseAllWindows turns `list-windows -a -F allWindowsFormat` output into the two
 // server-wide views the UI needs: @wt_working keyed by window id, and the placement
 // directory behind Layout.AllWindows.
-func parseAllWindows(out string) (map[string]string, []WindowRef) {
+//
+// sessions is the `list-sessions` output from the same refresh, used to turn each
+// row's session_id back into a name. A row whose session is unknown (the session
+// appeared between the two listings, or list-sessions failed outright) still
+// contributes its @wt_working — a window's light does not depend on knowing which
+// session it is in — but is left out of the DIRECTORY, which exists to be
+// navigated to and cannot name a target it can't resolve.
+func parseAllWindows(out string, sessions []sessionRow) (map[string]string, []WindowRef) {
+	names := sessionNamesByID(sessions)
 	working := make(map[string]string)
 	var refs []WindowRef
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
@@ -43,25 +63,128 @@ func parseAllWindows(out string) (map[string]string, []WindowRef) {
 		if len(f) < allWindowsFields {
 			continue
 		}
-		working[f[0]] = f[1]
+		working[f[0]] = f[3]
+		session, ok := names[f[1]]
+		if !ok {
+			continue
+		}
 		// A split's ephemeral web-* grouped session mirrors its base session's window
 		// list, so its rows are duplicates of placements already listed under the base
 		// — emitting them would double every window for as long as a split is open.
 		// (The status map above is keyed by window id, so the duplicate rows there are
 		// harmless overwrites of an identical value.)
-		if isWebShadowName(f[2]) {
+		if isWebShadowName(session) {
 			continue
 		}
-		idx, _ := strconv.Atoi(f[3])
+		idx, _ := strconv.Atoi(f[2])
 		refs = append(refs, WindowRef{
 			ID:      f[0],
-			Working: f[1],
-			Session: f[2],
+			Working: f[3],
+			Session: session,
 			Index:   idx,
 			Name:    f[4],
 		})
 	}
 	return working, refs
+}
+
+// The pane's OWN session identity, from `display-message -p`. session_name is
+// user-arbitrary and used to contain a ',' that the old comma-split truncated it
+// at — a session called "a, b" reported itself as "a".
+const sessionIdentSep = "|"
+
+var sessionIdentFormat = "#{session_id}" + sessionIdentSep + "#{session_name}"
+
+func parseSessionIdent(out string) (id, name string, ok bool) {
+	f := strings.SplitN(strings.TrimSpace(out), sessionIdentSep, 2)
+	if len(f) < 2 {
+		return "", "", false
+	}
+	return f[0], f[1], true
+}
+
+// The per-session window rows behind Layout.Windows. window_name last; the old
+// format put it SECOND of five and split on ',', so a window called "build, test"
+// shifted the index, the active flag and @wt_working by one field each — the
+// sidebar then showed the wrong current window and the wrong stoplight.
+const windowsSep = "|"
+const windowsFields = 5
+
+var windowsFormat = strings.Join([]string{
+	"#{window_id}", "#{window_index}", "#{window_active}", "#{@wt_working}", "#{window_name}",
+}, windowsSep)
+
+// parseWindowRows turns `list-windows -t <session> -F windowsFormat` output into
+// the per-session window list (panes and SessionCount are filled in by the caller).
+func parseWindowRows(out string) []Window {
+	var wins []Window
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		f := strings.SplitN(line, windowsSep, windowsFields)
+		if len(f) < windowsFields {
+			continue
+		}
+		idx, _ := strconv.Atoi(f[1])
+		wins = append(wins, Window{
+			ID:     f[0],
+			Index:  idx,
+			Active: f[2] == "1",
+			// Unset @wt_working expands to "" => an unfilled dot in the UI.
+			Working: f[3],
+			Name:    f[4],
+		})
+	}
+	return wins
+}
+
+// The per-window pane rows. TWO fields here are user-controlled and neither can be
+// replaced by an id (they ARE the data): pane_title, which any program can set with
+// an OSC escape and which routinely carries '|' from a shell prompt, and
+// pane_current_command, a process comm name. The riskier one takes the last slot,
+// so a '|' in a title is contained; a '|' in a comm name — a binary literally named
+// "a|b" — can still bleed into the title, but never into the geometry the layout is
+// computed from.
+const panesSep = "|"
+const panesFields = 10
+
+var panesFormat = strings.Join([]string{
+	"#{pane_id}", "#{pane_index}", "#{pane_active}", "#{pane_in_mode}",
+	"#{pane_width}", "#{pane_height}", "#{pane_top}", "#{pane_left}",
+	"#{pane_current_command}", "#{pane_title}",
+}, panesSep)
+
+// parsePaneRows turns `list-panes -t <window> -F panesFormat` output into panes.
+func parsePaneRows(out string) []Pane {
+	var panes []Pane
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		f := strings.SplitN(line, panesSep, panesFields)
+		if len(f) < panesFields {
+			continue
+		}
+		idx, _ := strconv.Atoi(f[1])
+		width, _ := strconv.Atoi(f[4])
+		height, _ := strconv.Atoi(f[5])
+		top, _ := strconv.Atoi(f[6])
+		left, _ := strconv.Atoi(f[7])
+		panes = append(panes, Pane{
+			ID:      f[0],
+			Index:   idx,
+			Active:  f[2] == "1",
+			InMode:  f[3] == "1",
+			Width:   width,
+			Height:  height,
+			Top:     top,
+			Left:    left,
+			Command: f[8],
+			Title:   f[9],
+		})
+	}
+	return panes
 }
 
 // identState is the controller's mutable IDENTITY: who this pane is and where it
@@ -415,18 +538,18 @@ func (c *Controller) RefreshLayout() error {
 	c.selfHeal(sess)
 	sess = c.session()
 	// Get session info
-	sessionOut, err := c.runTmux("display-message", "-t", sess, "-p", "#{session_id},#{session_name}")
+	sessionOut, err := c.runTmux("display-message", "-t", exactSession(sess), "-p", sessionIdentFormat)
 	if err != nil {
 		return err
 	}
-	sessionParts := strings.Split(strings.TrimSpace(sessionOut), ",")
-	if len(sessionParts) < 2 {
+	sessionID, sessionName, ok := parseSessionIdent(sessionOut)
+	if !ok {
 		return fmt.Errorf("invalid session output: %s", sessionOut)
 	}
 
 	layout := &Layout{
-		SessionID:   sessionParts[0],
-		SessionName: sessionParts[1],
+		SessionID:   sessionID,
+		SessionName: sessionName,
 	}
 
 	// All sessions with grouping info. This drives the sidebar session list, its
@@ -449,37 +572,12 @@ func (c *Controller) RefreshLayout() error {
 	linkCounts := c.windowLinkCounts(rows)
 
 	// Get windows
-	windowsOut, err := c.runTmux("list-windows", "-t", sess, "-F", "#{window_id},#{window_name},#{window_index},#{window_active},#{@wt_working}")
+	windowsOut, err := c.runTmux("list-windows", "-t", exactSession(sess), "-F", windowsFormat)
 	if err != nil {
 		return err
 	}
 
-	for _, line := range strings.Split(strings.TrimSpace(windowsOut), "\n") {
-		if line == "" {
-			continue
-		}
-		parts := strings.Split(line, ",")
-		if len(parts) < 4 {
-			continue
-		}
-
-		idx, _ := strconv.Atoi(parts[2])
-		active := parts[3] == "1"
-
-		win := Window{
-			ID:     parts[0],
-			Name:   parts[1],
-			Index:  idx,
-			Active: active,
-		}
-
-		// @wt_working rides as the LAST field (appended to the format), so read it
-		// from the tail — robust even if a window name contains a comma. Unset =>
-		// tmux expands it to "" => empty trailing field => unfilled dot in the UI.
-		if len(parts) >= 5 {
-			win.Working = parts[len(parts)-1]
-		}
-
+	for _, win := range parseWindowRows(windowsOut) {
 		// Distinct logical sessions holding this window; default to 1 (it's at
 		// least in the session we're listing) when the lookup came back empty.
 		if sc := linkCounts[win.ID]; sc > 0 {
@@ -488,53 +586,22 @@ func (c *Controller) RefreshLayout() error {
 			win.SessionCount = 1
 		}
 
-		if active {
+		if win.Active {
 			layout.ActiveWinID = win.ID
 		}
 
-		// Get panes for this window
-		panesOut, err := c.runTmux("list-panes", "-t", win.ID, "-F",
-			"#{pane_id},#{pane_index},#{pane_active},#{pane_in_mode},#{pane_width},#{pane_height},#{pane_top},#{pane_left},#{pane_current_command},#{pane_title}")
+		// Get panes for this window (window ids are already exact tmux targets).
+		panesOut, err := c.runTmux("list-panes", "-t", win.ID, "-F", panesFormat)
 		if err != nil {
 			continue
 		}
 
-		for _, paneLine := range strings.Split(strings.TrimSpace(panesOut), "\n") {
-			if paneLine == "" {
-				continue
-			}
-			paneParts := strings.Split(paneLine, ",")
-			if len(paneParts) < 10 {
-				continue
-			}
-
-			paneIdx, _ := strconv.Atoi(paneParts[1])
-			paneActive := paneParts[2] == "1"
-			paneInMode := paneParts[3] == "1"
-			width, _ := strconv.Atoi(paneParts[4])
-			height, _ := strconv.Atoi(paneParts[5])
-			top, _ := strconv.Atoi(paneParts[6])
-			left, _ := strconv.Atoi(paneParts[7])
-
-			pane := Pane{
-				ID:      paneParts[0],
-				Index:   paneIdx,
-				Active:  paneActive,
-				InMode:  paneInMode,
-				Width:   width,
-				Height:  height,
-				Top:     top,
-				Left:    left,
-				Command: paneParts[8],
-				Title:   paneParts[9],
-			}
-
-			if paneActive && active {
+		win.Panes = parsePaneRows(panesOut)
+		for _, pane := range win.Panes {
+			if pane.Active && win.Active {
 				layout.ActivePaneID = pane.ID
 				layout.ActivePaneInMode = pane.InMode
 			}
-
-			win.Panes = append(win.Panes, pane)
 		}
 
 		layout.Windows = append(layout.Windows, win)
@@ -549,7 +616,7 @@ func (c *Controller) RefreshLayout() error {
 	// happening, carries the session/index/name that make such a window NAVIGABLE
 	// (see Layout.AllWindows).
 	if allOut, err := c.runTmux("list-windows", "-a", "-F", allWindowsFormat); err == nil {
-		layout.AllWorking, layout.AllWindows = parseAllWindows(allOut)
+		layout.AllWorking, layout.AllWindows = parseAllWindows(allOut, rows)
 	}
 
 	// Shared UI visual-state blob (@wt_state SERVER-global option). Rides this push
@@ -1099,8 +1166,13 @@ func (c *Controller) nextWindowIndex(session string) int {
 // for the shadow→base resolution); a nil/failed query yields a nil map (callers
 // default such windows to a link count of 1).
 func (c *Controller) windowLinkCounts(rows []sessionRow) map[string]int {
-	// window_id is "@N" (no separator chars); session_name is user-arbitrary so it
-	// goes last and each line is split on the first '|'.
+	// window_id is "@N" (no separator chars); session_name is the row's ONLY
+	// user-arbitrary field, so it takes the last slot and SplitN(…, 2) hands it back
+	// whole — no id indirection needed here. Deliberately NOT switched to
+	// #{session_id} like the other listings: an id this refresh's `list-sessions`
+	// can't name would have to be dropped, and a dropped placement UNDERCOUNTS the
+	// links, which is the direction that turns the sidebar's × from an unlink into
+	// a kill. Counting a session we can name is the fail-safe side.
 	out, err := c.runTmux("list-windows", "-a", "-F", "#{window_id}|#{session_name}")
 	if err != nil {
 		return nil
@@ -1128,20 +1200,36 @@ func (c *Controller) windowLinkCounts(rows []sessionRow) map[string]int {
 	return counts
 }
 
+// emptinessSep/emptinessFormat: `list-panes -a` reduced to (owning session,
+// running command). BOTH would be user-controlled as text, so the session takes
+// its machine-safe id form and is resolved from the session listing we already
+// have — a session called "a | b" used to be counted under "a", i.e. as a
+// DIFFERENT, always-empty session, which is the state that skips the kill confirm.
+const emptinessSep = "|"
+
+var emptinessFormat = "#{session_id}" + emptinessSep + "#{pane_current_command}"
+
 // sessionEmptiness maps a session name to whether it's "empty": a single window
 // with a single pane running only an idle shell. Computed from one `list-panes
 // -a` fork; ephemeral web-* grouped shadows are skipped (they mirror their base's
 // panes, which are counted under the base's own name). A nil/failed query yields
 // a nil map (every session then reports non-empty, so the kill confirm stays).
 func (c *Controller) sessionEmptiness(rows []sessionRow) map[string]bool {
-	out, err := c.runTmux("list-panes", "-a", "-F", "#{session_name}|#{pane_current_command}")
+	out, err := c.runTmux("list-panes", "-a", "-F", emptinessFormat)
 	if err != nil {
 		return nil
 	}
+	return parseSessionEmptiness(out, rows)
+}
+
+// parseSessionEmptiness is the pure half of sessionEmptiness.
+func parseSessionEmptiness(out string, rows []sessionRow) map[string]bool {
 	shadow := map[string]bool{}
+	names := make(map[string]string, len(rows))
 	for _, r := range rows {
+		names[r.id] = r.name
 		if isWebShadow(r) {
-			shadow[r.name] = true
+			shadow[r.id] = true
 		}
 	}
 	type agg struct {
@@ -1153,13 +1241,17 @@ func (c *Controller) sessionEmptiness(rows []sessionRow) map[string]bool {
 		if line == "" {
 			continue
 		}
-		f := strings.SplitN(line, "|", 2)
+		f := strings.SplitN(line, emptinessSep, 2)
 		if len(f) < 2 {
 			continue
 		}
-		name, cmd := f[0], f[1]
-		if shadow[name] {
+		id, cmd := f[0], f[1]
+		if shadow[id] {
 			continue
+		}
+		name, ok := names[id]
+		if !ok {
+			continue // a session we can't name is one the UI can't ask about
 		}
 		a := byName[name]
 		if a == nil {
