@@ -31,7 +31,7 @@ import { WorkAlerts, hiddenAlerts, alertOf } from './work-alerts.js';
 import { clampRecentsMax, RecentsPersistence } from './recents-strip.js';
 import { buildMruOrder } from './mru-order.js';
 import { readSplitState } from './split-state.js';
-import { resolveRestoreView } from './restore-view.js';
+import { resolveRestoreView, planRestoreLanding } from './restore-view.js';
 import { saveOkText } from './save-target.js';
 import { IS_MAC } from './os.js';
 import { stateStore } from './state-store.js';
@@ -531,7 +531,21 @@ export class SplitManager {
   // that only happens when the view actually differs — a reload that lands where tmux
   // already is stays silent.
   _applyRestoreTarget(unit) {
-    if (!unit.layout || !unit._restoreWindowId) return;
+    if (!unit.layout) return;
+    if (!unit._restoreWindowId) {
+      // The PRIMARY can reach its first layout with no saved view at all (a blob from
+      // before primaryWindowId was persisted, a cold localStorage cache, a first-ever
+      // visit). That layout shows wherever the attach parked it — the base session's
+      // current window — and it is an attach, not a visit: mark it seen so the
+      // access-note in _onUnitLayout doesn't put it in the recents strip. Every other
+      // unit arrives with a restore target or _autoPickPending, which own their own
+      // suppression; _accessSeenId is only ever null before the first layout, so this
+      // cannot swallow a later real switch.
+      if (unit.primary && unit._accessSeenId == null) {
+        unit._accessSeenId = unit.layout.activeWindowId;
+      }
+      return;
+    }
     const saved = { windowId: unit._restoreWindowId, session: unit._restoreSession };
     unit._restoreWindowId = null;
     unit._restoreSession = null;
@@ -546,28 +560,25 @@ export class SplitManager {
       recents: this.recentWindows,
       recency: (id) => this.captureCache.accessed.get(id) ?? 0,
     });
-    if (!view) return;
 
-    const hop = !!view.session && view.session !== cur;
+    // The boot window is a visit only if the USER picks it later; whether to mark it
+    // seen — including on the stay-put outcomes, which used to leak it into the
+    // recents strip on every reload — is planRestoreLanding's job (restore-view.js),
+    // where the rules are pinned by tests. The linked-window exception (same id,
+    // other session: marking would swallow the landing's real access) lives there
+    // too; its intermediate layout is covered by _navSuppress below instead.
     const bootId = unit.layout.activeWindowId;
-    if (!hop && view.id === bootId) return;   // already there
-    // The window this pane booted on was only PASSED THROUGH on the way to the saved
-    // view; mark it seen so the access-note below doesn't record it as a visit and put
-    // a tab you never opened at the front of the recents strip. Not when the view IS
-    // that window in another session (a linked window, restored to its other tab):
-    // there is nothing to suppress, and marking it would swallow the real access that
-    // the landing layout should record for the session we are hopping to. The
-    // intermediate layout — target window, old session still named — is covered by
-    // _navSuppress below instead.
-    if (view.id !== bootId) unit._accessSeenId = bootId;
-    unit._targetWindowId = view.id;
-    unit._targetSession = view.session;
-    if (hop) {
+    const plan = planRestoreLanding({ view, bootId, session: cur });
+    if (plan.markSeen) unit._accessSeenId = plan.markSeen;
+    if (!plan.nav) return;   // nothing restorable, or already there
+    unit._targetWindowId = plan.nav.id;
+    unit._targetSession = plan.nav.session;
+    if (plan.nav.hop) {
       // Same transient guard the live switcher uses (see _onUnitLayout's _navSuppress).
-      unit._navSuppress = { id: view.id, session: cur };
-      unit.switchSession(view.session);
+      unit._navSuppress = { id: plan.nav.id, session: cur };
+      unit.switchSession(plan.nav.session);
     }
-    unit.selectWindow(view.id);
+    unit.selectWindow(plan.nav.id);
   }
 
   // Every (session, window) placement on the tmux server, from the directory that

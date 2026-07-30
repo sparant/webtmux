@@ -1435,6 +1435,14 @@ export class TerminalUnit {
     const base = this.layout.sessionBase || this.layout.sessionName;
     if (this.restorePending) {
       this.restorePending = false;
+      // The window this first post-reconnect layout shows is where the fresh attach
+      // PARKED us — the base session's current window — not somewhere the user went.
+      // SplitManager's access-note (which sees this layout right after us) treats
+      // any unseen window as a visit, so without this mark every reconnect stamped
+      // the base session's parked window (typically its window 0) into the recents
+      // strip. Marking it seen suppresses only this layout; the hop back below
+      // lands on the desired window, whose OWN layout records the view as before.
+      this._accessSeenId = active;
       // Only restore INDEPENDENT (grouped) split regions. The primary region is
       // shared with the ssh console; forcing its window would move the console too,
       // so let it simply re-sync to whatever the console is viewing.
@@ -1442,6 +1450,10 @@ export class TerminalUnit {
         if (this.desiredSession && base && this.desiredSession !== base) {
           // We were viewing another session — hop there, then re-select the
           // window. Both sends ride the same serialized ws (see goToWindow).
+          // Same transient guard as goToWindow: the hop can emit an intermediate
+          // layout showing the target window while still naming the base session,
+          // which must not be recorded as a visit in a session it never had.
+          if (this.desiredWindowId) this._navSuppress = { id: this.desiredWindowId, session: base };
           this.switchSession(this.desiredSession);
           if (this.desiredWindowId) this.selectWindow(this.desiredWindowId);
           return;   // the resulting layout re-remembers the restored view
