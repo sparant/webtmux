@@ -198,7 +198,7 @@ func (s *CaptureStore) EnumerateWindows() ([]WindowInfo, error) {
 	}
 
 	var wins []WindowInfo
-	seen := make(map[string]bool)    // "session\x00window_id" -> real placement emitted
+	seen := make(map[string]bool)        // "session\x00window_id" -> real placement emitted
 	webFallback := make(map[string]bool) // window_id -> web-only fallback emitted
 	for _, r := range rows {
 		if r.isWeb {
