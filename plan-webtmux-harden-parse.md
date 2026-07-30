@@ -139,7 +139,26 @@ wrapper buffers unbounded input pre-check. Mechanical, well-testable hardening.
 
 ### Phase 4 — verify & land (P0)
 
-- [ ] P0 Full Go suite `-race` in golang:1.23 docker + JS suite + bindata sync;
+- [x] P0 Full Go suite `-race` in golang:1.23 docker + JS suite + bindata sync;
       live smoke: window named `a, b | c` renders and navigates correctly everywhere
       (sidebar, recents, Exposé, stoplights). ~40m, Sonnet.
+      * `go vet ./... && go test -race -count=1 ./...` — every package ok.
+      * `node --test test/` — 208 pass, 0 fail (baseline 203; +5 from
+        `test/tmux-payloads.test.mjs`).
+      * `make check-js` clean, `make sync-assets` run.
+      * Live: `screenshots/harness/verify-parse.js` (new committed driver, run with
+        `DRIVER=verify-parse.js`) — a window named `a, b | c` inside a session named
+        `ops | staging`, driven in a real chromium against a real tmux. 17/17
+        checks: window row (name/index/active/@wt_working), pane geometry, the
+        server-wide directory, the session list + emptiness, the pane's own
+        identity after a switch, the sidebar row + its stoplight + click-to-select
+        (with tmux agreeing), the recents strip, Exposé tiles and placements, an
+        end-to-end session rename over the NUL payload, and `killSession("proj")`
+        leaving `proj-2` alone.
+      One finding, not a defect: the recents strip LABEL shows `b | c`, because the
+      `recentTrimName` pref (on by default) drops everything before the first
+      space — the same rule that renders "claude Dominion" as "Dominion". The name
+      in the strip's data is whole; the driver checks both for what they are.
 - [ ] P0 Mark complete, merge via the lock wrapper, tick subplan C in the master plan. ~15m.
+      Plan marked complete here; the MERGE and the master-plan tick are the parent
+      session's (subplan B is gated on it).
