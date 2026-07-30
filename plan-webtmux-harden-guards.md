@@ -89,8 +89,15 @@ authority lines and enforces them.
 
 ### Phase 4 — verify & land (P0)
 
-- [ ] P0 Full Go suite (`-race`) in golang:1.23 docker + JS suite + bindata sync. ~20m, Sonnet.
-- [ ] P0 Live smoke in a throwaway container: boot read-only (no `-w`), confirm watch
+- [x] P0 Full Go suite (`-race`) in golang:1.23 docker + JS suite + bindata sync. ~20m, Sonnet.
+      Go: every package `ok` under `-race` (tmux installed, so the live
+      save/capture backend tests ran rather than skipping). JS: 253 passing,
+      0 failing. `make check-js` clean, `make sync-assets` run.
+- [x] P0 Live smoke in a throwaway container: boot read-only (no `-w`), confirm watch
       works and kill/save/select are refused + UI greys; boot with `-w`, confirm save
       confinement + overwrite confirm. ~40m, Opus.
+      Driver committed at `screenshots/harness/verify-guards.js`; `run.sh` gained
+      `WT_PERMIT_WRITE=0` so it can boot the server without `-w`. Both passes green:
+      12/12 read-only (raw websocket frames, past the client guard, so it is the
+      SERVER's gate under test), 12/12 read-write.
 - [ ] P0 Mark complete, merge via the lock wrapper, tick subplan B in the master plan. ~15m.
