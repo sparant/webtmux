@@ -212,12 +212,22 @@ The recommended preferences: add this `hooks` block to `~/.claude/settings.json`
     ],
     "PreToolUse": [
       {
-        "hooks": [{ "type": "command", "command": "tmux set -w -t \"$TMUX_PANE\" @wt_working 1" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tmux set -w -t \"$TMUX_PANE\" @wt_working 1"
+          }
+        ]
       }
     ],
     "PostToolUse": [
       {
-        "hooks": [{ "type": "command", "command": "tmux set -w -t \"$TMUX_PANE\" @wt_working 1" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tmux set -w -t \"$TMUX_PANE\" @wt_working 1"
+          }
+        ]
       }
     ],
     "Notification": [
@@ -232,17 +242,32 @@ The recommended preferences: add this `hooks` block to `~/.claude/settings.json`
     ],
     "Stop": [
       {
-        "hooks": [{ "type": "command", "command": "tmux set -w -t \"$TMUX_PANE\" @wt_working 0" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tmux set -w -t \"$TMUX_PANE\" @wt_working 0"
+          }
+        ]
       }
     ],
     "SessionStart": [
       {
-        "hooks": [{ "type": "command", "command": "tmux set -w -t \"$TMUX_PANE\" @wt_working 0" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tmux set -w -t \"$TMUX_PANE\" @wt_working 0"
+          }
+        ]
       }
     ],
     "SessionEnd": [
       {
-        "hooks": [{ "type": "command", "command": "tmux set -w -t \"$TMUX_PANE\" @wt_working 0" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tmux set -w -t \"$TMUX_PANE\" @wt_working 0"
+          }
+        ]
       }
     ]
   }
@@ -283,16 +308,6 @@ The binary comes from the latest [GitHub release](https://github.com/sparant/web
 
 Replace `user:pass` with your desired credentials.
 
-## Features
-
-- **Visual Pane Layout**: Sidebar minimap shows your tmux pane arrangement - click to switch panes
-- **Window Tabs**: Quick window switching via clickable tabs
-- **Touch-Friendly**: Mobile controls for split, new window, and pane switching
-- **Scroll-to-Copy-Mode**: Scroll up automatically enters tmux copy mode
-- **Secure by Default**: HTTP Basic Auth with auto-generated credentials
-- **Single Binary**: All assets embedded - just download and run
-- **Real-time Updates**: Layout changes sync automatically
-
 ## Running webtmux on another machine — `webtmux-launch`
 
 One command on your laptop, against any box you can already SSH to:
@@ -332,14 +347,14 @@ already installed with no launcher update at all.
 
 Useful flags:
 
-| Flag | Effect |
-| --- | --- |
-| `--session <name>` | which tmux session to attach (default: the box's only session, else `main`) |
-| `--no-browser` | print the URL instead of opening it |
-| `--auth` | keep basic auth on, for a shared multi-user box |
-| `--fresh` / `--adopt-only` | ignore a running instance / refuse to start one |
-| `--webtmux-version vX.Y.Z\|latest` | which release to install |
-| `--verbose` | echo the ssh command lines and say which binary source won |
+| Flag                               | Effect                                                                      |
+| ---------------------------------- | --------------------------------------------------------------------------- |
+| `--session <name>`                 | which tmux session to attach (default: the box's only session, else `main`) |
+| `--no-browser`                     | print the URL instead of opening it                                         |
+| `--auth`                           | keep basic auth on, for a shared multi-user box                             |
+| `--fresh` / `--adopt-only`         | ignore a running instance / refuse to start one                             |
+| `--webtmux-version vX.Y.Z\|latest` | which release to install                                                    |
+| `--verbose`                        | echo the ssh command lines and say which binary source won                  |
 
 **Which webtmux gets installed.** The launcher carries no webtmux payload; it
 downloads the matching release asset and pushes it down the SSH connection it
@@ -351,8 +366,8 @@ repeat launch transfers nothing and several versions coexist safely.
 
 **Security model.** Both ends bind `127.0.0.1` and the URL carries a 32-character
 secret path, so reaching the terminal needs either the SSH-authenticated tunnel
-or a local account on one of the two machines. Stated plainly: *any local user on
-either machine who learns the secret path gets a shell.* The secret is visible in
+or a local account on one of the two machines. Stated plainly: _any local user on
+either machine who learns the secret path gets a shell._ The secret is visible in
 `ps` on both machines (it is a `--path` argument) and stored in
 `~/.config/webtmux-launch/<target>.json`. For a shared box, use `--auth`.
 
@@ -414,7 +429,7 @@ Prebuilt binaries are available in the `builds/` directory for all major platfor
 
 ```bash
 # Clone and use prebuilt binary (example for Linux x64)
-git clone https://github.com/chrismccord/webtmux.git
+git clone https://github.com/sparant/webtmux.git
 cd webtmux
 chmod +x builds/webtmux-linux-amd64
 ./builds/webtmux-linux-amd64 -w tmux new-session -A -s main
@@ -427,7 +442,7 @@ sudo cp builds/webtmux-linux-amd64 /usr/local/bin/webtmux
 
 ```bash
 # Clone the repository
-git clone https://github.com/chrismccord/webtmux.git
+git clone https://github.com/sparant/webtmux.git
 cd webtmux
 
 # Build for current platform
