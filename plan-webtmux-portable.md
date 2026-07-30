@@ -259,12 +259,12 @@ working repo's `origin`. Renumbered to 0.1–0.10; see the subplan's "Topology" 
 
 ### Phase 2 — Real releases · `plan-webtmux-portable-release.md` *(unblocks Phase 3)*
 
-- [ ] **P0** 2.1 Create worktree `chore/portable-release`
-- [ ] **P0** 2.2 **Verify only** — `builds/` already untracked by the build/run split
-- [ ] **P1** 2.3 `checksums` + `release-binaries` targets; drop the dead payload line from `.dockerignore`
-- [ ] **P0** 2.4 Rewrite the README install path (curl from `releases/download/…`; currently points at **upstream**)
-- [ ] **P0** 2.5 Cut `v0.1.0` — tag, build from the tag, `gh release create` *(user-executed)*
-- [ ] **P0** 2.6 Merge + cleanup
+- [x] **P0** 2.1 Create worktree `chore/portable-release`
+- [x] **P0** 2.2 **Verify only** — `builds/` already untracked by the build/run split
+- [x] **P1** 2.3 `checksums` + `release-binaries` targets; the dead payload line was already gone (Stage 3 dropped it)
+- [x] **P0** 2.4 Rewrite the README install path (curl from `releases/download/…`; the upstream URLs were already fixed by `66d07e0` — what was stale was `builds/`)
+- [~] **P0** 2.5 Cut `v0.1.0` — tagged locally and built from the tag; **pushing the tag and `gh release create` are user-executed and outstanding**
+- [x] **P0** 2.6 Merge + cleanup
 
 ### Phase 3 — The launcher · `plan-webtmux-portable-launcher.md`
 

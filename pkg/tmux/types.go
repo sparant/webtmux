@@ -55,6 +55,21 @@ type Layout struct {
 	// client that attaches — even after a webtmux server/client restart — converges
 	// on the same shared visual state. Unset / empty / non-JSON => omitted.
 	State json.RawMessage `json:"state,omitempty"`
+	// ServerStart identifies the tmux SERVER instance this push came from (its
+	// `#{start_time}`, sanitized). It exists for one job: the browser keys its
+	// offline @wt_state cache by it.
+	//
+	// State above is client-authoritative and versioned by a `rev` the CLIENT bumps.
+	// Point the same browser at a different tmux server — another socket, or the same
+	// one killed and restarted — and that server's rev sequence starts again at 1
+	// while the browser's cache still holds, say, rev 40. Under a single cache key the
+	// stale rev suppresses every push until the new server has climbed past it, and
+	// the UI sits on state belonging to a server that no longer exists. A per-server
+	// cache key makes that impossible.
+	//
+	// Omitted when tmux does not report it (too old to know the format), and the
+	// client then falls back to its single legacy cache key — i.e. today's behavior.
+	ServerStart string `json:"serverStart,omitempty"`
 }
 
 // WindowRef is one (session, window) placement in Layout.AllWindows — enough to

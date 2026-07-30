@@ -30,6 +30,16 @@ export class CaptureCache extends EventTarget {
     const persisted = loadAccess();
     this._accessSeq = persisted.seq;
     this.accessed = persisted.map;
+    // Windows that have gone missing from the server-wide directory, and WHEN they
+    // first did. A tombstone rather than an immediate delete: a window can be absent
+    // from one push for reasons that are not death (a directory that arrived empty,
+    // a server mid-restart), and forgetting a recency is not recoverable.
+    this.gone = persisted.gone;
+    // Accesses recorded before the first layout push. They are real — the user did
+    // click something — but they must not be WRITTEN yet, because everything else we
+    // hold at that moment came out of this browser's cache and the blob would carry
+    // it along. Replayed on top of the authoritative state instead (see below).
+    this._preload = new Set();
     // Adopt recency written by ANOTHER client (fromRemote) so the "Last accessed"
     // sort converges across browsers. Skip local echoes to avoid clobbering our own
     // map mid-write. Fire 'update' so an open Exposé re-sorts immediately.
@@ -38,7 +48,15 @@ export class CaptureCache extends EventTarget {
       const cur = loadAccess();
       this._accessSeq = Math.max(this._accessSeq, cur.seq);
       this.accessed = cur.map;
+      this.gone = cur.gone;
       this.dispatchEvent(new CustomEvent('update', { detail: { captures: [] } }));
+    });
+    // …and re-apply anything the user did before the blob arrived, on top of it.
+    stateStore.onFirstLoad(() => {
+      if (!this._preload.size) return;
+      for (const id of this._preload) this.accessed.set(id, ++this._accessSeq);
+      this._preload.clear();
+      this._save();
     });
   }
 
@@ -48,7 +66,30 @@ export class CaptureCache extends EventTarget {
   markAccessed(windowId) {
     if (!windowId) return;
     this.accessed.set(windowId, ++this._accessSeq);
-    saveAccess(this._accessSeq, this.accessed);
+    this.gone.delete(windowId);        // it is plainly alive
+    if (!stateStore.loadedOnce) { this._preload.add(windowId); return; }
+    this._save();
+  }
+
+  // Reconcile the recency map against the server-wide window DIRECTORY
+  // (layout.allWindows). Windows that stay missing long enough are forgotten; see
+  // pruneRecency for why "long enough" and not "now".
+  //
+  // Nothing happens before the first layout push: the map we would be pruning is the
+  // one read out of this browser's cache, and publishing a pruned copy of a stale map
+  // over the shared blob is the same erasure this plan set exists to stop.
+  noteLiveWindows(liveIds) {
+    if (!stateStore.loadedOnce) return;
+    const res = pruneRecency({ accessed: this.accessed, gone: this.gone, liveIds });
+    if (!res.changed) return;
+    this.accessed = res.accessed;
+    this.gone = res.gone;
+    this._save();
+    this.dispatchEvent(new CustomEvent('update', { detail: { captures: [] } }));
+  }
+
+  _save() {
+    saveAccess(this._accessSeq, this.accessed, this.gone);
   }
 
   // Forget a window's access recency (the user removed it from the recent strip)
@@ -57,8 +98,10 @@ export class CaptureCache extends EventTarget {
   // next open.
   forgetAccessed(windowId) {
     if (!windowId) return;
+    this._preload.delete(windowId);
     if (this.accessed.delete(windowId)) {
-      saveAccess(this._accessSeq, this.accessed);
+      this.gone.delete(windowId);
+      if (stateStore.loadedOnce) this._save();
       this.dispatchEvent(new CustomEvent('update', { detail: { captures: [] } }));
     }
   }
@@ -159,17 +202,84 @@ export function placementKey(sessionName, windowId) {
   return (sessionName || '') + ' ' + windowId;
 }
 
+// How long a window has to be absent from the server-wide directory before its
+// recency is forgotten, and how many entries the section may hold.
+//
+// SEVEN DAYS, not "the moment it went missing". Being absent from one push is not
+// proof of death — a directory can arrive empty, a server can be mid-restart, and
+// list-windows can lose a race with a session being created. Forgetting a recency
+// is not recoverable, and the cost of keeping a dead one is nil: all() only ranks
+// windows that are actually in the capture set, so a stale entry is invisible until
+// tmux happens to reuse its @id. What the entries do cost is BYTES in a blob that
+// rides every 500ms layout push, which is what the TTL and the cap are really for —
+// on a long-lived tmux server the map otherwise grows for months without bound.
+export const RECENCY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const RECENCY_CAP = 200;
+
+// Prune the recency map against a live window directory. Pure, so the policy above
+// is testable without a tmux server: takes and returns plain Map/Set values.
+//
+//   accessed  windowId -> seq (higher = more recent)
+//   gone      windowId -> timestamp when it was FIRST seen missing (the tombstone)
+//   liveIds   the ids in layout.allWindows on this push
+//
+// An empty/absent directory returns everything unchanged. That is the one case worth
+// stating out loud: treating "the server told us nothing" as "every window died"
+// would wipe the whole section on a single bad push.
+export function pruneRecency({
+  accessed, gone, liveIds, now = Date.now(),
+  ttlMs = RECENCY_TTL_MS, cap = RECENCY_CAP,
+} = {}) {
+  const map = new Map(accessed || []);
+  const tombs = new Map(gone || []);
+  const live = liveIds instanceof Set ? liveIds : new Set(liveIds || []);
+  let changed = false;
+  if (!live.size) return { accessed: map, gone: tombs, changed };
+
+  for (const id of [...map.keys()]) {
+    if (live.has(id)) {
+      if (tombs.delete(id)) changed = true;      // it came back (or never left)
+      continue;
+    }
+    const since = tombs.get(id);
+    if (since === undefined) { tombs.set(id, now); changed = true; continue; }
+    if (now - since > ttlMs) { map.delete(id); tombs.delete(id); changed = true; }
+  }
+  // Tombstones for ids that are no longer in the map at all are just litter.
+  for (const id of [...tombs.keys()]) {
+    if (!map.has(id)) { tombs.delete(id); changed = true; }
+  }
+  // Hard cap, least-recently-accessed first — the same rule the recents strip
+  // evicts by, so the two never disagree about which window is "older".
+  if (map.size > cap) {
+    const keep = [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, cap);
+    const kept = new Map(keep);
+    for (const id of [...map.keys()]) if (!kept.has(id)) { map.delete(id); changed = true; }
+    for (const id of [...tombs.keys()]) if (!map.has(id)) tombs.delete(id);
+  }
+  return { accessed: map, gone: tombs, changed };
+}
+
 // --- persisted access order --------------------------------------------------
 // Now lives in the shared StateStore under the 'recent' section:
-//   { seq, windows: [[windowId, seq], …] }
+//   { seq, windows: [[windowId, seq], …], gone: [[windowId, firstMissedAt], …] }
 // so "Last accessed" survives a reload AND is shared across clients (it rides the
 // tmux @wt_state blob). Stale ids (a tmux server restart reusing @N) are harmless:
 // all() only ranks windows currently present in the capture set.
 function loadAccess() {
   const rec = stateStore.section('recent');
-  return { seq: Number(rec.seq) || 0, map: new Map(rec.windows || []) };
+  return {
+    seq: Number(rec.seq) || 0,
+    map: new Map(rec.windows || []),
+    gone: new Map(rec.gone || []),
+  };
 }
 
-function saveAccess(seq, map) {
-  stateStore.patchSection('recent', { seq, windows: [...map] });
+function saveAccess(seq, map, gone) {
+  const patch = { seq, windows: [...map] };
+  // Absent rather than empty when there is nothing to remember, so the common case
+  // doesn't add a key to a blob that rides every layout push.
+  if (gone && gone.size) patch.gone = [...gone];
+  else if (stateStore.section('recent').gone) patch.gone = [];
+  stateStore.patchSection('recent', patch);
 }

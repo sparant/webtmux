@@ -375,13 +375,21 @@ const sourceEnv = "WEBTMUX_LAUNCH_SOURCE"
 // resolveSource picks the backend. Precedence, highest first:
 //
 //	--webtmux-binary > --webtmux-source > $WEBTMUX_LAUNCH_SOURCE
-//	  > -X main.DefaultSource > GitHub release
+//	  > -X main.DefaultSource > beside the launcher binary > GitHub release
 //
-// There is deliberately NO auto-detection of a nearby builds/ directory:
-// silently preferring a local directory means an ordinary user with a checkout
-// gets a stale hand-built binary instead of the release they asked for, and the
-// failure is invisible. The source is always either explicitly configured or
-// the release.
+// "Beside the launcher" means the directory the running launcher was executed
+// from, and ONLY that directory. It is the one piece of auto-detection here, and
+// it is narrow on purpose: an earlier design forbade auto-detection outright,
+// reasoning that silently preferring a local directory would hand an ordinary
+// user a stale hand-built binary instead of the release they asked for. Sitting
+// next to the executable is a much stronger signal than "somewhere in a
+// checkout" — you put it there, or whoever packaged the launcher did — and it
+// makes an unzipped directory of downloaded assets work with no flags. The
+// distinction that keeps the old objection answered: a checkout's builds/ is
+// still never searched unless configured.
+//
+// The choice is always announced on the source line, so a surprising pick is
+// visible rather than silent.
 func resolveSource(o *options, getenv func(string) string, cacheRoot string) (Source, string, error) {
 	switch {
 	case o.webtmuxBinary != "":
@@ -397,11 +405,59 @@ func resolveSource(o *options, getenv func(string) string, cacheRoot string) (So
 		s, err := newDirSource(DefaultSource, "main.DefaultSource")
 		return s, "main.DefaultSource (make launcher-dev)", err
 	default:
+		// Beside the launcher, but only when the asset for THIS target is
+		// actually there. A directory that happens to hold some other
+		// platform's binary must fall through to the release rather than fail:
+		// nobody configured it, so it is a hint, not an instruction.
+		if dir := launcherDir(); dir != "" && o.platformHint != "" {
+			if _, err := os.Stat(filepath.Join(dir, assetName(o.platformHint))); err == nil {
+				s, err := newDirSource(dir, "beside the launcher")
+				return s, "beside the launcher binary", err
+			}
+		}
 		if RepoOwner == "" || RepoName == "" {
-			return nil, "", errors.New("this launcher was built without a release repo baked in\n(configure a local build directory: --webtmux-source <dir> or $" + sourceEnv + ")")
+			return nil, "", errors.New("this launcher was built without a release repo baked in\n(put " + assetName(o.platformHint) + " next to this binary, or pass --webtmux-source <dir>)")
 		}
 		return newReleaseSource(RepoOwner, RepoName, o.webtmuxVersion, cacheRoot), "GitHub release (default)", nil
 	}
+}
+
+// validateSourceConfig checks an EXPLICITLY configured source before any SSH
+// happens. Full resolution has to wait for the probe (the beside-the-launcher
+// fallback needs the target's platform to know which asset to look for), but a
+// typo'd directory should cost milliseconds, not a round trip — and it must
+// still be a hard error rather than a quiet fall back to downloading, which is
+// the nastiest failure mode in this design.
+func validateSourceConfig(o *options, getenv func(string) string) error {
+	switch {
+	case o.webtmuxBinary != "":
+		_, err := newFileSource(o.webtmuxBinary)
+		return err
+	case o.webtmuxSource != "":
+		_, err := newDirSource(o.webtmuxSource, "--webtmux-source")
+		return err
+	case getenv(sourceEnv) != "":
+		_, err := newDirSource(getenv(sourceEnv), sourceEnv)
+		return err
+	case DefaultSource != "":
+		_, err := newDirSource(DefaultSource, "main.DefaultSource")
+		return err
+	}
+	return nil
+}
+
+// launcherDir is the directory the running launcher lives in, with symlinks
+// resolved — someone who symlinks it into ~/bin means the real directory, which
+// is where the assets they unpacked alongside it actually are.
+func launcherDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	return filepath.Dir(exe)
 }
 
 // sourceLine is the one line every run prints about where webtmux came from.

@@ -351,6 +351,10 @@ class WebtmuxPip extends LitElement {
     this.onChange = null;   // fired whenever the set / hidden state changes (toolbar sync)
     this._wins = [];        // [{windowId, session, label, index, name}]
     this._hidden = false;
+    this._restoring = false;   // applying a persisted set — writes are suppressed
+    // Has the USER changed the preview on this client? Until they have, the shared
+    // blob is allowed to re-apply itself over what we restored from the cache.
+    this._userTouched = false;
     this._stale = new Set();
     this._focusedWinId = null; // set by SplitManager: the window the focused pane shows
     this._terms = new Map(); // windowId -> {term, screen, cols, rows}
@@ -875,6 +879,10 @@ class WebtmuxPip extends LitElement {
   // for it would fork tmux every 1.5s indefinitely for nothing), tell the toolbar
   // (via onChange) to refresh its preview buttons. setHidden(false) re-primes.
   _changed() {
+    // Anything that reaches here while we are NOT restoring is the user adding,
+    // removing or hiding a preview — so the shared blob stops re-applying itself
+    // over this client's set (see the adopt in restoreState).
+    if (!this._restoring) this._userTouched = true;
     if (this._wins.length === 0 || this._hidden) {
       if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null; }
       this.cache?.removeEventListener('update', this._onCacheUpdate);
@@ -891,33 +899,65 @@ class WebtmuxPip extends LitElement {
   // ids) so labels are right before the first capture arrives. Merged (patchSection)
   // so corner/previewEdge are preserved. Skipped while restoreState() is applying,
   // so re-adding restored windows can't re-enter here mid-restore.
+  //
+  // …and skipped before the first layout push, which is the guard that matters: until
+  // then everything we hold came out of THIS browser's localStorage cache, and on a
+  // first-ever visit that is an empty preview. The 'pip' section is shared, so
+  // publishing it would close the preview every other browser has open.
   _persist() {
-    if (this._restoring) return;
+    if (this._restoring) return false;
+    if (!stateStore.loadedOnce) return false;
     const wins = this._wins.map((w) => ({
       windowId: w.windowId, session: w.session, index: w.index, name: w.name,
     }));
-    stateStore.patchSection('pip', { wins, hidden: this._hidden });
+    return stateStore.patchSection('pip', { wins, hidden: this._hidden });
   }
 
   // Restore the preview set + hidden flag from the shared 'pip' section (reload
   // recovery). Called once by the SplitManager after cache/manager are wired. Guarded
   // so the re-adds it performs don't write back through _persist() (idempotent churn).
+  //
+  // ADOPT, DON'T RESTORE-ONCE. The cache read here makes the preview reappear
+  // instantly, but it is this browser's private guess; the tmux server's copy is the
+  // shared truth and arrives one layout push later. So the same apply runs again from
+  // the authoritative blob — unless the user has already touched the preview, in
+  // which case their set wins and nothing is yanked away.
   restoreState() {
-    const pip = stateStore.section('pip');
-    const wins = Array.isArray(pip.wins) ? pip.wins : [];
-    if (!wins.length) return;
+    this._applyPersisted(stateStore.section('pip'));
+    stateStore.onFirstLoad(() => {
+      if (this._userTouched) return;
+      this._applyPersisted(stateStore.section('pip'));
+    });
+  }
+
+  // Make the live preview match a persisted 'pip' section: add what's missing, drop
+  // what's no longer listed, and match the hidden flag. RECONCILES rather than just
+  // adding, because the adopt above can run against a blob holding FEWER windows than
+  // the cache did — and a preview that only ever grows would keep resurrecting tiles
+  // another browser closed.
+  //
+  // The unconditional re-persist this used to end with is gone. Its stated purpose
+  // was "so its rev is current", which is precisely the bug: a restore is not an
+  // edit, and republishing a cache-derived set at a fresh rev is how a stale (or
+  // empty) preview overwrote the shared one.
+  _applyPersisted(pip) {
+    const wins = Array.isArray(pip && pip.wins) ? pip.wins : [];
+    const want = wins.filter((w) => w && w.windowId);
+    const wantIds = new Set(want.map((w) => w.windowId));
+    const hidden = !!(pip && pip.hidden);
+    if (!want.length && !this._wins.length && this._hidden === hidden) return;
     this._restoring = true;
     try {
-      for (const w of wins) {
-        if (!w || !w.windowId) continue;
+      for (const w of this._wins.map((x) => x.windowId)) {
+        if (!wantIds.has(w)) this.removeWindow(w);
+      }
+      for (const w of want) {
         this.addWindow(w.windowId, { index: w.index, name: w.name, session: w.session });
       }
-      if (pip.hidden) this.setHidden(true);
+      this.setHidden(hidden);
     } finally {
       this._restoring = false;
     }
-    // Write the (unchanged) restored set back once so its rev is current.
-    this._persist();
   }
 
   // Reserve edge space for the docked BAR by publishing --wt-preview-* on :root

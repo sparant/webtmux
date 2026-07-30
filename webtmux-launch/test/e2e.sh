@@ -366,6 +366,71 @@ fi
 kill_launcher "$pid"
 
 # ---------------------------------------------------------------------------
+step "connection priority order"
+# ---------------------------------------------------------------------------
+reset_target
+# Step 3: an existing tmux session is attached to, not stepped over.
+rsh 'tmux new-session -d -s onlyone' >/dev/null 2>&1
+pid=$(launch_bg /tmp/prio-session.log)
+if wait_for /tmp/prio-session.log 'ready: http' 60; then
+  grep -q 'attaching to existing session "onlyone"' /tmp/prio-session.log \
+    && ok "one existing tmux session is attached to, not bypassed" \
+    || no "did not attach to the only session: $(grep -E 'creating|attaching' /tmp/prio-session.log)"
+fi
+kill_launcher "$pid"
+
+# Step 3, ambiguous: several sessions and no --session must ASK, and with no
+# terminal that means failing while naming --session rather than guessing.
+rsh 'tmux new-session -d -s second' >/dev/null 2>&1
+out=$(timeout 25 "$LAUNCH" --no-browser "$TARGET" < /dev/null 2>&1)
+if echo "$out" | grep -q -- '--session' && echo "$out" | grep -qi 'no terminal'; then
+  ok "several sessions with no tty: refuses and names --session"
+else
+  no "ambiguous sessions not handled: $out"
+fi
+# (Answering the prompt is unit-tested. It cannot be driven from here: a pipe is
+# correctly not a terminal, which is the whole point of the refusal above.)
+# An explicit --session still resolves it without a terminal.
+# No head: --verbose echoes the whole probe script, so the interesting lines are
+# a long way down.
+out=$(timeout 25 "$LAUNCH" --no-browser --verbose --session second "$TARGET" < /dev/null 2>&1)
+echo "$out" | grep -q 'attaching to existing session "second"' \
+  && ok "--session resolves the ambiguity non-interactively" || no "--session ignored: $out"
+
+# Step 1 beats step 3: with a webtmux running, sessions are never consulted.
+reset_target
+rsh 'tmux new-session -d -s a; tmux new-session -d -s b' >/dev/null 2>&1
+# --session here on purpose: this launch only exists to deploy a binary, and
+# without it it would hit the very ambiguity this block is about to test.
+pid=$(launch_bg /tmp/prio-first.log --session a); wait_for /tmp/prio-first.log 'ready: http' 60; kill_launcher "$pid"
+BIN=$(rsh 'ls -t ~/.cache/webtmux/webtmux-* | head -1')
+ATT=$(rsh 'ls -t ~/.cache/webtmux/attach-*.sh | head -1')
+hand_start 8321 /prio/ --no-auth
+out=$(timeout 30 "$LAUNCH" --no-browser "$TARGET" < /dev/null 2>&1 | head -12)
+if echo "$out" | grep -q 'adopting webtmux'; then
+  ok "a running webtmux wins over the ambiguous session list (step 1 before 3)"
+else
+  no "priority order wrong: $out"
+fi
+rsh "pkill '^webtmux'; true" >/dev/null 2>&1
+
+# Step 4: a binary sitting beside the launcher is used with nothing configured.
+reset_target
+BESIDE=$(mktemp -d)
+# Build a launcher with NO ldflags for this: builds/webtmux-launch is the dev
+# build, which has main.DefaultSource baked in — and that correctly outranks
+# beside-the-launcher, so it would never exercise the rule under test.
+( cd "$REPO/webtmux-launch" && go build -o "$BESIDE/webtmux-launch" . ) || no "could not build a plain launcher"
+cp "$BUILDS/webtmux-linux-amd64" "$BESIDE/"
+out=$( (unset WEBTMUX_LAUNCH_SOURCE; cd /tmp && timeout 25 "$BESIDE/webtmux-launch" --no-browser --verbose "$TARGET" < /dev/null 2>&1) )
+if echo "$out" | grep -q 'beside the launcher'; then
+  ok "a binary beside the launcher is found with nothing configured"
+else
+  no "beside-the-launcher lookup did not fire: $(echo "$out" | head -5)"
+fi
+rm -rf "$BESIDE"
+
+# ---------------------------------------------------------------------------
 step "3.15f local-source tests"
 # ---------------------------------------------------------------------------
 reset_target
@@ -457,7 +522,12 @@ fi
 kill_launcher "$pid"
 ( cd "$REPO/webtmux-launch" && make release >/tmp/mkr.log 2>&1 ) || { no "make -C webtmux-launch release failed"; tail -5 /tmp/mkr.log; }
 if [ -x "$BUILDS/webtmux-launch-linux-amd64" ]; then
-  out=$(timeout 25 env -u WEBTMUX_LAUNCH_SOURCE "$BUILDS/webtmux-launch-linux-amd64" --no-browser "$TARGET" 2>&1)
+  # Copy it somewhere EMPTY first: left in builds/ it would find
+  # webtmux-linux-amd64 sitting beside it and never reach for the release, which
+  # is the beside-the-launcher rule working rather than a failure.
+  ALONE=$(mktemp -d); cp "$BUILDS/webtmux-launch-linux-amd64" "$ALONE/"
+  out=$(timeout 25 env -u WEBTMUX_LAUNCH_SOURCE "$ALONE/webtmux-launch-linux-amd64" --no-browser "$TARGET" < /dev/null 2>&1)
+  rm -rf "$ALONE"
   # There is no release yet: assert the ATTEMPT, not its success.
   if echo "$out" | grep -qi 'github.com\|release repo'; then
     ok "a release build with nothing configured reaches for the release path"
