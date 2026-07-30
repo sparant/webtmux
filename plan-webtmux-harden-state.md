@@ -48,44 +48,77 @@ sync protocol converge.
 
 ## Phases
 
-### Phase 1 — harness first (P0)
+### Phase 1 — harness first (P0) — complete
 
-- [ ] P0 Extend `test/state-store.test.mjs` with failing tests for decisions 1, 3, 4, 5
+- [x] P0 Extend `test/state-store.test.mjs` with failing tests for decisions 1, 3, 4, 5
       (fake ws send fn; simulate two stores sharing a fake tmux blob). ~40m, Sonnet.
-- [ ] P0 New `test/state-adopt.test.mjs`: cold-cache scenario — store B with empty cache
+      Decision 6 got tests here too (a fake localStorage, installed per test).
+      Three EXISTING tests had to gain a `firstPush(store)` line: they wrote without
+      ever calling `load()`, which decision 1 now (correctly) refuses.
+- [x] P0 New `test/state-adopt.test.mjs`: cold-cache scenario — store B with empty cache
       must adopt A's split/pip blob, and B's first navigation must not write `regions: []`.
       Drive via extracted pure logic (see Phase 2 extraction). ~40m, Opus.
+      The extraction is `SplitPersistence`/`splitSignature` in split-state.js, the split
+      section's answer to `RecentsPersistence`. pip is covered by the store-level gate
+      (it has no pure half to extract — its state IS the live xterm tile set).
 
-### Phase 2 — StateStore core (P0)
+### Phase 2 — StateStore core (P0) — complete
 
-- [ ] P0 Implement `loadedOnce`/`onFirstLoad`, first-load flush gate, write-success return
+- [x] P0 Implement `loadedOnce`/`onFirstLoad`, first-load flush gate, write-success return
       values, pending-patch replay after adopt, non-OPEN-ws flush hold + `resync()`.
       Keep the file's design-doc comment truthful — update it. ~45m, Opus.
-- [ ] P0 Rev tie-break by content hash (decision 4); store the applied-content hash beside
-      `appliedRev`. ~30m, Opus.
-- [ ] P1 Server identity in the cache key (decision 6): Go `Layout.ServerStart` from
+      `TerminalUnit.sendMessage` now RETURNS whether it sent (that is what "non-OPEN ws"
+      looks like from the store's side), and the primary unit calls `stateStore.resync()`
+      on ws open. `RecentsPersistence.persist` gained the same `loadedOnce` guard as
+      `SplitPersistence` — without it a boot-time `persist([])` is recorded as a pending
+      patch and replayed straight over the adopted blob.
+- [x] P0 Rev tie-break by content hash (decision 4); store the applied-content hash beside
+      `appliedRev`. ~30m, Opus. Key-sorted render + FNV-1a, rev/v excluded, so two
+      clients serializing the same content in different key order still see an echo.
+- [x] P1 Server identity in the cache key (decision 6): Go `Layout.ServerStart` from
       `display-message -p '#{start_time}'` (or the existing layout format), JS cache-key
       suffix, fallback path. Go test + JS test. ~40m, Sonnet.
+      Resolved once per controller (a running server's start time cannot change), so the
+      500ms refresh does not pay for it. Verified against real tmux 3.3a, not just the
+      sanitizer table.
 
-### Phase 3 — consumers (P0)
+### Phase 3 — consumers (P0) — complete
 
-- [ ] P0 `split`: gate `_persistSplitState` and the boot-time eager persist on
+- [x] P0 `split`: gate `_persistSplitState` and the boot-time eager persist on
       `loadedOnce`; add remote adopt (re-run `_restoreSplitState` from the first remote
       blob when un-touched); mark `_userTouched` on any real navigation/region change. ~45m, Opus.
-- [ ] P0 `pip`: same treatment for `restoreState`/`_persist`; drop the unconditional
+      Both guards moved into `SplitPersistence`; `_restoreSplitState` split into a
+      read + `_applySplitView(view, {boot})`, which the adopt reuses (tearing the
+      extra regions down first — reached only when untouched, so nothing is lost).
+      Touch points: `addUnit` (extra region), `removeUnit`, `goToWindowIn` at the
+      commit point — all via `_touchSplit()`, which ignores restore-driven changes.
+- [x] P0 `pip`: same treatment for `restoreState`/`_persist`; drop the unconditional
       boot `_persist()` ("so its rev is current" — that rationale is the bug). ~30m, Sonnet.
-- [ ] P0 `recents`: persist-only-on-accepted-write (`_sig` on success), microtask-deferred
+      `restoreState` now RECONCILES (`_applyPersisted`) instead of only adding, because
+      the adopted blob can hold fewer windows than the cache did.
+- [x] P0 `recents`: persist-only-on-accepted-write (`_sig` on success), microtask-deferred
       refresh in the remote-adopt subscriber; regression test: prune-during-adopt converges
       in one round trip (kills the dead-tab-resurrection loop). ~40m, Sonnet.
-- [ ] P1 `recent` recency pruning + cap (decision 7) in capture-cache.js + test. ~30m, Sonnet.
+- [x] P1 `recent` recency pruning + cap (decision 7) in capture-cache.js + test. ~30m, Sonnet.
+      Pure `pruneRecency()` + a `gone` tombstone map persisted beside `windows`; fed from
+      the primary unit's `layout.allWindows` on each push. Recency bumps recorded before
+      the first push are replayed on top of the adopted blob rather than written from
+      the cache (same rule 1 problem, smaller blast radius).
 
-### Phase 4 — verify & land (P0)
+### Phase 4 — verify & land (P0) — complete except the merge
 
-- [ ] P0 Full JS suite + `make check-js` + `make sync-assets`; Go suite for the layout
-      field. ~20m, Sonnet.
-- [ ] P0 Two-browser live check in a throwaway container (playwright memory pattern):
+- [x] P0 Full JS suite + `make check-js` + `make sync-assets`; Go suite for the layout
+      field. ~20m, Sonnet. 232 pass / 0 fail (baseline was 203); `go vet` + `go test
+      -race -count=1 ./...` green in golang:1.23, and the tmux-dependent
+      `TestServerStartInLayout` confirmed against a real tmux 3.3a rather than skipped.
+- [x] P0 Two-browser live check in a throwaway container (playwright memory pattern):
       arrange split+recents in A, cold-load B, confirm B converges and A's layout
       survives B's first navigation; kill a window, confirm no resurrection. ~45m, Opus.
+      Committed as `screenshots/harness/verify-state-sync.js` (DRIVER=… under run.sh):
+      13/13 PASS. NEGATIVE CONTROL: the same driver against the pre-fix commit
+      (c287fb8) fails exactly 3 checks — B's cold boot writes `regions: []` over A's
+      split, B never converges, and B wipes A's preview set. The harness is not vacuous.
 - [ ] P0 Mark plan complete, commit in worktree, merge via
       `scripts/git-merge-worktree.sh /workspace/webtmux-harden-state --target local-main --no-ff --remove`;
       tick subplan A in the master plan on local-main. ~15m.
+      Worktree work is complete and committed; the merge is the parent session's.

@@ -36,7 +36,10 @@ Pieces:
   exit non-zero on a failure: `verify-ux5.js` (recents cap, pin, arrow nav, lost-socket
   spinner), `verify-mousemode.js` (who gets a click/drag over a mouse-grabbing program),
   `verify-ux6.js` (MRU chord with an empty capture cache, Exposé's status filter, the
-  mouse-capture dropdown, the paired sidebar toggles, paste-trim on rename).
+  mouse-capture dropdown, the paired sidebar toggles, paste-trim on rename),
+  `verify-state-sync.js` (TWO browser contexts against one tmux server: a cold-cache
+  client must not erase the other's split/preview, must converge on it, and a killed
+  window must not be resurrected by the next push).
 - `driver-gifs.js` — records one video per animated feature, each scene
   replaying its README section's bullets in order (split → drag divider →
   close; hover → preview → restore; lights change → tabs flash until viewed;

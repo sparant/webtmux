@@ -141,6 +141,7 @@ test('the strip survives a full write -> tmux -> reload round trip', async () =>
   const a = new StateStore();
   let blob = null;
   a.setSender((json) => { blob = json; });
+  a.load(undefined);   // the first layout push: this tmux server holds no blob yet
   a.patchSection('recentTabs', { windows: [entry('@1'), entry('@2', { name: 'editors' })] });
   await delay(500);
   assert.ok(blob, 'a strip change reaches the wire');
@@ -194,6 +195,7 @@ test('a persist before the first restore cannot clobber the saved strip', () => 
 
 test('persist works normally once restore has run', () => {
   const store = new StateStore();
+  store.load(undefined);   // …and once the server's answer is in (see persist's guards)
   const p = new RecentsPersistence(store);
   p.restore();
 
@@ -203,6 +205,7 @@ test('persist works normally once restore has run', () => {
 
 test('an unchanged strip is not rewritten (the 500ms-refresh write guard)', () => {
   const store = new StateStore();
+  store.load(undefined);
   const p = new RecentsPersistence(store);
   p.restore();
   p.persist([entry('@1')]);
@@ -218,6 +221,7 @@ test('an unchanged strip is not rewritten (the 500ms-refresh write guard)', () =
 
 test('persist only writes the durable fields', () => {
   const store = new StateStore();
+  store.load(undefined);
   const p = new RecentsPersistence(store);
   p.restore();
   p.persist([entry('@1', { active: true, disabled: false, working: '1' })]);
@@ -227,11 +231,19 @@ test('persist only writes the durable fields', () => {
   ]);
 });
 
-test('adopt returns a remote change but ignores the echo of our own write', () => {
+test('adopt returns a remote change but ignores the echo of our own write', async () => {
   const store = new StateStore();
+  let wire = null;
+  store.setSender((json) => { wire = json; return true; });
+  store.load(undefined);
   const p = new RecentsPersistence(store);
   p.restore();
   p.persist([entry('@1')]);
+  // Let the write reach tmux and echo back. A write still sitting in the debounce is
+  // a LOCAL edit the server has never seen, and the store deliberately replays those
+  // on top of anything it adopts — so "our own write" only means this once it lands.
+  await delay(500);
+  store.load(wire);
 
   assert.equal(p.adopt(), null, 'our own write is not re-adopted');
 
@@ -246,6 +258,7 @@ test('the full boot order restores the strip end to end', async () => {
   const a = new StateStore();
   let wire = null;
   a.setSender((json) => { wire = json; });
+  a.load(undefined);
   const pa = new RecentsPersistence(a);
   pa.restore();
   pa.persist([entry('@1'), entry('@2', { name: 'editors' })]);
@@ -262,4 +275,56 @@ test('the full boot order restores the strip end to end', async () => {
 
   assert.deepEqual(restored.map((e) => [e.id, e.name]), [['@1', '@1'], ['@2', 'editors']],
     'the strip survives the boot sequence that used to erase it');
+});
+
+// --- the swallowed-write hazard ----------------------------------------------
+//
+// The second half of the same lifecycle bug. persist() is called from
+// _refreshToolbar, and _refreshToolbar is ALSO what runs when another client's blob
+// is adopted — inside StateStore's _applying guard, which swallows every write. If
+// persist recorded its new signature anyway, the change would be remembered as
+// published and never attempted again. The visible symptom was a tab for a window
+// that had been killed coming back on every push: the client pruned it, the prune
+// was swallowed, the blob still held it, and the next push handed it straight back.
+
+test('a persist the store swallows is retried, not remembered as published', () => {
+  const store = new StateStore();
+  store.load(undefined);
+  const p = new RecentsPersistence(store);
+  p.restore();
+
+  let swallowed = null;
+  store.subscribe(() => { if (swallowed === null) swallowed = p.persist([entry('@1')]); });
+  store.load(JSON.stringify({ v: 1, rev: 5, unrelated: 1 }));
+
+  assert.equal(swallowed, false, 'the mid-apply write is refused');
+  assert.equal(p.persist([entry('@1')]), true, 'and the same change is written on the retry');
+  assert.deepEqual(store.section('recentTabs').windows.map((e) => e.id), ['@1']);
+});
+
+test('a prune during an adopt converges in one round trip', async () => {
+  const store = new StateStore();
+  let wire = null;
+  store.setSender((json) => { wire = json; return true; });
+  store.load(undefined);
+  const p = new RecentsPersistence(store);
+  p.restore();
+
+  // Another client publishes a strip holding a window that has since been killed.
+  store.load(JSON.stringify({
+    v: 1, rev: 9, recentTabs: { windows: [entry('@1'), entry('@dead')] },
+  }));
+  const adopted = p.adopt();
+  assert.deepEqual(adopted.map((e) => e.id), ['@1', '@dead']);
+
+  // _refreshToolbar (deferred out of the apply by the SplitManager) prunes the dead
+  // tab and persists. This is the write that used to be swallowed.
+  assert.equal(p.persist(adopted.filter((e) => e.id !== '@dead')), true);
+  await delay(500);
+  assert.deepEqual(JSON.parse(wire).recentTabs.windows.map((e) => e.id), ['@1'],
+    'the prune reaches tmux');
+
+  // …and the echo of it does not resurrect the dead tab.
+  store.load(wire);
+  assert.equal(p.adopt(), null, 'nothing left to adopt — the two agree');
 });

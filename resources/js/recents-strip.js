@@ -146,18 +146,31 @@ export class RecentsPersistence {
 
   // Write the strip if it actually changed. Returns whether a write was issued —
   // callers ignore it, but it makes the guard's behavior assertable.
+  //
+  // TWO guards, for two versions of the same hazard. `_restored` covers the local
+  // boot order described above. `store.loadedOnce` covers the SHARED one: until the
+  // first layout push, everything this client holds came out of its own localStorage
+  // cache, and on a browser opening for the first time that is nothing at all.
+  // Writing then publishes an empty strip to every other browser on the tmux server
+  // — same erasure as before, but from a client that never had the data. So no
+  // section writes until the server's own answer (or its "I hold nothing") is in.
+  //
+  // The signature only advances on an ACCEPTED write: patchSection returns false
+  // when the store swallows it (mid-apply), and recording the signature anyway would
+  // remember the change as published and never write it again.
   persist(list) {
-    if (!this._restored) return false;      // the invariant above
+    if (!this._restored) return false;        // the invariant above
+    if (!this.store.loadedOnce) return false; // …and the shared one
     const sig = recentsSignature(list);
     if (sig === this._sig) return false;    // unchanged: do not bump the blob's rev
-    this._sig = sig;
     // Only the durable identity fields; active/disabled/working are per-render.
-    this.store.patchSection(this.sectionName, {
+    const ok = this.store.patchSection(this.sectionName, {
       windows: (list || []).map((e) => ({
         id: e.id, index: e.index, name: e.name, session: e.session,
       })),
     });
-    return true;
+    if (ok) this._sig = sig;
+    return ok;
   }
 
   // Re-read after another client wrote. Returns the new list, or null when the

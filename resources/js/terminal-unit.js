@@ -1195,6 +1195,14 @@ export class TerminalUnit {
       }, 100);
       // (Window restore after a reconnect happens when the first layout arrives —
       // see _rememberOrRestore, gated by this.restorePending.)
+      //
+      // Shared UI state has the same problem and needs telling too: a write that
+      // was handed to a socket that had already gone was never sent (sendMessage
+      // reports that below), so the store is still holding it. Nothing else would
+      // ever ask it to try again — the debounce that would have re-flushed it fired
+      // long ago — so the reconnect is the trigger. Only the PRIMARY unit owns the
+      // store's transport, so only it re-arms.
+      if (this.primary) stateStore.resync();
       this._startHeartbeat();
       if (this.onConnectionChange) this.onConnectionChange(this);
     };
@@ -1327,15 +1335,20 @@ export class TerminalUnit {
     }
   }
 
+  // Returns whether the message actually went out. Most callers ignore it — a
+  // dropped keystroke or resize is corrected by the next one — but the shared
+  // StateStore cannot: a persisted change handed to a closed socket is simply gone,
+  // and the store has to know to keep holding it rather than mark it written.
   sendMessage(type, payload = '') {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       // Tick the toolbar's activity spinner for anything that drives tmux (the
       // callback debounces, so a burst is one increment).
       if (TMUX_MSG_TYPES.has(type) && this.onTmuxActivity) this.onTmuxActivity();
       this.ws.send(type + payload);
-    } else {
-      console.warn('WebSocket not ready, state:', this.ws?.readyState);
+      return true;
     }
+    console.warn('WebSocket not ready, state:', this.ws?.readyState);
+    return false;
   }
 
   // ----- preview hold -----------------------------------------------------------
