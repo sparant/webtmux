@@ -11,7 +11,7 @@
 // thinks they're in and the one the file will actually appear in.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { saveHint, saveOkText, DEFAULT_SAVE_HINT } from '../resources/js/save-target.js';
+import { saveHint, saveOkText, saveResultBanner, DEFAULT_SAVE_HINT } from '../resources/js/save-target.js';
 
 test('with no answer yet, the hint states the intended rule', () => {
   assert.equal(saveHint(null).text, DEFAULT_SAVE_HINT);
@@ -108,4 +108,48 @@ test('the success banner stays terse when nothing surprising happened', () => {
   const info = { paneDir: '/p', baseDir: '/p', paneVisible: true };
   assert.equal(saveOkText('/p/out.txt', info), 'Saved: /p/out.txt');
   assert.equal(saveOkText('/p/out.txt', null), 'Saved: /p/out.txt');
+});
+
+// ---- the save-result banner ----------------------------------------------------
+//
+// Three outcomes, not two. "That file already exists" is the one failure the user
+// can answer where they are standing, and the dropdown turns it into an Overwrite
+// button — so the banner has to distinguish it, and has to do so from the reply's
+// FLAG rather than from the wording of the error.
+
+test('a successful save reads as one, with the destination', () => {
+  const b = saveResultBanner({ ok: true, path: '/p/out.txt', env: { paneDir: '/p', baseDir: '/p', paneVisible: true } });
+  assert.equal(b.state, 'ok');
+  assert.match(b.text, /Saved: \/p\/out\.txt/);
+});
+
+test('an existing file is a question the dropdown can answer, not a dead end', () => {
+  const b = saveResultBanner({
+    ok: false, exists: true, path: '/p/out.txt',
+    error: '/p/out.txt already exists. Overwrite it?',
+  });
+  assert.equal(b.state, 'confirm');
+  assert.equal(b.path, '/p/out.txt');
+  assert.match(b.text, /Overwrite/);
+});
+
+test('the overwrite case is told from the flag, never from the message text', () => {
+  // Same words, no flag: an ordinary error. A UI that matched on English would
+  // offer an Overwrite button that cannot help.
+  const b = saveResultBanner({ ok: false, error: 'something already exists somewhere' });
+  assert.equal(b.state, 'err');
+});
+
+test('every other failure keeps the server reason verbatim', () => {
+  const b = saveResultBanner({
+    ok: false,
+    error: '/etc/x is outside the directories webtmux may write to (/workspace).',
+  });
+  assert.equal(b.state, 'err');
+  assert.match(b.text, /outside the directories/);
+});
+
+test('a missing reply still says something', () => {
+  assert.equal(saveResultBanner(null).state, 'err');
+  assert.equal(saveResultBanner({ ok: false }).text, 'Save failed');
 });

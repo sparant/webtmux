@@ -62,13 +62,13 @@ authority lines and enforces them.
 - [x] P1 `permitWrite` in the init message; frontend disables mutating controls
       (toolbar/sidebar/Exposé actions, save-to-server option) in read-only mode. ~45m, Sonnet.
 
-### Phase 2 — savepath (P0)
+### Phase 2 — savepath (P0) — complete
 
-- [ ] P0 Containment + symlink-resolved `filepath.Rel` check + absolute/`~` policy change
+- [x] P0 Containment + symlink-resolved `filepath.Rel` check + absolute/`~` policy change
       in `webtty/savepath.go`; extend the existing decision-table tests with traversal,
       absolute-escape, and symlink cases (tests currently assert what it does; add what it
       must refuse). ~45m, Opus.
-- [ ] P0 Overwrite refusal + `"overwrite":true` protocol field + dropdown inline confirm
+- [x] P0 Overwrite refusal + `"overwrite":true` protocol field + dropdown inline confirm
       + tests both sides. ~40m, Sonnet.
 
 ### Phase 3 — refuse-don't-guess + capture cap (P1)

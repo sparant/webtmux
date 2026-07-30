@@ -32,7 +32,7 @@ import { clampRecentsMax, RecentsPersistence } from './recents-strip.js';
 import { buildMruOrder } from './mru-order.js';
 import { SplitPersistence } from './split-state.js';
 import { resolveRestoreView, planRestoreLanding } from './restore-view.js';
-import { saveOkText } from './save-target.js';
+import { saveResultBanner } from './save-target.js';
 import { IS_MAC } from './os.js';
 import { stateStore } from './state-store.js';
 import { clientStore } from './client-store.js';
@@ -1015,14 +1015,27 @@ export class SplitManager {
   // user-typed `path`. Unlike savePaneBuffer (a browser download), the server does
   // the capture + write itself and resolves a relative path against the pane's own
   // working directory. The outcome arrives via onSaveResult (toolbar feedback).
-  savePaneBufferToPath(path) {
+  savePaneBufferToPath(path, overwrite = false) {
     const u = this.focusedUnit;
     const id = u?.layout?.activeWindowId;
     if (!id || !u) return;
     const p = String(path || '').trim();
     if (!p) return;
+    // Remember what was asked for: the server refuses an existing file on the
+    // first ask, and answering "Overwrite" has to re-send the SAME path rather
+    // than re-read an input the user may have clicked away from.
+    this._lastSaveRequest = { windowId: id, path: p, unit: u };
     if (this.toolbar) this.toolbar.saveStatus = { state: 'saving', text: 'Saving…' };
-    u.sendSavePaneFile(id, p, this.saveDir());
+    u.sendSavePaneFile(id, p, this.saveDir(), overwrite);
+  }
+
+  // "Overwrite" in the save dropdown: re-send the refused request with the answer
+  // attached. Bound to the request that was refused, not to the input box.
+  confirmOverwriteSave() {
+    const req = this._lastSaveRequest;
+    if (!req || !req.unit) return;
+    if (this.toolbar) this.toolbar.saveStatus = { state: 'saving', text: 'Saving…' };
+    req.unit.sendSavePaneFile(req.windowId, req.path, this.saveDir(), true);
   }
 
   // Ask the server where a save for the FOCUSED window would land. Called when the
@@ -1066,17 +1079,17 @@ export class SplitManager {
     // The reply carries the environment it was resolved against; keep it so the
     // banner and the hint below it can't tell different stories.
     if (res && res.env && res.env.baseDir) this.toolbar.saveInfo = res.env;
-    if (res && res.ok) {
-      this.toolbar.saveStatus = { state: 'ok', text: saveOkText(res.path, res.env) };
-      setTimeout(() => {
-        if (this.toolbar && this.toolbar.saveStatus?.state === 'ok') {
-          this.toolbar.saveOpen = false;
-          this.toolbar.saveStatus = null;
-        }
-      }, 1800);
-    } else {
-      this.toolbar.saveStatus = { state: 'err', text: (res && res.error) || 'Save failed' };
-    }
+    // Three outcomes, not two: 'confirm' is "that file already exists", which the
+    // dropdown answers in place with an Overwrite button. See save-target.js.
+    const banner = saveResultBanner(res);
+    this.toolbar.saveStatus = { state: banner.state, text: banner.text };
+    if (banner.state !== 'ok') return;
+    setTimeout(() => {
+      if (this.toolbar && this.toolbar.saveStatus?.state === 'ok') {
+        this.toolbar.saveOpen = false;
+        this.toolbar.saveStatus = null;
+      }
+    }, 1800);
   }
 
   _refreshToolbar() {

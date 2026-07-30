@@ -1737,10 +1737,12 @@ export class TerminalUnit {
   // directory. The outcome comes back as a TmuxSaveResult -> onSaveResult.
   // `dir` is the save directory the user picked in the dropdown (see
   // save-target.js); the server validates it and may still refuse.
-  sendSavePaneFile(windowId, path, dir = '') {
+  // `overwrite` is the answer to the server's "that file already exists"
+  // refusal, which it never assumes: a save into a taken name comes back as a
+  // question (see savepath.go) and only a request carrying this replaces the file.
+  sendSavePaneFile(windowId, path, dir = '', overwrite = false) {
     if (!this.isConnected()) return false;
-    this.sendMessage(MSG.TmuxSavePaneFile, JSON.stringify({ windowId, path, dir }));
-    return true;
+    return this.sendMessage(MSG.TmuxSavePaneFile, JSON.stringify({ windowId, path, dir, overwrite }));
   }
 
   // Ask where a save for this window WOULD land — which directory a relative path

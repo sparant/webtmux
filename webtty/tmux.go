@@ -454,49 +454,74 @@ func (wt *WebTTY) handleSavePaneFile(payload []byte) error {
 		Path     string `json:"path"`
 		// Dir: the user-chosen save directory in force (see handleSaveInfo).
 		Dir string `json:"dir"`
+		// Overwrite is the answer to the "that file already exists" question. A
+		// save NEVER replaces an existing file on the first ask: the suggested
+		// filename is derived from the session/window name, so two saves of the
+		// same window collide by construction, and the previous one used to
+		// disappear without a word. Absent/false = refuse and ask.
+		Overwrite bool `json:"overwrite"`
 	}
 	if err := json.Unmarshal(payload, &req); err != nil {
-		return wt.sendSaveResult(false, "", "invalid save request", SaveEnv{})
+		return wt.sendSaveResult(saveOutcome{Error: "invalid save request"})
 	}
 	if strings.TrimSpace(req.Path) == "" {
-		return wt.sendSaveResult(false, "", "no path given", SaveEnv{})
+		return wt.sendSaveResult(saveOutcome{Error: "no path given"})
 	}
 	if wt.captureProvider == nil {
-		return wt.sendSaveResult(false, "", "saving is unavailable (not a tmux session)", SaveEnv{})
+		return wt.sendSaveResult(saveOutcome{Error: "saving is unavailable (not a tmux session)"})
 	}
-	entries, err := wt.captureProvider.CaptureWindows([]string{req.WindowID}, true)
-	if err != nil || len(entries) == 0 {
-		return wt.sendSaveResult(false, "", "could not capture the pane buffer", SaveEnv{})
-	}
-	text := cleanPaneText(entries[0].ANSI)
 	// Relative paths land in the pane's own working directory when webtmux can SEE
 	// it; when it can't (the container case), describeSaveEnv picks a directory
 	// that exists here and the reply says so rather than the save silently
 	// landing somewhere the user never named. See savepath.go.
 	paneDir, _ := wt.captureProvider.PaneCurrentPath(req.WindowID)
 	env := describeSaveEnv(paneDir, req.Dir)
+	// Resolve BEFORE capturing: a refused path (outside the allowlist, or an
+	// existing file the user has not agreed to replace) should cost a `capture-pane`
+	// fork and a screen's worth of text for nothing.
 	resolved, err := resolveSavePath(env, req.Path)
 	if err != nil {
-		return wt.sendSaveResult(false, "", err.Error(), env)
+		return wt.sendSaveResult(saveOutcome{Error: err.Error(), Env: env})
 	}
+	if !req.Overwrite && targetExists(resolved) {
+		return wt.sendSaveResult(saveOutcome{
+			Path: resolved, Error: existsMessage(resolved), Exists: true, Env: env,
+		})
+	}
+	entries, err := wt.captureProvider.CaptureWindows([]string{req.WindowID}, true)
+	if err != nil || len(entries) == 0 {
+		return wt.sendSaveResult(saveOutcome{Error: "could not capture the pane buffer", Env: env})
+	}
+	text := cleanPaneText(entries[0].ANSI)
 	if err := os.WriteFile(resolved, []byte(text), 0o644); err != nil {
-		return wt.sendSaveResult(false, resolved, writeErrorMessage(resolved, err), env)
+		return wt.sendSaveResult(saveOutcome{
+			Path: resolved, Error: writeErrorMessage(resolved, err), Env: env,
+		})
 	}
 	log.Printf("saved pane %s buffer -> %s (%d bytes)", req.WindowID, resolved, len(text))
-	return wt.sendSaveResult(true, resolved, "", env)
+	return wt.sendSaveResult(saveOutcome{OK: true, Path: resolved, Env: env})
+}
+
+// saveOutcome is the TmuxSaveResult payload.
+//
+// `exists` is a field rather than a phrase the browser has to recognize in
+// `error`: it is the one failure the user can answer in place ("Overwrite?"),
+// and a UI that decides that by matching on English breaks the first time the
+// sentence is reworded.
+type saveOutcome struct {
+	OK     bool    `json:"ok"`
+	Path   string  `json:"path"`
+	Error  string  `json:"error"`
+	Exists bool    `json:"exists"`
+	Env    SaveEnv `json:"env"`
 }
 
 // sendSaveResult reports a TmuxSavePaneFile outcome to the browser. The SaveEnv
 // rides along so the browser can explain a surprising destination in the same
 // breath as reporting success ("saved HERE, because your pane's directory isn't
 // visible to webtmux") instead of leaving the user to wonder.
-func (wt *WebTTY) sendSaveResult(ok bool, path, errMsg string, env SaveEnv) error {
-	data, err := json.Marshal(struct {
-		OK    bool    `json:"ok"`
-		Path  string  `json:"path"`
-		Error string  `json:"error"`
-		Env   SaveEnv `json:"env"`
-	}{OK: ok, Path: path, Error: errMsg, Env: env})
+func (wt *WebTTY) sendSaveResult(res saveOutcome) error {
+	data, err := json.Marshal(res)
 	if err != nil {
 		return fmt.Errorf("failed to marshal save result: %w", err)
 	}

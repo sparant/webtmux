@@ -1190,6 +1190,13 @@ class WebtmuxToolbar extends LitElement {
     this.manager?.savePaneBufferToPath(path);
   }
 
+  // The answer to "that file already exists". Re-sends the refused REQUEST (the
+  // manager kept it) rather than re-reading the input, which the user may have
+  // edited or scrolled away from since.
+  _confirmOverwrite() {
+    this.manager?.confirmOverwriteSave();
+  }
+
   disconnectedCallback() {
     super.disconnectedCallback();
     clearTimeout(this._buildTipTimer);

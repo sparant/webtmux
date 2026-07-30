@@ -337,3 +337,170 @@ func TestContainerDetectionCanBeForcedEitherWay(t *testing.T) {
 		t.Fatal("the override must be re-read, not cached from the first call")
 	}
 }
+
+// ---- containment ---------------------------------------------------------------
+//
+// Resolution says where a save lands; containment says whether that destination
+// was ever on offer. The tests above assert what the resolver DOES; these assert
+// what it must refuse — which is the half that was missing, and the half that
+// turned "save this pane's buffer" into a write-anywhere primitive.
+
+// saveEnvIn is the boring, fully-permitted environment: webtmux and tmux share a
+// filesystem and the pane's own directory is the base.
+func saveEnvIn(t *testing.T, dir string) SaveEnv {
+	t.Helper()
+	t.Setenv("WEBTMUX_PATH_MAP", "")
+	t.Setenv("WEBTMUX_SAVE_DIR", "")
+	t.Setenv("WEBTMUX_IN_CONTAINER", "1") // no implicit $HOME/cwd roots — only `dir`
+	t.Setenv("WEBTMUX_HOME", "")
+	return SaveEnv{BaseDir: dir, PaneVisible: true, Container: true, Writable: true}
+}
+
+func TestTraversalOutOfTheBaseDirectoryIsRefused(t *testing.T) {
+	base := t.TempDir()
+	outside := t.TempDir()
+	env := saveEnvIn(t, base)
+
+	// `../` climbs out of the one directory that was shared. The parent EXISTS —
+	// that is exactly why a dir-exists check alone never caught this.
+	rel, err := filepath.Rel(base, filepath.Join(outside, "stolen.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveSavePath(env, rel); err == nil {
+		t.Fatalf("%q escaped the base directory", rel)
+	} else if !strings.Contains(err.Error(), base) {
+		t.Errorf("the refusal should name the directory that IS allowed: %v", err)
+	}
+}
+
+func TestAbsolutePathsLoseTheirBypass(t *testing.T) {
+	base := t.TempDir()
+	env := saveEnvIn(t, base)
+
+	// The old rule honored an absolute path "as typed". /etc exists and, for a
+	// webtmux running as root (a container default), is writable.
+	for _, path := range []string{"/etc/webtmux-owned.conf", "/tmp/anywhere.txt"} {
+		if _, err := resolveSavePath(env, path); err == nil {
+			t.Errorf("%q was accepted; an absolute path is not an authorization", path)
+		}
+	}
+	// …and the same path INSIDE the allowed directory still works, so the rule is
+	// containment and not a ban on absolute paths.
+	got, err := resolveSavePath(env, filepath.Join(base, "fine.txt"))
+	if err != nil {
+		t.Fatalf("an absolute path inside the allowed directory must work: %v", err)
+	}
+	if got != filepath.Join(base, "fine.txt") {
+		t.Errorf("resolved = %q", got)
+	}
+}
+
+func TestTildeIsSubjectToContainment(t *testing.T) {
+	base, home := t.TempDir(), t.TempDir()
+	env := saveEnvIn(t, base)
+
+	// A declared WEBTMUX_HOME is itself a root — someone named it.
+	env.Home = home
+	if _, err := resolveSavePath(env, "~/notes.txt"); err != nil {
+		t.Fatalf("a declared home is a save destination: %v", err)
+	}
+	// But `~/../elsewhere` still leaves it.
+	if _, err := resolveSavePath(env, "~/../elsewhere.txt"); err == nil {
+		t.Error("~ must not be a way out of the allowlist either")
+	}
+}
+
+// A symlink inside an allowed directory pointing out of it satisfies every
+// string-prefix test ever written, which is why the check resolves it.
+func TestASymlinkedParentCannotEscape(t *testing.T) {
+	base, outside := t.TempDir(), t.TempDir()
+	env := saveEnvIn(t, base)
+
+	link := filepath.Join(base, "door")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := resolveSavePath(env, "door/out.txt"); err == nil {
+		t.Error("a symlinked directory walked straight out of the allowlist")
+	}
+}
+
+// …and the same for a symlink at the FILE, which os.WriteFile follows.
+func TestASymlinkedTargetCannotEscape(t *testing.T) {
+	base, outside := t.TempDir(), t.TempDir()
+	env := saveEnvIn(t, base)
+
+	target := filepath.Join(outside, "victim.txt")
+	if err := os.WriteFile(target, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "out.txt")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := resolveSavePath(env, "out.txt"); err == nil {
+		t.Error("a symlinked target let the write land outside the allowlist")
+	}
+}
+
+// Containment must not break the deployments the allowlist is built from.
+func TestEveryDeclaredDirectoryIsAllowed(t *testing.T) {
+	pane, configured, chosen := t.TempDir(), t.TempDir(), t.TempDir()
+	t.Setenv("WEBTMUX_PATH_MAP", "")
+	t.Setenv("WEBTMUX_SAVE_DIR", configured)
+	t.Setenv("WEBTMUX_IN_CONTAINER", "1")
+	t.Setenv("WEBTMUX_HOME", "")
+
+	env := SaveEnv{BaseDir: pane, Chosen: chosen, PaneVisible: true, Container: true}
+	for _, dir := range []string{pane, configured, chosen} {
+		if _, err := resolveSavePath(env, filepath.Join(dir, "out.txt")); err != nil {
+			t.Errorf("a declared directory (%s) was refused: %v", dir, err)
+		}
+	}
+}
+
+// The container-with-nothing-shared case: there is no root at all, so the
+// refusal is the "name a directory" message rather than a list of none.
+func TestABlockedEnvRefusesAbsolutePathsToo(t *testing.T) {
+	t.Setenv("WEBTMUX_PATH_MAP", "")
+	t.Setenv("WEBTMUX_SAVE_DIR", "")
+	t.Setenv("WEBTMUX_IN_CONTAINER", "1")
+
+	env := describeSaveEnv("/home/nathan/Projects", "")
+	if !env.Blocked {
+		t.Fatalf("expected a blocked env: %+v", env)
+	}
+	// An absolute path used to be waved through here on the theory that the typer
+	// knew about a mount webtmux couldn't infer. The dropdown is how they say so
+	// now, and it is checked.
+	if _, err := resolveSavePath(env, filepath.Join(t.TempDir(), "out.txt")); err == nil {
+		t.Error("an absolute path bypassed a blocked environment")
+	}
+}
+
+// ---- overwrite -----------------------------------------------------------------
+
+func TestExistingTargetsAreDetected(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "there.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !targetExists(file) {
+		t.Error("an existing file was not seen")
+	}
+	if targetExists(filepath.Join(dir, "absent.txt")) {
+		t.Error("a name that is free was reported as taken")
+	}
+	// A dangling symlink is still a name that is taken, and the write follows it.
+	link := filepath.Join(dir, "dangling.txt")
+	if err := os.Symlink(filepath.Join(dir, "nothing"), link); err == nil {
+		if !targetExists(link) {
+			t.Error("a dangling symlink is still an occupied name")
+		}
+	}
+	if !strings.Contains(existsMessage(file), "Overwrite") {
+		t.Errorf("the exists message should ask, not just report: %s", existsMessage(file))
+	}
+}
