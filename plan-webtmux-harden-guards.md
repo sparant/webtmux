@@ -100,4 +100,7 @@ authority lines and enforces them.
       `WT_PERMIT_WRITE=0` so it can boot the server without `-w`. Both passes green:
       12/12 read-only (raw websocket frames, past the client guard, so it is the
       SERVER's gate under test), 12/12 read-write.
-- [ ] P0 Mark complete, merge via the lock wrapper, tick subplan B in the master plan. ~15m.
+- [x] P0 Mark complete (phases 1–4 done on `harden-guards`).
+- [ ] P0 Merge via the lock wrapper, tick subplan B in the master plan. ~15m.
+      **Held for the parent session** — the branch is finished and green but
+      deliberately unmerged, and `plan-webtmux-harden-master.md` is untouched.
