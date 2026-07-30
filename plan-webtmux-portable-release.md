@@ -6,6 +6,23 @@
 last to **third** (execution order D → 0 → **2** → 3 → 1) because it now *unblocks* the
 launcher — Stage 3 fetches the assets published here.
 
+## Status — 2026-07-30: everything agent-executable is done; publishing is yours
+
+Phases 2A and 2B are complete and merged to `local-main` (`9b1c258`), and `v0.1.0` is
+tagged and built from that tag. `./builds/webtmux-linux-amd64 --version` reports
+**`webtmux version v0.1.0`** — the goal of this stage, reached.
+
+**What is left is exactly the three credentials the agent does not have**, and it is all
+in one script:
+
+```bash
+bash ~/Projects/claude_run_me_7731.sh --dry-run   # prints every command, changes nothing
+bash ~/Projects/claude_run_me_7731.sh             # push branch + tag both legs, gh release create, verify
+```
+
+That covers 2.9 and, on success, discharges 2.10 and 2.11 (their checks run as its step 5).
+Until it runs, the tag exists only on this machine and no release exists.
+
 ## Goal
 
 Make a webtmux binary able to say **what it is**, and give it a real distribution channel.
@@ -276,8 +293,24 @@ With binaries out of git, the old tag/commit chicken-and-egg **evaporates**: not
 a release needs committing after the build. Tag the release commit, build *from the tag*
 (so `git describe` stamps `v0.1.0` with no `VERSION=` override needed), and upload.
 
-- [ ] **P0** 2.7 Merge this stage's changes to `local-main` first (via the wrapper, tests
+- [x] **P0** 2.7 Merge this stage's changes to `local-main` first (via the wrapper, tests
       passing), so the tag lands on the integration branch: *(15 min)*
+      **Done 2026-07-30.** `make test` green before each merge — 203 JS store tests,
+      5 stoplight-hook tests, every Go package, `go vet` clean. The container has no Go
+      toolchain and no tmux, so the suite runs in a throwaway `golang:1.23` + tmux + nodejs
+      image against a copy of the worktree (`-v …:/src:ro`, then `cp -r /src /work`).
+      Two gotchas worth keeping: `bash -lc` drops `/usr/local/go/bin` from PATH (use
+      `bash -c`), and `cp -a` onto the ACL'd checkout floods "preserving permissions:
+      Invalid argument" (use `cp -r`).
+
+      **Merged twice**, because publishing turned up a defect (see 2.9). Both merges hit
+      the same obstacle: `/workspace/webtmux`'s working tree had *another agent's*
+      uncommitted README edit, and `git merge` refuses to touch a locally-modified file.
+      Resolved by backing the diff up to the scratchpad, `git stash push -- README.md`,
+      merging, then `git stash pop` — the concurrent work was preserved both times. Worth
+      knowing before the next merge into this repo: **`local-main` moves under you.** It
+      advanced from `c287fb8` to `66d07e0` between reading the plan and creating the
+      worktree, and three other worktrees were live on the same commit.
 
       ```bash
       make test
@@ -285,13 +318,33 @@ a release needs committing after the build. Tag the release commit, build *from 
           --target local-main --no-ff --remove
       ```
 
-- [ ] **P0** 2.8 Tag, build, sanity-check *(15 min)*:
+- [x] **P0** 2.8 Tag, build, sanity-check *(15 min)*:
 
       ```bash
       git -C /workspace/webtmux tag -a v0.1.0 -m "webtmux v0.1.0"
       cd /workspace/webtmux && make release-binaries    # VERSION=v0.1.0 via git describe
       ./builds/webtmux-linux-amd64 --version            # must say v0.1.0, not dev
       ```
+
+      **Done 2026-07-30.** `v0.1.0` is tagged on `local-main` at `9b1c258`, and
+      `builds/` holds all six platform binaries plus `SHA256SUMS`, built *from* the tag
+      with no `VERSION=` override — `git describe --tags` supplied it, and
+      `./builds/webtmux-linux-amd64 --version` prints **`webtmux version v0.1.0`**, the
+      first binary this repo has ever produced that does not say `dev`.
+      `sha256sum --check SHA256SUMS` passes for all six.
+
+      **The tag was moved once, deliberately.** The `--repo` defect found in 2.9 belonged
+      *in* v0.1.0 — a release whose own Makefile prints a command that cannot run is not
+      much of a release — so the fix was merged and the tag re-cut with `tag -f` before it
+      had left this machine. Safe precisely because nothing had been pushed; once the tag
+      reaches the Mac or GitHub, the "never move a published tag" rule applies and the
+      publish script enforces it.
+
+      Build ran in the same throwaway `golang:1.23` image as the tests, but read-write
+      (`-u 1000:1000 -v /workspace/webtmux:/work`, `HOME`/`GOCACHE`/`GOPATH` in `/tmp`,
+      plus `git config --global --add safe.directory '*'` so git inside the container will
+      read the tag). Output lands in the real `builds/` with the host uid intact, which is
+      what the user's `gh release create` needs.
 
 - [ ] **P0** 2.9 **Publish — user-executed.** *(15 min)*
 
@@ -313,9 +366,76 @@ a release needs committing after the build. Tag the release commit, build *from 
       Then run the `gh release create` command printed by `release-binaries`. **The agent
       has no GitHub access and no SSH key for the Mac**, so every step here is yours.
 
-- [ ] **P1** 2.10 Verify the documented install path end-to-end from a throwaway
+      *(2026-07-30: **the no-SSH-key claim is now measured, not assumed.**
+      `git ls-remote origin` from the container returns `Permission denied
+      (publickey,password,keyboard-interactive)` against `192.168.68.67`. `gh` is installed
+      in the container but unauthenticated. So this task is genuinely blocked on the user,
+      not merely marked that way.)*
+
+      **Prepared 2026-07-30 — run `/workspace/claude_run_me_7731.sh` on the host**
+      (`bash ~/Projects/claude_run_me_7731.sh --dry-run` first; it changes nothing and
+      prints every command). Its dry run was exercised against the real repo via a
+      symlinked fake `$HOME`, so the preflight is known to work. It does five things the
+      bare `gh` command does not:
+
+      1. **Preflight** — tag points at HEAD, all seven assets present, `release-notes.md`
+         present, the binary reports `v0.1.0` and not `dev`, `SHA256SUMS` matches the
+         binaries actually sitting in `builds/`.
+      2. **Pushes `local-main` to the Mac *before* the tag.** Fork-plan 0.10 found the fork
+         four commits behind, because `sync-all-repos.sh` skips a dirty repo and this one
+         nearly always is. Pushing only the tag would publish a release whose commit
+         GitHub has never seen on any branch.
+      3. Delegates the tag to `publish-webtmux-tag.sh` (both legs, with its own verify).
+      4. **Forwards `local-main` from the Mac to GitHub** — leg 2 of step 2, which nothing
+         does automatically.
+      5. Runs `gh release create`, then performs 2.10/2.11's unauthenticated verification
+         inline, so a `404` on `SHA256SUMS` or a renamed asset surfaces immediately.
+
+      **One defect found and fixed here, worth its own note: the printed `gh release
+      create` command could not have worked.** `gh` resolves the target repo from git
+      remotes, and this checkout has no GitHub remote *by design* — fork-plan 0.6 keeps
+      `origin` on the Mac because `sync-all-repos.sh` picks its remote with
+      `git remote | head -1`, so a remote named `github` would sort ahead of `origin` and
+      silently redirect the backup. Without `--repo`, `gh` fails with "none of the git
+      remotes configured for this repository point to a known GitHub host" — at exactly the
+      moment the user is handed the publish step. The recipe now prints
+      `--repo $(RELEASE_REPO)` (default `sparant/webtmux`, overridable). **The same trap
+      waits for the launcher's release**, whenever `webtmux-launch-*` assets first ship.
+
+      Also fixed, in the infra repo: `publish-webtmux-tag.sh`'s closing hint named
+      `make cross-compile && make launcher`, which predates `release-binaries` and gets the
+      order wrong in a way that destroys work (`cross-compile` depends on `clean`, so
+      building the launcher first deletes it). It now names `release-binaries` and mentions
+      `SHA256SUMS`.
+
+- [~] **P1** 2.10 Verify the documented install path end-to-end from a throwaway
       container: curl the release asset URL **unauthenticated**, `chmod +x`, run
       `--version`, and check the binary against the `SHA256SUMS` asset. *(20 min)*
+
+      **Rehearsed 2026-07-30 against a stand-in release; the real-URL run is inside the
+      host script (step 5) and fires the moment the release exists.** No release exists
+      yet, so `builds/` was served under the release filenames and the fresh-box section's
+      commands were run verbatim in a throwaway container: `curl -O` both assets →
+      `sha256sum --check --ignore-missing` → `install -m 755` → `webtmux --version` prints
+      `v0.1.0` → `webtmux -a 127.0.0.1 --credential …` serves **200 authenticated, 401
+      without credentials**. This tests every part of the documented flow except GitHub's
+      URL layout, which step 5 of the host script covers.
+
+      Three documentation claims were checked rather than asserted:
+
+      - **`--ignore-missing` is required, and the filename matters.** With one binary
+        downloaded, exactly one of the six `SHA256SUMS` entries is checked — and a copy
+        renamed to `webtmux` is silently *not* checked at all. Both are now stated in the
+        README, because a verification step that quietly verifies nothing is worse than
+        none.
+      - **The macOS ad-hoc signature claim is true and correctly scoped.** Parsing the
+        Mach-O load commands with `debug/macho`: `webtmux-darwin-arm64` carries
+        `LC_CODE_SIGNATURE`, `webtmux-darwin-amd64` does not — which is exactly Go's
+        behaviour (only `arm64` requires it), and why the README says `darwin/arm64`
+        rather than "the macOS binaries".
+      - **`-a 127.0.0.1` matters.** Unauthenticated requests get 401, but that is basic
+        auth over plain HTTP; the default `0.0.0.0` bind is what the README now warns
+        against.
 
 - [ ] **P0** 2.11 **Verify the launcher's contract before Stage 3 depends on it.** These
       are the exact requests the launcher will make; catching a mismatch now is far
@@ -339,6 +459,18 @@ a release needs committing after the build. Tag the release commit, build *from 
 
       All must be `200`. A `404` on `SHA256SUMS` or a renamed asset is exactly the failure
       that would break every launcher in the field.
+
+      **Blocked on 2.9 — these are live-URL checks and no release exists yet.** They are
+      wired into the host script as step 5 (all six platforms, including `freebsd-amd64`,
+      which this task's loop omits but `cross-compile` emits and the release will carry).
+
+      *What could be checked without a release, was.* The contract itself was read out of
+      the launcher rather than assumed: `assetName()` is literally `"webtmux-" + platform`
+      (`webtmux-launch/source.go:51`), and `releaseSource` fetches `SHA256SUMS` by that
+      name from both URL forms (`:242`, `:244`) — matching what `cross-compile` emits and
+      what `checksums` writes, unrenamed. `source_test.go` already exercises both URL
+      shapes through a `urlBase` seam. So the remaining risk is not the naming, it is
+      whether the *upload* includes every asset — which is what step 5 measures.
 
 ---
 
