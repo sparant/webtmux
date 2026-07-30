@@ -131,12 +131,15 @@ concurrent agents, so doc revisions go through a worktree and
 
 ## Steps (you run these)
 
-- [ ] **P0** 0.1 **Fork `chrismccord/webtmux`** on GitHub — the Fork button. Keep the name
+- [x] **P0** 0.1 **Fork `chrismccord/webtmux`** on GitHub — the Fork button. Keep the name
       `webtmux`. Leave "Copy the default branch only" **unchecked** if offered; extra
       branches are harmless and you may want upstream's history intact. *(3 min)*
 
       **It must be public** — that is what lets the launcher download Release assets
       without a token (see 0.8).
+
+      *Confirmed 2026-07-29: `sparant/webtmux` exists, `"fork": true`, parent
+      `chrismccord/webtmux`, default branch `local-main`.*
 
 - [x] **P0** 0.2 **~~Complete the Mac backup before restructuring anything.~~
       DISCHARGED 2026-07-28 — nothing to do.** *(0 min)*
@@ -226,7 +229,7 @@ concurrent agents, so doc revisions go through a worktree and
       fast-forward of `main`, so `local-main:main` would be a clean push if you ever change
       your mind — but do not, for the reasons above.)
 
-- [ ] **P0** 0.5 **Delete inherited tags — fork-specific, easy to miss.** A fork copies
+- [x] **P0** 0.5 **Delete inherited tags — fork-specific, easy to miss.** A fork copies
       upstream's git tags, and `VERSION` comes from `git describe --tags`. A stray
       upstream tag would make `v0.1.0` describe oddly and could confuse a human reading
       `webtmux --version`. *(10 min)*
@@ -243,7 +246,10 @@ concurrent agents, so doc revisions go through a worktree and
       GitHub **Release objects are not inherited**, so `releases/latest` on the fork will
       resolve to your own first release regardless. Only the tags need cleaning.
 
-- [ ] **P0** 0.6 **Leave the working repo's `origin` pointing at the Mac — and do *not*
+      *Confirmed 2026-07-29: the fork's tag list is empty (`/repos/sparant/webtmux/tags`
+      → `[]`), and the working repo has no local tags either.*
+
+- [x] **P0** 0.6 **Leave the working repo's `origin` pointing at the Mac — and do *not*
       add a GitHub remote to it.** *(5 min)*
 
       ```bash
@@ -276,6 +282,10 @@ concurrent agents, so doc revisions go through a worktree and
       `upstream` stays fetchable for cherry-picking, but any `git push upstream` now fails
       immediately instead of prompting for credentials you might absent-mindedly supply.
 
+      *Confirmed 2026-07-29: `git remote -v` shows exactly `origin` → the Mac bare and
+      `upstream` → chrismccord with push URL `DISABLED`. No `github` remote here, so the
+      alphabetical-`head -1` trap above is not armed.*
+
 - [ ] **P1** 0.7 **Optionally automate leg 2 with a `post-receive` hook.** *(15 min)*
 
       Legs 1 and 2 are otherwise auto-then-manual. This closes the gap: when sync pushes to
@@ -304,7 +314,7 @@ concurrent agents, so doc revisions go through a worktree and
 
       Defer this until the manual push in 0.4 is confirmed working.
 
-- [ ] **P0** 0.8 **Confirm the fork is public.** *(Revised 2026-07-26: with the launcher
+- [x] **P0** 0.8 **Confirm the fork is public.** *(Revised 2026-07-26: with the launcher
       fetching Release assets, this is no longer a free choice.)* *(5 min)*
 
       A **public** fork lets the launcher download with a plain unauthenticated HTTPS GET
@@ -317,6 +327,14 @@ concurrent agents, so doc revisions go through a worktree and
 
       A **private** fork would force every launcher to carry a GitHub token — a
       credential-distribution problem that defeats the "one command, no setup" goal.
+
+      **Confirmed 2026-07-29.** `GET /repos/sparant/webtmux` returns `"private": false`,
+      `"visibility": "public"`, and an **unauthenticated** `GET https://github.com/sparant/webtmux`
+      returns 200 — which is the property that actually matters, tested the way the launcher
+      tests it rather than read off a settings page. The launcher can therefore be built
+      with `REPO_OWNER=sparant` and will fetch with no token. Note there are still **0
+      releases**, so nothing is downloadable yet; that is Stage 2's job, and it is why the
+      launcher's fetch-path tests remain deferred.
       Forks of a public repo are public anyway, so this is the default; just confirm it.
 
       Publishing still needs an authenticated `gh` **on your side** — all pushes and
