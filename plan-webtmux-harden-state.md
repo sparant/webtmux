@@ -105,13 +105,20 @@ sync protocol converge.
       the first push are replayed on top of the adopted blob rather than written from
       the cache (same rule 1 problem, smaller blast radius).
 
-### Phase 4 — verify & land (P0)
+### Phase 4 — verify & land (P0) — complete except the merge
 
-- [ ] P0 Full JS suite + `make check-js` + `make sync-assets`; Go suite for the layout
-      field. ~20m, Sonnet.
-- [ ] P0 Two-browser live check in a throwaway container (playwright memory pattern):
+- [x] P0 Full JS suite + `make check-js` + `make sync-assets`; Go suite for the layout
+      field. ~20m, Sonnet. 232 pass / 0 fail (baseline was 203); `go vet` + `go test
+      -race -count=1 ./...` green in golang:1.23, and the tmux-dependent
+      `TestServerStartInLayout` confirmed against a real tmux 3.3a rather than skipped.
+- [x] P0 Two-browser live check in a throwaway container (playwright memory pattern):
       arrange split+recents in A, cold-load B, confirm B converges and A's layout
       survives B's first navigation; kill a window, confirm no resurrection. ~45m, Opus.
+      Committed as `screenshots/harness/verify-state-sync.js` (DRIVER=… under run.sh):
+      13/13 PASS. NEGATIVE CONTROL: the same driver against the pre-fix commit
+      (c287fb8) fails exactly 3 checks — B's cold boot writes `regions: []` over A's
+      split, B never converges, and B wipes A's preview set. The harness is not vacuous.
 - [ ] P0 Mark plan complete, commit in worktree, merge via
       `scripts/git-merge-worktree.sh /workspace/webtmux-harden-state --target local-main --no-ff --remove`;
       tick subplan A in the master plan on local-main. ~15m.
+      Worktree work is complete and committed; the merge is the parent session's.
