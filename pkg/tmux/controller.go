@@ -64,30 +64,56 @@ func parseAllWindows(out string) (map[string]string, []WindowRef) {
 	return working, refs
 }
 
-// Controller manages tmux interactions for a session
-type Controller struct {
+// identState is the controller's mutable IDENTITY: who this pane is and where it
+// is currently looking. Every field here is written by the 500ms layout poller
+// (RefreshLayout -> session/discoverClient/selfHeal/regroupOnto) AND, at the same
+// time, by the connection's message goroutine (SetClient/SwitchSession) — two
+// goroutines, so it lives behind Controller.identMu and is only ever touched
+// through ident()/setIdent().
+//
+// Follow the pane's real tmux client. A pane is a live tmux client (the pty)
+// the user can drive natively (Ctrl+B w/s) to any session — so a fixed session
+// name goes stale/miscorrelated. The server passes the pane's exact client
+// identity — tty (via TIOCGPTN) + pid (the exec'd tmux client) — through
+// SetClient, so EVERY pane, the primary included, is followed and switched
+// deterministically. The PID is the unambiguous row key (tty strings collide
+// across pid namespaces: our container's /dev/pts/N vs a host console's);
+// switch-client can only target by tty string, so switches additionally
+// refuse when the string is ambiguous (see switchOurClient) — ReservePtys
+// keeps it unique in practice. When neither is known we fall back to
+// discovering the sole client of the pane's grouped session.
+type identState struct {
+	// sessionName is the non-follow controller's own session (mutated by
+	// SwitchSession).
 	sessionName string
-	socket      string // tmux -S socket path; "" = tmux's default socket
-
-	// Follow the pane's real tmux client. A pane is a live tmux client (the pty)
-	// the user can drive natively (Ctrl+B w/s) to any session — so a fixed session
-	// name goes stale/miscorrelated. The server passes the pane's exact client
-	// identity — tty (via TIOCGPTN) + pid (the exec'd tmux client) — through
-	// SetClient, so EVERY pane, the primary included, is followed and switched
-	// deterministically. The PID is the unambiguous row key (tty strings collide
-	// across pid namespaces: our container's /dev/pts/N vs a host console's);
-	// switch-client can only target by tty string, so switches additionally
-	// refuse when the string is ambiguous (see switchOurClient) — ReservePtys
-	// keeps it unique in practice. When neither is known we fall back to
-	// discovering the sole client of the pane's grouped session.
-	// baseSession = the pane's own (grouped) session (discovery + fallback);
-	// groupBase = the logical session that group currently views ("" = primary,
-	// which sits directly on the shared base and is never re-grouped).
 	follow      bool
+	// baseSession is the pane's own (grouped) session — the discovery target and
+	// the fallback when the client row can't be read.
 	baseSession string
 	clientTTY   string
 	clientPID   int
-	groupBase   string
+	// groupBase is the logical session this pane's group currently views
+	// ("" = primary, which sits directly on the shared base and is never re-grouped).
+	groupBase string
+	// regrouping is the single-flight latch for regroupOnto: the poll tick's
+	// self-heal and a user's session switch can both decide to re-group, and two
+	// interleaved new-session+switch-client pairs leave an orphaned group behind
+	// (and can land the client on the loser).
+	regrouping bool
+}
+
+// Controller manages tmux interactions for a session
+type Controller struct {
+	// identMu guards every field of id. No tmux command is ever run with it held
+	// (copy the snapshot out, act, copy the result back) — the same discipline
+	// layoutMu already follows.
+	identMu sync.Mutex
+	id      identState
+
+	// run executes a tmux subcommand. Bound to the controller's socket in
+	// NewController; injectable so tests can drive the controller without a
+	// tmux server (see newControllerWithRunner).
+	run tmuxRunner
 
 	layoutCache *Layout
 	layoutMu    sync.RWMutex
@@ -96,23 +122,49 @@ type Controller struct {
 	closeChan chan struct{}
 }
 
+// ident returns a consistent snapshot of the controller's identity. Callers act
+// on the snapshot rather than re-reading fields, so a concurrent SwitchSession
+// can't change the answer halfway through a decision.
+func (c *Controller) ident() identState {
+	c.identMu.Lock()
+	defer c.identMu.Unlock()
+	return c.id
+}
+
+// setIdent mutates the identity under the lock. f must not run a tmux command.
+func (c *Controller) setIdent(f func(*identState)) {
+	c.identMu.Lock()
+	defer c.identMu.Unlock()
+	f(&c.id)
+}
+
 // NewController creates a new tmux controller for the given session on the given
 // socket. A non-empty socket (e.g. the mounted host socket /host-tmux/default)
 // is passed as `tmux -S <socket>` to EVERY command, so the layout sidebar reads
 // the real host server rather than the container's empty default socket. follow=
 // true (grouped split panes) tracks the pane's tmux client wherever it roams.
 func NewController(sessionName string, socket string, follow bool, groupBase string) (*Controller, error) {
-	c := &Controller{
-		sessionName: sessionName,
-		baseSession: sessionName,
-		follow:      follow,
-		groupBase:   groupBase,
-		socket:      socket,
-		eventChan:   make(chan Event, 100),
-		closeChan:   make(chan struct{}),
-	}
+	return newControllerWithRunner(sessionName, follow, groupBase, func(args ...string) (string, error) {
+		return runTmuxOn(socket, args...)
+	}), nil
+}
 
-	return c, nil
+// newControllerWithRunner is the test seam: the same controller with an injected
+// tmux runner, so behaviour that is otherwise only observable through a live tmux
+// server (argv shapes, cross-goroutine identity access) can be exercised in a unit
+// test.
+func newControllerWithRunner(sessionName string, follow bool, groupBase string, run tmuxRunner) *Controller {
+	return &Controller{
+		id: identState{
+			sessionName: sessionName,
+			baseSession: sessionName,
+			follow:      follow,
+			groupBase:   groupBase,
+		},
+		run:       run,
+		eventChan: make(chan Event, 100),
+		closeChan: make(chan struct{}),
+	}
 }
 
 // SetClient hands the controller the pane's exact tmux client identity: the
@@ -124,9 +176,11 @@ func (c *Controller) SetClient(tty string, pid int) {
 	if tty == "" && pid <= 0 {
 		return
 	}
-	c.clientTTY = tty
-	c.clientPID = pid
-	c.follow = true
+	c.setIdent(func(id *identState) {
+		id.clientTTY = tty
+		id.clientPID = pid
+		id.follow = true
+	})
 }
 
 // listClients fetches every client on the server with pid/tty/session.
@@ -146,24 +200,25 @@ func (c *Controller) listClients() ([]clientRow, error) {
 // ~impossible; this guard turns any residual one into a safe, loud no-op
 // instead of a wrong-client move. Verifies the landing by pid and logs a miss.
 func (c *Controller) switchOurClient(target string) error {
-	if c.clientTTY == "" {
+	id := c.ident()
+	if id.clientTTY == "" {
 		return fmt.Errorf("client tty unknown; cannot switch-client safely")
 	}
 	rows, err := c.listClients()
 	if err != nil {
 		return err
 	}
-	if n := countTTY(rows, c.clientTTY); n > 1 {
-		return fmt.Errorf("client tty %s is ambiguous (%d clients share it) — refusing switch-client; raise WEBTMUX_PTS_FLOOR", c.clientTTY, n)
+	if n := countTTY(rows, id.clientTTY); n > 1 {
+		return fmt.Errorf("client tty %s is ambiguous (%d clients share it) — refusing switch-client; raise WEBTMUX_PTS_FLOOR", id.clientTTY, n)
 	}
-	if _, err := c.runTmux("switch-client", "-c", c.clientTTY, "-t", target); err != nil {
+	if _, err := c.runTmux("switch-client", "-c", id.clientTTY, "-t", exactSession(target)); err != nil {
 		return err
 	}
-	if c.clientPID > 0 {
+	if id.clientPID > 0 {
 		if rows, err := c.listClients(); err == nil {
-			if r, ok := findClient(rows, c.clientPID, c.clientTTY); ok && r.session != target {
+			if r, ok := findClient(rows, id.clientPID, id.clientTTY); ok && r.session != target {
 				log.Printf("switch-client verification failed: client pid=%d tty=%s is on %q, wanted %q",
-					c.clientPID, c.clientTTY, r.session, target)
+					id.clientPID, id.clientTTY, r.session, target)
 			}
 		}
 	}
@@ -178,10 +233,11 @@ func (c *Controller) switchOurClient(target string) error {
 // current-window, so it decouples. A pane that is the sole client of its session
 // is healthy — left alone (a deliberate native move to an otherwise-empty session).
 func (c *Controller) selfHeal(curSession string) {
-	if !c.follow || c.clientTTY == "" || c.groupBase == "" {
+	id := c.ident()
+	if !id.follow || id.clientTTY == "" || id.groupBase == "" {
 		return
 	}
-	if curSession == c.baseSession {
+	if curSession == id.baseSession {
 		return // still the sole client of its own group — healthy
 	}
 	if c.clientCount(curSession) <= 1 {
@@ -193,30 +249,58 @@ func (c *Controller) selfHeal(curSession string) {
 	c.regroupOnto(curSession)
 }
 
+// errRegroupInFlight is returned when a regroup is refused because another one is
+// already running on this controller. It is a benign refusal, not a failure: the
+// in-flight regroup is doing the same job, and webtty logs a failed tmux command
+// without tearing the connection down.
+var errRegroupInFlight = fmt.Errorf("regroup already in flight")
+
 // regroupOnto moves this split pane's client into a fresh grouped session on
 // `base`, giving it an independent current-window over base's window list.
 // Order matters: create the group detached, MOVE the pane's client into it, and
 // only THEN arm destroy-unattached — setting it before the client attaches would
 // destroy the brand-new (unattached) session immediately. The pane's previous
 // grouped session self-reaps via its own destroy-unattached.
+//
+// SINGLE-FLIGHT. Two callers reach here from different goroutines — the 500ms
+// poll's selfHeal and the user's SwitchSession — and a regroup is a multi-step
+// tmux mutation (new-session, switch-client, set-option) that publishes its
+// result into the identity at the end. Interleaving two of them creates two
+// grouped sessions, switches the client twice, and leaves baseSession naming
+// whichever finished last while the client sits on the other. The latch makes
+// the second caller a no-op instead.
 func (c *Controller) regroupOnto(base string) error {
+	claimed := false
+	c.setIdent(func(id *identState) {
+		if !id.regrouping {
+			id.regrouping = true
+			claimed = true
+		}
+	})
+	if !claimed {
+		return errRegroupInFlight
+	}
+	defer c.setIdent(func(id *identState) { id.regrouping = false })
+
 	newName := fmt.Sprintf("web-h%d", time.Now().UnixNano()%1000000000)
-	if _, err := c.runTmux("new-session", "-d", "-t", base, "-s", newName); err != nil {
+	if _, err := c.runTmux("new-session", "-d", "-t", exactSession(base), "-s", newName); err != nil {
 		return err
 	}
 	if err := c.switchOurClient(newName); err != nil {
-		c.runTmux("kill-session", "-t", newName) // couldn't move the client — clean up
+		c.runTmux("kill-session", "-t", exactSession(newName)) // couldn't move the client — clean up
 		return err
 	}
-	c.runTmux("set-option", "-t", newName, "destroy-unattached", "on")
-	c.baseSession = newName // discovery target + fallback now points at the fresh group
-	c.groupBase = base      // the logical session this pane now views
+	c.runTmux("set-option", "-t", exactSession(newName), "destroy-unattached", "on")
+	c.setIdent(func(id *identState) {
+		id.baseSession = newName // discovery target + fallback now points at the fresh group
+		id.groupBase = base      // the logical session this pane now views
+	})
 	return nil
 }
 
 // clientCount returns how many tmux clients are attached to the given session.
 func (c *Controller) clientCount(session string) int {
-	out, err := c.runTmux("list-clients", "-t", session, "-F", "#{client_tty}")
+	out, err := c.runTmux("list-clients", "-t", exactSession(session), "-F", "#{client_tty}")
 	if err != nil {
 		return 0
 	}
@@ -236,31 +320,33 @@ func (c *Controller) clientCount(session string) int {
 // matched by PID first (unambiguous even when a host-side client shares our tty
 // string — see findClient), tty only as a fallback.
 func (c *Controller) session() string {
-	if !c.follow {
-		return c.sessionName
+	id := c.ident()
+	if !id.follow {
+		return id.sessionName
 	}
-	if c.clientTTY == "" && c.clientPID <= 0 {
+	if id.clientTTY == "" && id.clientPID <= 0 {
 		c.discoverClient()
+		id = c.ident() // discovery may have filled the tty in
 	}
 	if rows, err := c.listClients(); err == nil {
-		if r, ok := findClient(rows, c.clientPID, c.clientTTY); ok && r.session != "" {
+		if r, ok := findClient(rows, id.clientPID, id.clientTTY); ok && r.session != "" {
 			return r.session
 		}
 	}
-	return c.baseSession
+	return id.baseSession
 }
 
 // discoverClient finds the pane's tmux client tty. A grouped split session has
 // exactly one client (the pane's pty), so we read it off the base session before
 // the client ever roams away. Cached once found.
 func (c *Controller) discoverClient() {
-	out, err := c.runTmux("list-clients", "-t", c.baseSession, "-F", "#{client_tty}")
+	out, err := c.runTmux("list-clients", "-t", exactSession(c.ident().baseSession), "-F", "#{client_tty}")
 	if err != nil {
 		return
 	}
 	if lines := strings.Split(strings.TrimSpace(out), "\n"); len(lines) > 0 {
 		if tty := strings.TrimSpace(lines[0]); tty != "" {
-			c.clientTTY = tty
+			c.setIdent(func(id *identState) { id.clientTTY = tty })
 		}
 	}
 }
@@ -273,9 +359,10 @@ func (c *Controller) Start() error {
 	// *standalone* session of the same name (it would not be grouped with the
 	// base). Poll has-session for up to ~2s; only if it never appears do we fall
 	// back to creating one (the base-session bootstrap when webtmux starts first).
+	name := c.ident().sessionName
 	exists := false
 	for i := 0; i < 20; i++ {
-		if _, err := c.runTmux("has-session", "-t", "="+c.sessionName); err == nil {
+		if _, err := c.runTmux("has-session", "-t", "="+name); err == nil {
 			exists = true
 			break
 		}
@@ -283,8 +370,15 @@ func (c *Controller) Start() error {
 	}
 	if !exists {
 		// Session never appeared — create it (base bootstrap / non-grouped default).
-		if _, createErr := c.runTmux("new-session", "-d", "-s", c.sessionName); createErr != nil {
-			return fmt.Errorf("failed to create tmux session %s: %w", c.sessionName, createErr)
+		// `-s` takes the name as an OPTION ARGUMENT, so a leading '-' cannot be
+		// escaped (tmux consumes a `--` as the name itself and then parses the real
+		// name as flags). Refuse loudly instead of emitting a command that would
+		// fail with an unrelated "unknown option" message.
+		if strings.HasPrefix(name, "-") {
+			return fmt.Errorf("refusing to create tmux session %q: a leading '-' cannot be passed to new-session -s", name)
+		}
+		if _, createErr := c.runTmux("new-session", "-d", "-s", name); createErr != nil {
+			return fmt.Errorf("failed to create tmux session %s: %w", name, createErr)
 		}
 	}
 
@@ -710,14 +804,16 @@ func (c *Controller) NewSession() error {
 // dragged the ssh console along — so we only fall back to it when the tty is
 // genuinely unknown.
 func (c *Controller) SwitchSession(sessionName string) error {
+	id := c.ident()
 	// Discovery (sole client of the pane's grouped session) is only valid for
 	// split panes — on the primary's shared base session it could grab the
 	// CONSOLE's tty and drag the console along with the switch.
-	if c.clientTTY == "" && c.groupBase != "" {
+	if id.clientTTY == "" && id.groupBase != "" {
 		c.discoverClient()
+		id = c.ident()
 	}
-	if c.groupBase != "" && c.clientTTY != "" {
-		if sessionName == c.groupBase {
+	if id.groupBase != "" && id.clientTTY != "" {
+		if sessionName == id.groupBase {
 			return nil // already viewing this session's group
 		}
 		if err := c.regroupOnto(sessionName); err != nil {
@@ -726,18 +822,18 @@ func (c *Controller) SwitchSession(sessionName string) error {
 		c.RefreshLayout()
 		return nil
 	}
-	if c.clientTTY != "" {
+	if id.clientTTY != "" {
 		if err := c.switchOurClient(sessionName); err != nil {
 			return err
 		}
 	} else {
 		// Legacy fallback (no tty known — non-Linux): bare switch-client resolves
 		// to an arbitrary client; no safe alternative exists without the tty.
-		if _, err := c.runTmux("switch-client", "-t", sessionName); err != nil {
+		if _, err := c.runTmux("switch-client", "-t", exactSession(sessionName)); err != nil {
 			return err
 		}
 	}
-	c.sessionName = sessionName
+	c.setIdent(func(id *identState) { id.sessionName = sessionName })
 	c.RefreshLayout()
 	return nil
 }
@@ -801,8 +897,8 @@ func (c *Controller) ExitCopyMode() error {
 // unknown (the redraw is then whatever client(s) that session has, still safe:
 // refresh-client only repaints, it never changes what is displayed).
 func (c *Controller) RefreshClient() error {
-	if c.clientTTY != "" {
-		_, err := c.runTmux("refresh-client", "-t", c.clientTTY)
+	if tty := c.ident().clientTTY; tty != "" {
+		_, err := c.runTmux("refresh-client", "-t", tty)
 		return err
 	}
 	_, err := c.runTmux("refresh-client")
@@ -1106,11 +1202,36 @@ func (c *Controller) SetGlobalOption(key, val string) error {
 	return err
 }
 
-// runTmux executes a tmux command with the given arguments, prefixing the
-// `-S <socket>` flag when a socket path is configured so every layout query and
-// action targets the mounted host server.
+// exactSession renders a session name as a tmux EXACT-match target: `=name`.
+//
+// Without it tmux resolves a `-t` session by PREFIX, so a stale "dev" target
+// happily resolves to "dev-2" — and the operations that take one include
+// kill-session, rename-session, unlink-window and swap-window. `=` also makes a
+// name that starts with '-' safe wherever it appears as a `-t` VALUE, because the
+// argument no longer begins with a dash. Empty in, empty out: a bare "=" matches
+// nothing, and the callers that can be handed "" already mean "the default target".
+//
+// It is only ever applied to SESSION names. Window (@N) and pane (%N) ids are
+// already unique tmux identifiers and must be passed through untouched.
+func exactSession(name string) string {
+	if name == "" {
+		return ""
+	}
+	return "=" + name
+}
+
+// exactWindow renders `session:index` as an exact-match window target (`=session:index`),
+// the form the A.1 spike confirmed tmux accepts (cmd-find strips the `=` from the
+// session half before resolving it).
+func exactWindow(session string, index int) string {
+	return fmt.Sprintf("%s:%d", exactSession(session), index)
+}
+
+// runTmux executes a tmux command with the given arguments through the
+// controller's runner (bound to `tmux -S <socket>` in NewController, so every
+// layout query and action targets the mounted host server).
 func (c *Controller) runTmux(args ...string) (string, error) {
-	return runTmuxOn(c.socket, args...)
+	return c.run(args...)
 }
 
 // runTmuxOn is the one place a tmux command is exec'd (argv, never a shell):

@@ -49,14 +49,24 @@ wrapper buffers unbounded input pre-check. Mechanical, well-testable hardening.
 
 ## Phases
 
-### Phase 1 — races (P0)
+### Phase 1 — races (P0) — COMPLETE
 
-- [ ] P0 `identMu` + snapshot accessors + call-site sweep (`SwitchSession`,
+- [x] P0 `identMu` + snapshot accessors + call-site sweep (`SwitchSession`,
       `regroupOnto`, `discoverClient`, `SetClient`, `session()`, `selfHeal`); single-flight
       regroup. ~45m, Opus.
-- [ ] P0 A `-race` test that actually exercises it: fake-runner controller with a
+      Landed as `identState` (the six fields plus the `regrouping` latch) behind
+      `Controller.identMu`, reached only through `ident()`/`setIdent()`. A refused
+      regroup returns `errRegroupInFlight` (webtty logs a failed tmux command
+      without tearing the connection down).
+- [x] P0 A `-race` test that actually exercises it: fake-runner controller with a
       RefreshLayout loop racing SwitchSession/SetClient (the review noted `-race` passes
       only because no test crosses goroutines). ~40m, Opus.
+      `pkg/tmux/controller_race_test.go`, on a new fake-tmux seam
+      (`newControllerWithRunner` + `pkg/tmux/faketmux_test.go`, which RENDERS the
+      `-F` format the code asks for rather than hard-coding a line, so a field
+      reorder is exercised instead of re-baselined). Verified the test really
+      witnesses the bug: with the mutex removed it reports `WARNING: DATA RACE`
+      on `regroupOnto` vs `selfHeal`.
 
 ### Phase 2 — parsing (P0)
 
