@@ -51,29 +51,66 @@ has landed first.
 
 ### Phase 1 — genericize on local-main (P0)
 
-- [ ] P0 Stoplight installer parameterization (`WT_STOPLIGHT_DELEGATES`) + move our
+- [x] P0 Stoplight installer parameterization (`WT_STOPLIGHT_DELEGATES`) + move our
       patterns to the environment side (`scripts/webtmux-container/` or bashrc snippet —
       verify the live host setup keeps working); README hook section updated to match. ~45m, Opus.
-- [ ] P1 Personal-string scrub sweep (decision 3 second bullet) — comments/placeholders
+      *Done. Deviation from "an env line in our own bashrc": the agent cannot edit the host,
+      and an empty upstream default would have silently stopped delegation there. So the
+      patterns ship as `scripts/stoplight-delegates.env.sh`, which the installer sources ONLY
+      when `WT_STOPLIGHT_DELEGATES` is unset (environment still wins) and which
+      `make-upstream-pr.sh` strips — upstream keeps the empty default, the live host keeps
+      working with no bashrc edit at all. Loudness per the brief: `wt_stoplight_status` names
+      the resolved list and its origin, `WT_STOPLIGHT_VERBOSE=1` prints it at shell start, and
+      `test/stoplight-hooks.sh` now asserts all three configurations (env-set, site-file,
+      explicitly-empty) against the same command.*
+- [x] P1 Personal-string scrub sweep (decision 3 second bullet) — comments/placeholders
       only, no behavior; JS + Go grep sweep with `grep -a`. ~30m, Sonnet.
 
 ### Phase 2 — the PR-branch builder (P0)
 
-- [ ] P0 `scripts/make-upstream-pr.sh`: recreate `pr/upstream` from local-main; strip
+- [x] P0 `scripts/make-upstream-pr.sh`: recreate `pr/upstream` from local-main; strip
       paths per decision 2 (with the portable-release conditional); verify by building:
       `make check-js` + Go build in golang:1.23 docker on the stripped tree (catches a
       stripped file something still references). ~45m, Opus.
-- [ ] P1 Draft `PR-DESCRIPTION.md` (kept on local-main, consumed manually): feature
+      *Done. Two of decision 2's four strip targets turned out to be no-ops and are
+      reported as such by the script rather than dropped: `builds/` is already untracked
+      (`plan-webtmux-portable-release.md` landed), and the Dockerfile's `js-build` stage no
+      longer exists — the build/run split replaced it with a `golang:1.23-bookworm` builder
+      and a `FROM scratch AS artifact` export, neither of which touches `js/`. So the
+      gotty strip is the bundle plus the webpack project only. Added to the list:
+      `scripts/` (fork tooling + the machine-specific delegate list) and
+      `PR-DESCRIPTION.md`. The "claude-costs-style local files" clause is implemented as a
+      leak CHECK that fails the run, not a delete — a local file appearing in the base
+      wants a human. Verification widened beyond the plan's `check-js` + Go build to the
+      full JS suite, the hook suite (the stripped tree is the only place the empty
+      delegate default is exercised) and a sync-assets no-op assertion.*
+- [x] P1 Draft `PR-DESCRIPTION.md` (kept on local-main, consumed manually): feature
       summary reusing the README's "What this fork adds" groups, the warts note
       (decision 4), CDN note (decision 5), test instructions. ~35m, Sonnet.
+      *Decision 5 applies as written — `plan-webtmux-portable-vendor.md` has NOT landed and
+      `resources/index.html` still loads tailwind/xterm/lit from CDN, so it is a note, not a
+      change. Warts list gained one the plan did not name: the README's Extended WebSocket
+      Protocol table has drifted from `webtty/message_types.go`.*
 
 ### Phase 3 — verify & land (P0)
 
-- [ ] P0 Run the builder; on `pr/upstream`: full Go suite + JS suite + `make build`;
+- [x] P0 Run the builder; on `pr/upstream`: full Go suite + JS suite + `make build`;
       boot the binary in a throwaway container and click through core flows (split,
       sidebar, Exposé, stoplights, save). ~40m, Opus.
+      *Done against `pr/upstream` = `b566fcc`, built with `--base harden-prep` because
+      harden-prep is not merged yet; the post-merge run takes the default `local-main`.
+      On the stripped tree: `go vet` + `go test -race` all packages ok, `node --test test/`
+      253/253, `bash test/stoplight-hooks.sh` 11/11, `make check-js` clean, `make sync-assets`
+      a no-op, `make build` green. Then the real binary in the playwright harness:
+      `verify-ux6.js` 22/22, `verify-state-sync.js` 13/13 (two browsers), `verify-guards.js`
+      12/12 (read-only + savepath confinement + overwrite confirm), and the screenshot
+      driver posed all 16 flows — recents, stoplights, sidebar, split, Exposé, capture,
+      preview/PiP, hover, copy/scroll, save, shortcuts, rendering, build chip, state
+      persistence — DONE all ok.*
 - [ ] P0 Mark complete; merge `harden-prep` via the lock wrapper; tick subplan D and the
       master plan completion list. ~15m.
+      *Left to the parent session by instruction: this agent does not merge `harden-prep`
+      and does not edit the master plan.*
 
 ## Non-goals
 

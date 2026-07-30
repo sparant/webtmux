@@ -8,38 +8,102 @@
 # not executed. The DEBUG trap / PROMPT_COMMAND / functions have to be
 # installed into the live shell environment. In ~/.bashrc add:
 #
-#     [[ -f /workspace/webtmux/install_stoplight_hooks_bash.sh ]] && \
-#         source /workspace/webtmux/install_stoplight_hooks_bash.sh
+#     [[ -f /path/to/webtmux/install_stoplight_hooks_bash.sh ]] && \
+#         source /path/to/webtmux/install_stoplight_hooks_bash.sh
 #
 # The $TMUX guard means it only activates in shells started inside tmux;
 # the 2>/dev/null absorbs the rare case where tmux is set but unreachable.
 #
 # WT_STOPLIGHT_SUPPRESS=1 in the environment disables the hooks entirely —
 # export it when something else owns this window's stoplight.
+#
+# WT_STOPLIGHT_DELEGATES names the launchers that own the light themselves —
+# see the block below. Run `wt_stoplight_status` in any shell to see what this
+# file actually installed.
 
 if [[ -n "$TMUX" && -z "$__wt_hooks_installed" && -z "$WT_STOPLIGHT_SUPPRESS" ]]; then
   __wt_hooks_installed=1
 
   # Some commands HAND this window's status to something else for their whole
   # lifetime, and must not be painted here:
-  #   - agent launches (claude/pi) — the agent drives @wt_working from its own
-  #     lifecycle hooks inside the container;
-  #   - entering the secure daemon — the shell you land on in there installs these
-  #     same hooks and reports its own commands.
+  #   - agent launches — the agent drives @wt_working from its own lifecycle
+  #     hooks, possibly from inside a container;
+  #   - entering a nested shell/container that installs these same hooks and
+  #     reports its own commands.
   # Each is ONE foreground command that runs until you exit it, so preexec-green
   # would latch for the entire session (precmd cannot fire until it returns) and
-  # mask the real state coming from inside. Match the COMMAND STRING, not the
-  # first token: env-var prefixes and `docker exec` bury the real target.
+  # mask the real state coming from inside.
+  #
+  # WHICH commands those are is a property of your machine, not of webtmux, so
+  # the list is configuration: WT_STOPLIGHT_DELEGATES, colon-separated glob
+  # patterns, EMPTY by default (nothing delegates; every command paints). A
+  # pattern is tried twice against each command:
+  #
+  #   - against the WHOLE command string, so `*mylauncher.sh*` still matches when
+  #     env-var prefixes and `docker exec` bury the real target in the middle;
+  #   - against the BASENAME OF THE FIRST WORD, so a bare `claude` matches
+  #     `claude --resume` and `/opt/bin/claude`, but not `echo claude`.
+  #
+  # Patterns cannot themselves contain `:`. The variable is read LIVE, so
+  # exporting a new value mid-session takes effect on the next command.
   __wt_delegates_status() {
-    case "$1" in
-      *claude-docker/launch.sh*|*pi-docker/launch.sh*|*enter_secure_container.sh*) return 0 ;;
-    esac
-    local first="${1%% *}"
-    case "${first##*/}" in
-      claude|pi) return 0 ;;
-    esac
+    [[ -n "${WT_STOPLIGHT_DELEGATES:-}" ]] || return 1
+    local cmd="$1" first pat
+    local -a pats
+    IFS=: read -r -a pats <<< "$WT_STOPLIGHT_DELEGATES"
+    first="${cmd%% *}"
+    first="${first##*/}"
+    for pat in "${pats[@]}"; do
+      [[ -n "$pat" ]] || continue
+      # Unquoted RHS in [[ == ]] is glob MATCHING, not pathname expansion.
+      [[ "$cmd" == $pat || "$first" == $pat ]] && return 0
+    done
     return 1
   }
+
+  # Where the patterns come from, in priority order. An explicit
+  # WT_STOPLIGHT_DELEGATES always wins — including an explicitly EMPTY one, which
+  # is how you say "nothing delegates here" and mean it. Otherwise a site file
+  # shipped beside this script is sourced if present; that file is how a fork
+  # carries its own machines' launchers without every user inheriting them, and
+  # it is absent from a stock checkout, which is why the default is empty.
+  if [[ -z "${WT_STOPLIGHT_DELEGATES+set}" ]]; then
+    __wt_site="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/scripts/stoplight-delegates.env.sh"
+    if [[ -r "$__wt_site" ]]; then
+      # shellcheck disable=SC1090
+      source "$__wt_site"
+      __wt_delegates_origin="$__wt_site"
+    else
+      __wt_delegates_origin="unset (no site file, no environment)"
+    fi
+    unset __wt_site
+  else
+    __wt_delegates_origin="environment"
+  fi
+  export WT_STOPLIGHT_DELEGATES="${WT_STOPLIGHT_DELEGATES:-}"
+
+  # Say out loud what got installed. An empty delegate list is BOTH the correct
+  # stock configuration and the exact shape of a local setup that quietly lost
+  # its patterns (an rc that stopped exporting them, a site file that moved) —
+  # and the symptom, a window latched green for a whole agent session, points
+  # nowhere near here. So there is one command that answers it.
+  # WT_STOPLIGHT_VERBOSE=1 prints the same line at every shell start.
+  wt_stoplight_status() {
+    printf 'webtmux stoplight hooks: installed (pane %s)\n' "${TMUX_PANE:-<no TMUX_PANE!>}"
+    if [[ -n "$WT_STOPLIGHT_DELEGATES" ]]; then
+      printf '  delegates from %s:\n' "$__wt_delegates_origin"
+      local pat
+      local -a pats
+      IFS=: read -r -a pats <<< "$WT_STOPLIGHT_DELEGATES"
+      for pat in "${pats[@]}"; do [[ -n "$pat" ]] && printf '    %s\n' "$pat"; done
+    else
+      printf '  delegates: NONE (%s) — every command paints this window green.\n' \
+        "$__wt_delegates_origin"
+      printf '  If a launcher here drives @wt_working itself, export\n'
+      printf '  WT_STOPLIGHT_DELEGATES (colon-separated globs) or it will fight these hooks.\n'
+    fi
+  }
+  if [[ -n "${WT_STOPLIGHT_VERBOSE:-}" ]]; then wt_stoplight_status; fi
 
   # Leaving the shell is not work, and green for `exit` is the last thing the
   # shell ever does — no prompt follows to clear it, so walking away from a

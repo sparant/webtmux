@@ -22,10 +22,10 @@ test('with no answer yet, the hint states the intended rule', () => {
 test('with nothing shared, the hint asks for a directory instead of guessing', () => {
   // The default deployment: a container mounting only the tmux control socket.
   // webtmux can't tell a bind mount from its own filesystem; the user can.
-  const h = saveHint({ paneDir: '/home/nathan/Projects', baseDir: '', blocked: true, container: true });
+  const h = saveHint({ paneDir: '/home/you/Projects', baseDir: '', blocked: true, container: true });
   assert.equal(h.level, 'warn');
   assert.match(h.text, /Name one above/);
-  assert.match(h.text, /\/workspace/);            // an example they can act on
+  assert.match(h.text, /\/data/);                 // an example they can act on
   assert.match(h.text, /Download to browser/);    // the no-directory alternative
   assert.doesNotMatch(h.text, /Relative paths save in/); // there is no directory to name
 });
@@ -41,7 +41,7 @@ test('a rejected directory is explained, and the question stays open', () => {
 
 test('once chosen, the hint names the directory and says it is remembered', () => {
   const h = saveHint({
-    paneDir: '/home/nathan/Projects', baseDir: '/workspace', chosen: '/workspace',
+    paneDir: '/home/you/Projects', baseDir: '/workspace', chosen: '/workspace',
     paneVisible: false, writable: true, container: true,
   });
   assert.equal(h.level, 'info');
@@ -51,21 +51,21 @@ test('once chosen, the hint names the directory and says it is remembered', () =
 
 test('when the pane directory is visible, the hint names it plainly', () => {
   const h = saveHint({
-    paneDir: '/home/nathan/Projects', baseDir: '/home/nathan/Projects',
+    paneDir: '/home/you/Projects', baseDir: '/home/you/Projects',
     paneVisible: true, writable: true, mapped: false, container: false,
   });
   assert.equal(h.level, 'info');
-  assert.match(h.text, /\/home\/nathan\/Projects/);
+  assert.match(h.text, /\/home\/you\/Projects/);
   assert.doesNotMatch(h.text, /⚠/);
 });
 
 test('the container case warns and names both directories', () => {
   const h = saveHint({
-    paneDir: '/home/nathan/Projects', baseDir: '/saves',
+    paneDir: '/home/you/Projects', baseDir: '/saves',
     paneVisible: false, writable: true, mapped: false, container: true,
   });
   assert.equal(h.level, 'warn');
-  assert.match(h.text, /\/home\/nathan\/Projects/);  // where the user thinks they are
+  assert.match(h.text, /\/home\/you\/Projects/);  // where the user thinks they are
   assert.match(h.text, /\/saves/);                    // where the file will land
   assert.match(h.text, /container/);                  // why
   assert.match(h.text, /Download to browser/);        // the escape hatch
@@ -82,12 +82,12 @@ test('an invisible pane directory warns even when containerization is unknown', 
 
 test('a mapped directory is disclosed, so the saved path is not a surprise', () => {
   const h = saveHint({
-    paneDir: '/home/nathan/Projects', baseDir: '/workspace',
+    paneDir: '/home/you/Projects', baseDir: '/workspace',
     paneVisible: true, writable: true, mapped: true, container: true,
   });
   assert.equal(h.level, 'info');
   assert.match(h.text, /\/workspace/);
-  assert.match(h.text, /\/home\/nathan\/Projects/);
+  assert.match(h.text, /\/home\/you\/Projects/);
 });
 
 test('an unwritable destination warns before anything is typed', () => {
@@ -99,9 +99,9 @@ test('an unwritable destination warns before anything is typed', () => {
 });
 
 test('the success banner explains a destination the user did not choose', () => {
-  const info = { paneDir: '/home/nathan/Projects', baseDir: '/saves', paneVisible: false };
+  const info = { paneDir: '/home/you/Projects', baseDir: '/saves', paneVisible: false };
   assert.match(saveOkText('/saves/out.txt', info), /Saved: \/saves\/out\.txt/);
-  assert.match(saveOkText('/saves/out.txt', info), /\/home\/nathan\/Projects/);
+  assert.match(saveOkText('/saves/out.txt', info), /\/home\/you\/Projects/);
 });
 
 test('the success banner stays terse when nothing surprising happened', () => {

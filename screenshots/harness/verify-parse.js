@@ -162,7 +162,7 @@ async function main() {
   // ---- 7. the recents strip ------------------------------------------------
   // The strip's DATA must carry the whole name. Its visible LABEL does not, and
   // that is correct: the recentTrimName pref (on by default) drops everything
-  // before the first space, so "claude Dominion" reads as "Dominion" — and this
+  // before the first space, so "ssh web-01" reads as "web-01" — and this
   // window as "b | c". Asserting the label would be asserting that pref, not the
   // parse, so both are checked for what they are.
   const strip = await toolbar((n, rr) => ({

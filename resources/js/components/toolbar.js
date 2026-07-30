@@ -35,9 +35,9 @@ import { clampRecentsMax, RECENTS_MIN, RECENTS_MAX } from '../recents-strip.js';
 // leading word is the part you already know.
 const LABEL_DEFAULTS = { showSession: false, trimName: true };
 
-// Drop everything up to and including the first space: "claude Dominion-wq" reads
-// as "Dominion-wq". A name with no space is left alone (there's nothing redundant
-// to remove), and a name that is ALL prefix ("claude ") keeps the original rather
+// Drop everything up to and including the first space: "ssh web-01" reads
+// as "web-01". A name with no space is left alone (there's nothing redundant
+// to remove), and a name that is ALL prefix ("ssh ") keeps the original rather
 // than collapsing to nothing.
 function trimWindowName(name) {
   const s = String(name || '');
@@ -1151,7 +1151,7 @@ class WebtmuxToolbar extends LitElement {
           type="text"
           spellcheck="false"
           autocomplete="off"
-          placeholder="/workspace"
+          placeholder="/data"
           .value=${chosen || ''}
           @keydown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); this._useSaveDir(); } e.stopPropagation(); }}
         >
@@ -1283,7 +1283,7 @@ class WebtmuxToolbar extends LitElement {
   // it's a rarely-touched display preference, and the label is exactly the thing it
   // is about.
   _labelMenu() {
-    const sample = this.recent[0] || { session: 'services', name: 'claude Dominion', index: 3 };
+    const sample = this.recent[0] || { session: 'services', name: 'ssh web-01', index: 3 };
     const shape = (showSession, trimName) => {
       const name = trimName ? trimWindowName(sample.name) : (sample.name || 'bash');
       return showSession ? `${sample.session}: ${name}` : name;

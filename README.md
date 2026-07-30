@@ -193,6 +193,25 @@ Source the bundled prompt hooks from `~/.bashrc`:
 
 The hooks only activate inside tmux and are idempotent. They paint green when a command starts (bash `DEBUG` trap), red when the prompt returns (`PROMPT_COMMAND`), and leave the window red when the shell exits so it is never stranded green. `exit`/`logout` never paint green, and tab-completion doesn't trigger them. Every write is addressed to `$TMUX_PANE`, so a command that finishes while you are looking at another window reddens (and flashes) the window it actually ran in.
 
+`wt_stoplight_status` prints what the hooks installed in the current shell — the pane they address and the delegate list they resolved.
+
+#### Launchers that own the light: `WT_STOPLIGHT_DELEGATES`
+
+An agent or TUI that reports its own state is started by one foreground command that does not return until you quit it. Painted normally, that command latches the window green for the whole session and buries every write the agent makes. Name such launchers and the shell steps aside for them:
+
+```sh
+export WT_STOPLIGHT_DELEGATES='claude:pi:*mylauncher.sh*'
+```
+
+Colon-separated glob patterns, **empty by default** — which launchers exist is a property of your machine, not of webtmux. Each pattern is matched twice against every command:
+
+- against the **whole command string**, so `*mylauncher.sh*` still matches when env-var prefixes or a `docker exec …` bury the real target in the middle;
+- against the **basename of the first word**, so a bare `claude` matches `claude --resume` and `/opt/bin/claude`, but not `echo claude`.
+
+Patterns cannot contain `:`. The variable is read live, so exporting a new value takes effect on the next command.
+
+A fork that wants its own machines configured without pushing that list onto everyone can drop the same `export` into `scripts/stoplight-delegates.env.sh` beside the installer; it is sourced only when `WT_STOPLIGHT_DELEGATES` is unset, so the environment always wins. If delegation ever stops working, the symptom is a window stuck green for a whole agent session and it points nowhere near here — run `wt_stoplight_status`, which names the list and where it came from.
+
 ### Claude Code Integration
 
 The recommended preferences: add this `hooks` block to `~/.claude/settings.json` (hooks run as children of the agent process in the window's own pane, so they inherit both `$TMUX` and `$TMUX_PANE` — keep the `-t "$TMUX_PANE"`, or the write follows whichever window you are looking at):
@@ -279,14 +298,14 @@ Two of the entries are guarded, and the guards matter:
 - **UserPromptSubmit skips `/`-prefixed prompts.** Local slash commands (`/model`, `/cost`, …) are handled without a model turn, so no `Stop` ever follows — an unconditional green would latch until the next real turn ends, and the window lies "working" while the agent sits idle. Slash-invoked _skills_ do run real turns and re-green via `PreToolUse` a moment later. (A `UserPromptSubmit` hook's stdout is injected into the model's context, so whatever you put here must stay silent — every command above prints nothing.)
 - **Notification stays red on the idle-timer message.** Claude Code fires `Notification` both when it genuinely needs a decision (permission prompt, question — that's amber) and as a ~60s "waiting for your input" idle reminder after a turn ends (nothing is blocked — repainting that amber would flip every idle window to "needs me" a minute after `Stop` correctly made it red). Unmatched messages default to amber deliberately: a missed block is worse than a spurious one.
 
-`SessionStart`/`SessionEnd`/`Stop` all paint red — "waiting for work" — so a window is never stranded green by a crash or exit. The bash prompt hooks above already skip `claude` launches (`__wt_delegates_status`), so the shell and agent hooks compose without fighting. If the agent runs inside a container where `tmux` can't be reached, keep the same hook shape but swap the `tmux set` for a small script that relays the value (and a window id, e.g. from a `WT_WINDOW` env var passed at launch) to a listener on the host that runs the `tmux set` there.
+`SessionStart`/`SessionEnd`/`Stop` all paint red — "waiting for work" — so a window is never stranded green by a crash or exit. For the shell and agent hooks to compose without fighting, the shell must be told to step aside for the launch command: `export WT_STOPLIGHT_DELEGATES=claude` (see above) — otherwise the `claude` invocation itself sits green from launch to exit and hides every write the agent makes. If the agent runs inside a container where `tmux` can't be reached, keep the same hook shape but swap the `tmux set` for a small script that relays the value (and a window id, e.g. from a `WT_WINDOW` env var passed at launch) to a listener on the host that runs the `tmux set` there.
 
 ### Hooking up Tools that own their window's light
 
 For agents, long-running TUIs that report their own status: two escape hatches keep the shell hooks from fighting them:
 
 - `WT_STOPLIGHT_SUPPRESS=1` in the environment disables the shell hooks entirely.
-- `__wt_delegates_status` in the installer script lists launcher commands whose whole lifetime owns the light (by default `claude`, `pi`, and their launch scripts); the shell skips painting green for them so the tool's own writes shine through. Add your launcher's pattern there.
+- `WT_STOPLIGHT_DELEGATES` lists launcher commands whose whole lifetime owns the light; the shell skips painting green for them so the tool's own writes shine through. Empty by default — [add your launcher's pattern](#launchers-that-own-the-light-wt_stoplight_delegates).
 
 An agent lifecycle integration is then just three writes: `1` when work starts, `2` from a "needs your input" hook, `0` when it goes idle or exits.
 
@@ -636,7 +655,7 @@ is missing the directory rather than surfacing a raw `open` error.
 When webtmux is containerized and no shared directory is known, it does not
 guess: a container's own filesystem is always writable, so saving there would
 report success for a file that dies with the container. Instead the dropdown
-**asks** — "name a directory as webtmux sees it (e.g. `/workspace`), mounted from
+**asks** — "name a directory as webtmux sees it (e.g. `/data`), mounted from
 outside" — checks that it exists and is writable, and remembers it (in the shared
 tmux UI state, so every client on that server gets the answer). A remembered
 directory that later disappears re-opens the question rather than silently
@@ -650,7 +669,7 @@ saving a text file needs. Four environment variables adjust the resolution:
 
 | Variable               | Effect                                                                                                                                                                                                                                                                                                                   |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `WEBTMUX_PATH_MAP`     | `host=server[,host2=server2]` prefix rewrites, applied to the pane's directory and to absolute paths you type — e.g. `/home/you/Projects=/workspace`                                                                                                                                                                     |
+| `WEBTMUX_PATH_MAP`     | `host=server[,host2=server2]` prefix rewrites, applied to the pane's directory and to absolute paths you type — e.g. `/home/you/Projects=/data`                                                                                                                                                                     |
 | `WEBTMUX_SAVE_DIR`     | Declares a **shared** directory and enables server-side saving in a container; relative saves land here when the pane's own directory isn't visible. Created if missing. Outside a container this defaults to `$HOME`, then the process's working directory. A directory the user names in the dropdown takes precedence |
 | `WEBTMUX_HOME`         | What `~` expands to. Unset inside a container, `~` is refused rather than expanded to the image's own home                                                                                                                                                                                                               |
 | `WEBTMUX_IN_CONTAINER` | `1`/`0` to override container auto-detection, which only affects the _wording_ of the explanation                                                                                                                                                                                                                        |

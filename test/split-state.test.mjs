@@ -45,14 +45,14 @@ test('a blob with a window but no session reads as "session unknown", not as a c
 test('a NEW blob restores the full view — session and window — for every region', () => {
   const { regions, primaryWindowId, primarySession } = readSplitState({
     primaryWindowId: '@1',
-    primarySession: 'claude-editors',
+    primarySession: 'editors',
     regions: [
       { windowId: '@2', session: 'services' },
       { windowId: '@3', session: 'pi-editors' },
     ],
   });
   assert.equal(primaryWindowId, '@1');
-  assert.equal(primarySession, 'claude-editors',
+  assert.equal(primarySession, 'editors',
     'the session is half the address — without it a cross-session view cannot be found');
   assert.deepEqual(regions, [
     { windowId: '@2', session: 'services' },

@@ -11,10 +11,10 @@ import "testing"
 // SESSION name containing it (which is why the session rides as an id: only one
 // user-typed string can hold the final slot).
 const allWindowsFixture = `@0|$0|0||shell
-@1|$0|1|1|claude Dominion
+@1|$0|1|1|ssh web-01
 @2|$0|2|2|claude llmrefine
-@1|$1|4|1|claude Dominion
-@1|$9|1|1|claude Dominion
+@1|$1|4|1|ssh web-01
+@1|$9|1|1|ssh web-01
 @0|$9|0||shell
 @7|$1|5|0|build | test
 @8|$2|0|1|a, b | c
@@ -52,7 +52,7 @@ func TestParseAllWindowsDirectory(t *testing.T) {
 		}
 	}
 	if refs[1].ID != "@1" || refs[1].Session != "services" || refs[1].Index != 1 ||
-		refs[1].Name != "claude Dominion" || refs[1].Working != "1" {
+		refs[1].Name != "ssh web-01" || refs[1].Working != "1" {
 		t.Errorf("bad placement: %+v", refs[1])
 	}
 }

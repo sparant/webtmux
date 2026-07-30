@@ -46,6 +46,29 @@ sleep 3
 SH
 chmod +x "$TMPDIR_T/work.sh"
 
+# The delegate cases assert an ABSENCE over a span, so they need a command that is
+# still running when the span ends — otherwise the shell's own precmd lands inside
+# the window being watched and reads as a hook write. Long, then interrupted.
+cat > "$TMPDIR_T/agent-sim.sh" <<'SH'
+#!/usr/bin/env bash
+sleep 30
+SH
+cp "$TMPDIR_T/agent-sim.sh" "$TMPDIR_T/fakeagent"
+chmod +x "$TMPDIR_T/agent-sim.sh" "$TMPDIR_T/fakeagent"
+
+# A whole second installation, so the "site file beside the installer" resolution
+# path is exercised on a tree that may not have one (the upstream PR branch strips
+# it). Copying the installer is the only way to control what sits next to it.
+mkdir -p "$TMPDIR_T/site/scripts"
+cp "$HOOKS" "$TMPDIR_T/site/install_stoplight_hooks_bash.sh"
+cat > "$TMPDIR_T/site/scripts/stoplight-delegates.env.sh" <<'SITE'
+export WT_STOPLIGHT_DELEGATES='*agent-sim.sh*:fakeagent'
+SITE
+cat > "$TMPDIR_T/site/rc" <<RC
+PS1='\$ '
+source "$TMPDIR_T/site/install_stoplight_hooks_bash.sh"
+RC
+
 # `work` runs the command; `other` is what we are looking at. Both windows exist
 # before anything is asserted, so "the write went to the wrong window" is a state
 # we can actually observe rather than infer from an absence.
@@ -66,6 +89,18 @@ wait_light() { # window value tries
     sleep 0.1
   done
   return 1
+}
+
+# The delegation assertions are about a write that must NEVER happen, so they are
+# the mirror image: hold the value down for the whole span instead of waiting for
+# it to appear.
+stays_light() { # window value tries
+  local i
+  for ((i = 0; i < $3; i++)); do
+    [ "$(light "$1")" = "$2" ] || return 1
+    sleep 0.1
+  done
+  return 0
 }
 
 echo
@@ -102,6 +137,71 @@ echo "== the same window, now current (the case that always worked) =="
 "${T[@]}" send-keys -t s:work "$TMPDIR_T/work.sh" Enter
 if wait_light work 1 30 && wait_light work 0 60; then ok "green then red while watched"
 else no "green then red while watched (got '$(light work)')"; fi
+
+# WT_STOPLIGHT_DELEGATES decides which commands hand the window's light to
+# something else. Getting it wrong is invisible in the direction that matters: a
+# lost delegate pattern does not error, it just latches the window green for the
+# whole agent session and buries the state the agent itself is reporting. So both
+# settings are asserted against the SAME command.
+echo
+echo "== with delegates configured =="
+"${T[@]}" select-window -t s:other
+# Through the SESSION environment, not the client's: a tmux server is started once
+# and every later pane inherits ITS environment, so `HOME=x tmux new-window` sets
+# nothing at all — the variable never reaches the pane.
+"${T[@]}" set-environment -t s WT_STOPLIGHT_DELEGATES '*agent-sim.sh*:fakeagent'
+"${T[@]}" new-window -d -t s: -n deleg bash
+sleep 1
+
+# Sentinel 4: a value no hook writes, so any change to it is a hook write. "Still
+# red" could not distinguish delegation from the idle shell's own precmd.
+"${T[@]}" set -w -t s:deleg @wt_working 4
+"${T[@]}" send-keys -t s:deleg "FOO=1 $TMPDIR_T/agent-sim.sh" Enter
+if stays_light deleg 4 15; then ok "a delegated launcher is not painted (env prefix and all)"
+else no "a delegated launcher is not painted (light became '$(light deleg)')"; fi
+"${T[@]}" send-keys -t s:deleg C-c; sleep 1
+
+"${T[@]}" set -w -t s:deleg @wt_working 4
+"${T[@]}" send-keys -t s:deleg "$TMPDIR_T/fakeagent" Enter
+if stays_light deleg 4 15; then ok "a slugless pattern matches the first word's basename"
+else no "a slugless pattern matches the first word's basename (became '$(light deleg)')"; fi
+"${T[@]}" send-keys -t s:deleg C-c; sleep 1
+
+# A pattern with no wildcards must not match as a substring, or naming `claude` a
+# delegate would silently stop painting every command that merely mentions it.
+"${T[@]}" set -w -t s:deleg @wt_working 4
+"${T[@]}" send-keys -t s:deleg "$TMPDIR_T/work.sh fakeagent" Enter
+if wait_light deleg 1 30; then ok "a non-delegate that merely mentions one is still painted"
+else no "a non-delegate that merely mentions one is still painted (got '$(light deleg)')"; fi
+sleep 3
+
+echo
+echo "== delegates from a site file beside the installer =="
+# Nothing in the environment now, so the installer has to find the list itself.
+# This is the path a fork's own machines ride on, and its failure is silent: the
+# window simply goes green for a whole agent session.
+"${T[@]}" set-environment -t s -u WT_STOPLIGHT_DELEGATES
+"${T[@]}" new-window -d -t s: -n site "bash --rcfile $TMPDIR_T/site/rc"
+sleep 1
+"${T[@]}" set -w -t s:site @wt_working 4
+"${T[@]}" send-keys -t s:site "$TMPDIR_T/agent-sim.sh" Enter
+if stays_light site 4 15; then ok "a site file's patterns are picked up with an empty environment"
+else no "a site file's patterns are picked up with an empty environment (became '$(light site)')"; fi
+"${T[@]}" send-keys -t s:site C-c; sleep 1
+
+echo
+echo "== with no delegates (the stock default) =="
+# Set EXPLICITLY empty rather than left unset, so this says what it means instead
+# of depending on whether a site file happens to sit next to \$HOOKS.
+"${T[@]}" set-environment -t s WT_STOPLIGHT_DELEGATES ''
+"${T[@]}" new-window -d -t s: -n nodeleg bash
+sleep 1
+"${T[@]}" send-keys -t s:nodeleg "FOO=1 $TMPDIR_T/agent-sim.sh" Enter
+if wait_light nodeleg 1 30; then ok "the same command IS painted when nothing delegates"
+else no "the same command IS painted when nothing delegates (got '$(light nodeleg)')"; fi
+"${T[@]}" send-keys -t s:nodeleg C-c
+if wait_light nodeleg 0 60; then ok "and returns to red at the prompt"
+else no "and returns to red at the prompt (got '$(light nodeleg)')"; fi
 
 echo
 printf 'stoplight hooks: %d passed, %d failed\n' "$pass" "$fail"
