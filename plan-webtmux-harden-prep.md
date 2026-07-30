@@ -94,11 +94,23 @@ has landed first.
 
 ### Phase 3 — verify & land (P0)
 
-- [ ] P0 Run the builder; on `pr/upstream`: full Go suite + JS suite + `make build`;
+- [x] P0 Run the builder; on `pr/upstream`: full Go suite + JS suite + `make build`;
       boot the binary in a throwaway container and click through core flows (split,
       sidebar, Exposé, stoplights, save). ~40m, Opus.
+      *Done against `pr/upstream` = `b566fcc`, built with `--base harden-prep` because
+      harden-prep is not merged yet; the post-merge run takes the default `local-main`.
+      On the stripped tree: `go vet` + `go test -race` all packages ok, `node --test test/`
+      253/253, `bash test/stoplight-hooks.sh` 11/11, `make check-js` clean, `make sync-assets`
+      a no-op, `make build` green. Then the real binary in the playwright harness:
+      `verify-ux6.js` 22/22, `verify-state-sync.js` 13/13 (two browsers), `verify-guards.js`
+      12/12 (read-only + savepath confinement + overwrite confirm), and the screenshot
+      driver posed all 16 flows — recents, stoplights, sidebar, split, Exposé, capture,
+      preview/PiP, hover, copy/scroll, save, shortcuts, rendering, build chip, state
+      persistence — DONE all ok.*
 - [ ] P0 Mark complete; merge `harden-prep` via the lock wrapper; tick subplan D and the
       master plan completion list. ~15m.
+      *Left to the parent session by instruction: this agent does not merge `harden-prep`
+      and does not edit the master plan.*
 
 ## Non-goals
 
