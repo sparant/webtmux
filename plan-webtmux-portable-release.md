@@ -85,9 +85,13 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
 
 ## Phase 2A — Untrack binaries; Makefile and ignore files
 
-- [ ] **P0** 2.1 Create the worktree per the block above, after both gate checks. *(5 min)*
+- [x] **P0** 2.1 Create the worktree per the block above, after both gate checks. *(5 min)*
+      **Done 2026-07-30.** Both gates passed: `https://github.com/sparant/webtmux` is
+      reachable unauthenticated, and `origin` is still the Mac. Branched from `local-main`
+      at `66d07e0` — note that `local-main` advanced during the session (a concurrent
+      README commit), which is the normal state of this repo.
 
-- [ ] **P0** 2.2 **VERIFY ONLY — `builds/` is already untracked.**
+- [x] **P0** 2.2 **VERIFY ONLY — `builds/` is already untracked.**
       The build/run split (`af969d2`) did this on `local-main`: the artifact
       build writes into `builds/`, so it could not leave a tracked output directory
       behind. Confirm, do not redo: *(5 min)*
@@ -96,6 +100,9 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
       test -z "$(git ls-files builds/)" && grep -q '^/builds/$' .gitignore \
         || echo "UNEXPECTED: builds/ still tracked — the build/run split did not land"
       ```
+
+      **Verified 2026-07-30:** `git ls-files builds/` is empty and `.gitignore:22` carries
+      `/builds/`. Nothing to change.
 
       The landed `.gitignore` comment differs in wording (it cites `make docker-artifact`
       as a writer, which did not exist when this subplan was written) but is the same
@@ -106,7 +113,7 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
       tracked-deletion safety is needed. Keep `cross-compile`'s
       `@rm -f $(OUTPUT_DIR)/$(BINARY_NAME)-*` line (catches a dropped platform).
 
-- [ ] **P1** 2.3 Add `checksums` and `release-binaries` targets. `SHA256SUMS` is a
+- [x] **P1** 2.3 Add `checksums` and `release-binaries` targets. `SHA256SUMS` is a
       release *asset* now, not a committed file. `release-binaries` deliberately does not
       tag or publish — the user reviews, then runs the printed commands. *(20 min)*
 
@@ -138,7 +145,27 @@ Merge with `--no-ff`. See the Worktree Reference in the master plan.
       URLs from `uname` output mapped to these exact names; a rename breaks every launcher
       already distributed.
 
-- [ ] **P1** 2.4 **`.dockerignore` — verify, then delete one dead line.**
+      **Done 2026-07-30, with two deviations:**
+
+      - **The `vendor` target was NOT added.** `scripts/vendor-assets.sh` does not exist —
+        Stage 1 is optional and unstarted, and there is no `scripts/` directory at all. A
+        target whose recipe names a missing script is a footgun, not a placeholder. Stage 1
+        step 1.3 writes the script; it should add the target in the same change.
+      - **A `release-notes.md` was added** at the repo root, because the `gh release create`
+        line this target prints passes `--notes-file release-notes.md`. Printing a command
+        that references a nonexistent file would fail at exactly the moment the user is
+        handed the publish step.
+
+      One footgun found and documented in the recipe comment rather than fixed:
+      `cross-compile` depends on `clean`, which `rm -rf`s `builds/`. So `make launcher &&
+      make release-binaries` silently destroys the launcher binaries — launcher assets must
+      be built *after* `release-binaries`, followed by a re-run of `checksums`.
+
+- [x] **P1** 2.4 **`.dockerignore` — verify, then delete one dead line.**
+      **Verified 2026-07-30 — nothing to delete.** The `cmd/webtmux-launch/payload/*.gz`
+      line is already gone; Stage 3 removed it (task 3.4 predicted exactly this), and the
+      file now instead excludes `webtmux-launch/` with a comment explaining that webtmux's
+      image build neither compiles nor ships the launcher. Current contents are correct.
       The build/run split (`af969d2`) added the file. The `COPY . /src` it protects now
       lives in the fork's own `Dockerfile` (the artifact build), not in
       `scripts/webtmux-docker/Dockerfile` — that file stopped building the binary in the
@@ -173,7 +200,24 @@ The current instructions are **broken for this fork**: `README.md:10`, `:48`, an
 point at `github.com/chrismccord/webtmux` — upstream, which contains none of this fork's
 work — and describe fetching binaries from `builds/`, which is no longer committed.
 
-- [ ] **P0** 2.5 Rewrite the Installation section around Release assets. *(30 min)*
+*(Revised 2026-07-30: **half of this was already fixed.** Commit `66d07e0`
+("docs(readme): point clone URLs at the fork…") repointed every clone URL at
+`sparant/webtmux` and removed the `git archive --remote` / shallow-clone instructions, so
+no `chrismccord` reference remained in the install path. What was still broken is the part
+this phase actually targets: "Prebuilt binaries are available in the `builds/` directory",
+which describes a distribution channel that no longer exists.)*
+
+- [x] **P0** 2.5 Rewrite the Installation section around Release assets. *(30 min)*
+      **Done 2026-07-30.** "Prebuilt Binaries" now curls
+      `releases/download/v0.1.0/webtmux-<os>-<arch>` unauthenticated, documents
+      `releases/latest/download/…` as the always-current variant, and documents the
+      `SHA256SUMS` asset with `sha256sum --check --ignore-missing` (the `--ignore-missing`
+      is load-bearing: the file lists every platform and the user downloaded one; the local
+      filename must also match the asset name for the check to find it).
+      The asset-name table lost its `builds/` prefix so it now reads as the release
+      interface it is. The Development section gained a **Cutting a release** block —
+      tag → `make release-binaries` → `--version` check → user-run `gh release create` —
+      carrying the two launcher-facing rules (publish `SHA256SUMS`; never rename an asset).
 
       ```bash
       curl -fsSL -o webtmux \
@@ -189,7 +233,7 @@ work — and describe fetching binaries from `builds/`, which is no longer commi
       Note `releases/latest/download/webtmux-linux-amd64` as the always-current variant —
       it is the same redirect the launcher uses for `--webtmux-version latest`.
 
-- [ ] **P0** 2.6 Fresh-box section: tmux prereq, `chmod +x`, `~/.local/bin` + PATH,
+- [x] **P0** 2.6 Fresh-box section: tmux prereq, `chmod +x`, `~/.local/bin` + PATH,
       `webtmux --version`, verify against the release's `SHA256SUMS` asset, and a
       first-run command that **binds loopback** (`-a 127.0.0.1`) — basic auth over plain
       HTTP must not face a LAN, and the default is `0.0.0.0`. *(25 min)*
@@ -207,6 +251,15 @@ work — and describe fetching binaries from `builds/`, which is no longer commi
         Linux, so the binaries run on Apple Silicon. `curl`-downloaded binaries carry the
         quarantine xattr — `xattr -d com.apple.quarantine webtmux` if Gatekeeper objects
         (`gh release download` avoids this).
+
+      **Done 2026-07-30** as "Installing on a fresh machine": five numbered steps (tmux
+      prereq → fetch + verify → PATH → `webtmux --version` → first run with
+      `-a 127.0.0.1`), both platform notes, and — as this task's second paragraph asks —
+      a closing pointer that `webtmux-launch` makes the whole section unnecessary when the
+      goal is reaching that machine's tmux rather than installing there permanently.
+      The launcher section already sits above Installation, so it leads by position.
+      `install -m 755` replaces `chmod +x` + `cp`: one command, and it cannot leave a
+      half-installed binary on PATH.
 
 ---
 

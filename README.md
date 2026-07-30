@@ -416,27 +416,100 @@ laptop, `webtmux-launch` above is the shorter path.
 
 ### Prebuilt Binaries
 
-Prebuilt binaries are available in the `builds/` directory for all major platforms:
-
-| Platform              | Binary                         |
-| --------------------- | ------------------------------ |
-| Linux (x64)           | `builds/webtmux-linux-amd64`   |
-| Linux (ARM64)         | `builds/webtmux-linux-arm64`   |
-| Linux (ARM)           | `builds/webtmux-linux-arm`     |
-| macOS (Intel)         | `builds/webtmux-darwin-amd64`  |
-| macOS (Apple Silicon) | `builds/webtmux-darwin-arm64`  |
-| FreeBSD (x64)         | `builds/webtmux-freebsd-amd64` |
+Binaries are published as [release assets](https://github.com/sparant/webtmux/releases).
+They are not committed to the repository — `builds/` is untracked, so cloning gets
+you source, not a binary. The repo is public, so downloading needs no token and no
+`gh`:
 
 ```bash
-# Clone and use prebuilt binary (example for Linux x64)
-git clone https://github.com/sparant/webtmux.git
-cd webtmux
-chmod +x builds/webtmux-linux-amd64
-./builds/webtmux-linux-amd64 -w tmux new-session -A -s main
-
-# Or copy to your PATH
-sudo cp builds/webtmux-linux-amd64 /usr/local/bin/webtmux
+curl -fsSL -o webtmux \
+  https://github.com/sparant/webtmux/releases/download/v0.1.0/webtmux-linux-amd64
+chmod +x webtmux
+./webtmux -w tmux new-session -A -s main
 ```
+
+One asset per platform, named `webtmux-<os>-<arch>`:
+
+| Platform              | Asset                   |
+| --------------------- | ----------------------- |
+| Linux (x64)           | `webtmux-linux-amd64`   |
+| Linux (ARM64)         | `webtmux-linux-arm64`   |
+| Linux (ARM)           | `webtmux-linux-arm`     |
+| macOS (Intel)         | `webtmux-darwin-amd64`  |
+| macOS (Apple Silicon) | `webtmux-darwin-arm64`  |
+| FreeBSD (x64)         | `webtmux-freebsd-amd64` |
+
+Swap `download/v0.1.0/` for `latest/download/` to always get the newest release —
+the same redirect `webtmux-launch --webtmux-version latest` follows:
+
+```bash
+curl -fsSL -o webtmux \
+  https://github.com/sparant/webtmux/releases/latest/download/webtmux-linux-amd64
+```
+
+Each release also carries a `SHA256SUMS` asset covering every binary in it. It is
+a few hundred bytes, so verifying costs nothing:
+
+```bash
+curl -fsSL -O https://github.com/sparant/webtmux/releases/download/v0.1.0/SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS      # want: webtmux-linux-amd64: OK
+```
+
+(`--ignore-missing` because `SHA256SUMS` lists every platform and you downloaded
+one. The name must match the asset name for the check to find it — download to
+`webtmux-linux-amd64`, not `webtmux`, if you want to verify before renaming.)
+
+### Installing on a fresh machine
+
+Start to finish on a box that has never seen webtmux. Only the first step needs
+root, and only if tmux isn't there already.
+
+```bash
+# 1. tmux is the one prerequisite — webtmux drives it, it does not replace it.
+tmux -V || sudo apt-get install -y tmux        # or: brew install tmux
+
+# 2. Fetch the asset for this machine, verify it, install it on PATH.
+mkdir -p ~/.local/bin && cd "$(mktemp -d)"
+BASE=https://github.com/sparant/webtmux/releases/download/v0.1.0
+curl -fsSL -O $BASE/webtmux-linux-amd64        # match your os-arch from the table
+curl -fsSL -O $BASE/SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+install -m 755 webtmux-linux-amd64 ~/.local/bin/webtmux
+
+# 3. PATH, if ~/.local/bin isn't on it yet.
+case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *)
+  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc; export PATH="$HOME/.local/bin:$PATH";;
+esac
+
+# 4. Confirm what you installed — a real release says v0.1.0, not dev.
+webtmux --version
+
+# 5. First run, bound to loopback.
+webtmux -a 127.0.0.1 -w tmux new-session -A -s main
+```
+
+**Bind loopback unless you mean otherwise.** The default address is `0.0.0.0`, and
+authentication here is HTTP basic auth over plain HTTP — fine over an SSH tunnel or
+on `127.0.0.1`, not something to face a LAN. `-a 127.0.0.1` plus
+`ssh -L 8080:127.0.0.1:8080 host` is the safe remote story (and is exactly what
+`webtmux-launch` automates).
+
+Two platform notes:
+
+- **The tmux protocol-version pinning in the Docker deploy does not apply to a
+  native binary.** That pinning exists only because the container attaches to the
+  *host's* tmux across a bind-mounted socket, and the two tmux builds must agree.
+  A native webtmux talks to its own local tmux, so there is nothing to pin.
+- **macOS:** the `darwin/arm64` binaries are ad-hoc signed by Go's linker even
+  though they are cross-compiled from Linux, so they run on Apple Silicon as-is.
+  A `curl`-downloaded binary does carry the quarantine xattr; if Gatekeeper
+  objects, `xattr -d com.apple.quarantine webtmux` clears it. Downloading with
+  `gh release download` avoids the xattr altogether.
+
+**Or skip the target machine entirely.** If the reason you are installing webtmux
+somewhere is to reach *that* machine's tmux from your laptop, `webtmux-launch`
+above makes this whole section unnecessary — it fetches and installs webtmux on the
+target itself over SSH, needing nothing there but `ssh` and `tmux`.
 
 ### Build from Source
 
@@ -652,9 +725,36 @@ make build
 # Cross-compile all platforms
 make cross-compile
 
-# Create release archives
+# Cross-compile + builds/SHA256SUMS, then print the gh publish command
+make release-binaries
+
+# Create release archives (tarballs — predates GitHub Releases)
 make release
 ```
+
+#### Cutting a release
+
+Tag first, then build from the tag, so `git describe` stamps the version with no
+`VERSION=` override:
+
+```bash
+git tag -a v0.1.0 -m "webtmux v0.1.0"
+make release-binaries
+./builds/webtmux-linux-amd64 --version    # must say v0.1.0, not dev
+```
+
+`release-binaries` stops there and prints the `gh release create` command; run it
+yourself after looking at the assets. Two rules the launcher depends on:
+
+- **Upload `SHA256SUMS` as its own asset.** The launcher fetches it before deciding
+  whether to download a 12 MB binary; without it that cheap path is gone.
+- **Never rename the `webtmux-<os>-<arch>` assets.** Their names are the interface
+  the launcher builds download URLs from. Adding a platform is safe; renaming or
+  removing one breaks every launcher already distributed.
+
+Launcher binaries release on their own cadence — include `webtmux-launch-*` assets
+only when the launcher itself changed, and build them *after* `release-binaries`
+(`cross-compile` cleans `builds/`).
 
 ### Tech Stack
 

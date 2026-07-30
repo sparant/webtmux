@@ -24,7 +24,7 @@ PLATFORMS = \
 
 export CGO_ENABLED=0
 
-.PHONY: all build clean test test-js test-hooks install cross-compile release help check-js docker-artifact launcher launcher-dev
+.PHONY: all build clean test test-js test-hooks install cross-compile release help check-js docker-artifact launcher launcher-dev checksums release-binaries
 
 # Default target
 all: build
@@ -143,7 +143,37 @@ launcher:
 launcher-dev:
 	$(MAKE) -C $(LAUNCHER_DIR) dev VERSION=$(VERSION)
 
-# Create release archives
+# SHA256SUMS for the raw cross-compiled binaries, written next to them. This is a
+# release *asset*, not a committed file — builds/ is untracked. webtmux-launch
+# fetches it first (a few hundred bytes) to decide whether the 12 MB binary
+# download is needed at all, so a release without it loses the launcher's cheap
+# path entirely.
+checksums:
+	@cd $(OUTPUT_DIR) && sha256sum $(BINARY_NAME)-* > SHA256SUMS
+	@echo "Wrote $(OUTPUT_DIR)/SHA256SUMS"
+
+# Build everything a release needs, then print the publish command rather than
+# running it: tagging and `gh release create` are deliberately manual, so the
+# assets can be reviewed first.
+#
+#   make release-binaries        # after tagging — VERSION comes from git describe
+#
+# Do NOT rename the webtmux-<os>-<arch> outputs. The launcher builds its download
+# URLs from `uname` mapped to exactly these names, and its local-source mode reads
+# the same names out of builds/; a rename breaks every launcher already in the field.
+#
+# No `launcher` prerequisite: the two programs release on independent cadences, and
+# a webtmux patch needs no launcher rebuild. To publish launcher assets too, build
+# them AFTER this target and re-run `checksums` — cross-compile's `clean` wipes
+# builds/, so `make launcher` first would lose them.
+release-binaries: cross-compile checksums
+	@echo ""
+	@echo "Built $(VERSION). Publish (user-executed — the agent has no GitHub auth):"
+	@echo "  gh release create $(VERSION) builds/webtmux-* builds/SHA256SUMS \\"
+	@echo "     --title 'webtmux $(VERSION)' --notes-file release-notes.md"
+
+# Create release archives (tarballs under builds/dist/). Predates the move to
+# GitHub Releases, which publishes the raw binaries — see release-binaries.
 release: cross-compile
 	@echo "Creating release archives..."
 	@mkdir -p $(OUTPUT_DIR)/dist
@@ -177,6 +207,8 @@ help:
 	@echo "  make launcher     Build webtmux-launch for release (see webtmux-launch/)"
 	@echo "  make launcher-dev Build webtmux-launch for the host, deploying from ./builds"
 	@echo "  make docker-artifact Build builds/webtmux-<os>-<arch> in a container (no local Go)"
+	@echo "  make checksums    Write builds/SHA256SUMS for the cross-compiled binaries"
+	@echo "  make release-binaries  Cross-compile + checksums, then print the gh publish command"
 	@echo "  make release      Create release archives"
 	@echo "  make assets       Copy JS assets to bindata"
 	@echo "  make check-js     Parse-check all JS (runs automatically before a build)"
