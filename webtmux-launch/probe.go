@@ -16,20 +16,29 @@ import (
 
 // probe is the parsed result of one probeScript run.
 type probe struct {
-	OS        string // uname -s
-	Arch      string // uname -m
-	Platform  string // release asset platform, e.g. linux-amd64
-	Home      string
-	User      string
-	TmuxPath  string
-	TmuxVer   string
-	DistroID  string // /etc/os-release ID, for the install hint
-	Sessions  []string
-	CacheDirs []string // ~/.cache/webtmux entries, newest first
-	Linger    string   // loginctl Linger
-	KillUser  string   // logind.conf KillUserProcesses line, if set
-	SelfPIDNS string
-	Instances []instance
+	OS       string // uname -s
+	Arch     string // uname -m
+	Platform string // release asset platform, e.g. linux-amd64
+	Home     string
+	User     string
+	TmuxPath string
+	TmuxVer  string
+	DistroID string // /etc/os-release ID, for the install hint
+	// WebtmuxPath / WebtmuxVer describe a webtmux binary ALREADY on the target
+	// (a system install, or one an earlier run cached). Step 4 reuses it when its
+	// version matches what this launcher expects, which is what makes a repeat
+	// launch cost no transfer at all.
+	WebtmuxPath string
+	WebtmuxVer  string
+	Downloader  string // "curl" | "wget" | "" — can the target fetch its own binary?
+	Sessions    []string
+	// SessionLabels[name] is a human line for the "which session?" prompt.
+	SessionLabels map[string]string
+	CacheDirs     []string // ~/.cache/webtmux entries, newest first
+	Linger        string   // loginctl Linger
+	KillUser      string   // logind.conf KillUserProcesses line, if set
+	SelfPIDNS     string
+	Instances     []instance
 }
 
 // probeScript is deliberately POSIX sh and tolerant of a missing /proc, missing
@@ -64,9 +73,28 @@ fi
 p TMUX "$wtl_tmux"
 if [ -n "$wtl_tmux" ]; then p TMUXVER "$("$wtl_tmux" -V 2>/dev/null || true)"; fi
 p DISTRO "$(. /etc/os-release 2>/dev/null; echo "${ID:-}")"
+# An existing webtmux on the target, looked for the same way tmux is: PATH first
+# (which a non-interactive shell keeps bare), then the usual prefixes, then this
+# launcher's own cache. Reporting its version lets the Mac decide whether a
+# transfer is needed at all.
+wtl_wt="$(command -v webtmux 2>/dev/null || true)"
+if [ -z "$wtl_wt" ]; then
+  for wtl_c in /usr/local/bin/webtmux /usr/bin/webtmux /opt/homebrew/bin/webtmux \
+               "$HOME/bin/webtmux" "$HOME/.local/bin/webtmux"; do
+    if [ -x "$wtl_c" ]; then wtl_wt="$wtl_c"; break; fi
+  done
+fi
+p WEBTMUX "$wtl_wt"
+if [ -n "$wtl_wt" ]; then p WEBTMUXVER "$("$wtl_wt" --version 2>/dev/null | head -1 || true)"; fi
+# Can the target fetch its own binary? Checked, never assumed: a box with no
+# egress falls back to being fed over the SSH connection we already have.
+if command -v curl >/dev/null 2>&1; then p DOWNLOADER curl
+elif command -v wget >/dev/null 2>&1; then p DOWNLOADER wget
+else p DOWNLOADER ""; fi
 for f in $(ls -t "$HOME/.cache/webtmux" 2>/dev/null); do p CACHE "$f"; done
 if [ -n "$wtl_tmux" ]; then
-  "$wtl_tmux" list-sessions -F '#{session_name}' 2>/dev/null | while read -r s; do p SESSION "$s"; done
+  "$wtl_tmux" list-sessions -F '#{session_windows} #{session_attached} #{session_name}' 2>/dev/null \
+    | while read -r s; do p SESSION "$s"; done
 fi
 p LINGER "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || true)"
 p KILLUSER "$(grep -hs '^[[:space:]]*KillUserProcesses' /etc/systemd/logind.conf /etc/systemd/logind.conf.d/*.conf 2>/dev/null | tail -1)"
@@ -175,6 +203,12 @@ func parseProbe(out string) *probe {
 			p.TmuxPath = val
 		case "TMUXVER":
 			p.TmuxVer = val
+		case "WEBTMUX":
+			p.WebtmuxPath = val
+		case "WEBTMUXVER":
+			p.WebtmuxVer = val
+		case "DOWNLOADER":
+			p.Downloader = val
 		case "DISTRO":
 			p.DistroID = val
 		case "CACHE":
@@ -182,8 +216,14 @@ func parseProbe(out string) *probe {
 				p.CacheDirs = append(p.CacheDirs, val)
 			}
 		case "SESSION":
-			if val != "" {
-				p.Sessions = append(p.Sessions, val)
+			// "<windows> <attached> <name>" — name last because it is the field
+			// that can contain spaces.
+			if name, label, ok := parseSessionLine(val); ok {
+				p.Sessions = append(p.Sessions, name)
+				if p.SessionLabels == nil {
+					p.SessionLabels = map[string]string{}
+				}
+				p.SessionLabels[name] = label
 			}
 		case "LINGER":
 			p.Linger = val
@@ -233,6 +273,32 @@ func parseProbe(out string) *probe {
 		p.Instances = append(p.Instances, *i)
 	}
 	return p
+}
+
+// parseSessionLine splits "<windows> <attached> <name>" and builds the label the
+// chooser shows. Tolerates the older name-only form, so a probe that predates
+// this format still yields a usable session list rather than nothing.
+func parseSessionLine(v string) (name, label string, ok bool) {
+	if v == "" {
+		return "", "", false
+	}
+	fields := strings.SplitN(v, " ", 3)
+	if len(fields) < 3 {
+		return v, v, true
+	}
+	windows, attached, name := fields[0], fields[1], fields[2]
+	if name == "" {
+		return "", "", false
+	}
+	label = fmt.Sprintf("%s (%s window", name, windows)
+	if windows != "1" {
+		label += "s"
+	}
+	label += ")"
+	if attached != "0" {
+		label += " — attached"
+	}
+	return name, label, true
 }
 
 func parseEnvList(s string) map[string]string {

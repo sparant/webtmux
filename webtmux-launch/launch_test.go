@@ -138,23 +138,6 @@ func TestSetupCreatesSessionDetached(t *testing.T) {
 	}
 }
 
-func TestChooseSession(t *testing.T) {
-	if got := chooseSession("", nil); got != "main" {
-		t.Errorf("no sessions: %s", got)
-	}
-	// With exactly one existing session, prefer it: the box has already told us
-	// what it calls things.
-	if got := chooseSession("", []string{"services"}); got != "services" {
-		t.Errorf("single session: %s", got)
-	}
-	if got := chooseSession("", []string{"a", "b"}); got != "main" {
-		t.Errorf("ambiguous: %s", got)
-	}
-	if got := chooseSession("pick", []string{"a"}); got != "pick" {
-		t.Errorf("--session ignored: %s", got)
-	}
-}
-
 func TestAttachScriptKeepsSplitViewAndUTF8(t *testing.T) {
 	// Mode 1 IS split-view: a grouped session sharing the base's window list.
 	if !strings.Contains(attachScript, "HTTP_WEBTMUX_SESSION") {
@@ -266,5 +249,56 @@ func TestIsPortCollision(t *testing.T) {
 	}
 	if isPortCollision("Connection closed by remote host") {
 		t.Error("false positive")
+	}
+}
+
+// The target fetching its own binary is the new default for the release source —
+// it saves pushing ~12 MB through the SSH connection. The sha check happens on
+// the TARGET, so a truncated or substituted download never reaches the install
+// path: the same guarantee the push path gets by verifying before sending.
+func TestRemoteFetchCommandVerifiesBeforeInstalling(t *testing.T) {
+	p := &probe{Home: "/home/dev", Platform: "linux-amd64", Downloader: "curl"}
+	digest := strings.Repeat("a", 63) + "b"
+	dep := planDeploy(p, digest)
+	rs := &releaseSource{owner: "o", repo: "webtmux", version: "v0.1.0"}
+
+	cmd := dep.fetchCommandFor(rs, p)
+	for _, want := range []string{
+		"curl -fsSL 'https://github.com/o/webtmux/releases/download/v0.1.0/webtmux-linux-amd64'",
+		"sha256sum", "shasum -a 256", // GNU and BSD/macOS
+		`if [ "$got" != '` + digest + `' ]`,
+		"rm -f", "chmod 755", "mv -f",
+	} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("remote fetch lacks %q:\n%s", want, cmd)
+		}
+	}
+	// The verification must come before the install, or a bad download lands.
+	if strings.Index(cmd, "$got") > strings.Index(cmd, "mv -f") {
+		t.Errorf("sha check happens after the install:\n%s", cmd)
+	}
+
+	p.Downloader = "wget"
+	if !strings.Contains(dep.fetchCommandFor(rs, p), "wget -q -O") {
+		t.Error("wget fallback missing")
+	}
+}
+
+// Reusing a webtmux already on the target must still deploy the attach script —
+// that script is ours, and split-view depends on it.
+func TestSkipBinaryStillNeedsTheAttachScript(t *testing.T) {
+	p := &probe{Home: "/home/dev", Platform: "linux-amd64"}
+	dep := planDeploy(p, "")
+	dep.SkipBinary = true
+	dep.BinaryPath = "/usr/local/bin/webtmux"
+	if dep.AttachPath == "" || !strings.HasSuffix(dep.AttachPath, ".sh") {
+		t.Errorf("attach script path lost when reusing a binary: %q", dep.AttachPath)
+	}
+	cmd := remoteCommand(dep, &targetConfig{Secret: "s"}, "main", "/usr/bin/tmux", &options{})
+	if !strings.Contains(cmd, "'/usr/local/bin/webtmux'") {
+		t.Errorf("should exec the reused binary: %s", cmd)
+	}
+	if !strings.Contains(cmd, dep.AttachPath) {
+		t.Errorf("should still run our attach script: %s", cmd)
 	}
 }

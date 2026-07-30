@@ -270,3 +270,62 @@ func TestSourceLineNamesWhatGotDeployed(t *testing.T) {
 		}
 	}
 }
+
+// The launcher's own directory is the one place auto-detection now happens, and
+// only when the asset for THIS target is actually sitting there.
+func TestBesideTheLauncherIsUsedWhenNothingIsConfigured(t *testing.T) {
+	defer func(o, n, s string) { RepoOwner, RepoName, DefaultSource = o, n, s }(RepoOwner, RepoName, DefaultSource)
+	RepoOwner, RepoName, DefaultSource = "someone", "webtmux", ""
+
+	dir := launcherDir()
+	if dir == "" {
+		t.Skip("cannot determine the test binary's directory")
+	}
+	writeAsset(t, dir, "webtmux-linux-amd64", "beside me")
+	defer os.Remove(filepath.Join(dir, "webtmux-linux-amd64"))
+
+	src, why, err := resolveSource(&options{platformHint: "linux-amd64", webtmuxVersion: "v0.1.0"},
+		func(string) string { return "" }, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.Kind() != "local" || !strings.Contains(why, "beside") {
+		t.Fatalf("kind=%s why=%s — should have used the directory beside the launcher", src.Kind(), why)
+	}
+	if got := src.Location("linux-amd64"); got != filepath.Join(dir, "webtmux-linux-amd64") {
+		t.Errorf("location = %s", got)
+	}
+
+	// A directory holding some OTHER platform's binary is a hint, not an
+	// instruction: nobody configured it, so it must fall through to the release
+	// rather than fail the run.
+	src, _, err = resolveSource(&options{platformHint: "darwin-arm64", webtmuxVersion: "v0.1.0"},
+		func(string) string { return "" }, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.Kind() != "release" {
+		t.Errorf("kind = %s, want release when the local asset is for another platform", src.Kind())
+	}
+}
+
+// Explicit config still beats it, and still fails hard rather than falling back.
+func TestConfiguredSourceBeatsBesideTheLauncher(t *testing.T) {
+	dir := t.TempDir()
+	writeAsset(t, dir, "webtmux-linux-amd64", "configured")
+	src, why, err := resolveSource(&options{webtmuxSource: dir, platformHint: "linux-amd64"},
+		func(string) string { return "" }, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.Location("linux-amd64") != filepath.Join(dir, "webtmux-linux-amd64") || !strings.Contains(why, "--webtmux-source") {
+		t.Fatalf("configured source lost: %s / %s", src.Location("linux-amd64"), why)
+	}
+	// Validation happens before any SSH, so a typo costs milliseconds.
+	if err := validateSourceConfig(&options{webtmuxSource: "/definitely/not/here"}, func(string) string { return "" }); err == nil {
+		t.Error("a bad --webtmux-source must fail before the probe")
+	}
+	if err := validateSourceConfig(&options{}, func(string) string { return "" }); err != nil {
+		t.Errorf("nothing configured is not an error: %v", err)
+	}
+}
