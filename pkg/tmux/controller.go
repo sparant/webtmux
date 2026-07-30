@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os/exec"
@@ -416,6 +417,21 @@ func (c *Controller) selfHeal(curSession string) {
 	c.regroupOnto(curSession)
 }
 
+// ErrRefused marks a command this controller DECLINED to send, as opposed to one
+// tmux rejected.
+//
+// The distinction matters at the far end. webtty treats a failed tmux command as
+// ordinary — the window closed between the click and the command, the pane left
+// copy mode — logs it and pushes a fresh layout, and the user sees the UI correct
+// itself. A refusal is not that: nothing raced, the command was well-formed, and
+// webtmux chose not to send it because it could not tell WHICH object it would
+// have hit. Sending it anyway would have moved, or destroyed, something the user
+// never named. That is worth saying out loud, so errors wrapping this sentinel
+// are surfaced to the browser as a notice instead of being logged and forgotten.
+//
+// Use with %w:  fmt.Errorf("%w: <what could not be identified>", ErrRefused)
+var ErrRefused = errors.New("refused")
+
 // errRegroupInFlight is returned when a regroup is refused because another one is
 // already running on this controller. It is a benign refusal, not a failure: the
 // in-flight regroup is doing the same job, and webtty logs a failed tmux command
@@ -722,6 +738,15 @@ func (c *Controller) SelectPane(paneID string) error {
 // `select-window -t <session>:<index>` — which the A.1 spike confirmed moves
 // only this session. The client sends a window @id, so we map @id -> index via
 // the layout cache (refreshing once if it's not found).
+//
+// REFUSE, DON'T GUESS, when both lookups miss. The old fallback sent the bare
+// `select-window -t @id`, which is correct only if this session is the sole
+// member of its group — and the case that reaches the fallback is precisely the
+// case where the window is NOT in this session's list, so tmux resolves it in
+// whichever session owns it and moves THAT session's current window. A user
+// clicking a stale row in one pane would silently jump a colleague's pane, or
+// the ssh console, to another window. The client already treats a failed select
+// as a no-op plus a layout refresh, so refusing costs nothing but the guess.
 func (c *Controller) SelectWindow(windowID string) error {
 	idx, ok := c.windowIndex(windowID)
 	if !ok {
@@ -729,13 +754,12 @@ func (c *Controller) SelectWindow(windowID string) error {
 		c.RefreshLayout()
 		idx, ok = c.windowIndex(windowID)
 	}
-
-	target := windowID // last-resort fallback: bare @id (single-session correctness)
-	if ok {
-		target = exactWindow(c.session(), idx)
+	if !ok {
+		return fmt.Errorf("%w: %s is not in this pane's window list (it may have closed, "+
+			"or it lives in another session)", ErrRefused, windowID)
 	}
 
-	if _, err := c.runTmux("select-window", "-t", target); err != nil {
+	if _, err := c.runTmux("select-window", "-t", exactWindow(c.session(), idx)); err != nil {
 		return err
 	}
 	c.RefreshLayout()
@@ -937,10 +961,12 @@ func (c *Controller) NewSession() error {
 // re-grouped onto the target: a fresh grouped session on `sessionName` keeps an
 // independent current-window while sharing the target's window list.
 //
-// The primary switches its OWN client (-c <tty>) directly. Without the tty a
-// bare `switch-client -t` resolves to an arbitrary client — historically this
-// dragged the ssh console along — so we only fall back to it when the tty is
-// genuinely unknown.
+// The primary switches its OWN client (-c <tty>) directly. Without the tty there
+// is no safe command at all: a bare `switch-client -t` resolves to an ARBITRARY
+// client, which historically dragged the ssh console along — a switch the user
+// asked for in one browser pane landing on someone else's terminal. That is the
+// same failure switchOurClient already refuses when the tty is ambiguous, so it
+// is refused here too rather than guessed at.
 func (c *Controller) SwitchSession(sessionName string) error {
 	id := c.ident()
 	// Discovery (sole client of the pane's grouped session) is only valid for
@@ -960,16 +986,12 @@ func (c *Controller) SwitchSession(sessionName string) error {
 		c.RefreshLayout()
 		return nil
 	}
-	if id.clientTTY != "" {
-		if err := c.switchOurClient(sessionName); err != nil {
-			return err
-		}
-	} else {
-		// Legacy fallback (no tty known — non-Linux): bare switch-client resolves
-		// to an arbitrary client; no safe alternative exists without the tty.
-		if _, err := c.runTmux("switch-client", "-t", exactSession(sessionName)); err != nil {
-			return err
-		}
+	if id.clientTTY == "" {
+		return fmt.Errorf("%w: can't identify this pane's tmux client, so switching to %q "+
+			"would move an arbitrary client (possibly the console)", ErrRefused, sessionName)
+	}
+	if err := c.switchOurClient(sessionName); err != nil {
+		return err
 	}
 	c.setIdent(func(id *identState) { id.sessionName = sessionName })
 	c.RefreshLayout()

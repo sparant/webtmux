@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -120,10 +121,9 @@ func TestDestructiveOpsTargetExactly(t *testing.T) {
 			func(c *Controller) error { return c.SelectWindow("@1") },
 			"select-window", []string{"select-window", "-t", "=dev:1"}},
 
-		// The no-tty legacy path; the tty path is covered by switchOurClient below.
-		{"switch-client",
-			func(c *Controller) error { return c.SwitchSession("dev-2") },
-			"switch-client", []string{"switch-client", "-t", "=dev-2"}},
+		// switch-client has no targetable form without the client's tty — see
+		// TestSwitchSessionRefusesWithoutAClientIdentity below, which is now what
+		// the no-tty path does.
 	}
 
 	for _, tc := range cases {
@@ -304,5 +304,61 @@ func TestNoCommandTargetsASessionByBareName(t *testing.T) {
 		if s := flagValue(call, "-s"); s != "" && call[0] == "swap-window" && !strings.HasPrefix(s, "=") {
 			t.Errorf("bare source target %q in %q", s, call)
 		}
+	}
+}
+
+// ---- refuse, don't guess -------------------------------------------------------
+//
+// Two commands used to fall back to a target that tmux resolves for itself when
+// this controller could not say which object it meant. Both fallbacks succeed —
+// that is the problem. They act on WHATEVER tmux picks: another client, another
+// session's current window. A user gesture in one browser pane silently moving a
+// colleague's terminal (or the ssh console) is not a failure anyone can see, so
+// it has to be refused where the ambiguity is known.
+
+func TestSwitchSessionRefusesWithoutAClientIdentity(t *testing.T) {
+	f := twoSessionServer()
+	c := newControllerWithRunner("dev", false, "", f.run) // no SetClient: no tty
+	err := c.SwitchSession("dev-2")
+	if err == nil {
+		t.Fatal("switching with no client identity must be refused, not guessed at")
+	}
+	if !errors.Is(err, ErrRefused) {
+		t.Errorf("the refusal must be distinguishable from a tmux failure: %v", err)
+	}
+	if f.count("switch-client") != 0 {
+		t.Errorf("a switch-client was sent anyway: %v", f.calls)
+	}
+	if !strings.Contains(err.Error(), "dev-2") {
+		t.Errorf("the message should name what was asked for: %v", err)
+	}
+}
+
+func TestSelectWindowRefusesAWindowThatIsNotOurs(t *testing.T) {
+	f := twoSessionServer()
+	c := newControllerWithRunner("dev", false, "", f.run)
+	if err := c.RefreshLayout(); err != nil {
+		t.Fatalf("RefreshLayout: %v", err)
+	}
+	// @2 lives in "dev-2". The old fallback sent `select-window -t @2`, which tmux
+	// resolves in the session that owns it — moving dev-2's current window on
+	// behalf of a pane attached to dev.
+	before := f.count("select-window")
+	err := c.SelectWindow("@2")
+	if err == nil {
+		t.Fatal("selecting a window outside this session must be refused")
+	}
+	if !errors.Is(err, ErrRefused) {
+		t.Errorf("the refusal must be distinguishable from a tmux failure: %v", err)
+	}
+	if f.count("select-window") != before {
+		t.Errorf("a select-window was sent for a window in another session: %v", f.calls)
+	}
+	if !strings.Contains(err.Error(), "@2") {
+		t.Errorf("the message should name the window: %v", err)
+	}
+	// …and a window that IS ours still selects, so this is a refusal and not a ban.
+	if err := c.SelectWindow("@1"); err != nil {
+		t.Fatalf("selecting our own window broke: %v", err)
 	}
 }

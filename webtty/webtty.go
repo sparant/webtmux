@@ -40,6 +40,16 @@ type WebTTY struct {
 	// Tmux controller for tmux-specific operations
 	tmuxCtrl TmuxController
 
+	// captures bounds this connection's capture fan-out: one in-flight
+	// CaptureWindows call and a rate limit on the TTL bypass. See tmux.go.
+	captures captureLimiter
+
+	// ctxMu guards runCtx, the context Run was given. Capture goroutines read it
+	// to stop working for a connection that has already gone. Set once, in Run;
+	// nil when a handler is driven directly (tests), which the readers allow for.
+	ctxMu  sync.RWMutex
+	runCtx context.Context
+
 	// captureProvider is the SERVER-GLOBAL window-capture store, shared by pointer
 	// across every connection (set alongside tmuxCtrl). Kept off the per-connection
 	// TmuxController so "one capture per window across all connections" is intrinsic.
@@ -90,6 +100,10 @@ func New(masterConn Master, slave Slave, options ...Option) (*WebTTY, error) {
 // responsibility.
 // If the connection to one end gets closed, returns ErrSlaveClosed or ErrMasterClosed.
 func (wt *WebTTY) Run(ctx context.Context) error {
+	wt.ctxMu.Lock()
+	wt.runCtx = ctx
+	wt.ctxMu.Unlock()
+
 	err := wt.sendInitializeMessage()
 	if err != nil {
 		return fmt.Errorf("failed to send initializing message: %w", err)
@@ -184,6 +198,15 @@ func (wt *WebTTY) sendInitializeMessage() error {
 	}
 
 	return nil
+}
+
+// connCtx is the context this connection is running under, or nil when Run has
+// not been entered (a handler driven directly, as the tests do). Background work
+// started per-request uses it to give up when the connection does.
+func (wt *WebTTY) connCtx() context.Context {
+	wt.ctxMu.RLock()
+	defer wt.ctxMu.RUnlock()
+	return wt.runCtx
 }
 
 // preferencesFrames are the SetPreferences payloads to send at init: whatever the

@@ -65,6 +65,11 @@ export const MSG = {
   TmuxLayoutUpdate: '7',
   TmuxModeUpdate: '9',
   TmuxCaptureData: 'A',
+  // A command webtmux REFUSED to send, with the reason. Not the same thing as a
+  // tmux command that failed (those are routine races the layout push repairs and
+  // are never sent here) — this is "I could not tell which object you meant, so I
+  // did nothing", which looks exactly like a broken button unless it is said.
+  TmuxError: 'B',
   TmuxSaveResult: 'C',
   TmuxSaveInfo: 'D',
 };
@@ -1328,6 +1333,14 @@ export class TerminalUnit {
         } catch (e) {
           console.warn('Bad save result:', e);
         }
+        break;
+
+      case MSG.TmuxError:
+        // Surfaced in the toolbar (see SplitManager.showNotice) rather than
+        // swallowed: nothing changed, so the layout push that follows looks
+        // identical to the one before it and says nothing at all.
+        console.warn('tmux refused:', payload);
+        if (this.onNotice) this.onNotice(payload);
         break;
 
       case MSG.TmuxSaveInfo:

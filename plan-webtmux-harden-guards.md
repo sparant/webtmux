@@ -71,12 +71,19 @@ authority lines and enforces them.
 - [x] P0 Overwrite refusal + `"overwrite":true` protocol field + dropdown inline confirm
       + tests both sides. ~40m, Sonnet.
 
-### Phase 3 — refuse-don't-guess + capture cap (P1)
+### Phase 3 — refuse-don't-guess + capture cap (P1) — complete
 
-- [ ] P1 Decision 3: error returns for the two fallbacks in `pkg/tmux/controller.go`;
+- [x] P1 Decision 3: error returns for the two fallbacks in `pkg/tmux/controller.go`;
       client-side surfaced as the existing toolbar error toast; Go tests via the
       fake-runner seam. ~40m, Opus.
-- [ ] P1 Decision 4: per-connection in-flight guard + force rate limit in
+      **Deviation:** there was no "existing toolbar error toast" — the toolbar's
+      only banner was `saveStatus`, inside the save dropdown, and nothing on the
+      client handled the (never-emitted) `TmuxError` frame. Closest workable
+      alternative, implemented: refusals are marked with a `tmux.ErrRefused`
+      sentinel, `afterCmd` forwards only those as `TmuxError`, and the toolbar
+      grew a one-line transient `notice` (also used for the read-only refusal
+      from decision 1) driven by `SplitManager.showNotice`.
+- [x] P1 Decision 4: per-connection in-flight guard + force rate limit in
       `webtty/tmux.go` capture handling; goroutines on the connection ctx; test with the
       capture backend fake. ~40m, Sonnet.
 

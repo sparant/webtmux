@@ -3,6 +3,8 @@ package webtty
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -260,4 +262,58 @@ func TestCopyModeReplyReportsTmuxNotTheRequest(t *testing.T) {
 	if got := modeUpdate(t, m2); got {
 		t.Error("reported in-copy-mode though the command failed and tmux says otherwise")
 	}
+}
+
+// A REFUSAL is the one command failure the browser hears about. tmux saying no is
+// a race the next layout push repairs; a refusal is the controller declining to
+// guess which object a command would hit, so nothing will change and the layout
+// push looks identical to the one before it. Silence there is indistinguishable
+// from a broken button.
+func TestARefusalIsReportedToTheClient(t *testing.T) {
+	wt, m, _ := newFailingWebTTY(t, &tmux.Layout{})
+	wt.permitWrite = true
+	wt.SetTmuxController(&refuseCtrl{failCtrl: failCtrl{layout: &tmux.Layout{}}})
+
+	if err := wt.handleTmuxMessage(TmuxSelectWindow, []byte("@3")); err != nil {
+		t.Fatalf("a refusal must not tear the connection down: %v", err)
+	}
+	var got string
+	for _, f := range m.sent() {
+		if f[0] == TmuxError {
+			got = string(f[1:])
+		}
+	}
+	if got == "" {
+		t.Fatal("the refusal was swallowed; the user sees a button that does nothing")
+	}
+	if strings.Contains(got, "refused:") {
+		t.Errorf("the sentinel's prefix leaked into the user-facing message: %q", got)
+	}
+	if !strings.Contains(got, "@3") {
+		t.Errorf("the message should name what could not be identified: %q", got)
+	}
+}
+
+// …and an ORDINARY tmux failure still is not: those happen routinely (a window
+// closed between the click and the command) and the layout push already corrects
+// the UI. A banner per race would be noise.
+func TestAnOrdinaryFailureIsNotReportedToTheClient(t *testing.T) {
+	wt, m, _ := newFailingWebTTY(t, &tmux.Layout{})
+	wt.permitWrite = true
+	if err := wt.handleTmuxMessage(TmuxKillWindow, []byte("@3")); err != nil {
+		t.Fatalf("handleTmuxMessage: %v", err)
+	}
+	for _, f := range m.sent() {
+		if f[0] == TmuxError {
+			t.Fatalf("an ordinary tmux failure raised a banner: %q", f[1:])
+		}
+	}
+}
+
+// refuseCtrl refuses instead of failing — the "can't identify which object this
+// would hit" case (see pkg/tmux.ErrRefused).
+type refuseCtrl struct{ failCtrl }
+
+func (c *refuseCtrl) SelectWindow(id string) error {
+	return fmt.Errorf("%w: %s is not in this pane's window list", tmux.ErrRefused, id)
 }
