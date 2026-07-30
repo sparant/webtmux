@@ -202,6 +202,12 @@ export class TerminalUnit {
     this.desiredWindowIndex = null;
     this.desiredSession = null;
     this.restorePending = false;
+    // While a post-reconnect restore hop is in flight, the window this region is
+    // PARKED on — where the fresh attach dropped us, not anywhere the user went.
+    // Read by SplitManager._markWorkAlerts, which otherwise treats "on screen in a
+    // region" as having looked at it and would clear that window's attention flash
+    // for you. Null whenever the region has actually landed (see _rememberOrRestore).
+    this._parkedWindowId = null;
     // Toolbar MRU bookkeeping (read by SplitManager): last window it recorded as a
     // toolbar "access", and window ids whose next arrival should NOT count (they
     // came from sidebar arrow-key WINDOW browsing). _suppressAccessNext is the
@@ -1510,17 +1516,27 @@ export class TerminalUnit {
           // layout showing the target window while still naming the base session,
           // which must not be recorded as a visit in a session it never had.
           if (this.desiredWindowId) this._navSuppress = { id: this.desiredWindowId, session: base };
+          // Same reasoning one level up, for attention flashes rather than recents:
+          // this layout is dispatched to SplitManager before the hop below lands, so
+          // for one poll the region "shows" the parked window. Left unmarked, that
+          // counts as having looked at it and cancels its flash.
+          this._parkedWindowId = active;
           this.switchSession(this.desiredSession);
           if (this.desiredWindowId) this.selectWindow(this.desiredWindowId);
           return;   // the resulting layout re-remembers the restored view
         }
         const want = this._findWindow(this.desiredWindowId, this.desiredWindowIndex);
         if (want && want.id !== active) {
+          this._parkedWindowId = active;   // as above: parked, not visited
           this.selectWindow(want.id);   // restore; the resulting layout re-remembers it
           return;
         }
       }
     }
+    // Reached on every layout that is NOT an in-flight restore hop — including the
+    // one the hop above lands on — so the parked marker clears itself the moment the
+    // region is genuinely showing something.
+    this._parkedWindowId = null;
     this.desiredWindowId = active;
     this.desiredSession = base;
     if (activeWin) this.desiredWindowIndex = activeWin.index;

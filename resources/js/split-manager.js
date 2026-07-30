@@ -27,7 +27,7 @@
 import { TerminalUnit, MSG } from './terminal-unit.js';
 import { CaptureCache } from './capture-cache.js';
 import { HoverPreview } from './hover-preview.js';
-import { WorkAlerts, hiddenAlerts, alertOf } from './work-alerts.js';
+import { WorkAlerts, AlertsPersistence, hiddenAlerts, alertOf } from './work-alerts.js';
 import { clampRecentsMax, RecentsPersistence } from './recents-strip.js';
 import { buildMruOrder } from './mru-order.js';
 import { SplitPersistence } from './split-state.js';
@@ -115,6 +115,14 @@ export class SplitManager {
     // you were looking elsewhere (see work-alerts.js). Every surface that can show a
     // window reads its flash from this one registry.
     this.workAlerts = new WorkAlerts();
+    // …and kept across a reload. The flashes are derived from a sequence of polls, so
+    // they used to die with the page — which meant refreshing the browser to get the
+    // connection back after a laptop sleep silently answered every flash waiting for
+    // you. Restored HERE, before addUnit() below can reach _refreshToolbar, so the
+    // first poll compares against the baseline we left rather than against nothing.
+    // (Per-tab store, not the shared blob — see AlertsPersistence for why.)
+    this._alertState = new AlertsPersistence(clientStore, 'alerts');
+    this._alertState.restore(this.workAlerts);
     // Every (session, window) placement on the server, marked with its alert — the
     // universe the registry was last run over, kept so the overflow arrow can be
     // recomputed (and survive a push that arrived without a directory).
@@ -1131,6 +1139,9 @@ export class SplitManager {
     // Raise/clear the attention flashes across the WHOLE server before anything is
     // rendered, so every surface below reads one settled answer.
     this._placements = this._markWorkAlerts(workingById);
+    // Save the settled registry so a reload restores the flashes instead of dismissing
+    // them. Signature-guarded, so the common no-change poll costs one JSON.stringify.
+    this._alertState.persist(this.workAlerts);
     const alerts = this.workAlerts.snapshot();
     // Windows shown by OTHER panes are not selectable here (they'd put two panes on
     // one window) — greyed out, like the sidebar. One shared source: occupiedWindowIds.
@@ -1216,10 +1227,15 @@ export class SplitManager {
   // session A says nothing about the tab you keep for it in session B, matching how
   // the strip has always treated the two as separate tabs.
   _markWorkAlerts(workingById) {
+    // …with one exception: a region mid-reconnect is parked on whatever window the
+    // fresh attach happened to land on, for the one poll before its restore hop takes
+    // effect. Counting that as "you looked" let a reconnect cancel the flash of a
+    // window you never saw — the same dismissal-by-accident the persisted registry
+    // exists to prevent, arriving by a different route.
     const shown = new Set();
     for (const u of this.units) {
       const id = u.layout?.activeWindowId;
-      if (id) shown.add(WorkAlerts.keyOf(this.logicalSession(u), id));
+      if (id && id !== u._parkedWindowId) shown.add(WorkAlerts.keyOf(this.logicalSession(u), id));
     }
     const placements = [];
     const seen = new Set();

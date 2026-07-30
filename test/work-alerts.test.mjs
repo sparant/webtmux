@@ -13,7 +13,7 @@
 // that silently stops firing is the failure you'd never notice.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { WorkAlerts, hiddenAlerts, alertOf } from '../resources/js/work-alerts.js';
+import { WorkAlerts, AlertsPersistence, hiddenAlerts, alertOf } from '../resources/js/work-alerts.js';
 
 // One recents strip entry, shaped like the ones SplitManager._refreshToolbar builds.
 const tab = (id, working, extra = {}) => ({
@@ -257,4 +257,149 @@ test('one covered placement covers the window in every session', () => {
   run(a, strip('1'));
   const marked = run(a, strip('0'));
   assert.equal(hiddenAlerts(marked, new Set(['@1'])).length, 0);
+});
+
+// --- surviving a reload -------------------------------------------------------
+//
+// The bug these cover: you open the laptop to several flashing tabs, refresh the
+// browser to get the connection back, and the refresh clears every flash as though
+// you had gone and looked at each window. The registry is derived from a sequence of
+// polls, so a reload wiped it — and an empty registry is indistinguishable from an
+// acknowledged one.
+
+test('a reload restores the flashes it left', () => {
+  const a = new WorkAlerts();
+  run(a,
+    [tab('@1', '1'), tab('@2', '1'), tab('@3', '1')],
+    [tab('@1', '0'), tab('@2', '2'), tab('@3', '1')],
+  );
+  const saved = JSON.parse(JSON.stringify(a.toJSON()));   // through the store and back
+
+  const b = new WorkAlerts().restore(saved);
+  const out = run(b, [tab('@1', '0'), tab('@2', '2'), tab('@3', '1')]);
+  assert.equal(out[0].alert, '0', 'the red flash survived the reload');
+  assert.equal(out[1].alert, '2', 'so did the amber one');
+  assert.equal(out[2].alert, '', 'and a window that never stopped is still quiet');
+});
+
+test('a restored flash still clears the moment you look at it', () => {
+  const a = new WorkAlerts();
+  run(a, [tab('@1', '1')], [tab('@1', '0')]);
+  const b = new WorkAlerts().restore(a.toJSON());
+  const out = run(b, [tab('@1', '0', { active: true })]);
+  assert.equal(out[0].alert, '', 'restoring is not the same as making it permanent');
+});
+
+test('a restored flash re-colours when the window moved on during the reload', () => {
+  const a = new WorkAlerts();
+  run(a, [tab('@1', '1')], [tab('@1', '0')]);
+  const b = new WorkAlerts().restore(a.toJSON());
+  const out = run(b, [tab('@1', '2')]);
+  assert.equal(out[0].alert, '2', 'red -> amber across the reload is still "and now it wants you"');
+});
+
+test('a restored flash clears when the window went back to green', () => {
+  const a = new WorkAlerts();
+  run(a, [tab('@1', '1')], [tab('@1', '0')]);
+  const b = new WorkAlerts().restore(a.toJSON());
+  assert.equal(run(b, [tab('@1', '1')])[0].alert, '', 'nothing left to go and look at');
+});
+
+test('the remembered green baseline survives, so a drop DURING the reload flashes', () => {
+  // The whole point of carrying `prev` and not just the live alerts: the window was
+  // green when the page went away and stopped while it was reloading (or while the
+  // laptop was shut). Without the baseline this reads as "first seen red" and stays
+  // silent forever — the exact transition the flash exists to catch.
+  const a = new WorkAlerts();
+  run(a, [tab('@1', '1')]);
+  const b = new WorkAlerts().restore(a.toJSON());
+  assert.equal(run(b, [tab('@1', '0')])[0].alert, '0');
+});
+
+test('a window that was already red and acknowledged stays quiet after a reload', () => {
+  const a = new WorkAlerts();
+  run(a, [tab('@1', '1')], [tab('@1', '0')], [tab('@1', '0', { active: true })]);
+  const b = new WorkAlerts().restore(a.toJSON());
+  assert.equal(run(b, [tab('@1', '0')])[0].alert, '', 'a reload must not resurrect old news');
+});
+
+test('restored alerts keep their order against ones raised afterwards', () => {
+  const a = new WorkAlerts();
+  run(a, [tab('@1', '1'), tab('@2', '1')], [tab('@1', '0'), tab('@2', '1')]);
+  const b = new WorkAlerts().restore(a.toJSON());
+  const out = run(b, [tab('@1', '0'), tab('@2', '0')]);
+  const [w1, w2] = out;
+  assert.ok(w2.alertSeq > w1.alertSeq,
+    'the flash raised after the reload is the newer one, so the arrow goes there first');
+});
+
+test('restore tolerates junk out of the store', () => {
+  const b = new WorkAlerts().restore({ seq: 'x', prev: 'nope', alerts: [null, {}, { id: '@1', value: '9' }] });
+  assert.equal(run(b, [tab('@1', '0')])[0].alert, '', 'a bad value is dropped, not flashed');
+  assert.equal(new WorkAlerts().restore(null).snapshot().size, 0);
+  assert.equal(new WorkAlerts().restore(undefined).snapshot().size, 0);
+});
+
+test('a linked window restores a flash in both of its tabs', () => {
+  const a = new WorkAlerts();
+  const strip = (working) => [
+    tab('@1', working, { session: 'services' }),
+    tab('@1', working, { session: 'editors' }),
+  ];
+  run(a, strip('1'), strip('0'));
+  const b = new WorkAlerts().restore(a.toJSON());
+  const out = run(b, strip('0'));
+  assert.equal(out[0].alert, '0');
+  assert.equal(out[1].alert, '0', 'both doors onto the window still flash');
+});
+
+// --- AlertsPersistence: the guard around the store ----------------------------
+
+// Minimal stand-in for ClientStore (section/patchSection is all that is used).
+function fakeStore(initial = {}) {
+  const state = { ...initial };
+  return {
+    state,
+    writes: 0,
+    section(name) { return state[name] && typeof state[name] === 'object' ? state[name] : {}; },
+    patchSection(name, partial) { this.writes++; state[name] = { ...this.section(name), ...partial }; },
+  };
+}
+
+test('nothing is written before the registry has been restored', () => {
+  // SplitManager's constructor reaches _refreshToolbar before the restore runs; an
+  // unguarded persist there saves an EMPTY registry over the one about to be read,
+  // which is the reload-dismisses-your-flashes bug arriving by the back door.
+  const store = fakeStore({ alerts: { registry: { seq: 3, prev: [], alerts: [{ session: 's', id: '@1', value: '0', seq: 3 }] } } });
+  const p = new AlertsPersistence(store, 'alerts');
+  assert.equal(p.persist(new WorkAlerts()), false, 'inert before restore()');
+  assert.equal(store.writes, 0);
+
+  const a = p.restore(new WorkAlerts());
+  assert.equal(alertOf(a.snapshot(), 's', '@1'), '0', 'the saved flash was still there to read');
+});
+
+test('an unchanged registry is not written twice a second', () => {
+  const store = fakeStore();
+  const p = new AlertsPersistence(store, 'alerts');
+  const a = p.restore(new WorkAlerts());
+  run(a, [tab('@1', '1')]);
+  assert.equal(p.persist(a), true, 'the first real change is written');
+  const after = store.writes;
+  assert.equal(p.persist(a), false, 'an identical registry is not');
+  assert.equal(store.writes, after);
+  run(a, [tab('@1', '0')]);
+  assert.equal(p.persist(a), true, 'a raised flash is');
+});
+
+test('a persist/restore round trip through the store carries the flashes', () => {
+  const store = fakeStore();
+  const p = new AlertsPersistence(store, 'alerts');
+  const a = p.restore(new WorkAlerts());
+  run(a, [tab('@1', '1')], [tab('@1', '0')]);
+  p.persist(a);
+
+  // …reload: a new tab-lifetime object reading the same sessionStorage-backed blob.
+  const b = new AlertsPersistence(store, 'alerts').restore(new WorkAlerts());
+  assert.equal(run(b, [tab('@1', '0')])[0].alert, '0');
 });
