@@ -101,6 +101,6 @@ authority lines and enforces them.
       12/12 read-only (raw websocket frames, past the client guard, so it is the
       SERVER's gate under test), 12/12 read-write.
 - [x] P0 Mark complete (phases 1–4 done on `harden-guards`).
-- [ ] P0 Merge via the lock wrapper, tick subplan B in the master plan. ~15m.
-      **Held for the parent session** — the branch is finished and green but
-      deliberately unmerged, and `plan-webtmux-harden-master.md` is untouched.
+- [x] P0 Merge via the lock wrapper, tick subplan B in the master plan. ~15m.
+      Merged to local-main as `5a83b7c` (clean — no conflict with A or C);
+      worktree and branch removed.
