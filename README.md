@@ -1,15 +1,15 @@
 # webtmux
 
-A web-based terminal with tmux-specific features. Access your tmux sessions from any browser with a visual pane layout, touch-friendly controls, and automatic scroll-to-copy-mode. Most importantly, see at a glance of all your windows which are working and which are idle. Get notified when a window is ready for more work!
+A web-based terminal with tmux-specific features. Access your tmux sessions from any browser with a visual pane layout, touch-friendly controls, and automatic scroll-to-copy-mode. Most importantly, see at a glance which of your windows are working and which are idle. Get notified when a window is ready for more work!
 
 - Multiple ways ([Exposé](#windows-mosaic), [Pip, Preview Bar](#preview-and-picture-in-picture), [Sidebar](#windows-view-in-sidebar), [Recents Tabs](#toolbar-and-recent-tabs)) to [quickly monitor](#hover-previews) and access your tmux windows.
 - [Get notified with visuals](#stoplights-and-work-alerts) when your tmux windows are done working, are prompting for input or are idle waiting for more work.
   - Perfect for working with AI coding agents - know exactly when they are done/need input
   - **setup required for feature to work**
 - Take advantage of modern UI - Use Drag and Drop, Previews on hover etc to manage your tmux state.
-- Controls mimick familiar tmux shortcuts - just with control+Option instead of the usual prefix.
+- Controls mimic familiar tmux shortcuts - just with control+Option instead of the usual prefix.
 - Discoverability of all features - no more searching for shortcuts or remembering commands
-- Quickly access your most recent windows. Monitor any window keeping it always in your view
+- Quickly access your most recent windows. Monitor any window, keeping it always in your view.
 
 ## Unique Features
 
@@ -30,38 +30,38 @@ A UI replacement for tmux Prefix+W. Lets you manage windows/sessions - create/de
 - Hover × kills a window — or just unlinks it when it lives in other sessions too.
 - Double-click renames windows and sessions inline.
 - "+" creates a session or a window.
-- session and window order persists.
+- Session and window order persists.
 
 ### Toolbar and Recent Tabs
 
-Manage your fleet of windows and keep your attention on the widnows that matter. The most recents you accessed are immediately avaialble in recent tabs - for preview or bringing into focus.
+Manage your fleet of windows and keep your attention on the windows that matter. The most recent ones you accessed are immediately available in recent tabs - for preview or bringing into focus.
 
 ![The toolbar: five most-recently-used window tabs with stoplight dots, and the flashing attention arrow counting unseen windows](screenshots/toolbar-recents.jpg)
 
-A tab flashes amber when its window has stopped working and an arrow flashes when a window not currently visible need addtion. Viewing the window stops its flash.
+A tab flashes amber when its window has stopped working, and an arrow flashes when a window that is not currently visible needs attention. Viewing the window stops its flash.
 
 ![The strip in motion: a tab flashes amber when its window prompts, the attention arrow flashes for a red window with no tab, and viewing the window stops its flash](screenshots/toolbar-alerts.gif)
 
-- The Toolbar has up to 5(configurable) most-recently-used window tabs for quick access.
-  - control+Option+N/P - used to Navigate to next previous in your most recent list.
-  - Move from your most recents by a hover revealing close button ×
+- The toolbar has up to 5 (configurable) most-recently-used window tabs for quick access.
+  - control+Option+N/P - used to navigate to the next/previous window in your most-recent list.
+  - Remove a window from your most recents with the hover-revealed close button ×
   - Most recents persist across reloads
 - Attention arrow (→) at the end of the strip counts and flashes for windows that need you but are visible nowhere; clicking it opens the most recent one for preview.
 - App wide toggles:
   - Copy-mode indicator/toggle
   - a single **mouse capture** dropdown holding both gesture questions — `click+drag:` (who gets a mouse press, the program or a text selection) and `copymode on scroll:` (who gets the wheel).
   - save (⤓) button to download your buffer locally or remotely
-  - focus dots tell you what region you are in.
+  - focus dots tell you which region you are in.
   - a hidden build-id chip (Ctrl+Alt+B, copies the build id when revealed).
 
 ### Windows Mosaic
 
-Bring up a mac style Exposé view to see 4 or 9 windows at once. Syllable substring search for filtering and scroll to see additional windows. Order by most recent to quickly find what you were working on, or see status of multiple windows at once. A **Show** filter narrows the mosaic to one work status — working / needs you / idle — which turns it into a triage board when a dozen agents are running.
+Bring up a Mac-style Exposé view to see 4 or 9 windows at once. Syllable substring search for filtering and scroll to see additional windows. Order by most recent to quickly find what you were working on, or see status of multiple windows at once. A **Show** filter narrows the mosaic to one work status — working / needs you / idle — which turns it into a triage board when a dozen agents are running.
 
 ![Exposé replayed: Ctrl+Alt+E opens the mosaic, pressing again densifies 2×2 to 3×3, typing filters by name, Enter switches the focused region](screenshots/expose.gif)
 
 - Ctrl+Alt+E cycles a full-screen mosaic of every window across every session: 2×2 → 3×3 → closed
-- Ln a Mac a trackpad pinch opens/closes it
+- On a Mac a trackpad pinch opens/closes it
 - Live thumbnails and left click or arrow+Enter to start working on it
 - Type to filter by name, with an optional toggle to search captured window content too
 - Linked windows appear once; sort by session or recency
@@ -72,7 +72,7 @@ Keep an eye on specific windows, even while you focus on others.
 
 ![Preview replayed: Ctrl+Alt+I floats one window as a corner PiP that blanks while you view its window; a second window docks both as an edge bar; Ctrl+Alt+H hides and restores it](screenshots/preview-pip.gif)
 
-- "Preview" collects windows to keep an eye on. Toggle with Command+Option+I
+- "Preview" collects windows to keep an eye on. Toggle with Ctrl+Alt+I
   - A single window floats as a corner PiP box.
   - Two or more dock as a bar along a screen edge that reserves space instead of covering the terminal.
 - Ctrl+Alt+I adds/removes the focused window.
@@ -97,7 +97,7 @@ Keep an eye on specific windows, even while you focus on others.
 - Windows self-report status via the tmux option `@wt_working`.
 - When a window drops out of green while you're looking elsewhere, everything showing it flashes in the new color until you actually view it.
   - Alerts cover every window on the server, not just visible tabs.
-- A bash prompt-hook installer ships in the repo so ordinary shells paint their own light automatically (see below), or hook into your Agent framework (like Claude)
+- A bash prompt-hook installer ships in the repo so ordinary shells paint their own light automatically (see below), or you can hook into your agent framework (like Claude).
 
 ### Split View And Regions
 
@@ -105,7 +105,7 @@ Keep an eye on specific windows, even while you focus on others.
 
 - Split view: add side-by-side terminal regions (Ctrl+Alt+Enter), each an independent live tmux view backed by its own grouped session — watch two windows of the same server at once.
 - One shared sidebar bound to whichever region is focused
-- a draggable divider resizes regions.
+- A draggable divider resizes regions.
 - A new region auto-picks the most-recently-used window not already on screen; two regions never show the same window (occupied windows are greyed out in every switcher).
 - Secondary regions switch sessions freely without dragging the primary or the console along; a split that gets synced onto a shared session self-heals.
 - Close the focused region with Ctrl+Alt+X (the primary region can't be closed).
@@ -159,7 +159,7 @@ Keep an eye on specific windows, even while you focus on others.
 
 ### Build, server & reliability
 
-Discover what build you are running on.
+Discover which build you are running.
 ![The hidden build-id chip (Ctrl+Alt+B) revealing the commit the running binary was built from](screenshots/build-reliability.jpg)
 
 ## Setting up the Busy/Working Stoplights
@@ -295,14 +295,14 @@ The recommended preferences: add this `hooks` block to `~/.claude/settings.json`
 
 Two of the entries are guarded, and the guards matter:
 
-- **UserPromptSubmit skips `/`-prefixed prompts.** Local slash commands (`/model`, `/cost`, …) are handled without a model turn, so no `Stop` ever follows — an unconditional green would latch until the next real turn ends, and the window lies "working" while the agent sits idle. Slash-invoked _skills_ do run real turns and re-green via `PreToolUse` a moment later. (A `UserPromptSubmit` hook's stdout is injected into the model's context, so whatever you put here must stay silent — every command above prints nothing.)
+- **UserPromptSubmit skips `/`-prefixed prompts.** Local slash commands (`/model`, `/cost`, …) are handled without a model turn, so no `Stop` ever follows — an unconditional green would latch until the next real turn ends, and the window would lie "working" while the agent sits idle. Slash-invoked _skills_ do run real turns and re-green via `PreToolUse` a moment later. (A `UserPromptSubmit` hook's stdout is injected into the model's context, so whatever you put here must stay silent — every command above prints nothing.)
 - **Notification stays red on the idle-timer message.** Claude Code fires `Notification` both when it genuinely needs a decision (permission prompt, question — that's amber) and as a ~60s "waiting for your input" idle reminder after a turn ends (nothing is blocked — repainting that amber would flip every idle window to "needs me" a minute after `Stop` correctly made it red). Unmatched messages default to amber deliberately: a missed block is worse than a spurious one.
 
 `SessionStart`/`SessionEnd`/`Stop` all paint red — "waiting for work" — so a window is never stranded green by a crash or exit. For the shell and agent hooks to compose without fighting, the shell must be told to step aside for the launch command: `export WT_STOPLIGHT_DELEGATES=claude` (see above) — otherwise the `claude` invocation itself sits green from launch to exit and hides every write the agent makes. If the agent runs inside a container where `tmux` can't be reached, keep the same hook shape but swap the `tmux set` for a small script that relays the value (and a window id, e.g. from a `WT_WINDOW` env var passed at launch) to a listener on the host that runs the `tmux set` there.
 
 ### Hooking up Tools that own their window's light
 
-For agents, long-running TUIs that report their own status: two escape hatches keep the shell hooks from fighting them:
+For agents and long-running TUIs that report their own status, two escape hatches keep the shell hooks from fighting them:
 
 - `WT_STOPLIGHT_SUPPRESS=1` in the environment disables the shell hooks entirely.
 - `WT_STOPLIGHT_DELEGATES` lists launcher commands whose whole lifetime owns the light; the shell skips painting green for them so the tool's own writes shine through. Empty by default — [add your launcher's pattern](#launchers-that-own-the-light-wt_stoplight_delegates).
@@ -324,8 +324,6 @@ sudo curl -fsSL https://github.com/sparant/webtmux/releases/latest/download/webt
 ```
 
 The binary comes from the latest [GitHub release](https://github.com/sparant/webtmux/releases) of this fork (`builds/` is untracked on `local-main`, so there is no raw-URL download). To build it yourself instead: clone the fork, check out `local-main` (the default branch), and run `make cross-compile` — the binary lands at `builds/webtmux-linux-amd64`.
-
-Replace `user:pass` with your desired credentials.
 
 ## Running webtmux on another machine — `webtmux-launch`
 
@@ -370,7 +368,7 @@ make launcher          # -> builds/webtmux-launch-{darwin-arm64,darwin-amd64,lin
 ```
 
 Pre-built launcher binaries are published as release assets from
-`https://github.com/<owner>/webtmux/releases` — download the one for your
+`https://github.com/sparant/webtmux/releases` — download the one for your
 laptop's platform, `chmod +x`, and put it on your `PATH`. The launcher and
 webtmux ship on independent cadences: a webtmux fix reaches every launcher
 already installed with no launcher update at all.
@@ -438,7 +436,7 @@ make launcher-dev && ./builds/webtmux-launch testbox
 
 Precedence, highest first: `--webtmux-binary <file>` › `--webtmux-source <dir>` ›
 `$WEBTMUX_LAUNCH_SOURCE` › the `make launcher-dev` default › the GitHub release.
-A configured-but-invalid directory is a **hard error**, never a quiet fall back
+A configured-but-invalid directory is a **hard error**, never a quiet fallback
 to downloading. Every run prints one line naming the source, its sha and how old
 the build is — local mode cannot misreport what it deployed, but it cannot know
 you forgot to run `make cross-compile`, so read that line when a fix "doesn't
