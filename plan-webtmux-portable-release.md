@@ -6,22 +6,49 @@
 last to **third** (execution order D → 0 → **2** → 3 → 1) because it now *unblocks* the
 launcher — Stage 3 fetches the assets published here.
 
-## Status — 2026-07-30: everything agent-executable is done; publishing is yours
+## ✅ COMPLETE — v0.1.0 published 2026-08-02
 
-Phases 2A and 2B are complete and merged to `local-main` (`9b1c258`), and `v0.1.0` is
-tagged and built from that tag. `./builds/webtmux-linux-amd64 --version` reports
-**`webtmux version v0.1.0`** — the goal of this stage, reached.
+**https://github.com/sparant/webtmux/releases/tag/v0.1.0** — seven assets, public,
+downloadable with no token and no `gh`. The stage's goal is reached: a webtmux binary can
+say what it is (`webtmux version v0.1.0`, never again `dev`), and it has a real
+distribution channel.
 
-**What is left is exactly the three credentials the agent does not have**, and it is all
-in one script:
+Verified after publication, unauthenticated, from a throwaway container — the way a
+stranger meets it:
 
-```bash
-bash ~/Projects/claude_run_me_7731.sh --dry-run   # prints every command, changes nothing
-bash ~/Projects/claude_run_me_7731.sh             # push branch + tag both legs, gh release create, verify
-```
+- All six platform binaries + `SHA256SUMS` return `200`, as does the `latest` redirect.
+- **All six downloaded binaries check against the published `SHA256SUMS`**, and are
+  byte-identical to what was staged locally. The published `SHA256SUMS` is byte-identical
+  to the local copy.
+- The release names the tagged commit: `refs/tags/v0.1.0` → tag object `d6cb344` →
+  commit `bc27015`, matching this repo.
+- Release metadata: not a draft, not a prerelease, 7 assets all `state=uploaded`, body
+  4471 chars (the full `release-notes.md` from the tag).
+- **The README's install flow was run verbatim against the live URLs**: curl → verify →
+  `install -m 755` → `webtmux --version` → serves `200` authenticated and `401` without.
+- Both URL forms `webtmux-launch` constructs (`download/v0.1.0/…` and `latest/download/…`)
+  resolve for the platforms it targets.
 
-That covers 2.9 and, on success, discharges 2.10 and 2.11 (their checks run as its step 5).
-Until it runs, the tag exists only on this machine and no release exists.
+*Residual gap, stated rather than glossed:* the launcher has not been run end-to-end
+against the live release — its release-source code path is covered by unit tests through a
+`urlBase` seam, and the URLs it builds are confirmed live above, but no real
+`webtmux-launch <host>` has fetched from GitHub yet. Stage 3's e2e suite runs against a
+local source. Worth doing once.
+
+### How publishing actually went — three failures, all of them useful
+
+It took three attempts, and each failure was a real defect that would have recurred:
+
+1. **`gh release create` could not resolve the repo.** Fixed before publishing by adding
+   `--repo $(RELEASE_REPO)`; see 2.9.
+2. **`publish-webtmux-tag.sh` refused to push the tag**, because it insisted the tag point
+   at HEAD — but `local-main` had moved 33 commits ahead, as it always will. Pushing a tag
+   is not moving it. Fixed; see 2.9.
+3. **A release asset was silently swapped out between building and shipping.** See 2.8.
+
+The lesson common to all three: every step between "built" and "published" needs a check
+that fails loudly, because each of these produced either a confusing error at the worst
+moment or — in the third case — no error at all.
 
 ## Goal
 
@@ -343,10 +370,63 @@ a release needs committing after the build. Tag the release commit, build *from 
       Build ran in the same throwaway `golang:1.23` image as the tests, but read-write
       (`-u 1000:1000 -v /workspace/webtmux:/work`, `HOME`/`GOCACHE`/`GOPATH` in `/tmp`,
       plus `git config --global --add safe.directory '*'` so git inside the container will
-      read the tag). Output lands in the real `builds/` with the host uid intact, which is
-      what the user's `gh release create` needs.
+      read the tag).
 
-- [ ] **P0** 2.9 **Publish — user-executed.** *(15 min)*
+      **The tag was moved a second time, at the user's direction**, to include the 33
+      commits of authority hardening that landed the same day (read-only actually gating
+      more than keystrokes, pane-save confined to declared directories, tmux mutations
+      targeting exactly, `@wt_state` convergence). A first release that omitted them would
+      have handed every `--webtmux-version latest` target the weaker binary. Cost was one
+      rebuild and one re-test. `release-notes.md` gained a section naming that work; the
+      tag was re-cut once more so the notes live *inside* what is released.
+      `v0.1.0` = `bc27015`.
+
+      **⚠ NEVER STAGE RELEASE ASSETS IN `builds/` — this bit, for real.** The first
+      transfer to the Mac failed its preflight with
+      `builds/ holds 'webtmux version local', not exactly v0.1.0`. Cause:
+      `scripts/webtmux-docker/launch.sh:159` runs
+      `make docker-artifact VERSION=local`, so **any webtmux container rebuild overwrites
+      `builds/webtmux-linux-amd64`** — here, a day after v0.1.0 was built, leaving a
+      `local`-stamped `root`-owned binary that no longer matched `SHA256SUMS`. The other
+      five were untouched, so the release would have shipped five good assets and one
+      wrong one. `builds/` is a **shared drop box** between the fork's build and the deploy
+      path, not a release staging area.
+
+      Fix, now the standing procedure: build from the tag in a **detached worktree**
+      (`git worktree add --detach <path> v0.1.0`) and stage the output in
+      `/workspace/webtmux-release/<tag>/`, outside the repo, where nothing else writes.
+      Two gotchas found doing it: `cp -a`/`cp -p` onto the ACL'd checkout fails with
+      "preserving permissions: Invalid argument" (use plain `cp` + `chmod`), and a linked
+      worktree's `.git` is a *file* holding an absolute `gitdir:` path — so a container
+      build needs the main repo mounted at its **real path**
+      (`-v /workspace/webtmux/.git:/workspace/webtmux/.git:ro`) or `git describe` fails
+      silently and the Makefile stamps `dev`. Caught only because the recipe printed
+      `Built dev`.
+
+- [x] **P0** 2.9 **Publish — user-executed.** *(15 min)* — **DONE 2026-08-02.**
+      Took three runs. Run 1 pushed `local-main` to the Mac (clearing a 30-commit backlog)
+      then died on the tag; run 2 got the tag to GitHub via both legs and forwarded the
+      branch, but found **`gh` is not installed on the host**; run 3 shipped the assets to
+      the Mac, where `gh` does live, and the Mac created the Release.
+
+      That produced a second script, `scripts/webtmux-docker/create-webtmux-release.sh`,
+      which **runs on the Mac** and is reusable for every future release. Why a second
+      script at all: `publish-webtmux-tag.sh` moves a *tag*, which is pure git riding the
+      SSH key the Mac already has. A *Release* is not git — it is an API object with
+      binaries attached, and **an SSH key cannot create one**; that needs a token, or `gh`,
+      which stores one. Different mechanism, different credential, different machine.
+
+      It needs nothing macOS does not ship (`curl`, `perl`, `shasum`, `git`), uses `gh`
+      when present and a plain token otherwise, and is written for **bash 3.2** — still
+      `/bin/bash` on macOS — verified by parsing it in a `bash:3.2` container. It validates
+      before publishing (all seven assets, checksums, tag already on GitHub, and the
+      binary matching the Mac's own arch reporting **exactly** the tag), reads the notes
+      out of `release-notes.md` **in the tag** so they cannot drift, and re-fetches every
+      asset unauthenticated afterwards.
+
+      The Mac holds only a bare repo, so the binaries must travel:
+      `claude_run_me_7731_to_mac.sh` stages them via `push_files_to_mac.sh`. Notes do not
+      travel — they are read from the tag.
 
       *(Revised 2026-07-29: "push the tag to origin" is not sufficient under the chain.
       `origin` is the Mac, and `sync-all-repos.sh` pushes the current branch only — no
@@ -408,12 +488,18 @@ a release needs committing after the build. Tag the release commit, build *from 
       building the launcher first deletes it). It now names `release-binaries` and mentions
       `SHA256SUMS`.
 
-- [~] **P1** 2.10 Verify the documented install path end-to-end from a throwaway
+- [x] **P1** 2.10 Verify the documented install path end-to-end from a throwaway
       container: curl the release asset URL **unauthenticated**, `chmod +x`, run
       `--version`, and check the binary against the `SHA256SUMS` asset. *(20 min)*
 
-      **Rehearsed 2026-07-30 against a stand-in release; the real-URL run is inside the
-      host script (step 5) and fires the moment the release exists.** No release exists
+      **DONE 2026-08-02 against the live release**, and rehearsed 2026-07-30 against a
+      stand-in before one existed. The real run: `curl` the asset from
+      `releases/download/v0.1.0/`, `sha256sum --check --ignore-missing`, `install -m 755`,
+      `webtmux --version` → `v0.1.0`, then a loopback-bound first run serving **200
+      authenticated / 401 without**. All six binaries were downloaded and checked against
+      the published `SHA256SUMS`, and are byte-identical to the staged originals.
+
+      *Original rehearsal notes follow.* No release exists
       yet, so `builds/` was served under the release filenames and the fresh-box section's
       commands were run verbatim in a throwaway container: `curl -O` both assets →
       `sha256sum --check --ignore-missing` → `install -m 755` → `webtmux --version` prints
@@ -437,7 +523,7 @@ a release needs committing after the build. Tag the release commit, build *from 
         auth over plain HTTP; the default `0.0.0.0` bind is what the README now warns
         against.
 
-- [ ] **P0** 2.11 **Verify the launcher's contract before Stage 3 depends on it.** These
+- [x] **P0** 2.11 **Verify the launcher's contract before Stage 3 depends on it.** These
       are the exact requests the launcher will make; catching a mismatch now is far
       cheaper than debugging it inside the launcher. *(15 min)*
 
@@ -460,7 +546,9 @@ a release needs committing after the build. Tag the release commit, build *from 
       All must be `200`. A `404` on `SHA256SUMS` or a renamed asset is exactly the failure
       that would break every launcher in the field.
 
-      **Blocked on 2.9 — these are live-URL checks and no release exists yet.** They are
+      **DONE 2026-08-02 — all `200`.** Six platform assets, `SHA256SUMS` as its own asset,
+      and the `latest` redirect; both URL forms the launcher builds
+      (`download/v0.1.0/…` and `latest/download/…`) confirmed live. They are also
       wired into the host script as step 5 (all six platforms, including `freebsd-amd64`,
       which this task's loop omits but `cross-compile` emits and the release will carry).
 
@@ -478,6 +566,11 @@ a release needs committing after the build. Tag the release commit, build *from 
 
 - **Tag + publish only at release time; never commit binaries.** The repo's size is now
   independent of release cadence.
+- **Release assets are staged outside the repo, in `/workspace/webtmux-release/<tag>/`,
+  and built from the tag in a detached worktree.** `builds/` is a shared drop box the
+  deploy path rewrites (`launch.sh` runs `make docker-artifact VERSION=local`), so an
+  asset left there can be silently replaced between building and publishing — which
+  happened to v0.1.0 and was caught only by a version preflight.
 - **Asset names are a public interface.** The launcher constructs URLs from them. Adding
   platforms is safe; renaming or removing is a breaking change for launchers already
   distributed.
