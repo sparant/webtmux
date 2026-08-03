@@ -257,13 +257,18 @@ working repo's `origin`. Renumbered to 0.1–0.10; see the subplan's "Topology" 
 - [ ] **P0** 1.8 Verify offline (static greps, `--network none` boot, binary grep)
 - [ ] **P0** 1.9 Merge + cleanup
 
-### Phase 2 — Real releases · `plan-webtmux-portable-release.md` *(unblocks Phase 3)*
+### Phase 2 — Real releases · `plan-webtmux-portable-release.md` ✅ **COMPLETE 2026-08-02**
+
+**v0.1.0 is published:** https://github.com/sparant/webtmux/releases/tag/v0.1.0 — seven
+assets, public, no token needed. Verified unauthenticated end to end (all six binaries
+re-downloaded and checked against the published `SHA256SUMS`; README install flow run
+verbatim against the live URLs).
 
 - [x] **P0** 2.1 Create worktree `chore/portable-release`
 - [x] **P0** 2.2 **Verify only** — `builds/` already untracked by the build/run split
 - [x] **P1** 2.3 `checksums` + `release-binaries` targets; the dead payload line was already gone (Stage 3 dropped it)
 - [x] **P0** 2.4 Rewrite the README install path (curl from `releases/download/…`; the upstream URLs were already fixed by `66d07e0` — what was stale was `builds/`)
-- [~] **P0** 2.5 Cut `v0.1.0` — tagged locally and built from the tag; **pushing the tag and `gh release create` are user-executed and outstanding**
+- [x] **P0** 2.5 Cut `v0.1.0` — tagged, built from the tag, published, verified. Needed three runs and produced two script fixes plus a new Mac-side `create-webtmux-release.sh`
 - [x] **P0** 2.6 Merge + cleanup
 
 ### Phase 3 — The launcher · `plan-webtmux-portable-launcher.md`
