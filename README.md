@@ -142,6 +142,24 @@ Keep an eye on specific windows, even while you focus on others.
 
 - Toolbar ⤓ saves the focused pane's buffer — the **entire scrollback** (the default) or just the visible screen: download to the browser, or write a file on the machine webtmux runs on — container-aware, with the save location explained up front and configurable via `WEBTMUX_SAVE_DIR` / `WEBTMUX_PATH_MAP` / `WEBTMUX_HOME` / `WEBTMUX_IN_CONTAINER` (details in the save section below).
 
+### Scrollback buffer size
+
+- Toolbar ⛁ shows how many lines the focused window's panes can hold, how many
+  they are holding, and a gauge that turns amber once a buffer is full — i.e.
+  once tmux has already started dropping the oldest lines.
+- **New windows** sets `history-limit` for everything created from then on
+  (`set-option -g`), and says out loud that it leaves existing windows alone.
+- **Resize this window** changes an existing window, which tmux offers no command
+  for: a pane's buffer is fixed when the pane is created. webtmux rebuilds the
+  window's panes at the new size in place — same window, same name, same index,
+  same shape — which restarts the shells and discards the current scrollback, so
+  it asks first and names anything it would kill. Download it with ⤓ beforehand
+  if you want to keep it.
+- **Clear** empties every pane's history in the window (not just the visible
+  one), leaving the screen and everything running untouched.
+- Reading the sizes works on a read-only server (`-w` absent); changing them
+  does not.
+
 ### Keyboard navigation & discoverability
 
 ![The shortcuts overlay (Ctrl+Alt+/): every global chord with modifier labels matching your OS](screenshots/keyboard-shortcuts.jpg)
@@ -789,11 +807,16 @@ WebTmux extends the gotty protocol with tmux-specific message types:
 - `B` TmuxScrollUp - Scroll up in copy mode
 - `C` TmuxScrollDown - Scroll down in copy mode
 - `D` TmuxNewWindow - Create new window
+- `S` TmuxScrollbackRequest - Read a window's entire pane buffer (its CONTENTS)
+- `T` TmuxHistoryInfoRequest - Read a window's scrollback SIZE and usage
+- `U` TmuxHistoryAction - Set the default / resize / clear a scrollback buffer
 
 **Server -> Client:**
 
 - `7` TmuxLayoutUpdate - Full layout JSON
 - `9` TmuxModeUpdate - Copy mode state
+- `E` TmuxScrollbackData - A window's entire pane buffer, base64
+- `F` TmuxHistoryInfo - Scrollback sizes/usage + the outcome of an action
 
 ## Development
 

@@ -60,6 +60,12 @@ const (
 	// unbounded, one-shot, and must never enter the capture cache the thumbnails
 	// read. See handleScrollbackRequest.
 	TmuxScrollbackData = 'E'
+	// One window's scrollback ACCOUNTING (JSON: a tmux.HistoryReport plus the
+	// outcome of whatever action asked for it). Answers both TmuxHistoryInfoRequest
+	// and TmuxHistoryAction, so the numbers on screen are always the ones tmux held
+	// after the last thing that was done to them. Note the pairing: TmuxScrollback*
+	// above is the buffer's CONTENTS, this is its size and how full it is.
+	TmuxHistoryInfo = 'F'
 )
 
 // Tmux input message types (client -> server)
@@ -134,4 +140,15 @@ const (
 	// for a moment ago and gave up on. Used by "Download to browser" when the
 	// save dropdown's scope is the whole buffer.
 	TmuxScrollbackRequest = 'S'
+	// Ask how big one window's scrollback is and how much of it is used (payload
+	// JSON: {"windowId":"@N"}). Read-only — `list-panes -F` and `show-options -v`.
+	// The reply is a TmuxHistoryInfo. Sent when the scrollback dropdown opens.
+	TmuxHistoryInfoRequest = 'T'
+	// Change a scrollback buffer (payload JSON: {"windowId":"@N","action":"…",
+	// "limit":N,"force":bool}). Three actions: "default" sets what NEW windows are
+	// born with (`set-option -g history-limit`), "resize" rebuilds this window's
+	// panes at a new size, "clear" empties them. The reply is a TmuxHistoryInfo
+	// carrying the outcome AND the fresh numbers. See pkg/tmux/history.go for why
+	// a resize has to rebuild panes rather than set an option.
+	TmuxHistoryAction = 'U'
 )

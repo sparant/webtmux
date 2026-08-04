@@ -42,7 +42,13 @@ Pieces:
   must reach neither the program nor the copy-mode exit),
   `verify-state-sync.js` (TWO browser contexts against one tmux server: a cold-cache
   client must not erase the other's split/preview, must converge on it, and a killed
-  window must not be resurrected by the next push).
+  window must not be resurrected by the next push),
+  `verify-scrollback-save.js` (the ⤓ dropdown saves the WHOLE buffer, asserted against
+  the downloaded file),
+  `verify-scrollback-buffer.js` (the ⛁ dropdown: reported sizes match `tmux display -p`,
+  setting the default leaves existing windows alone, a confirmed resize rebuilds a
+  3-pane window in place at the new size and keeps its shape, clear empties every pane
+  — and with `WT_PERMIT_WRITE=0` the sizes are still shown but nothing can change them).
 - `driver-gifs.js` — records one video per animated feature, each scene
   replaying its README section's bullets in order (split → drag divider →
   close; hover → preview → restore; lights change → tabs flash until viewed;

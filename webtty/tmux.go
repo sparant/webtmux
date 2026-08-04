@@ -37,6 +37,14 @@ type TmuxController interface {
 	SplitPane(horizontal bool) error
 	ClosePane(paneID string) error
 	SetGlobalOption(key, val string) error
+	// Scrollback buffer management. SetDefaultHistoryLimit changes what NEW
+	// windows are born with; ResizeWindowHistory rebuilds an existing window's
+	// panes at a new size (destructive — see pkg/tmux/history.go); ClearWindowHistory
+	// empties them. windowID is passed to the default-setter too, so it can tell
+	// whether a session-scope override would shadow the global write.
+	SetDefaultHistoryLimit(windowID string, limit int) error
+	ResizeWindowHistory(windowID string, limit int, force bool) (tmux.HistoryResize, error)
+	ClearWindowHistory(windowID string) error
 	EnterCopyMode() error
 	ExitCopyMode() error
 	RefreshClient() error
@@ -64,6 +72,10 @@ type CaptureProvider interface {
 	// CaptureScrollback is the WHOLE pane buffer (tmux history + screen) as plain
 	// text, for a save. Uncached and unbounded; asked for only on a user gesture.
 	CaptureScrollback(windowID string) (string, error)
+	// HistoryReport is one window's scrollback ACCOUNTING — how big each pane's
+	// buffer is and how much of it holds anything. Read-only, so it belongs here
+	// with the other reads rather than on the write-side controller.
+	HistoryReport(windowID string) (tmux.HistoryReport, error)
 }
 
 // SetCaptureProvider hands this connection the shared capture store. Parallel to
@@ -170,6 +182,11 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 	// And for the full-buffer read behind "Download to browser".
 	if msgType == TmuxScrollbackRequest {
 		return wt.handleScrollbackRequest(payload)
+	}
+	// "How big is this scrollback and how full is it?" is a read of the same
+	// server-global store, so it too answers before the tmuxCtrl guard.
+	if msgType == TmuxHistoryInfoRequest {
+		return wt.handleHistoryInfoRequest(payload)
 	}
 
 	if wt.tmuxCtrl == nil {
@@ -344,6 +361,9 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 			log.Printf("@wt_state write failed (ignored, pane kept): %v", err)
 		}
 		return nil
+
+	case TmuxHistoryAction:
+		return wt.handleHistoryAction(payload)
 
 	case TmuxRefresh:
 		// Put this region's REAL screen back after a hover preview blitted another
@@ -801,7 +821,8 @@ func isTmuxMessage(msgType byte) bool {
 		TmuxSwitchSession, TmuxRenameWindow, TmuxMoveWindow, TmuxNewSession,
 		TmuxRenameSession, TmuxKillWindow, TmuxKillSession, TmuxLinkWindow,
 		TmuxUnlinkWindow, TmuxCaptureRequest, TmuxSavePaneFile, TmuxSaveInfoRequest,
-		TmuxScrollbackRequest, TmuxSetState, TmuxRefresh:
+		TmuxScrollbackRequest, TmuxHistoryInfoRequest, TmuxHistoryAction,
+		TmuxSetState, TmuxRefresh:
 		return true
 	default:
 		return false

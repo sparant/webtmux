@@ -67,6 +67,11 @@ func authorityOf(msgType byte) msgAuthority {
 		// keep it deliberately: "Download to browser" is the save path that asks
 		// nothing of the filesystem, and it is the only one they have.
 		return authView
+	case TmuxHistoryInfoRequest:
+		// Reads one window's scrollback accounting (`list-panes -F` +
+		// `show-options -v`). Nothing is written, and a viewer who can see the
+		// buffer's contents should certainly be allowed to see how big it is.
+		return authView
 	case TmuxRefresh:
 		// `refresh-client` on this pane's OWN client: it repaints a screen that the
 		// hover preview scribbled on. No tmux state changes.
@@ -98,6 +103,12 @@ func authorityOf(msgType byte) msgAuthority {
 		return authWrite
 	case TmuxSetState:
 		// Rewrites @wt_state, which every other client adopts.
+		return authWrite
+	case TmuxHistoryAction:
+		// The loudest write in the protocol: a resize REBUILDS panes, which kills
+		// whatever is running in them, and "clear" throws away history no one can
+		// get back. Setting the default merely rewrites a server-global option —
+		// still a write, and still one every other client lives with.
 		return authWrite
 	}
 	return authUnclassified

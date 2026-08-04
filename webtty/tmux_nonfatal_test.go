@@ -77,6 +77,17 @@ func (c *failCtrl) ScrollUp(int) error                   { return c.note("scroll
 func (c *failCtrl) ScrollDown(int) error                 { return c.note("scroll-down") }
 func (c *failCtrl) NewWindow(string) error               { return c.note("new-window") }
 
+// The scrollback-buffer trio. All three mutate — a resize rebuilds panes, a clear
+// throws history away, and the default-setter rewrites a server-global option —
+// so all three go through note() and are counted by the write-authority tests.
+func (c *failCtrl) SetDefaultHistoryLimit(string, int) error {
+	return c.note("set-option history-limit")
+}
+func (c *failCtrl) ClearWindowHistory(string) error { return c.note("clear-history") }
+func (c *failCtrl) ResizeWindowHistory(string, int, bool) (tmux.HistoryResize, error) {
+	return tmux.HistoryResize{}, c.note("resize-history")
+}
+
 // countingCapture is a CaptureProvider that records every call and can be made to
 // block inside one, so a test can observe a SECOND request arriving while the
 // first is still in flight (see capture_cap_test.go).
@@ -95,6 +106,12 @@ type countingCapture struct {
 	scrollbackErr  error
 	scrollbackHold chan struct{} // when non-nil, CaptureScrollback waits on it
 	scrollbackFor  []string
+
+	// The scrollback-ACCOUNTING half (how big / how full), as distinct from the
+	// scrollback CONTENTS above.
+	history    *tmux.HistoryReport
+	historyErr error
+	historyFor []string
 }
 
 type captureCall struct {
@@ -121,6 +138,24 @@ func (c *countingCapture) CaptureWindows(ids []string, force bool) ([]tmux.Captu
 }
 
 func (c *countingCapture) PaneCurrentPath(string) (string, error) { return c.paneDir, nil }
+
+// HistoryReport is the read behind the scrollback dropdown. `history` is what it
+// answers with; a nil one still yields a usable (empty) report, so a test that
+// isn't about scrollback doesn't have to populate it.
+func (c *countingCapture) HistoryReport(windowID string) (tmux.HistoryReport, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.historyFor = append(c.historyFor, windowID)
+	if c.historyErr != nil {
+		return tmux.HistoryReport{}, c.historyErr
+	}
+	if c.history == nil {
+		return tmux.HistoryReport{WindowID: windowID}, nil
+	}
+	rep := *c.history
+	rep.WindowID = windowID
+	return rep, nil
+}
 
 func (c *countingCapture) CaptureScrollback(windowID string) (string, error) {
 	c.mu.Lock()

@@ -56,6 +56,8 @@ export const MSG = {
   TmuxRefresh: 'Q',
   TmuxSaveInfoRequest: 'R',
   TmuxScrollbackRequest: 'S',
+  TmuxHistoryInfoRequest: 'T',
+  TmuxHistoryAction: 'U',
 
   // Output (server -> client)
   Output: '1',
@@ -78,6 +80,11 @@ export const MSG = {
   // Not a TmuxCaptureData: it is not a screen and must never reach the capture
   // cache — it is handed straight to a download and dropped.
   TmuxScrollbackData: 'E',
+  // One window's scrollback ACCOUNTING — how big each pane's buffer is, how much
+  // of it is used, and what new windows will be born with. Answers both the
+  // question and the three actions, so the panel's numbers are always the ones
+  // tmux held after the last thing that was done to them.
+  TmuxHistoryInfo: 'F',
 };
 
 // Scroll-wheel behavior. Cycled by the sidebar button through all four:
@@ -103,6 +110,7 @@ const TMUX_MSG_TYPES = new Set([
   MSG.TmuxMoveWindow, MSG.TmuxNewSession, MSG.TmuxRenameSession, MSG.TmuxKillWindow,
   MSG.TmuxKillSession, MSG.TmuxLinkWindow, MSG.TmuxUnlinkWindow,
   MSG.TmuxSavePaneFile, MSG.TmuxSaveInfoRequest, MSG.TmuxScrollbackRequest,
+  MSG.TmuxHistoryInfoRequest, MSG.TmuxHistoryAction,
   MSG.TmuxSetState, MSG.TmuxRefresh,
 ]);
 
@@ -1498,6 +1506,16 @@ export class TerminalUnit {
         }
         break;
 
+      case MSG.TmuxHistoryInfo:
+        // Scrollback sizes/usage, and the outcome of whatever action asked for
+        // them. Routed to the toolbar's scrollback dropdown.
+        try {
+          this.onHistoryInfo?.(JSON.parse(payload));
+        } catch (e) {
+          console.warn('Bad scrollback info:', e);
+        }
+        break;
+
       default:
         console.warn('Unknown message type:', type);
     }
@@ -1940,6 +1958,26 @@ export class TerminalUnit {
     if (!this.isConnected()) return false;
     this.sendMessage(MSG.TmuxSaveInfoRequest, JSON.stringify({ windowId, dir }));
     return true;
+  }
+
+  // Ask how big this window's scrollback is and how much of it is used. Read-only
+  // on the server (`list-panes -F` + `show-options -v`), so it answers on a
+  // read-only webtmux too: seeing how full a buffer is changes nothing. The reply
+  // is a TmuxHistoryInfo -> onHistoryInfo.
+  sendHistoryInfoRequest(windowId) {
+    if (!this.isConnected()) return false;
+    return this.sendMessage(MSG.TmuxHistoryInfoRequest, JSON.stringify({ windowId }));
+  }
+
+  // Change a scrollback buffer: 'default' (what NEW windows are born with),
+  // 'resize' (rebuild this window's panes at a new size — destructive, hence
+  // `force`), or 'clear'. The reply is the same TmuxHistoryInfo frame, carrying
+  // the outcome AND the numbers it produced, so the panel can never report a
+  // change beside figures from before it.
+  sendHistoryAction(windowId, action, limit = 0, force = false) {
+    if (!this.isConnected()) return false;
+    return this.sendMessage(MSG.TmuxHistoryAction,
+      JSON.stringify({ windowId, action, limit, force }));
   }
 
   enterCopyMode() {

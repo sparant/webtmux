@@ -34,6 +34,9 @@ import { SplitPersistence } from './split-state.js';
 import { resolveRestoreView, planRestoreLanding } from './restore-view.js';
 import { saveResultBanner } from './save-target.js';
 import { DEFAULT_SAVE_SCOPE, normalizeScope, isScrollback, fetchingText } from './save-scope.js';
+import {
+  ACTION_DEFAULT, ACTION_RESIZE, ACTION_CLEAR, actionBanner, formatBytes,
+} from './scrollback.js';
 import { IS_MAC } from './os.js';
 import { stateStore } from './state-store.js';
 import { clientStore } from './client-store.js';
@@ -257,6 +260,8 @@ export class SplitManager {
     // into the capture cache: it is a one-shot object bigger than everything
     // else in the page, and the download is the only thing that ever wants it.
     unit.onScrollbackData = (payload) => this.onScrollbackData(payload);
+    // Scrollback SIZES (as opposed to contents) -> the ⛁ dropdown.
+    unit.onHistoryInfo = (res) => this.onHistoryInfo(res);
     // Clicking the terminal collapses the shared sidebar out of the way (unless pinned).
     unit.onTerminalMousedown = () => {
       const sb = this.sidebar;
@@ -1180,6 +1185,75 @@ export class SplitManager {
     }, 1800);
   }
 
+  // ---- scrollback buffer (the ⛁ dropdown) ---------------------------------
+  //
+  // Everything here speaks about the FOCUSED region's active window, like the
+  // save dropdown beside it. A tmux scrollback belongs to a pane, so the panel
+  // reports the window's panes individually and acts on all of them at once —
+  // "this window's buffer" is the object a person means, and silently acting on
+  // only the visible pane of a split is how a cleared window keeps most of its
+  // history (see ClearWindowHistory).
+
+  // Ask for this window's sizes/usage. Sent when the dropdown opens, and again
+  // after every action, so the numbers on screen are never older than the last
+  // thing that changed them.
+  requestHistoryInfo() {
+    const u = this.focusedUnit;
+    const id = u?.layout?.activeWindowId;
+    if (!id || !u) return false;
+    return u.sendHistoryInfoRequest(id);
+  }
+
+  // The server's answer, to the question OR to an action. One frame for both, so
+  // the panel can't show a success line beside figures from before it.
+  onHistoryInfo(res) {
+    if (!this.toolbar) return;
+    this.toolbar.historyInfo = res || null;
+    // A plain info request says nothing; only an action earns a banner.
+    if (!res || !res.action) return;
+    this.toolbar.historyStatus = actionBanner(res);
+    // One more read a moment later. A rebuild's replacement shells are still
+    // starting when the reply is written, so the figures in it are honest but
+    // instantaneous; this is what makes the panel settle on what the window
+    // actually ended up with.
+    if (res.ok) {
+      clearTimeout(this._historySettle);
+      this._historySettle = setTimeout(() => this.requestHistoryInfo(), 900);
+    }
+  }
+
+  // What NEW windows are born with (`set-option -g history-limit`). Deliberately
+  // does not touch any existing window — that is what resizeWindowHistory is for,
+  // and conflating them is how you kill a running program by changing a default.
+  setDefaultHistoryLimit(limit) {
+    this._historyAction(ACTION_DEFAULT, limit, false);
+  }
+
+  // Rebuild this window's panes at `limit` lines. Destructive: see scrollback.js's
+  // resizePlan for the sentence the toolbar makes the user agree to first, and
+  // pkg/tmux/history.go for why tmux leaves no gentler option. `force` is that
+  // agreement; without it the server refuses a window running anything but shells.
+  resizeWindowHistory(limit, force = false) {
+    this._historyAction(ACTION_RESIZE, limit, force);
+  }
+
+  clearWindowHistory() {
+    this._historyAction(ACTION_CLEAR, 0, false);
+  }
+
+  _historyAction(action, limit, force) {
+    const u = this.focusedUnit;
+    const id = u?.layout?.activeWindowId;
+    if (!id || !u || !this.toolbar) return;
+    this.toolbar.historyStatus = { state: 'saving', text: 'Asking tmux…' };
+    if (!u.sendHistoryAction(id, action, Number(limit) || 0, !!force)) {
+      // A refused send (read-only, or a closed socket) already explains itself in
+      // the notice line; clear the pending banner so the panel isn't left waiting
+      // on a reply that was never asked for.
+      this.toolbar.historyStatus = null;
+    }
+  }
+
   _refreshToolbar() {
     if (!this.toolbar) return;
     this._refreshPanes();
@@ -1986,14 +2060,6 @@ function decodeScrollback(b64) {
   if (!b64) return '';
   const text = new TextDecoder().decode(CaptureCache.decodeAnsi({ data: b64 }));
   return text.replace(/\x1b\[[0-9;]*m/g, '');
-}
-
-// Byte counts a person can read at a glance — the confirmation's whole job is to
-// make "how much did I actually get?" answerable without opening the file.
-function formatBytes(n) {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 // Decode a capture entry to plain text: base64 ANSI -> UTF-8, then strip SGR

@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -32,6 +33,18 @@ type fakeServer struct {
 	clients  []map[string]string
 
 	state string // @wt_state, returned by show-options -gqv
+
+	// options models tmux's SCOPED option store, keyed "<scope>/<name>" where scope
+	// is "global" or a session id ("$0"). Only consulted for named options other
+	// than @wt_state, so the state tests above are untouched. `-A` resolves the
+	// inheritance chain (session, then global) exactly as tmux does — which is the
+	// distinction the scrollback code depends on: an option a session merely
+	// INHERITS must read back empty without it, or a temporary override could never
+	// be undone (see ownHistoryLimit).
+	options map[string]string
+	// nextPane numbers the panes split-window creates, so a test can watch a
+	// rebuild replace a window's panes one at a time.
+	nextPane int
 
 	// fail maps a tmux subcommand name to an error to return instead of output.
 	fail map[string]error
@@ -173,6 +186,19 @@ func (f *fakeServer) run(args ...string) (string, error) {
 		return f.rows(format, rows), nil
 
 	case "display-message":
+		// A window/pane target resolves against that row (which carries its owning
+		// session's variables), not against a session name — `display-message -t @3
+		// '#{session_id}'` is how the scrollback code asks which session a window
+		// lives in, and answering it from "the current session" would make the
+		// distinction untestable.
+		if strings.HasPrefix(target, "@") || strings.HasPrefix(target, "%") {
+			for _, r := range append(append([]map[string]string{}, windows...), panes...) {
+				if r["window_id"] == target || r["pane_id"] == target {
+					return renderFormat(flagValue(args, "-p"), r) + "\n", nil
+				}
+			}
+			return "", nil
+		}
 		sess := targetSession(target)
 		for _, s := range sessions {
 			if s["session_name"] == sess {
@@ -186,7 +212,27 @@ func (f *fakeServer) run(args ...string) (string, error) {
 		return "", nil
 
 	case "show-options":
+		// @wt_state keeps its dedicated slot; everything else comes from the scoped
+		// option store.
+		name := args[len(args)-1]
+		if name != "@wt_state" {
+			return f.showOption(args, name), nil
+		}
 		return state, nil
+
+	case "set-option":
+		f.setOption(args)
+		return "", nil
+
+	case "split-window":
+		// Model the one property the rebuild depends on: a NEW pane is born with the
+		// history-limit in force RIGHT NOW for its session, while existing panes keep
+		// theirs. That is the whole reason a resize has to rebuild.
+		return f.splitWindow(args), nil
+
+	case "kill-pane":
+		f.killPane(target)
+		return "", nil
 
 	case "new-session":
 		// `-P -F` asks tmux to print something about the session it just made; the
@@ -199,6 +245,146 @@ func (f *fakeServer) run(args ...string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// ---- scoped options + pane lifecycle ---------------------------------------
+
+// optionScope reads the scope out of a set/show-options argv: "global" for -g,
+// the -t target otherwise (a session id in this package), "" for neither.
+func optionScope(args []string) string {
+	if hasFlag(args, "-g") {
+		return "global"
+	}
+	if t := flagValue(args, "-t"); t != "" {
+		return t
+	}
+	return ""
+}
+
+// showOption answers `show-options [-g] [-A] [-v] -t <scope> <name>`. Without -A
+// an inherited option reads back EMPTY, which is how the caller tells "the
+// session has its own value" from "it is borrowing the global's".
+func (f *fakeServer) showOption(args []string, name string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	scope := optionScope(args)
+	if v, ok := f.options[scope+"/"+name]; ok {
+		return v + "\n"
+	}
+	if hasFlag(args, "-A") && scope != "global" {
+		if v, ok := f.options["global/"+name]; ok {
+			return v + "\n"
+		}
+	}
+	return ""
+}
+
+// setOption applies `set-option [-g] [-u] -t <scope> <name> [value]`.
+func (f *fakeServer) setOption(args []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.options == nil {
+		f.options = map[string]string{}
+	}
+	scope := optionScope(args)
+	if hasFlag(args, "-u") {
+		delete(f.options, scope+"/"+args[len(args)-1])
+		return
+	}
+	if len(args) < 2 {
+		return
+	}
+	name, value := args[len(args)-2], args[len(args)-1]
+	f.options[scope+"/"+name] = value
+}
+
+// paneLimit is what a pane created in `sessionID` right now would be born with.
+func (f *fakeServer) paneLimit(sessionID string) string {
+	if v, ok := f.options[sessionID+"/history-limit"]; ok {
+		return v
+	}
+	if v, ok := f.options["global/history-limit"]; ok {
+		return v
+	}
+	return "2000"
+}
+
+// splitWindow inserts a fresh pane immediately after its source — tmux's own
+// placement, and the reason a rebuild preserves pane ORDER — and prints its id
+// when asked with -P -F.
+func (f *fakeServer) splitWindow(args []string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	target := flagValue(args, "-t")
+	at := -1
+	for i, p := range f.panes {
+		if p["pane_id"] == target || p["window_id"] == target {
+			at = i
+			break
+		}
+	}
+	if at < 0 {
+		return ""
+	}
+	src := f.panes[at]
+	f.nextPane++
+	dir := flagValue(args, "-c")
+	if dir == "" {
+		dir = src["pane_current_path"]
+	}
+	fresh := map[string]string{
+		"pane_id": "%" + strconv.Itoa(100+f.nextPane), "pane_active": "0",
+		"pane_in_mode": "0", "pane_width": src["pane_width"], "pane_height": src["pane_height"],
+		"pane_top": src["pane_top"], "pane_left": src["pane_left"],
+		"pane_current_command": "bash", "pane_current_path": dir,
+		"history_limit": f.paneLimit(src["session_id"]), "history_size": "0", "history_bytes": "0",
+		"window_id": src["window_id"], "session_id": src["session_id"],
+		"session_name": src["session_name"],
+	}
+	rest := append([]map[string]string{}, f.panes[at+1:]...)
+	f.panes = append(append(f.panes[:at+1:at+1], fresh), rest...)
+	f.renumberPanes()
+	if hasFlag(args, "-P") {
+		return renderFormat(flagValue(args, "-F"), fresh) + "\n"
+	}
+	return ""
+}
+
+// killPane removes a pane; if it was the active one, its successor in the window
+// takes over — the reason a rebuild has to re-select at the end.
+func (f *fakeServer) killPane(target string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var kept []map[string]string
+	killedActive, window := false, ""
+	for _, p := range f.panes {
+		if p["pane_id"] == target {
+			killedActive = p["pane_active"] == "1"
+			window = p["window_id"]
+			continue
+		}
+		kept = append(kept, p)
+	}
+	f.panes = kept
+	if killedActive {
+		for _, p := range f.panes {
+			if p["window_id"] == window {
+				p["pane_active"] = "1"
+				break
+			}
+		}
+	}
+	f.renumberPanes()
+}
+
+// renumberPanes restates #{pane_index} as tmux does: position within the window.
+func (f *fakeServer) renumberPanes() {
+	seen := map[string]int{}
+	for _, p := range f.panes {
+		w := p["window_id"]
+		p["pane_index"] = strconv.Itoa(seen[w])
+		seen[w]++
+	}
 }
 
 // oneSessionServer is the common fixture: a single session "services" with two

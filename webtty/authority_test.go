@@ -56,6 +56,9 @@ func TestReadOnlyAllowsExactlyTheViewingMessages(t *testing.T) {
 		// The whole-buffer read behind "Download to browser" — the one save a
 		// read-only server can still offer, since it writes nothing anywhere.
 		{"scrollback request", TmuxScrollbackRequest},
+		// How big the buffer is / how full — a `list-panes -F` + `show-options -v`
+		// read. The action that CHANGES it is in the write list below.
+		{"scrollback size probe", TmuxHistoryInfoRequest},
 		{"refresh (repaint our own pane)", TmuxRefresh},
 	}
 	for _, tc := range view {
@@ -91,6 +94,7 @@ func TestReadOnlyAllowsExactlyTheViewingMessages(t *testing.T) {
 		{"unlink window", TmuxUnlinkWindow},
 		{"save pane to a file on the server", TmuxSavePaneFile},
 		{"rewrite the shared @wt_state", TmuxSetState},
+		{"resize/clear a scrollback buffer", TmuxHistoryAction},
 	}
 	for _, tc := range write {
 		if !requiresWrite(tc.msg) {
@@ -132,6 +136,9 @@ func TestGateBlocksMutationsWithoutPermitWrite(t *testing.T) {
 		[]byte(string(rune(TmuxLinkWindow)) + "@3 other"),
 		{TmuxUnlinkWindow, '@', '3'},
 		[]byte(string(rune(TmuxSetState)) + `{"v":1}`),
+		// The scrollback writes: a rebuild kills whatever runs in the panes it
+		// replaces, and a clear discards history nobody can get back.
+		[]byte(string(rune(TmuxHistoryAction)) + `{"windowId":"@3","action":"default","limit":50000}`),
 	}
 
 	t.Run("read-only", func(t *testing.T) {
@@ -176,6 +183,8 @@ func TestGateLetsAReadOnlyClientWatch(t *testing.T) {
 		[]byte("4base64"),
 		[]byte(string(rune(TmuxCaptureRequest)) + `{"windows":"all"}`),
 		[]byte(string(rune(TmuxSaveInfoRequest)) + `{"windowId":"@0"}`),
+		// Seeing how big a buffer is, and how full, changes nothing.
+		[]byte(string(rune(TmuxHistoryInfoRequest)) + `{"windowId":"@0"}`),
 		{TmuxRefresh},
 	} {
 		if err := wt.handleMasterReadEvent(f); err != nil {

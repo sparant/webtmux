@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import {
   writeAuthority, requiresWrite, VIEW_ONLY, READ_ONLY_NOTICE,
   MSG_INPUT, MSG_PING, MSG_RESIZE, MSG_SET_ENCODING,
-  MSG_CAPTURE_REQUEST, MSG_SAVE_INFO_REQUEST, MSG_REFRESH,
+  MSG_CAPTURE_REQUEST, MSG_SAVE_INFO_REQUEST, MSG_HISTORY_INFO_REQUEST, MSG_REFRESH,
 } from '../resources/js/write-guard.js';
 import { StateStore } from '../resources/js/state-store.js';
 
@@ -49,6 +49,9 @@ const MUTATING = {
   unlinkWindow: 'N',
   savePaneFile: 'O',
   setState: 'P',
+  // Changing a scrollback buffer: a resize REBUILDS panes (killing what runs in
+  // them) and a clear discards history nobody can get back.
+  historyAction: 'U',
 };
 
 const VIEWING = {
@@ -57,6 +60,9 @@ const VIEWING = {
   setEncoding: MSG_SET_ENCODING,
   captureRequest: MSG_CAPTURE_REQUEST,
   saveInfoRequest: MSG_SAVE_INFO_REQUEST,
+  // Reading how big a scrollback is, and how full — a `list-panes`/`show-options`
+  // read. The action that CHANGES it sits in MUTATING above.
+  historyInfoRequest: MSG_HISTORY_INFO_REQUEST,
   refresh: MSG_REFRESH,
 };
 

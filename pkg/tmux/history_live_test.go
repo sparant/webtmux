@@ -1,0 +1,336 @@
+package tmux
+
+import (
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// The scrollback rebuild, against a REAL tmux.
+//
+// Everything else in this package can be proved against a fake runner, because
+// everything else is about the argv webtmux sends. This is not: the whole design
+// rests on claims about what tmux DOES —
+//
+//	a pane's history-limit is fixed at creation and no option changes it;
+//	a new pane is born with the option in force at that moment;
+//	killing a pane redistributes its rows rather than handing them to its neighbour;
+//	select-layout accepts a re-labelled layout string if its checksum is right;
+//
+// — and a fake that agrees with those claims proves only that we wrote it to. So
+// this drives tmux itself on a private socket and asserts against what tmux
+// reports afterwards.
+//
+// Skipped, not failed, where tmux is absent: it is a legitimate build environment
+// (the release cross-compiles), and a test that cannot run is not a test that failed.
+
+func liveTmux(t *testing.T) (tmuxRunner, func()) {
+	t.Helper()
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed — skipping the live scrollback test")
+	}
+	// A socket of our own: this test kills panes and rewrites options, and must not
+	// be able to reach a tmux server anybody is using.
+	socket := filepath.Join(t.TempDir(), "wt-history.sock")
+	run := func(args ...string) (string, error) { return runTmuxOn(socket, args...) }
+	if _, err := run("new-session", "-d", "-s", "live", "-x", "120", "-y", "40"); err != nil {
+		t.Skipf("could not start a tmux server: %v", err)
+	}
+	cleanup := func() { _, _ = run("kill-server") }
+	t.Cleanup(cleanup)
+	// The shell in a fresh pane takes a moment to be the thing #{pane_current_command}
+	// reports; without this the idle/busy check reads whatever is still exec'ing.
+	waitFor(t, run, func() bool {
+		out, err := run("display-message", "-t", "live", "-p", "#{pane_current_command}")
+		return err == nil && paneIsIdle(strings.TrimSpace(out))
+	})
+	return run, cleanup
+}
+
+// waitFor polls a condition for a second — tmux is a separate process and every
+// assertion here is about state it settles into, not state it returns.
+func waitFor(t *testing.T, run tmuxRunner, ok func() bool) {
+	t.Helper()
+	for i := 0; i < 50; i++ {
+		if ok() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func liveField(t *testing.T, run tmuxRunner, target, format string) string {
+	t.Helper()
+	out, err := run("display-message", "-t", target, "-p", format)
+	if err != nil {
+		t.Fatalf("display-message %s %s: %v", target, format, err)
+	}
+	return strings.TrimSpace(out)
+}
+
+// The premise the whole feature is built on. If tmux ever gains a real resize,
+// this is the test that will notice.
+func TestLiveHistoryLimitIsFixedAtPaneCreation(t *testing.T) {
+	run, _ := liveTmux(t)
+	win := liveField(t, run, "live", "#{window_id}")
+
+	before := liveField(t, run, win, "#{history_limit}")
+	if _, err := run("set-option", "-g", "history-limit", "12345"); err != nil {
+		t.Fatal(err)
+	}
+	if after := liveField(t, run, win, "#{history_limit}"); after != before {
+		t.Fatalf("an existing pane's limit changed from %s to %s — tmux can now resize "+
+			"a live buffer, and the rebuild this package does is no longer necessary",
+			before, after)
+	}
+	// …but a NEW pane gets it, which is what makes the rebuild work at all.
+	if _, err := run("split-window", "-d", "-t", win); err != nil {
+		t.Fatal(err)
+	}
+	panes, err := historyPanes(run, win)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(panes) != 2 || panes[1].Limit != 12345 {
+		t.Fatalf("a new pane was not born with the new limit: %+v", panes)
+	}
+}
+
+// The rebuild itself, on a three-pane window with an uneven layout and something
+// running in one of the panes.
+func TestLiveResizeRebuildsAWindowAndKeepsItsShape(t *testing.T) {
+	run, _ := liveTmux(t)
+	c := newControllerWithRunner("live", false, "", run)
+	win := liveField(t, run, "live", "#{window_id}")
+
+	if _, err := run("split-window", "-d", "-t", win); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run("split-window", "-d", "-h", "-t", win); err != nil {
+		t.Fatal(err)
+	}
+	// An uneven layout, so "the geometry was restored" is a claim with content.
+	if _, err := run("resize-pane", "-t", win+".0", "-y", "8"); err != nil {
+		t.Fatal(err)
+	}
+	// Something running, so the busy check and the force flag are both exercised.
+	if _, err := run("respawn-pane", "-k", "-t", win+".1", "sleep 600"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, run, func() bool {
+		panes, err := historyPanes(run, win)
+		return err == nil && len(panes) == 3 && !paneIsIdle(panes[1].Command)
+	})
+
+	before, err := historyPanes(run, win)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != 3 {
+		t.Fatalf("expected a 3-pane window, got %d", len(before))
+	}
+	layoutBefore := liveField(t, run, win, "#{window_layout}")
+	geomBefore := paneGeometry(layoutBefore)
+
+	// Without force it must refuse, and cost nothing.
+	if _, err := c.ResizeWindowHistory(win, 50000, false); err == nil {
+		t.Fatal("resized a window running `sleep` without being told to")
+	}
+	if after, _ := historyPanes(run, win); len(after) != 3 || after[0].PaneID != before[0].PaneID {
+		t.Fatal("the refusal disturbed the window")
+	}
+
+	res, err := c.ResizeWindowHistory(win, 50000, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Rebuilt != 3 {
+		t.Errorf("rebuilt %d panes, want 3", res.Rebuilt)
+	}
+	if len(res.Restarted) != 1 || !strings.Contains(res.Restarted[0], "sleep") {
+		t.Errorf("restarted = %v, want the sleep it killed", res.Restarted)
+	}
+	if !res.LayoutRestored {
+		t.Error("the layout was not restored")
+	}
+
+	after, err := historyPanes(run, win)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 3 {
+		t.Fatalf("window has %d panes after the rebuild, want 3", len(after))
+	}
+	for _, p := range after {
+		if p.Limit != 50000 {
+			t.Errorf("pane %s (index %d) holds %d lines, want 50000", p.PaneID, p.Index, p.Limit)
+		}
+		if !paneIsIdle(p.Command) {
+			t.Errorf("pane %s is running %q — the rebuild should leave fresh shells",
+				p.PaneID, p.Command)
+		}
+	}
+	// The shape, cell for cell. This is the assertion the layout re-labelling and
+	// its checksum exist for: without them tmux redistributes the killed panes'
+	// rows and the window comes back a different shape.
+	if got := paneGeometry(liveField(t, run, win, "#{window_layout}")); got != geomBefore {
+		t.Errorf("geometry changed:\n before %s\n  after %s", geomBefore, got)
+	}
+	// The window keeps its identity — same window, same name, same place in the
+	// session. Only its panes were replaced.
+	if liveField(t, run, win, "#{window_id}") != win {
+		t.Error("the window id changed")
+	}
+}
+
+// A resize must not become a change to the default. tmux has no way to create a
+// pane at a given size other than by pointing the option at it first, so the
+// option is borrowed — and this is the proof it is given back.
+func TestLiveResizeDoesNotChangeTheDefaultForNewWindows(t *testing.T) {
+	run, _ := liveTmux(t)
+	c := newControllerWithRunner("live", false, "", run)
+	win := liveField(t, run, "live", "#{window_id}")
+
+	if _, err := run("set-option", "-g", "history-limit", "3000"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.ResizeWindowHistory(win, 50000, true); err != nil {
+		t.Fatal(err)
+	}
+	global, err := globalHistoryLimit(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if global != 3000 {
+		t.Errorf("global history-limit is now %d — resizing one window silently "+
+			"changed what every new one gets", global)
+	}
+	// And the proof that matters to the user: the NEXT window still comes up at the
+	// old default.
+	if _, err := run("new-window", "-d", "-t", "live:"); err != nil {
+		t.Fatal(err)
+	}
+	fresh := liveField(t, run, "live:$", "#{history_limit}")
+	if fresh != "3000" {
+		t.Errorf("a new window came up at %s lines, want the untouched default of 3000", fresh)
+	}
+}
+
+// Setting the default, on the other hand, must reach the next window — and leave
+// the one you are looking at exactly as it was.
+func TestLiveSetDefaultAffectsNewWindowsOnly(t *testing.T) {
+	run, _ := liveTmux(t)
+	c := newControllerWithRunner("live", false, "", run)
+	win := liveField(t, run, "live", "#{window_id}")
+	before := liveField(t, run, win, "#{history_limit}")
+
+	if err := c.SetDefaultHistoryLimit(win, 44444); err != nil {
+		t.Fatal(err)
+	}
+	if now := liveField(t, run, win, "#{history_limit}"); now != before {
+		t.Errorf("the existing window changed from %s to %s", before, now)
+	}
+	if _, err := run("new-window", "-d", "-t", "live:"); err != nil {
+		t.Fatal(err)
+	}
+	if fresh := liveField(t, run, "live:$", "#{history_limit}"); fresh != "44444" {
+		t.Errorf("a new window came up at %s lines, want 44444", fresh)
+	}
+}
+
+// A session-scope override is the silent reason "I set the default and nothing
+// changed" — so the default-setter follows through it.
+func TestLiveSetDefaultBeatsASessionOverride(t *testing.T) {
+	run, _ := liveTmux(t)
+	c := newControllerWithRunner("live", false, "", run)
+	win := liveField(t, run, "live", "#{window_id}")
+	sid := liveField(t, run, win, "#{session_id}")
+
+	if _, err := run("set-option", "-t", sid, "history-limit", "500"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetDefaultHistoryLimit(win, 44444); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run("new-window", "-d", "-t", "live:"); err != nil {
+		t.Fatal(err)
+	}
+	if fresh := liveField(t, run, "live:$", "#{history_limit}"); fresh != "44444" {
+		t.Errorf("a new window came up at %s lines — the session's own value went on "+
+			"shadowing the global write, with nothing on screen to say so", fresh)
+	}
+}
+
+// Clearing has to empty every pane, and disturb nothing else.
+func TestLiveClearEmptiesEveryPane(t *testing.T) {
+	run, _ := liveTmux(t)
+	c := newControllerWithRunner("live", false, "", run)
+	win := liveField(t, run, "live", "#{window_id}")
+
+	if _, err := run("split-window", "-d", "-t", win); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range mustPanes(t, run, win) {
+		if _, err := run("send-keys", "-t", p.PaneID,
+			"for i in $(seq 1 300); do echo history-line-$i; done", "Enter"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor(t, run, func() bool {
+		for _, p := range mustPanesQuiet(run, win) {
+			if p.Size == 0 {
+				return false
+			}
+		}
+		return true
+	})
+	before := mustPanes(t, run, win)
+	for _, p := range before {
+		if p.Size == 0 {
+			t.Fatalf("pane %s never filled; the clear would prove nothing", p.PaneID)
+		}
+	}
+
+	if err := c.ClearWindowHistory(win); err != nil {
+		t.Fatal(err)
+	}
+	after := mustPanes(t, run, win)
+	if len(after) != len(before) {
+		t.Fatalf("clearing changed the pane count: %d -> %d", len(before), len(after))
+	}
+	for _, p := range after {
+		if p.Size != 0 {
+			t.Errorf("pane %s still holds %d lines — `clear-history -t @win` only "+
+				"reaches the ACTIVE pane, which is why this walks them", p.PaneID, p.Size)
+		}
+		if !paneIsIdle(p.Command) {
+			t.Errorf("pane %s is no longer a shell — a clear must disturb nothing", p.PaneID)
+		}
+	}
+}
+
+func mustPanes(t *testing.T, run tmuxRunner, win string) []PaneHistory {
+	t.Helper()
+	panes, err := historyPanes(run, win)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return panes
+}
+
+func mustPanesQuiet(run tmuxRunner, win string) []PaneHistory {
+	panes, _ := historyPanes(run, win)
+	return panes
+}
+
+// paneGeometry strips a layout string down to the cell rectangles, dropping the
+// checksum and the pane ids — "the same shape", which is the property a rebuild
+// has to preserve, as opposed to "the same panes", which by definition it cannot.
+func paneGeometry(layout string) string {
+	if i := strings.IndexByte(layout, ','); i >= 0 {
+		layout = layout[i+1:]
+	}
+	return layoutLeaf.ReplaceAllString(layout, "${1}#")
+}

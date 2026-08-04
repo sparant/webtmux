@@ -26,6 +26,9 @@ import {
   DEFAULT_SAVE_SCOPE, SCOPE_OPTIONS, normalizeScope,
   downloadLabel, saveButtonLabel,
 } from '../save-scope.js';
+import {
+  HISTORY_PRESETS, parseLimit, formatLines, formatBytes, windowUsage, resizePlan,
+} from '../scrollback.js';
 import { READ_ONLY_NOTICE } from '../write-guard.js';
 import { copyText } from '../clipboard.js';
 import { SCROLL_MODES as SCROLL_ORDER, normalizeScrollMode as normalizeScroll } from '../terminal-unit.js';
@@ -102,6 +105,38 @@ const mouseCaptureTooltip = (mouseCur, scrollCur) => [
 // because that is what makes a rectangle a window. Drawn rather than typed so it
 // doesn't depend on a font having a usable glyph — the same lesson as the
 // renderer's system-font fallback.
+// The scrollback button's hover hint. It leads with the fact the control exists
+// to expose — a pane's buffer size is fixed when the pane is made — because that
+// is the thing a person has no way to discover from the terminal in front of them.
+const SCROLLBACK_TIP = [
+  'Scrollback buffer — how many lines this window keeps, and how many it is holding.',
+  '',
+  'tmux fixes a pane\'s buffer size when the pane is created, so raising the limit',
+  'only affects NEW windows. Resizing one that already exists means rebuilding its',
+  'panes, which restarts them. Both are in here, kept apart.',
+].join('\n');
+
+// The scrollback button's icon: a buffer with a fill level.
+//
+// Drawn rather than typed, for the reason the Exposé icon is — a glyph that
+// depends on the system font having it is a glyph that renders as a box on
+// somebody's machine. A container filled from the bottom says "how much of it is
+// used", which is the question this control exists to answer; the lines inside
+// the fill say the contents are text.
+function bufferIcon() {
+  return html`
+    <svg viewBox="0 0 20 20" width="17" height="17" aria-hidden="true" focusable="false">
+      <rect x="3.2" y="2.2" width="13.6" height="15.6" rx="1.8"
+            fill="none" stroke="currentColor" stroke-width="1.3"></rect>
+      <path d="M3.2 9.4 h13.6 V16 a1.8 1.8 0 0 1 -1.8 1.8 H5 a1.8 1.8 0 0 1 -1.8 -1.8 Z"
+            fill="currentColor" opacity="0.28"></path>
+      <g stroke="currentColor" stroke-width="1.1" stroke-linecap="round" opacity="0.85">
+        <line x1="6" y1="11.6" x2="14" y2="11.6"></line>
+        <line x1="6" y1="14" x2="11.6" y2="14"></line>
+      </g>
+    </svg>`;
+}
+
 function exposeIcon() {
   return html`
     <svg viewBox="0 0 20 20" width="17" height="17" aria-hidden="true" focusable="false">
@@ -246,6 +281,15 @@ class WebtmuxToolbar extends LitElement {
     // The window the shared HoverPreview is currently showing ('' = none). Marks
     // which tab the preview on screen belongs to. Set by the SplitManager.
     previewWindow: { type: String },
+    // Scrollback-buffer dropdown: whether it's open, the server's last report
+    // (a tmux.HistoryReport plus an action outcome — see webtty/history.go), the
+    // transient banner under it, and the pending "this rebuilds panes" question.
+    // The report is what makes a pane's ACTUAL capacity visible, as opposed to
+    // the option that only governs the next pane to be created.
+    historyOpen: { type: Boolean },
+    historyInfo: { type: Object },
+    historyStatus: { type: Object },
+    historyConfirm: { type: Object },
     // Whether the mouse-capture dropdown is open (the two gesture modes live in it).
     mouseMenuOpen: { type: Boolean },
     // Recent-tab label shape (see LABEL_DEFAULTS) + whether its little menu is open.
@@ -671,6 +715,81 @@ class WebtmuxToolbar extends LitElement {
     :host([readonly]) .tabs,
     :host([readonly]) .mode { opacity: 0.45; pointer-events: none; }
     :host([readonly]) .save-ro { color: #f2c774; font-size: 11px; line-height: 1.4; }
+
+    /* Scrollback-buffer control. Reuses the save dropdown's chrome wholesale
+       (.save-menu/.save-row/.save-path/.save-go/.save-status/.save-confirm) —
+       it is the same kind of object in the same place, and a second set of the
+       same rules is a second set to keep in step. Only what is genuinely new
+       lives here: a fullness gauge, the per-pane breakdown, and the preset chips. */
+    .save-menu.hist { min-width: 340px; max-width: min(380px, 92vw); }
+    .hist-num {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 11px;
+      color: #9fc4ff;
+    }
+    .hist-num b { color: #e8eefc; font-weight: 600; }
+    /* The gauge. Blue while there is room; amber once the buffer is full, which
+       is not decoration — a full buffer is already dropping the oldest lines, and
+       that is the moment worth noticing BEFORE the output you wanted is gone. */
+    .hist-bar {
+      position: relative;
+      height: 8px;
+      border-radius: 4px;
+      background: #14233f;
+      border: 1px solid #0f3460;
+      overflow: hidden;
+    }
+    .hist-fill {
+      position: absolute;
+      top: 0; bottom: 0; left: 0;
+      background: #4a9eff;
+      transition: width 0.2s;
+    }
+    .hist-bar.full .hist-fill { background: #f0a742; }
+    .hist-panes { display: flex; flex-direction: column; gap: 2px; }
+    .hist-pane {
+      display: flex;
+      gap: 8px;
+      font-size: 10.5px;
+      color: #6b7690;
+      white-space: nowrap;
+    }
+    .hist-pane.on { color: #9fc4ff; }
+    .hist-pane .cmd {
+      flex: 1;
+      color: #9aa4bf;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .hist-pane.on .cmd { color: #e8eefc; }
+    .hist-presets { display: flex; gap: 4px; flex-wrap: wrap; }
+    .hist-preset {
+      background: #14233f;
+      color: #9fc4ff;
+      border: 1px solid #0f3460;
+      border-radius: 4px;
+      padding: 2px 7px;
+      font-size: 10.5px;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    .hist-preset:hover { border-color: #4a9eff; color: #fff; }
+    /* "Clear" is destructive in the quiet way — nothing looks different afterwards
+       except that the history is gone — so it is styled as a warning rather than
+       as another neutral row. */
+    .hist-clear {
+      background: #2a1a20;
+      color: #ff9db0;
+      border: 1px solid #7a2438;
+      border-radius: 4px;
+      padding: 5px 8px;
+      font-size: 11px;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    .hist-clear:hover { background: #3a1420; color: #fff; }
     /* The transient explanation line (read-only refusals, controller refusals).
        Sits in the bar itself so it is visible wherever the click happened. */
     .notice {
@@ -947,6 +1066,10 @@ class WebtmuxToolbar extends LitElement {
     this.saveInfo = null;    // server's "where would this land?" answer
     this.saveScope = DEFAULT_SAVE_SCOPE; // which buffer a save means (see save-scope.js)
     this._editingDir = false; // save-directory row open for editing (see _saveDirRow)
+    this.historyOpen = false;    // scrollback-buffer dropdown open?
+    this.historyInfo = null;     // last report from the server
+    this.historyStatus = null;   // transient result banner
+    this.historyConfirm = null;  // pending "this rebuilds panes" question
     this.readOnly = false;   // set from the connect handshake (see write-guard.js)
     this.notice = '';        // transient explanation line
     this.previewWindow = ''; // window the shared hover preview is showing
@@ -1253,6 +1376,221 @@ class WebtmuxToolbar extends LitElement {
   // edited or scrolled away from since.
   _confirmOverwrite() {
     this.manager?.confirmOverwriteSave();
+  }
+
+  // ---- scrollback buffer ---------------------------------------------------
+  //
+  // The panel is laid out as an argument, in this order:
+  //
+  //   1. what this window's buffer IS — capacity, how full, per pane;
+  //   2. what it would take to change it — a rebuild, stated as such;
+  //   3. what NEW windows get, which is the only part that is a mere setting.
+  //
+  // (3) sits last on purpose even though it is the cheap, safe one. Putting the
+  // setting first is what taught everybody that `history-limit` resizes a pane:
+  // you change it, nothing happens to what you are looking at, and there is
+  // nothing on screen to say why. Here the pane's own number is the first thing
+  // you read, so the two can never be mistaken for each other.
+
+  _toggleHistoryMenu() {
+    this.historyOpen = !this.historyOpen;
+    if (!this.historyOpen) return;
+    this.historyStatus = null;
+    this.historyConfirm = null;
+    // Dropped first, like the save dropdown's env: a report about the window you
+    // were looking at a minute ago must not be read as this one's while the fresh
+    // answer is still in flight.
+    this.historyInfo = null;
+    this._histResize = null;
+    this._histDefault = null;
+    this.manager?.requestHistoryInfo?.();
+  }
+
+  _closeHistoryMenu() {
+    this.historyOpen = false;
+    this.historyStatus = null;
+    this.historyConfirm = null;
+  }
+
+  // The two inputs are backed by fields rather than read out of the DOM, so a
+  // re-render (a status line, the settling re-poll) can never clobber what
+  // someone is halfway through typing. `null` means untouched, which is what lets
+  // the current value prefill them the moment the report lands.
+  _resizeValue() {
+    return this._histResize ?? String(this.historyInfo?.default ?? '');
+  }
+
+  _defaultValue() {
+    return this._histDefault ?? String(this.historyInfo?.default ?? '');
+  }
+
+  // Set what NEW windows are born with. Not a resize, and the banner says so.
+  _setHistoryDefault() {
+    const parsed = parseLimit(this._defaultValue());
+    if (!parsed.ok) { this.historyStatus = { state: 'err', text: parsed.error }; return; }
+    this.historyConfirm = null;
+    this.manager?.setDefaultHistoryLimit(parsed.value);
+  }
+
+  // Ask to rebuild. Never acts on the click: a rebuild kills what is running and
+  // discards the scrollback, and neither is recoverable, so the plan is put on
+  // screen in words first (see scrollback.js's resizePlan).
+  _askResize() {
+    const parsed = parseLimit(this._resizeValue());
+    if (!parsed.ok) { this.historyStatus = { state: 'err', text: parsed.error }; return; }
+    const plan = resizePlan(this.historyInfo?.panes || [], parsed.value);
+    if (plan.none) { this.historyStatus = { state: 'ok', text: plan.text }; return; }
+    this.historyStatus = null;
+    this.historyConfirm = { kind: 'resize', limit: parsed.value, label: 'Rebuild', text: plan.text };
+  }
+
+  _askClear() {
+    const n = (this.historyInfo?.panes || []).length || 1;
+    this.historyStatus = null;
+    this.historyConfirm = {
+      kind: 'clear',
+      label: 'Clear',
+      text: `Discard the scrollback of ${n} pane${n === 1 ? '' : 's'} in this window. `
+        + 'What is on screen stays, and nothing running is disturbed — but the '
+        + 'history above it is gone. Download it first with ⤓ if you might want it.',
+    };
+  }
+
+  _doHistoryConfirm() {
+    const c = this.historyConfirm;
+    if (!c) return;
+    this.historyConfirm = null;
+    // force: the user has just read what it costs and said yes. The server refuses
+    // a rebuild without it (webtty/history.go), so this flag IS the confirmation.
+    if (c.kind === 'resize') this.manager?.resizeWindowHistory(c.limit, true);
+    else this.manager?.clearWindowHistory();
+  }
+
+  // The window's capacity and how much of it holds anything, with a per-pane
+  // breakdown whenever there is more than one — a window's panes can genuinely
+  // have different capacities (they were created at different times), and one
+  // summary number would hide the pane that is about to start dropping lines.
+  _historyUsage() {
+    const panes = this.historyInfo?.panes || [];
+    if (!panes.length) {
+      return html`<div class="save-hint">${this.historyInfo?.error ? '' : 'Reading this window…'}</div>`;
+    }
+    const use = windowUsage(panes);
+    return html`
+      <div class="hist-num">
+        <span>${use.mixed ? 'Smallest pane holds' : 'Buffer'} <b>${formatLines(use.limit)}</b> lines</span>
+        <span><b>${formatLines(use.size)}</b> used · ${formatBytes(use.bytes)}</span>
+      </div>
+      <div class="hist-bar ${use.full ? 'full' : ''}">
+        <div class="hist-fill" style="width:${Math.round(use.pct)}%"></div>
+      </div>
+      ${use.full ? html`
+        <div class="save-hint warn">This buffer is full — tmux is already dropping its
+          oldest lines to make room. Rebuild it bigger below, or download it with ⤓.</div>
+      ` : ''}
+      ${panes.length > 1 ? html`
+        <div class="hist-panes">
+          ${panes.map((p) => html`
+            <div class="hist-pane ${p.active ? 'on' : ''}">
+              <span>${p.active ? '▸' : ' '}${p.index}</span>
+              <span class="cmd">${p.command || 'shell'}</span>
+              <span>${formatLines(p.size)} / ${formatLines(p.limit)}</span>
+              <span>${formatBytes(p.bytes)}</span>
+            </div>
+          `)}
+        </div>
+      ` : ''}
+    `;
+  }
+
+  _historyPresets(apply) {
+    return html`
+      <div class="hist-presets">
+        ${HISTORY_PRESETS.map((n) => html`
+          <button class="hist-preset" @click=${() => { apply(String(n)); this.requestUpdate(); }}>
+            ${formatLines(n)}
+          </button>
+        `)}
+      </div>
+    `;
+  }
+
+  _historyMenu() {
+    const info = this.historyInfo;
+    const confirm = this.historyConfirm;
+    return html`
+      <div class="save-backdrop" @click=${() => this._closeHistoryMenu()}></div>
+      <div class="save-menu hist" @click=${(e) => e.stopPropagation()}>
+        <div class="save-label">This window's scrollback</div>
+        ${this._historyUsage()}
+
+        ${this.readOnly ? html`
+          <div class="save-sep"></div>
+          <div class="save-ro">${READ_ONLY_NOTICE} Buffer sizes are shown because reading
+            them changes nothing; resizing or clearing one would.</div>
+        ` : html`
+          <div class="save-sep"></div>
+          <div class="save-label">Resize this window</div>
+          <div class="save-row">
+            <input
+              class="save-path"
+              type="text"
+              inputmode="numeric"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="lines"
+              .value=${this._resizeValue()}
+              @input=${(e) => { this._histResize = e.target.value; }}
+              @keydown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); this._askResize(); } e.stopPropagation(); }}
+            >
+            <button class="save-go" @click=${() => this._askResize()}>Resize</button>
+          </div>
+          ${this._historyPresets((v) => { this._histResize = v; })}
+          <div class="save-hint">tmux fixes a pane's buffer when the pane is created,
+            so this rebuilds the panes: the shells restart in place and the current
+            scrollback is lost. Anything still running is killed.</div>
+
+          <div class="save-sep"></div>
+          <div class="save-label">New windows</div>
+          <div class="save-row">
+            <input
+              class="save-path"
+              type="text"
+              inputmode="numeric"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="lines"
+              .value=${this._defaultValue()}
+              @input=${(e) => { this._histDefault = e.target.value; }}
+              @keydown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); this._setHistoryDefault(); } e.stopPropagation(); }}
+            >
+            <button class="save-go" @click=${() => this._setHistoryDefault()}>Set default</button>
+          </div>
+          ${this._historyPresets((v) => { this._histDefault = v; })}
+          <div class="save-hint">Every window and pane created from now on
+            (<code>set-option -g history-limit</code>). Windows that already exist keep
+            the size they were born with${info && info.global !== info.default
+              ? ` — and this session overrides the server default of ${formatLines(info.global)}`
+              : ''}.</div>
+
+          <div class="save-sep"></div>
+          <button class="hist-clear" @click=${() => this._askClear()}>
+            Clear this window's scrollback
+          </button>
+        `}
+
+        ${confirm ? html`
+          <div class="save-status confirm">${confirm.text}</div>
+          <div class="save-confirm">
+            <button @click=${() => this._doHistoryConfirm()}>${confirm.label}</button>
+            <button class="cancel" @click=${() => { this.historyConfirm = null; }}>Cancel</button>
+          </div>
+        ` : ''}
+        ${this.historyStatus ? html`
+          <div class="save-status ${this.historyStatus.state}">${this.historyStatus.text}</div>
+        ` : ''}
+      </div>
+    `;
   }
 
   disconnectedCallback() {
@@ -1603,6 +1941,16 @@ class WebtmuxToolbar extends LitElement {
             ` : ''}
           </div>
         ` : ''}
+      </div>
+      <div class="save-wrap">
+        <button
+          class="tbtn icon ${this.historyOpen ? 'on' : ''}"
+          aria-label="Scrollback buffer"
+          @mouseenter=${(e) => this._tipEnter(e, SCROLLBACK_TIP)}
+          @mouseleave=${() => this._tipLeave()}
+          @click=${() => { this._tipLeave(); this._toggleHistoryMenu(); }}
+        >${bufferIcon()}</button>
+        ${this.historyOpen ? this._historyMenu() : ''}
       </div>
       <div class="mouse-wrap">
         <button

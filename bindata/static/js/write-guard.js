@@ -26,6 +26,7 @@ export const MSG_SET_ENCODING = '4';
 
 export const MSG_CAPTURE_REQUEST = 'G';
 export const MSG_SAVE_INFO_REQUEST = 'R';
+export const MSG_HISTORY_INFO_REQUEST = 'T';
 export const MSG_REFRESH = 'Q';
 
 // Everything a read-only connection may send: it changes nothing another client
@@ -37,6 +38,9 @@ export const VIEW_ONLY = new Set([
   MSG_SET_ENCODING,
   MSG_CAPTURE_REQUEST,
   MSG_SAVE_INFO_REQUEST,
+  // Reading a scrollback's SIZE is a read. Changing it (MSG 'U') is not, and is
+  // deliberately absent: a resize rebuilds panes and kills what is running in them.
+  MSG_HISTORY_INFO_REQUEST,
   MSG_REFRESH,
 ]);
 
