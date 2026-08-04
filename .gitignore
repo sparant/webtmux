@@ -29,3 +29,8 @@ Thumbs.db
 # Throwaway ssh key + state for webtmux-launch/test/run.sh. Inside the repo because
 # the test daemon can only bind-mount paths under the workspace.
 /.launcher-rig/
+
+# Scratch for scripts/verify-reproducible.sh: an extracted copy of the ref plus
+# the two binaries it compares. Inside the repo for the same reason as above —
+# the daemon only bind-mounts paths under the workspace. Removed on success.
+/.repro-check/
