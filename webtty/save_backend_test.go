@@ -19,8 +19,10 @@ import (
 // is told when that directory doesn't exist for the process doing the write.
 
 // saveHarness starts a throwaway tmux server with one session whose pane sits in
-// `cwd`, and returns a WebTTY wired to a fake master that records frames.
-func saveHarness(t *testing.T, cwd string) (*WebTTY, *captureMaster) {
+// `cwd`, and returns a WebTTY wired to a fake master that records frames, plus
+// the tmux socket (so a test can type into the pane — see save_scope_test.go,
+// where the scopes only differ once something has scrolled off).
+func saveHarness(t *testing.T, cwd string) (*WebTTY, *captureMaster, string) {
 	t.Helper()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not installed; skipping live save backend test")
@@ -37,7 +39,7 @@ func saveHarness(t *testing.T, cwd string) (*WebTTY, *captureMaster) {
 		t.Fatal(err)
 	}
 	wt.SetCaptureProvider(tmux.NewCaptureStore(sock))
-	return wt, m
+	return wt, m, sock
 }
 
 // nextFrame waits for one recorded frame of the given type.
@@ -67,7 +69,7 @@ func TestSaveWritesIntoThePaneDirectoryWhenItIsVisible(t *testing.T) {
 	cwd := t.TempDir()
 	t.Setenv("WEBTMUX_PATH_MAP", "")
 	t.Setenv("WEBTMUX_SAVE_DIR", "")
-	wt, m := saveHarness(t, cwd)
+	wt, m, _ := saveHarness(t, cwd)
 
 	if err := wt.handleTmuxMessage(TmuxSavePaneFile, []byte(`{"windowId":"@0","path":"out.txt"}`)); err != nil {
 		t.Fatalf("handleTmuxMessage: %v", err)
@@ -100,7 +102,7 @@ func TestSaveFallsBackAndSaysSoWhenThePaneDirectoryIsInvisible(t *testing.T) {
 	saves := filepath.Join(t.TempDir(), "saves")
 	t.Setenv("WEBTMUX_PATH_MAP", cwd+"=/definitely/not/here")
 	t.Setenv("WEBTMUX_SAVE_DIR", saves)
-	wt, m := saveHarness(t, cwd)
+	wt, m, _ := saveHarness(t, cwd)
 
 	if err := wt.handleTmuxMessage(TmuxSavePaneFile, []byte(`{"windowId":"@0","path":"out.txt"}`)); err != nil {
 		t.Fatalf("handleTmuxMessage: %v", err)
@@ -130,7 +132,7 @@ func TestTypedPathIntoAnInvisibleDirectoryFailsWithAnExplanation(t *testing.T) {
 	t.Setenv("WEBTMUX_PATH_MAP", "")
 	t.Setenv("WEBTMUX_SAVE_DIR", t.TempDir())
 	t.Setenv("WEBTMUX_IN_CONTAINER", "1")
-	wt, m := saveHarness(t, cwd)
+	wt, m, _ := saveHarness(t, cwd)
 
 	if err := wt.handleTmuxMessage(TmuxSavePaneFile, []byte(`{"windowId":"@0","path":"/home/you/Projects/services-13.txt"}`)); err != nil {
 		t.Fatalf("handleTmuxMessage: %v", err)
@@ -145,7 +147,7 @@ func TestTypedPathIntoAnInvisibleDirectoryFailsWithAnExplanation(t *testing.T) {
 	if strings.Contains(res.Error, "no such file or directory") {
 		t.Errorf("still leaking the raw open(2) error: %s", res.Error)
 	}
-	for _, want := range []string{"/home/you/Projects", "container", "Download to browser"} {
+	for _, want := range []string{"/home/you/Projects", "container", "downloading to your browser"} {
 		if !strings.Contains(res.Error, want) {
 			t.Errorf("error is missing %q:\n  %s", want, res.Error)
 		}
@@ -160,7 +162,7 @@ func TestSaveUsesTheDirectoryTheUserNamed(t *testing.T) {
 	t.Setenv("WEBTMUX_PATH_MAP", cwd+"=/definitely/not/here") // pane dir invisible
 	t.Setenv("WEBTMUX_SAVE_DIR", "")
 	t.Setenv("WEBTMUX_IN_CONTAINER", "1")
-	wt, m := saveHarness(t, cwd)
+	wt, m, _ := saveHarness(t, cwd)
 
 	// Before an answer, the probe says it is blocked — that is what makes the
 	// dropdown ask instead of offering a path box that can only fail.
@@ -205,7 +207,7 @@ func TestAStaleRememberedDirectoryReopensTheQuestion(t *testing.T) {
 	t.Setenv("WEBTMUX_PATH_MAP", cwd+"=/definitely/not/here")
 	t.Setenv("WEBTMUX_SAVE_DIR", "")
 	t.Setenv("WEBTMUX_IN_CONTAINER", "1")
-	wt, m := saveHarness(t, cwd)
+	wt, m, _ := saveHarness(t, cwd)
 
 	if err := wt.handleTmuxMessage(TmuxSaveInfoRequest, []byte(`{"windowId":"@0","dir":"/gone/away"}`)); err != nil {
 		t.Fatalf("handleTmuxMessage: %v", err)
@@ -225,7 +227,7 @@ func TestSaveInfoDescribesTheSameDestinationTheSaveWouldUse(t *testing.T) {
 	cwd := t.TempDir()
 	t.Setenv("WEBTMUX_PATH_MAP", "")
 	t.Setenv("WEBTMUX_SAVE_DIR", "")
-	wt, m := saveHarness(t, cwd)
+	wt, m, _ := saveHarness(t, cwd)
 
 	if err := wt.handleTmuxMessage(TmuxSaveInfoRequest, []byte(`{"windowId":"@0"}`)); err != nil {
 		t.Fatalf("handleTmuxMessage: %v", err)
@@ -261,7 +263,7 @@ func TestSaveRefusesToOverwriteUntilAsked(t *testing.T) {
 	cwd := t.TempDir()
 	t.Setenv("WEBTMUX_PATH_MAP", "")
 	t.Setenv("WEBTMUX_SAVE_DIR", "")
-	wt, m := saveHarness(t, cwd)
+	wt, m, _ := saveHarness(t, cwd)
 
 	target := filepath.Join(cwd, "out.txt")
 	if err := os.WriteFile(target, []byte("PRECIOUS"), 0o644); err != nil {
@@ -312,7 +314,7 @@ func TestSaveRefusesAPathOutsideTheAllowedDirectories(t *testing.T) {
 	t.Setenv("WEBTMUX_SAVE_DIR", "")
 	t.Setenv("WEBTMUX_IN_CONTAINER", "1") // no implicit $HOME/cwd roots
 	t.Setenv("WEBTMUX_HOME", "")
-	wt, m := saveHarness(t, cwd)
+	wt, m, _ := saveHarness(t, cwd)
 
 	req, _ := json.Marshal(map[string]string{
 		"windowId": "@0", "path": filepath.Join(outside, "stolen.txt"),

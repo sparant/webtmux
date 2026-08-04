@@ -22,6 +22,10 @@ import { workClass, workLabel, workTip } from '../stoplight.js';
 import { ALERT_CSS, alertClass, alertTip } from '../alert-flash.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
 import { saveHint } from '../save-target.js';
+import {
+  DEFAULT_SAVE_SCOPE, SCOPE_OPTIONS, normalizeScope,
+  downloadLabel, saveButtonLabel,
+} from '../save-scope.js';
 import { READ_ONLY_NOTICE } from '../write-guard.js';
 import { copyText } from '../clipboard.js';
 import { SCROLL_MODES as SCROLL_ORDER, normalizeScrollMode as normalizeScroll } from '../terminal-unit.js';
@@ -234,6 +238,11 @@ class WebtmuxToolbar extends LitElement {
     // hint line, so an invisible pane directory is disclosed before a failed save
     // rather than after one. Null until the answer arrives.
     saveInfo: { type: Object },
+    // WHICH buffer a save means — the whole scrollback or just the visible screen
+    // (see save-scope.js). Qualifies BOTH destinations in the dropdown, and is
+    // re-set to the default every time the menu opens: "entire buffer" is the
+    // answer that should never depend on what someone picked an hour ago.
+    saveScope: { type: String },
     // The window the shared HoverPreview is currently showing ('' = none). Marks
     // which tab the preview on screen belongs to. Set by the SplitManager.
     previewWindow: { type: String },
@@ -532,6 +541,25 @@ class WebtmuxToolbar extends LitElement {
     }
     .save-item:hover { border-color: #4a9eff; color: #fff; }
     .save-sep { height: 1px; background: #0f3460; }
+    /* The scope chooser sits ABOVE both destinations, because it qualifies both:
+       whichever button you press next, this is which buffer it means. */
+    .save-scope { display: flex; flex-direction: column; gap: 4px; }
+    .save-scope-opt {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 6px 8px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      cursor: pointer;
+      color: #c9d4e8;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .save-scope-opt:hover { background: #14233f; }
+    .save-scope-opt.on { border-color: #4a9eff; background: #14233f; color: #e8eefc; }
+    .save-scope-opt input { margin: 2px 0 0; accent-color: #4a9eff; cursor: pointer; }
+    .save-scope-note { display: block; color: #6b7690; font-size: 10.5px; margin-top: 2px; }
     .save-label { color: #9fc4ff; font-size: 11px; letter-spacing: 0.02em; }
     .save-row { display: flex; gap: 6px; }
     .save-path {
@@ -917,6 +945,7 @@ class WebtmuxToolbar extends LitElement {
     this.saveOpen = false;   // save dropdown open?
     this.saveStatus = null;  // transient save result banner (see properties)
     this.saveInfo = null;    // server's "where would this land?" answer
+    this.saveScope = DEFAULT_SAVE_SCOPE; // which buffer a save means (see save-scope.js)
     this._editingDir = false; // save-directory row open for editing (see _saveDirRow)
     this.readOnly = false;   // set from the connect handshake (see write-guard.js)
     this.notice = '';        // transient explanation line
@@ -1105,6 +1134,10 @@ class WebtmuxToolbar extends LitElement {
     // the hint falls back to the general rule until the reply arrives.
     this.saveInfo = null;
     this._editingDir = false;
+    // Back to the whole buffer on every open. A scope is a decision about ONE
+    // save, not a preference: someone who once grabbed a screenshot of a screen
+    // should not silently get 24 rows the next time they reach for a build log.
+    this.saveScope = DEFAULT_SAVE_SCOPE;
     this.manager?.requestSaveInfo?.();
     const def = this.manager?.suggestedSaveName?.() || 'pane.txt';
     this.updateComplete.then(() => {
@@ -1113,12 +1146,37 @@ class WebtmuxToolbar extends LitElement {
     });
   }
 
-  // "Download to browser" — the original behavior; hands the browser a .txt.
+  // "Download …" — hands the browser a .txt of the chosen buffer.
+  //
+  // The menu deliberately STAYS OPEN. It used to close on the click, which was
+  // honest when the download was a synchronous read of a screen already in the
+  // cache; a whole-buffer read is a round trip to tmux that can take a moment and
+  // can fail, and its result — including how much text actually came out — is
+  // reported in the banner this menu is the only home for.
   _saveToBrowser() {
     this._tipLeave();
-    this.manager?.savePaneBuffer();
-    this.saveOpen = false;
     this.saveStatus = null;
+    this.manager?.savePaneBuffer(this.saveScope);
+  }
+
+  // The scope chooser: which buffer BOTH destinations below mean.
+  _saveScopeRow() {
+    const current = normalizeScope(this.saveScope);
+    return html`
+      <div class="save-scope" role="radiogroup" aria-label="Which buffer to save">
+        ${SCOPE_OPTIONS.map((opt) => html`
+          <label class="save-scope-opt ${current === opt.value ? 'on' : ''}">
+            <input
+              type="radio"
+              name="save-scope"
+              .checked=${current === opt.value}
+              @change=${() => { this.saveScope = opt.value; }}
+            >
+            <span>${opt.label}<span class="save-scope-note">${opt.note}</span></span>
+          </label>
+        `)}
+      </div>
+    `;
   }
 
   // True while webtmux has no directory it can honestly save into and is waiting
@@ -1187,7 +1245,7 @@ class WebtmuxToolbar extends LitElement {
     const el = this.renderRoot?.querySelector('.save-path');
     const path = (el?.value || '').trim();
     if (!path) { this.saveStatus = { state: 'err', text: 'Enter a path' }; return; }
-    this.manager?.savePaneBufferToPath(path);
+    this.manager?.savePaneBufferToPath(path, false, this.saveScope);
   }
 
   // The answer to "that file already exists". Re-sends the refused REQUEST (the
@@ -1502,20 +1560,22 @@ class WebtmuxToolbar extends LitElement {
         <button
           class="tbtn ${this.saveOpen ? 'on' : ''}"
           aria-label="Save pane buffer"
-          @mouseenter=${(e) => this._tipEnter(e, `Save the focused pane's buffer — download to your browser, or write it to a file on the machine tmux runs on.`)}
+          @mouseenter=${(e) => this._tipEnter(e, `Save the focused pane's buffer — the whole scrollback (default) or just the visible screen; download it to your browser, or write it to a file on the machine tmux runs on.`)}
           @mouseleave=${() => this._tipLeave()}
           @click=${() => { this._tipLeave(); this._toggleSaveMenu(); }}
         >⤓</button>
         ${this.saveOpen ? html`
           <div class="save-backdrop" @click=${() => { this.saveOpen = false; this.saveStatus = null; }}></div>
           <div class="save-menu" @click=${(e) => e.stopPropagation()}>
-            <button class="save-item" @click=${() => this._saveToBrowser()}>⤓&nbsp; Download to browser</button>
+            ${this._saveScopeRow()}
+            <div class="save-sep"></div>
+            <button class="save-item" @click=${() => this._saveToBrowser()}>⤓&nbsp; ${downloadLabel(this.saveScope)}</button>
             <div class="save-sep"></div>
             <div class="save-label">Save on the machine tmux runs on</div>
             ${this.readOnly ? html`
               <div class="save-ro">Not available — this server is read-only (started without -w),
-                so it will not write files. "Download to browser" needs nothing from the server
-                and still works.</div>
+                so it will not write files. The download above needs nothing written anywhere
+                and still works — including for the whole scrollback.</div>
             ` : html`
               ${this._saveDirRow()}
               <div class="save-row">
@@ -1528,7 +1588,7 @@ class WebtmuxToolbar extends LitElement {
                   placeholder=${this._askingForDir() ? 'name a directory first' : '~/out.txt or ./out.txt'}
                   @keydown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); this._saveToPath(); } e.stopPropagation(); }}
                 >
-                <button class="save-go" ?disabled=${this._askingForDir()} @click=${() => this._saveToPath()}>Save</button>
+                <button class="save-go" ?disabled=${this._askingForDir()} @click=${() => this._saveToPath()}>${saveButtonLabel(this.saveScope)}</button>
               </div>
               ${this._saveHint()}
             `}

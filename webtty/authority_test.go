@@ -53,6 +53,9 @@ func TestReadOnlyAllowsExactlyTheViewingMessages(t *testing.T) {
 		{"set encoding", SetEncoding},
 		{"capture request", TmuxCaptureRequest},
 		{"save-info probe", TmuxSaveInfoRequest},
+		// The whole-buffer read behind "Download to browser" — the one save a
+		// read-only server can still offer, since it writes nothing anywhere.
+		{"scrollback request", TmuxScrollbackRequest},
 		{"refresh (repaint our own pane)", TmuxRefresh},
 	}
 	for _, tc := range view {

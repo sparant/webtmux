@@ -54,6 +54,12 @@ const (
 	// the save dropdown BEFORE a save, so a surprising destination is never a
 	// surprise. See webtty/savepath.go.
 	TmuxSaveInfo = 'D'
+	// Answer to a TmuxScrollbackRequest: one window's ENTIRE pane buffer (JSON:
+	// {"windowId":"@N","token":N,"data":"<base64 text>","error":"…"}). Its own
+	// frame rather than a TmuxCaptureData, because it is not a screen: it is
+	// unbounded, one-shot, and must never enter the capture cache the thumbnails
+	// read. See handleScrollbackRequest.
+	TmuxScrollbackData = 'E'
 )
 
 // Tmux input message types (client -> server)
@@ -121,4 +127,11 @@ const (
 	// Ask where a save for this window would land (payload JSON: {"windowId":"@N"}).
 	// Read-only — writes nothing; the reply is a TmuxSaveInfo.
 	TmuxSaveInfoRequest = 'R'
+	// Ask for a window's ENTIRE pane buffer — tmux history + visible screen —
+	// (payload JSON: {"windowId":"@N","token":N}). Read-only: it forks
+	// `capture-pane -S -`. The reply is a TmuxScrollbackData carrying the same
+	// token, which is how the browser tells its own reply from the one it asked
+	// for a moment ago and gave up on. Used by "Download to browser" when the
+	// save dropdown's scope is the whole buffer.
+	TmuxScrollbackRequest = 'S'
 )

@@ -26,7 +26,7 @@ test('with nothing shared, the hint asks for a directory instead of guessing', (
   assert.equal(h.level, 'warn');
   assert.match(h.text, /Name one above/);
   assert.match(h.text, /\/data/);                 // an example they can act on
-  assert.match(h.text, /Download to browser/);    // the no-directory alternative
+  assert.match(h.text, /[Dd]ownloading to your browser/); // the no-directory alternative
   assert.doesNotMatch(h.text, /Relative paths save in/); // there is no directory to name
 });
 
@@ -68,7 +68,7 @@ test('the container case warns and names both directories', () => {
   assert.match(h.text, /\/home\/you\/Projects/);  // where the user thinks they are
   assert.match(h.text, /\/saves/);                    // where the file will land
   assert.match(h.text, /container/);                  // why
-  assert.match(h.text, /Download to browser/);        // the escape hatch
+  assert.match(h.text, /download.*to your browser/); // the escape hatch
 });
 
 test('an invisible pane directory warns even when containerization is unknown', () => {

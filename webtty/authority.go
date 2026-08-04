@@ -61,6 +61,12 @@ func authorityOf(msgType byte) msgAuthority {
 		// probe creates and removes its own temp file, which is not user-visible
 		// state).
 		return authView
+	case TmuxScrollbackRequest:
+		// Reads one window's history buffer. `capture-pane -S -` is the same read
+		// as any other capture — bigger, but it moves nothing. Read-only servers
+		// keep it deliberately: "Download to browser" is the save path that asks
+		// nothing of the filesystem, and it is the only one they have.
+		return authView
 	case TmuxRefresh:
 		// `refresh-client` on this pane's OWN client: it repaints a screen that the
 		// hover preview scribbled on. No tmux state changes.
