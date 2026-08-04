@@ -18,8 +18,11 @@
 //      the window you are looking at — the misunderstanding the panel exists for.
 //   4. "Resize" asks first, naming what it will destroy.
 //   5. Confirming it rebuilds the window's panes at the new size, in place: same
-//      window id, same name, same index, same shape.
+//      window id, same name, same index, same shape — AND the scrollback comes
+//      with it, including the oldest line, which is the whole reason to resize.
 //   6. …and does not change the default for new windows on the way.
+//   9. "Also save it for future tmux servers" writes the tmux config, provably:
+//      a SEPARATE tmux server started afterwards comes up at the saved size.
 //   7. "Clear" empties the history without disturbing what is running.
 //   8. With WT_PERMIT_WRITE=0 the panel still SHOWS the sizes (reading them
 //      changes nothing) and offers none of the controls that would.
@@ -27,6 +30,7 @@
 // Run exactly like run.sh does, with DRIVER=verify-scrollback-buffer.js.
 const { chromium } = require('playwright');
 const { execFileSync } = require('child_process');
+const fs = require('fs');
 
 const URL = 'http://localhost:8090/';
 const SOCK = '/tmp/wt.sock';
@@ -150,11 +154,12 @@ async function main() {
       note: rr.querySelector('.save-ro')?.textContent.replace(/\s+/g, ' ').trim() || '',
       inputs: rr.querySelectorAll('.save-menu.hist .save-path').length,
       clear: rr.querySelectorAll('.hist-clear').length,
+      persist: rr.querySelectorAll('.hist-persist').length,
       gauge: rr.querySelectorAll('.hist-bar').length,
     }));
     check('a read-only server still shows how big the buffer is', ro.gauge === 1, JSON.stringify(ro));
     check('…and offers no control that would change it',
-      ro.inputs === 0 && ro.clear === 0, JSON.stringify(ro));
+      ro.inputs === 0 && ro.clear === 0 && ro.persist === 0, JSON.stringify(ro));
     check('…and says why', /read-only/i.test(ro.note), ro.note.slice(0, 100));
     await browser.close();
     const roBad = results.filter((r) => !r.ok);
@@ -197,7 +202,8 @@ async function main() {
   const asked = await confirmText();
   check('resize asks before it acts', asked.length > 0, asked.slice(0, 140));
   check('…and states that the panes are rebuilt', /rebuild/i.test(asked), asked.slice(0, 140));
-  check('…and that the scrollback is lost', /scrollback is lost/i.test(asked), asked.slice(0, 140));
+  check('…and that the scrollback comes with it',
+    /scrollback is carried across/i.test(asked), asked.slice(0, 200));
   text = await menuText();
   check('a split window is broken down pane by pane',
     paneRows(win).every((p) => text.includes(p.id.replace('%', '')) || true)
@@ -212,6 +218,7 @@ async function main() {
   // ---- 5. confirming rebuilds the window in place -----------------------------
   const shapeBefore = field(win, '#{window_layout}').replace(/^[0-9a-f]{4},/, '')
     .replace(/(\d+x\d+,\d+,\d+,)\d+/g, '$1#');
+  const sizeBefore = paneRows(win)[0].size;
   await clickConfirm();
   for (let i = 0; i < 40; i++) {
     if (paneRows(win).every((p) => p.limit === 50000)) break;
@@ -231,13 +238,57 @@ async function main() {
   const rebuiltBanner = await banner();
   check('…and the result is reported as a receipt',
     /Rebuilt \d+ pane/i.test(rebuiltBanner?.text || ''), JSON.stringify(rebuiltBanner));
-  check('the new buffer really is empty (the rebuild started fresh panes)',
-    rows.every((p) => p.size === 0), rows.map((p) => `${p.id}:${p.size}`).join(' '));
+  // The point of resizing at all: what was in the buffer is still in the buffer.
+  for (let i = 0; i < 40; i++) {
+    if (paneRows(win)[0].size >= sizeBefore) break;
+    await sleep(250);
+  }
+  const whole = tmux('capture-pane', '-p', '-S', '-', '-t', win);
+  check('the scrollback survived the rebuild — including its OLDEST line',
+    whole.includes('buffer-line-1\n') && whole.includes('buffer-line-600'),
+    `history_size ${sizeBefore} -> ${paneRows(win)[0].size}`);
+  check('…in colour', tmux('capture-pane', '-p', '-e', '-S', '-', '-t', win).includes('\u001b['),
+    'SGR sequences present in the rebuilt pane');
+  check('…and the receipt says so', /scrollback carried across/i.test(rebuiltBanner?.text || ''),
+    JSON.stringify(rebuiltBanner));
 
   // ---- 6. …without changing the default on the way ---------------------------
   check('the rebuild did not disturb the default for new windows',
     tmux('show-options', '-g', '-v', 'history-limit') === '50000',
     tmux('show-options', '-g', '-v', 'history-limit'));
+
+  // ---- 9. saving the default for FUTURE tmux servers --------------------------
+  const CONF = `${process.env.HOME || '/root'}/.tmux.conf`;
+  try { fs.unlinkSync(CONF); } catch (e) { /* none yet */ }
+  await reopenMenu();
+  await toolbar((n, rr, v) => {
+    const rows = [...rr.querySelectorAll('.save-menu.hist > *')];
+    const at = rows.findIndex((el) => el.classList.contains('save-label')
+      && el.textContent.toLowerCase().includes('new windows'));
+    const row = rows.slice(at).find((el) => el.classList.contains('save-row'));
+    const input = row.querySelector('.save-path');
+    input.value = v;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    rr.querySelector('.hist-persist').click();
+  }, '64000');
+  await sleep(2500);
+  const persistBanner = await banner();
+  const conf = fs.existsSync(CONF) ? fs.readFileSync(CONF, 'utf8') : '';
+  check('saving for next time writes the tmux config',
+    /set -g history-limit 64000/.test(conf), conf ? conf.trim() : 'no file written');
+  check('…and reports which file it wrote', /\.tmux\.conf/.test(persistBanner?.text || ''),
+    JSON.stringify(persistBanner));
+  // The claim that matters, and the only way to check it: a tmux server that has
+  // never seen this browser reads the file and comes up at the saved size.
+  const OTHER = '/tmp/wt-fresh.sock';
+  try { execFileSync('tmux', ['-S', OTHER, 'kill-server'], { stdio: 'ignore' }); } catch (e) { /* none */ }
+  execFileSync('tmux', ['-S', OTHER, 'new-session', '-d', '-s', 'fresh', '-x', '80', '-y', '24']);
+  const freshLimit = execFileSync('tmux',
+    ['-S', OTHER, 'display-message', '-t', 'fresh', '-p', '#{history_limit}'],
+    { encoding: 'utf8' }).trim();
+  check('a brand-new tmux server starts at the saved size', freshLimit === '64000',
+    `fresh server pane = ${freshLimit} lines`);
+  try { execFileSync('tmux', ['-S', OTHER, 'kill-server'], { stdio: 'ignore' }); } catch (e) { /* gone */ }
 
   // ---- 7. clear empties the history and disturbs nothing else -----------------
   await closeMenu();

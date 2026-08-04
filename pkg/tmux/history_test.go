@@ -407,3 +407,207 @@ func TestBusyCommandsIgnoresPanesAlreadyAtTheLimit(t *testing.T) {
 		t.Errorf("BusyCommands = %v, want [claude]", got)
 	}
 }
+
+// ---- carrying the scrollback across ----------------------------------------
+
+// The rebuild must capture each pane BEFORE destroying it, and hand the
+// replacement something that prints it back. Without this a resize costs you the
+// very thing you resized to keep more of.
+func TestResizeCapturesEachPaneAndReplaysItIntoTheReplacement(t *testing.T) {
+	f := historyServer()
+	c := historyController(f)
+
+	res, err := c.ResizeWindowHistory("@0", 50000, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Replayed != 3 {
+		t.Errorf("replayed %d of %d rebuilt panes", res.Replayed, res.Rebuilt)
+	}
+	captured := map[string]bool{}
+	for _, argv := range f.argv("capture-pane") {
+		// The whole buffer, colours included, into a buffer of its own.
+		if !contains(argv, "-S") || !contains(argv, "-") || !contains(argv, "-e") {
+			t.Errorf("capture-pane %v does not read the whole buffer with colours", argv)
+		}
+		captured[flagValue(argv, "-t")] = true
+	}
+	for _, id := range []string{"%0", "%2", "%1"} {
+		if !captured[id] {
+			t.Errorf("pane %s was destroyed without being captured first", id)
+		}
+	}
+	// …and the split carries the command that plays it back.
+	for _, argv := range f.argv("split-window") {
+		last := argv[len(argv)-1]
+		if !strings.Contains(last, "save-buffer") || !strings.Contains(last, "exec ") {
+			t.Errorf("split-window's command is not a replay-then-shell: %q", last)
+		}
+	}
+}
+
+// A capture that fails costs the history, not the resize. The old behaviour lost
+// the history every time, so falling back to it is never worse.
+func TestResizeStillRebuildsWhenTheCaptureFails(t *testing.T) {
+	f := historyServer()
+	f.fail = map[string]error{"capture-pane": errors.New("nope")}
+	c := historyController(f)
+
+	res, err := c.ResizeWindowHistory("@0", 50000, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Rebuilt != 3 {
+		t.Errorf("rebuilt %d, want 3 — a failed capture must not abandon the resize", res.Rebuilt)
+	}
+	if res.Replayed != 0 {
+		t.Errorf("replayed %d with every capture failing", res.Replayed)
+	}
+	for _, argv := range f.argv("split-window") {
+		if strings.Contains(argv[len(argv)-1], "save-buffer") {
+			t.Error("a pane that could not be captured was still told to replay a buffer")
+		}
+	}
+}
+
+// The replay command must fail SAFE: whatever goes wrong, the pane still becomes
+// a shell. A pane that dies on a bad replay is worse than one with no history.
+func TestReplayCommandAlwaysEndsInAShell(t *testing.T) {
+	cmd := replayCommand("wt-replay-3", "exec '/bin/zsh' -l")
+	if !strings.HasSuffix(cmd, "exec '/bin/zsh' -l") {
+		t.Errorf("replay command does not end by becoming the shell: %q", cmd)
+	}
+	if strings.Count(cmd, "2>/dev/null") != 2 {
+		t.Errorf("the tmux calls are not failure-tolerant: %q", cmd)
+	}
+	// `;` not `&&`: a failed replay must not swallow the shell.
+	if strings.Contains(cmd, "&&") {
+		t.Errorf("a failed replay would skip the shell: %q", cmd)
+	}
+}
+
+func TestReplayBufferNameIsPerPane(t *testing.T) {
+	if a, b := replayBufferName("%0"), replayBufferName("%12"); a == b {
+		t.Errorf("two panes share the replay buffer %q — one would overwrite the other", a)
+	}
+	if got := replayBufferName("%12"); got != "wt-replay-12" {
+		t.Errorf("replayBufferName(%%12) = %q", got)
+	}
+}
+
+// ---- the default that outlives the server ----------------------------------
+
+func TestPersistWritesTheConfigAndTheLiveDefault(t *testing.T) {
+	f := historyServer()
+	f.options["global/config_files"] = ""
+	f.windows[0]["config_files"] = "/home/me/.tmux.conf"
+	f.runShellVerdict = "ok|/home/me/.tmux.conf"
+	c := historyController(f)
+
+	path, err := c.PersistDefaultHistoryLimit("@0", 50000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != "/home/me/.tmux.conf" {
+		t.Errorf("reported %q as the file it wrote", path)
+	}
+	// The live server too: a saved default the current session disagrees with is
+	// its own kind of confusing.
+	if f.options["global/history-limit"] != "50000" {
+		t.Errorf("global history-limit = %q, want the live server updated as well",
+			f.options["global/history-limit"])
+	}
+	if f.count("run-shell") != 1 {
+		t.Errorf("run-shell called %d times", f.count("run-shell"))
+	}
+	// The verdict option is cleaned up, so it never lingers as tmux state of ours.
+	if v := f.options["global/"+historyConfOption]; v != "" {
+		t.Errorf("%s left behind as %q", historyConfOption, v)
+	}
+}
+
+// A write that fails must not be reported as a save. The user would go on
+// believing their setting survives a restart when it does not.
+func TestPersistReportsAFailedWrite(t *testing.T) {
+	f := historyServer()
+	f.runShellVerdict = "err|/etc/tmux.conf|no permission to write it"
+	c := historyController(f)
+
+	if _, err := c.PersistDefaultHistoryLimit("@0", 50000); err == nil {
+		t.Fatal("a failed config write was reported as success")
+	} else if !strings.Contains(err.Error(), "no permission") {
+		t.Errorf("error %q does not carry the reason", err)
+	}
+}
+
+// No verdict at all means the script never ran to completion. Claiming a write
+// nobody saw evidence of is the one answer that must not be given.
+func TestPersistWithNoVerdictIsNotASuccess(t *testing.T) {
+	f := historyServer()
+	c := historyController(f) // runShellVerdict unset
+
+	if _, err := c.PersistDefaultHistoryLimit("@0", 50000); err == nil {
+		t.Fatal("an unconfirmed config write was reported as success")
+	}
+}
+
+// The script has to choose the file ON the tmux host, so its choosing rules are
+// asserted on the text it generates.
+func TestPersistScriptChoosesTheUsersOwnConfig(t *testing.T) {
+	// A system-wide config is never edited: it is not this user's to change.
+	s := persistScript([]string{"/etc/tmux.conf"}, 50000)
+	if !strings.Contains(s, `case "$f" in "$HOME"/*)`) {
+		t.Error("the script does not restrict itself to files under $HOME")
+	}
+	if !strings.Contains(s, `$HOME/.config/tmux/tmux.conf`) || !strings.Contains(s, `$HOME/.tmux.conf`) {
+		t.Error("the script has no fallback for a server that loaded no config")
+	}
+	// With no candidates at all it must still be valid sh (no empty `for` list).
+	if strings.Contains(persistScript(nil, 100), "for f in;") {
+		t.Error("an empty candidate list produced a broken `for`")
+	}
+	// The rewrite is atomic and idempotent: old lines dropped, one appended.
+	for _, want := range []string{"history-limit", "grep -vE", "mv \"$tmp\" \"$conf\"", historyConfOption} {
+		if !strings.Contains(s, want) {
+			t.Errorf("the script is missing %q", want)
+		}
+	}
+	if !strings.Contains(persistScript(nil, 50000), "set -g history-limit 50000") {
+		t.Error("the script does not write the requested limit")
+	}
+}
+
+// A config path is arbitrary text from the user's own environment; it goes into a
+// shell program, so it is quoted rather than pasted.
+func TestPersistScriptQuotesCandidatePaths(t *testing.T) {
+	s := persistScript([]string{"/home/me/my conf'; rm -rf /; #/tmux.conf"}, 100)
+	if strings.Contains(s, "rm -rf /; #") && !strings.Contains(s, `'\''`) {
+		t.Errorf("a path with a quote in it was not escaped:\n%s", s)
+	}
+}
+
+func TestParseConfVerdict(t *testing.T) {
+	kind, path, _ := parseConfVerdict("ok|/home/me/.tmux.conf")
+	if kind != "ok" || path != "/home/me/.tmux.conf" {
+		t.Errorf("ok verdict parsed as %q/%q", kind, path)
+	}
+	kind, path, why := parseConfVerdict("err|/etc/tmux.conf|no permission")
+	if kind != "err" || path != "/etc/tmux.conf" || why != "no permission" {
+		t.Errorf("err verdict parsed as %q/%q/%q", kind, path, why)
+	}
+	if k, _, _ := parseConfVerdict(""); k != "" {
+		t.Error("an empty verdict was read as an answer")
+	}
+	if k, _, _ := parseConfVerdict("something else"); k != "" {
+		t.Error("an unrecognized verdict was read as an answer")
+	}
+}
+
+func contains(argv []string, want string) bool {
+	for _, a := range argv {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}

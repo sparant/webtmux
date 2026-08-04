@@ -149,12 +149,18 @@ Keep an eye on specific windows, even while you focus on others.
   once tmux has already started dropping the oldest lines.
 - **New windows** sets `history-limit` for everything created from then on
   (`set-option -g`), and says out loud that it leaves existing windows alone.
+  That lasts only as long as the tmux *server* does, so **Also save it for future
+  tmux servers** writes the line into your tmux config (`~/.config/tmux/tmux.conf`
+  or `~/.tmux.conf`, whichever tmux actually loaded) and names the file it wrote.
+  The rewrite is done on the machine tmux runs on, so it works when webtmux is in
+  a container that cannot see your home directory.
 - **Resize this window** changes an existing window, which tmux offers no command
   for: a pane's buffer is fixed when the pane is created. webtmux rebuilds the
   window's panes at the new size in place — same window, same name, same index,
-  same shape — which restarts the shells and discards the current scrollback, so
-  it asks first and names anything it would kill. Download it with ⤓ beforehand
-  if you want to keep it.
+  same shape — **and carries the existing scrollback across**, colours and all.
+  What it cannot carry is a running program: a pty can't be reparented, so
+  anything but a shell is killed, and the confirmation names it first. (To keep
+  one, hand it to a new pane yourself with `reptyr`, then resize.)
 - **Clear** empties every pane's history in the window (not just the visible
   one), leaving the screen and everything running untouched.
 - Reading the sizes works on a read-only server (`-w` absent); changing them
@@ -809,7 +815,8 @@ WebTmux extends the gotty protocol with tmux-specific message types:
 - `D` TmuxNewWindow - Create new window
 - `S` TmuxScrollbackRequest - Read a window's entire pane buffer (its CONTENTS)
 - `T` TmuxHistoryInfoRequest - Read a window's scrollback SIZE and usage
-- `U` TmuxHistoryAction - Set the default / resize / clear a scrollback buffer
+- `U` TmuxHistoryAction - Set the default (for this tmux server, or persisted to
+  tmux.conf) / resize / clear a scrollback buffer
 
 **Server -> Client:**
 

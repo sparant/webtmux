@@ -105,6 +105,7 @@ func TestEveryHistoryActionAnswers(t *testing.T) {
 		payload string
 	}{
 		{"default", `{"windowId":"@7","action":"default","limit":50000}`},
+		{"persist", `{"windowId":"@7","action":"persist","limit":50000}`},
 		{"resize", `{"windowId":"@7","action":"resize","limit":50000,"force":true}`},
 		{"clear", `{"windowId":"@7","action":"clear"}`},
 	} {
@@ -197,6 +198,53 @@ func TestMalformedHistoryPayloadsAnswerRatherThanDrop(t *testing.T) {
 	}
 }
 
+// A "persist" has to name the file it wrote. The file is chosen on the tmux
+// server (see pkg/tmux/history.go), so the browser has no way to know which of
+// the user's configs just changed unless the reply says.
+func TestPersistReportsTheFileItWrote(t *testing.T) {
+	wt, m, _ := newFailingWebTTY(t, &tmux.Layout{})
+	wt.SetTmuxController(&persistCtrl{path: "/home/me/.tmux.conf"})
+	wt.SetCaptureProvider(&countingCapture{history: sampleReport()})
+
+	if err := wt.handleTmuxMessage(TmuxHistoryAction,
+		[]byte(`{"windowId":"@7","action":"persist","limit":50000}`)); err != nil {
+		t.Fatal(err)
+	}
+	got := lastHistory(t, m)
+	if !got.OK {
+		t.Fatalf("persist reported a failure: %+v", got)
+	}
+	if got.SavedTo != "/home/me/.tmux.conf" {
+		t.Errorf("savedTo = %q, want the path it wrote", got.SavedTo)
+	}
+}
+
+// …and on failure it must STILL name it: "which file did you just try to change?"
+// is the first thing anyone asks either way.
+func TestPersistNamesTheFileEvenWhenTheWriteFails(t *testing.T) {
+	wt, m, _ := newFailingWebTTY(t, &tmux.Layout{})
+	wt.SetTmuxController(&persistCtrl{
+		path: "/etc/tmux.conf",
+		err:  fmt.Errorf("%w: could not write /etc/tmux.conf (no permission)", tmux.ErrRefused),
+	})
+	wt.SetCaptureProvider(&countingCapture{history: sampleReport()})
+
+	if err := wt.handleTmuxMessage(TmuxHistoryAction,
+		[]byte(`{"windowId":"@7","action":"persist","limit":50000}`)); err != nil {
+		t.Fatal(err)
+	}
+	got := lastHistory(t, m)
+	if got.OK {
+		t.Error("a failed config write was reported as a success")
+	}
+	if got.SavedTo != "/etc/tmux.conf" {
+		t.Errorf("savedTo = %q — the failure does not say which file it tried", got.SavedTo)
+	}
+	if !strings.Contains(got.Error, "no permission") {
+		t.Errorf("error = %q, want the reason", got.Error)
+	}
+}
+
 // A resize's receipt has to survive the trip: how many panes, and what it cost.
 func TestResizeReceiptReachesTheBrowser(t *testing.T) {
 	wt, m, _ := newFailingWebTTY(t, &tmux.Layout{})
@@ -231,6 +279,19 @@ func (c *refuseHistoryCtrl) ResizeWindowHistory(string, int, bool) (tmux.History
 	c.calls++
 	c.seen = append(c.seen, "resize-history")
 	return tmux.HistoryResize{}, fmt.Errorf("%w: rebuilding this window would kill claude", tmux.ErrRefused)
+}
+
+// persistCtrl answers the config write with a canned path (and optional failure).
+type persistCtrl struct {
+	failCtrl
+	path string
+	err  error
+}
+
+func (c *persistCtrl) PersistDefaultHistoryLimit(string, int) (string, error) {
+	c.calls++
+	c.seen = append(c.seen, "persist history-limit")
+	return c.path, c.err
 }
 
 // resizeCtrl succeeds and hands back a receipt.

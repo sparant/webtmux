@@ -27,9 +27,16 @@ export const HISTORY_MAX = 1000000;
 // actually reach for when a build log has just scrolled away.
 export const HISTORY_PRESETS = [2000, 10000, 50000, 100000];
 
-// The three things the dropdown can ask the server for. Same strings the Go side
+// The four things the dropdown can ask the server for. Same strings the Go side
 // switches on (webtty/history.go).
+//
+// 'default' and 'persist' are two different scopes of the same idea, and the
+// difference is the one people trip over: `set -g history-limit` lasts exactly as
+// long as the tmux SERVER does, so a default set today is gone after a reboot.
+// 'persist' also writes it into the tmux config file, where a server started
+// tomorrow will read it.
 export const ACTION_DEFAULT = 'default';
+export const ACTION_PERSIST = 'persist';
 export const ACTION_RESIZE = 'resize';
 export const ACTION_CLEAR = 'clear';
 
@@ -123,31 +130,40 @@ export function busyCommands(panes, limit) {
 
 // What the resize button is about to do, said plainly enough to decide on.
 //
-// Returns null when there is nothing to do, and otherwise {needsConfirm, text}.
-// The wording never softens the two irreversible parts — the running program
-// dies and the existing scrollback goes with it — because tmux offers no way to
-// avoid either: a pane's history is fixed at creation and a running process
-// cannot be moved into a new pane.
+// Returns {none:true} when there is nothing to do, and otherwise
+// {needsConfirm, text}. The scrollback is carried into the replacement, so the
+// only irreversible part left is the running program — and the wording never
+// softens THAT, because tmux offers no way to avoid it: a running process cannot
+// be moved into a new pane.
 export function resizePlan(panes, limit) {
   const todo = panesToRebuild(panes, limit);
   if (!todo.length) {
     return { none: true, needsConfirm: false, text: `Every pane already holds ${formatLines(limit)} lines.` };
   }
   const busy = busyCommands(panes, limit);
-  const count = `${todo.length} pane${todo.length === 1 ? '' : 's'}`;
-  const head = `tmux cannot resize a pane's buffer, so this rebuilds ${count} at ${formatLines(limit)} lines.`;
+  const one = todo.length === 1;
+  const count = `${todo.length} pane${one ? '' : 's'}`;
+  const head = `tmux cannot resize a pane's buffer, so this rebuilds ${count} at `
+    + `${formatLines(limit)} lines. The current scrollback is carried across.`;
   if (!busy.length) {
     return {
       none: false,
       needsConfirm: true,
-      text: `${head} The shell${todo.length === 1 ? '' : 's'} restart${todo.length === 1 ? 's' : ''} in the same place and the current scrollback is lost.`,
+      text: `${head} The shell${one ? '' : 's'} restart${one ? 's' : ''} in the same place.`,
     };
   }
+  // The one cost nothing can soften, so it is stated in full and the escape hatch
+  // is named. reptyr is the only way to move a running program to another pty, and
+  // it is deliberately not automated (it needs a permissive kernel ptrace_scope and
+  // fails by orphaning the program) — but someone who wants it should not have to
+  // discover that it exists.
   return {
     none: false,
     needsConfirm: true,
     busy,
-    text: `${head} This KILLS ${busy.join(', ')} — a running program cannot be moved into a new pane — and the current scrollback is lost.`,
+    text: `${head} But it KILLS ${busy.join(', ')}: a running program cannot be moved `
+      + 'into a new pane. To keep one, hand it over yourself first with reptyr '
+      + '(Linux, needs ptrace permission), then resize.',
   };
 }
 
@@ -161,11 +177,22 @@ export function actionBanner(res) {
       return { state: 'ok', text: `New windows will hold ${formatLines(res.default)} lines. Windows that already exist keep their current size.` };
     case ACTION_CLEAR:
       return { state: 'ok', text: 'Scrollback cleared for this window.' };
+    case ACTION_PERSIST:
+      return {
+        state: 'ok',
+        text: `Saved to ${res.savedTo || 'your tmux config'} — new tmux servers will start at `
+          + `${formatLines(res.default)} lines, and this one already does.`,
+      };
     case ACTION_RESIZE: {
       const r = res.resize || {};
       if (!r.rebuilt) return { state: 'ok', text: `Nothing to rebuild — every pane already held ${formatLines(res.panes?.[0]?.limit || 0)} lines.` };
       const bits = [`Rebuilt ${r.rebuilt} pane${r.rebuilt === 1 ? '' : 's'} at ${formatLines(res.panes?.[0]?.limit || 0)} lines`];
       if (r.skipped) bits.push(`${r.skipped} already the right size`);
+      // The scrollback is the thing the user was most afraid of losing, so whether
+      // it came across is reported either way rather than only when it didn't.
+      if (r.replayed >= r.rebuilt) bits.push('scrollback carried across');
+      else if (r.replayed) bits.push(`scrollback carried across for ${r.replayed} of them`);
+      else bits.push('the old scrollback could not be read, so they start empty');
       if (r.restarted?.length) bits.push(`restarted ${r.restarted.join(', ')}`);
       // Said out loud rather than left to be noticed: the panes are the size you
       // asked for, but they are not the shape you left them in.
@@ -175,4 +202,15 @@ export function actionBanner(res) {
     default:
       return { state: 'ok', text: '' };
   }
+}
+
+// Which tmux config file a "save for next time" would land in, said as a phrase
+// the panel can drop into a sentence. `#{config_files}` lists what this server
+// actually loaded and is empty when it loaded none — in which case one is created,
+// and saying so beforehand is the difference between a button and a surprise.
+export function configFileHint(configFiles) {
+  const files = String(configFiles || '').split(',').map((f) => f.trim()).filter(Boolean);
+  if (!files.length) return 'you have no tmux config yet — one will be created';
+  const mine = files[files.length - 1];
+  return mine;
 }

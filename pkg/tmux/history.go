@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"fmt"
+	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -29,12 +30,22 @@ import (
 // re-applied (see relabelLayout).
 //
 // What a rebuild costs is stated here because it is the part no UI can soften:
-// the pane is a new pty, so the process running in it is GONE and its scrollback
-// with it. A pty cannot be reparented — there is no tmux command that moves a
-// running process from one pane to another, and `move-pane`/`break-pane` move the
-// pane object (grid, limit and all) rather than its contents. That is why
-// ResizeWindowHistory refuses a pane running anything but a shell unless the
+// the pane is a new pty, so the process running in it is GONE. A pty cannot be
+// reparented — there is no tmux command that moves a running process from one
+// pane to another, and `move-pane`/`break-pane` move the pane object (grid,
+// limit and all) rather than its contents. Moving a process between ptys is an
+// OS operation (reptyr does it, via ptrace); it is deliberately not attempted
+// here, because it needs a permissive kernel ptrace_scope and an external
+// binary, and its failure mode is a program orphaned on a pty nothing reads.
+// So ResizeWindowHistory refuses a pane running anything but a shell unless the
 // caller says otherwise: the caller's user is the only one who can weigh it.
+//
+// The SCROLLBACK, though, does not have to be lost, and isn't. The old pane is
+// captured whole and replayed into its replacement, so a resize keeps every line
+// and its colours — see replayCommand. It goes through a tmux BUFFER rather than
+// a temp file on purpose: the buffer lives in the tmux server, so the text never
+// has to cross a filesystem that webtmux and tmux might not share (the
+// containerized deployment savepath.go exists for).
 
 // The bounds a requested limit must fall in. Zero is meaningful to tmux (keep no
 // history at all) and so is allowed; the ceiling is a guard against a typo
@@ -74,6 +85,13 @@ type HistoryReport struct {
 	// "I set the default and nothing changed".
 	Default int           `json:"default"`
 	Panes   []PaneHistory `json:"panes"`
+	// ConfigFiles is `#{config_files}` — the tmux config this server actually
+	// loaded, or "" when it loaded none. It is the third scope of "the default",
+	// and the only one that survives `kill-server`: Global answers "what will the
+	// next WINDOW get", this answers "what will the next tmux SERVER get". They are
+	// different questions and a panel that showed only the first would keep sending
+	// people back to a config file it never mentioned.
+	ConfigFiles string `json:"configFiles"`
 }
 
 // HistoryResize is the outcome of a rebuild — deliberately a count of what
@@ -89,6 +107,11 @@ type HistoryResize struct {
 	// has already shown these in a confirmation; echoing them back is what makes
 	// the result a receipt rather than a promise.
 	Restarted []string `json:"restarted"`
+	// Replayed is how many rebuilt panes carried their old scrollback across. It
+	// is reported separately from Rebuilt because the two can differ — a pane whose
+	// capture fails is still rebuilt, just empty — and "your history came with it"
+	// is the claim a user most needs to be true rather than assumed.
+	Replayed int `json:"replayed"`
 	// LayoutRestored is false when the geometry could not be put back (an
 	// unparseable layout, or tmux rejecting the re-labelled one). The panes are
 	// correct either way; only their sizes are not.
@@ -249,6 +272,7 @@ func buildHistoryReport(run tmuxRunner, windowID string) (HistoryReport, error) 
 			rep.Default = d
 		}
 	}
+	rep.ConfigFiles, _ = optionValue(run, "display-message", "-p", "#{config_files}")
 	return rep, nil
 }
 
@@ -328,6 +352,143 @@ func (c *Controller) SetDefaultHistoryLimit(windowID string, limit int) error {
 		_, _ = c.runTmux("set-option", "-t", sid, "history-limit", val)
 	}
 	return nil
+}
+
+// ---- the default that outlives the server ----------------------------------
+//
+// `set-option -g history-limit` lasts exactly as long as the tmux SERVER does.
+// Kill it — a reboot, a `tmux kill-server`, the last client detaching from a
+// server started with a `-` exit — and the next one comes up at whatever
+// tmux.conf says, which is why "I set this last week and it's back to 2000" is
+// such a common experience. Making it stick means editing the config file.
+//
+// Two things make that harder than it sounds, and both are answered by doing the
+// work INSIDE tmux:
+//
+//   - The file is on the machine tmux runs on, which need not be the machine
+//     webtmux runs on. webtmux is routinely a container with a mounted socket and
+//     no sight of the host's home directory (savepath.go). Writing "~/.tmux.conf"
+//     from here would confidently edit the wrong file.
+//   - Which file it even IS depends on that same filesystem: tmux reads
+//     ~/.config/tmux/tmux.conf or ~/.tmux.conf, plus a system-wide one, and only
+//     something standing there can look.
+//
+// `run-shell` runs a command on the tmux SERVER, so both problems dissolve: the
+// script below chooses the file, rewrites it, and reports back through a tmux
+// user option — a round trip entirely within the tmux server, which webtmux then
+// reads like any other option. Measured, not assumed: a fresh server started
+// after this comes up at the written value.
+
+// historyConfOption is where the config-writing script leaves its verdict:
+// "ok|<path>" or "err|<path>|<why>". A user option rather than the command's
+// output because run-shell's output goes to a pane, not to the caller.
+const historyConfOption = "@wt_history_conf"
+
+// PersistDefaultHistoryLimit writes `set -g history-limit N` into the tmux config
+// file, so a tmux server started later comes up with it — and applies it to the
+// running server too, since a control that saved a default the current session
+// disagreed with would be its own kind of confusing.
+//
+// Returns the path actually written.
+func (c *Controller) PersistDefaultHistoryLimit(windowID string, limit int) (string, error) {
+	if limit < HistoryLimitMin || limit > HistoryLimitMax {
+		return "", fmt.Errorf("%w: a history limit of %d is outside %d..%d",
+			ErrRefused, limit, HistoryLimitMin, HistoryLimitMax)
+	}
+	// The live server first: if this fails the config write would be a promise
+	// about a future that the present already contradicts.
+	if err := c.SetDefaultHistoryLimit(windowID, limit); err != nil {
+		return "", err
+	}
+	// Clear the verdict before asking, so a leftover from an earlier attempt can
+	// never be read as this one's answer.
+	if _, err := c.runTmux("set-option", "-g", historyConfOption, ""); err != nil {
+		return "", err
+	}
+	files, _ := optionValue(c.run, "display-message", "-p", "#{config_files}")
+	if _, err := c.runTmux("run-shell", persistScript(splitConfigFiles(files), limit)); err != nil {
+		return "", err
+	}
+	verdict, _ := optionValue(c.run, "show-options", "-g", "-v", historyConfOption)
+	_, _ = c.runTmux("set-option", "-g", "-u", historyConfOption)
+
+	kind, path, why := parseConfVerdict(verdict)
+	switch kind {
+	case "ok":
+		return path, nil
+	case "err":
+		return path, fmt.Errorf("%w: could not write %s (%s)", ErrRefused, path, why)
+	}
+	// No verdict at all: run-shell went through but the script never reported.
+	// Say so rather than claiming a write nobody has seen evidence of.
+	return "", fmt.Errorf("%w: tmux ran the update but did not confirm it — "+
+		"check your tmux config by hand", ErrRefused)
+}
+
+// splitConfigFiles turns `#{config_files}` (comma-separated) into candidates.
+func splitConfigFiles(files string) []string {
+	var out []string
+	for _, f := range strings.Split(files, ",") {
+		if f = strings.TrimSpace(f); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// parseConfVerdict reads "ok|<path>" / "err|<path>|<why>".
+func parseConfVerdict(v string) (kind, path, why string) {
+	parts := strings.SplitN(strings.TrimSpace(v), "|", 3)
+	if len(parts) < 2 || (parts[0] != "ok" && parts[0] != "err") {
+		return "", "", ""
+	}
+	why = "unknown reason"
+	if len(parts) == 3 && parts[2] != "" {
+		why = parts[2]
+	}
+	return parts[0], parts[1], why
+}
+
+// persistScript is the sh program run ON THE TMUX SERVER to update the config.
+//
+// It picks the file the way tmux would: the config tmux actually loaded, if one
+// of them is the user's own — a system-wide /etc/tmux.conf is deliberately not
+// edited, since it is not this user's to change and would alter it for everyone.
+// With no config file at all it creates one, preferring ~/.config/tmux/tmux.conf
+// when that directory already exists and ~/.tmux.conf otherwise.
+//
+// The rewrite drops any existing history-limit line and appends the new one, via
+// a temp file and a rename, so an interrupted write cannot leave a truncated
+// config — the file that decides how the user's tmux behaves is not one to write
+// in place. Everything else in it is passed through untouched. The line moves to
+// the end, which is also what makes it idempotent: run it twice and there is
+// still exactly one.
+func persistScript(candidates []string, limit int) string {
+	var b strings.Builder
+	b.WriteString("set -u\nconf=\n")
+	if len(candidates) > 0 {
+		b.WriteString("for f in")
+		for _, c := range candidates {
+			b.WriteString(" " + shellQuote(c))
+		}
+		b.WriteString("; do case \"$f\" in \"$HOME\"/*) conf=$f;; esac; done\n")
+	}
+	b.WriteString(`if [ -z "$conf" ]; then
+  if [ -d "$HOME/.config/tmux" ]; then conf=$HOME/.config/tmux/tmux.conf; else conf=$HOME/.tmux.conf; fi
+fi
+report() { tmux set-option -g ` + historyConfOption + ` "$1"; }
+mkdir -p "$(dirname "$conf")" 2>/dev/null
+if ! touch "$conf" 2>/dev/null; then report "err|$conf|no permission to write it"; exit 0; fi
+tmp=$conf.webtmux-new
+if { grep -vE '^[[:space:]]*set(-option)?[[:space:]]+(-g[[:space:]]+)?history-limit([[:space:]]|$)' "$conf" 2>/dev/null; ` +
+		`echo ` + shellQuote(fmt.Sprintf("set -g history-limit %d  # webtmux", limit)) + `; } > "$tmp" && mv "$tmp" "$conf"; then
+  report "ok|$conf"
+else
+  rm -f "$tmp" 2>/dev/null
+  report "err|$conf|write failed"
+fi
+`)
+	return b.String()
 }
 
 // ClearWindowHistory empties every pane's scrollback in one window
@@ -437,6 +598,7 @@ func (c *Controller) ResizeWindowHistory(windowID string, limit int, force bool)
 		}
 	}()
 
+	startCmd := c.paneStartCommand(sid)
 	newByOld := make(map[string]string, len(todo))
 	var walkErr error
 	for _, p := range todo {
@@ -444,9 +606,18 @@ func (c *Controller) ResizeWindowHistory(windowID string, limit int, force bool)
 		if dir := paths[p.PaneID]; dir != "" {
 			args = append(args, "-c", dir)
 		}
+		// Capture the old pane BEFORE anything can destroy it, and hand the
+		// replacement a command that plays it back. A capture that fails is not a
+		// reason to abandon the resize — it costs the history, which is exactly
+		// what the old behaviour cost every time — so it degrades to a plain shell.
+		replay := c.captureForReplay(p.PaneID)
+		if replay != "" {
+			args = append(args, replayCommand(replay, startCmd))
+		}
 		out, err := c.runTmux(args...)
 		newID := strings.TrimSpace(out)
 		if err != nil || newID == "" {
+			c.dropBuffer(replay)
 			// The commonest cause by far: the pane is too short to divide. Stop
 			// rather than press on — the panes already rebuilt are correct, and the
 			// count in the result says how far it got.
@@ -459,11 +630,15 @@ func (c *Controller) ResizeWindowHistory(windowID string, limit int, force bool)
 			// has one pane too many. Take the new one back out: a failed resize that
 			// leaves a stray shell behind is worse than one that changed nothing.
 			_, _ = c.runTmux("kill-pane", "-t", newID)
+			c.dropBuffer(replay)
 			walkErr = fmt.Errorf("%w: could not close the old pane %s", ErrRefused, p.PaneID)
 			break
 		}
 		newByOld[p.PaneID] = newID
 		res.Rebuilt++
+		if replay != "" {
+			res.Replayed++
+		}
 		if !paneIsIdle(p.Command) {
 			res.Restarted = append(res.Restarted, p.Command)
 		}
@@ -495,6 +670,100 @@ func (c *Controller) ResizeWindowHistory(windowID string, limit int, force bool)
 		c.RefreshLayout()
 	}
 	return res, walkErr
+}
+
+// ---- carrying the scrollback across ----------------------------------------
+//
+// A rebuilt pane is a new pty with an empty grid, so without this a resize costs
+// you the very thing you were resizing to keep more of. There is no way to hand
+// tmux a history — a grid is only ever filled by output — so the old buffer is
+// REPLAYED: captured whole (colours included) and printed into the replacement
+// before its shell starts. What lands in the new pane's history is a faithful
+// transcript rather than the original grid, which for a scrollback is the same
+// thing: it is text you scroll back through either way.
+//
+// It travels in a tmux BUFFER, not a temp file. The buffer lives in the tmux
+// server's memory, so the text is written and read entirely on the machine tmux
+// runs on — webtmux never has to have a filesystem in common with it. That is not
+// hypothetical: webtmux is routinely containerized against a mounted socket, with
+// the host's home directory nowhere in sight (see savepath.go).
+
+// replayBufferName is the buffer one pane's rebuild uses. Derived from the pane
+// id so two panes rebuilt in the same walk cannot collide, and so a leftover from
+// a crashed rebuild is overwritten rather than accumulating.
+func replayBufferName(paneID string) string {
+	return "wt-replay-" + strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, paneID)
+}
+
+// captureForReplay snapshots a pane's whole buffer into a tmux buffer and returns
+// its name, or "" if the capture failed (in which case the rebuild simply starts
+// the new pane empty — a lost history is not worth abandoning the resize over).
+//
+// `-e` keeps the colours: the replay is `cat`-ed into a terminal, so the SGR
+// sequences are interpreted rather than shown, and the old output comes back
+// looking like itself.
+func (c *Controller) captureForReplay(paneID string) string {
+	name := replayBufferName(paneID)
+	if _, err := c.runTmux("capture-pane", "-e", "-S", "-", "-b", name, "-t", paneID); err != nil {
+		log.Printf("could not capture %s for replay (rebuilding it empty): %v", paneID, err)
+		return ""
+	}
+	return name
+}
+
+// dropBuffer discards a replay buffer whose pane never got rebuilt.
+func (c *Controller) dropBuffer(name string) {
+	if name == "" {
+		return
+	}
+	_, _ = c.runTmux("delete-buffer", "-b", name)
+}
+
+// replayCommand is what the replacement pane runs: print the captured buffer,
+// discard it, then become the shell a pane normally is.
+//
+// `tmux save-buffer -b <name> -` writes the buffer to stdout — the pane's own
+// terminal — which is what puts those lines into the NEW pane's history. It is
+// run from inside the pane, so it reaches the right server through $TMUX with no
+// socket path to get wrong, and it runs where the pane runs.
+//
+// Every step is failure-tolerant. A tmux that isn't on PATH, a buffer that went
+// missing: the redirections swallow it and the `exec` still happens, so the worst
+// case is the pane you would have had anyway. What must NEVER happen is a pane
+// that fails to become a shell.
+func replayCommand(buffer, startCmd string) string {
+	b := shellQuote(buffer)
+	return fmt.Sprintf("tmux save-buffer -b %s - 2>/dev/null; tmux delete-buffer -b %s 2>/dev/null; %s",
+		b, b, startCmd)
+}
+
+// paneStartCommand is what tmux itself would have run in a new pane: the
+// session's default-command if it has one, else its shell as a LOGIN shell —
+// which is what tmux does when default-command is empty. Reproducing that is the
+// difference between a rebuilt pane that behaves like a new one and one that
+// quietly skipped the user's profile.
+func (c *Controller) paneStartCommand(sessionID string) string {
+	if cmd, _ := optionValue(c.run, "show-options", "-v", "-A", "-t", sessionID, "default-command"); cmd != "" {
+		return "exec " + cmd
+	}
+	shell, _ := optionValue(c.run, "show-options", "-v", "-A", "-t", sessionID, "default-shell")
+	if shell == "" {
+		// tmux always has a default-shell, so this is only reachable on a tmux too
+		// old to report it; the pane's own $SHELL is the same answer by another route.
+		return `exec "${SHELL:-/bin/sh}" -l`
+	}
+	return "exec " + shellQuote(shell) + " -l"
+}
+
+// shellQuote wraps a value for the `sh -c` line tmux runs a pane command through.
+// Single quotes, with the one escape single quotes have: end, quote, resume.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // ---- layout re-labelling ---------------------------------------------------

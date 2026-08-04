@@ -43,6 +43,9 @@ type TmuxController interface {
 	// empties them. windowID is passed to the default-setter too, so it can tell
 	// whether a session-scope override would shadow the global write.
 	SetDefaultHistoryLimit(windowID string, limit int) error
+	// PersistDefaultHistoryLimit additionally writes it into the tmux config file,
+	// so a tmux server started later comes up with it. Returns the path written.
+	PersistDefaultHistoryLimit(windowID string, limit int) (string, error)
 	ResizeWindowHistory(windowID string, limit int, force bool) (tmux.HistoryResize, error)
 	ClearWindowHistory(windowID string) error
 	EnterCopyMode() error

@@ -31,6 +31,7 @@ import (
 const (
 	historyActionInfo    = ""        // no action; just report
 	historyActionDefault = "default" // set-option -g history-limit
+	historyActionPersist = "persist" // …and write it into the tmux config file
 	historyActionResize  = "resize"  // rebuild this window's panes
 	historyActionClear   = "clear"   // clear-history on this window's panes
 )
@@ -58,6 +59,10 @@ type historyOutcome struct {
 	// Resize carries the rebuild's receipt (how many panes, what was killed).
 	// Absent for the other actions.
 	Resize *tmux.HistoryResize `json:"resize,omitempty"`
+	// SavedTo is the config file a "persist" wrote — reported even when the write
+	// FAILED, because "which file did you just try to change?" is the first thing
+	// anyone asks either way.
+	SavedTo string `json:"savedTo,omitempty"`
 }
 
 // handleHistoryInfoRequest answers "how big is this scrollback, and how full?"
@@ -87,12 +92,21 @@ func (wt *WebTTY) handleHistoryAction(payload []byte) error {
 	}
 
 	var (
-		actErr error
-		resize *tmux.HistoryResize
+		actErr  error
+		resize  *tmux.HistoryResize
+		savedTo string
+		err     error
 	)
 	switch req.Action {
 	case historyActionDefault:
 		actErr = wt.tmuxCtrl.SetDefaultHistoryLimit(req.WindowID, req.Limit)
+	case historyActionPersist:
+		// Sets the live default AND makes it survive a tmux restart. The path it
+		// landed at rides back in the reply: the file is chosen on the tmux server
+		// (see pkg/tmux/history.go), so naming it is the only way the user can know
+		// which of their configs just changed.
+		savedTo, err = wt.tmuxCtrl.PersistDefaultHistoryLimit(req.WindowID, req.Limit)
+		actErr = err
 	case historyActionResize:
 		r, err := wt.tmuxCtrl.ResizeWindowHistory(req.WindowID, req.Limit, req.Force)
 		resize, actErr = &r, err
@@ -110,7 +124,9 @@ func (wt *WebTTY) handleHistoryAction(payload []byte) error {
 	// The report is re-read AFTER the action either way. On success it is the
 	// proof; on failure it is what the window actually looks like now, which for a
 	// partial rebuild is neither the old state nor the requested one.
-	return wt.sendHistory(wt.historyReport(req.WindowID, req.Action, actErr, resize))
+	out := wt.historyReport(req.WindowID, req.Action, actErr, resize)
+	out.SavedTo = savedTo
+	return wt.sendHistory(out)
 }
 
 // historyReport reads the window's current numbers and folds an action's outcome

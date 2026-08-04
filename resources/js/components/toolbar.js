@@ -28,6 +28,7 @@ import {
 } from '../save-scope.js';
 import {
   HISTORY_PRESETS, parseLimit, formatLines, formatBytes, windowUsage, resizePlan,
+  configFileHint,
 } from '../scrollback.js';
 import { READ_ONLY_NOTICE } from '../write-guard.js';
 import { copyText } from '../clipboard.js';
@@ -113,7 +114,8 @@ const SCROLLBACK_TIP = [
   '',
   'tmux fixes a pane\'s buffer size when the pane is created, so raising the limit',
   'only affects NEW windows. Resizing one that already exists means rebuilding its',
-  'panes, which restarts them. Both are in here, kept apart.',
+  'panes, which restarts them (the scrollback comes along). Both are in here, kept',
+  'apart \u2014 plus saving the default into your tmux config, so it survives a restart.',
 ].join('\n');
 
 // The scrollback button's icon: a buffer with a fill level.
@@ -790,6 +792,21 @@ class WebtmuxToolbar extends LitElement {
       cursor: pointer;
     }
     .hist-clear:hover { background: #3a1420; color: #fff; }
+    /* "Save for next time" is a normal, safe action — it writes a config file and
+       changes nothing running — so it is styled as a quiet secondary button rather
+       than borrowing the destructive red of Clear. */
+    .hist-persist {
+      background: #14233f;
+      color: #9fc4ff;
+      border: 1px solid #0f3460;
+      border-radius: 4px;
+      padding: 5px 8px;
+      font-size: 11px;
+      font-family: inherit;
+      cursor: pointer;
+      text-align: left;
+    }
+    .hist-persist:hover { border-color: #4a9eff; color: #fff; }
     /* The transient explanation line (read-only refusals, controller refusals).
        Sits in the bar itself so it is visible wherever the click happened. */
     .notice {
@@ -1432,6 +1449,16 @@ class WebtmuxToolbar extends LitElement {
     this.manager?.setDefaultHistoryLimit(parsed.value);
   }
 
+  // …and make it stick across tmux restarts, by writing the config file. Reads the
+  // SAME input as "Set default": they are one number at two scopes, and two boxes
+  // for it would invite them to disagree.
+  _persistHistoryDefault() {
+    const parsed = parseLimit(this._defaultValue());
+    if (!parsed.ok) { this.historyStatus = { state: 'err', text: parsed.error }; return; }
+    this.historyConfirm = null;
+    this.manager?.persistDefaultHistoryLimit(parsed.value);
+  }
+
   // Ask to rebuild. Never acts on the click: a rebuild kills what is running and
   // discards the scrollback, and neither is recoverable, so the plan is put on
   // screen in words first (see scrollback.js's resizePlan).
@@ -1572,6 +1599,13 @@ class WebtmuxToolbar extends LitElement {
             the size they were born with${info && info.global !== info.default
               ? ` — and this session overrides the server default of ${formatLines(info.global)}`
               : ''}.</div>
+          <button class="hist-persist" @click=${() => this._persistHistoryDefault()}>
+            Also save it for future tmux servers
+          </button>
+          <div class="save-hint">A default set above lasts only as long as this tmux
+            SERVER — a reboot or <code>tmux kill-server</code> puts it back. This writes
+            <code>set -g history-limit</code> into ${configFileHint(info?.configFiles)},
+            which every tmux started afterwards reads.</div>
 
           <div class="save-sep"></div>
           <button class="hist-clear" @click=${() => this._askClear()}>

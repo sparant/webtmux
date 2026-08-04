@@ -15,8 +15,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   HISTORY_MAX, parseLimit, formatLines, formatBytes, windowUsage,
-  paneIsIdle, panesToRebuild, busyCommands, resizePlan, actionBanner,
-  ACTION_DEFAULT, ACTION_RESIZE, ACTION_CLEAR,
+  paneIsIdle, panesToRebuild, busyCommands, resizePlan, actionBanner, configFileHint,
+  ACTION_DEFAULT, ACTION_PERSIST, ACTION_RESIZE, ACTION_CLEAR,
 } from '../resources/js/scrollback.js';
 
 const pane = (over = {}) => ({
@@ -93,7 +93,7 @@ test('panes already at the requested size are neither rebuilt nor warned about',
   assert.deepEqual(busyCommands(panes, 50000), ['claude']);
 });
 
-test('the resize plan states both irreversible costs, and names what dies', () => {
+test('the resize plan names what dies, and the one way to keep it', () => {
   const plan = resizePlan([
     pane({ paneId: '%0', command: 'bash' }),
     pane({ paneId: '%1', command: 'claude' }),
@@ -102,15 +102,23 @@ test('the resize plan states both irreversible costs, and names what dies', () =
   assert.match(plan.text, /2 panes/);
   assert.match(plan.text, /50,000/);
   assert.match(plan.text, /claude/);
-  assert.match(plan.text, /scrollback is lost/);
+  // The scrollback survives a rebuild now, so promising otherwise would be a
+  // stale warning that talks people out of a resize they can safely make.
+  assert.match(plan.text, /scrollback is carried across/);
+  assert.doesNotMatch(plan.text, /scrollback is lost/);
+  // reptyr is not automated (see the module comment), but it IS the answer to
+  // "can I keep this running", so the confirmation names it rather than leaving
+  // the user to conclude there is no way.
+  assert.match(plan.text, /reptyr/);
 });
 
-test('an all-shell window still confirms — the scrollback goes either way', () => {
+test('an all-shell window confirms without the reptyr sentence', () => {
   const plan = resizePlan([pane({ command: 'bash' })], 50000);
   assert.equal(plan.needsConfirm, true);
   assert.equal(plan.busy, undefined);
   assert.match(plan.text, /1 pane\b/);
-  assert.match(plan.text, /scrollback is lost/);
+  assert.match(plan.text, /scrollback is carried across/);
+  assert.doesNotMatch(plan.text, /reptyr/, 'nothing is running, so nothing needs rescuing');
 });
 
 test('resizing to the size it already is asks for nothing', () => {
@@ -133,11 +141,43 @@ test('the resize banner is a receipt: how many, and what it cost', () => {
   const b = actionBanner({
     action: ACTION_RESIZE, ok: true,
     panes: [{ limit: 50000 }],
-    resize: { rebuilt: 2, skipped: 1, restarted: ['claude'], layoutRestored: true },
+    resize: { rebuilt: 2, skipped: 1, replayed: 2, restarted: ['claude'], layoutRestored: true },
   });
   assert.match(b.text, /Rebuilt 2 panes at 50,000 lines/);
   assert.match(b.text, /1 already the right size/);
+  assert.match(b.text, /scrollback carried across/);
   assert.match(b.text, /restarted claude/);
+});
+
+test('a rebuild that could not carry the scrollback says which panes lost it', () => {
+  const none = actionBanner({
+    action: ACTION_RESIZE, ok: true, panes: [{ limit: 50000 }],
+    resize: { rebuilt: 2, replayed: 0, restarted: [], layoutRestored: true },
+  });
+  assert.match(none.text, /could not be read, so they start empty/);
+  const some = actionBanner({
+    action: ACTION_RESIZE, ok: true, panes: [{ limit: 50000 }],
+    resize: { rebuilt: 3, replayed: 2, restarted: [], layoutRestored: true },
+  });
+  assert.match(some.text, /carried across for 2 of them/);
+});
+
+test('the persist banner names the file, and both scopes it just changed', () => {
+  const b = actionBanner({
+    action: ACTION_PERSIST, ok: true, default: 50000, savedTo: '/home/me/.tmux.conf',
+  });
+  assert.equal(b.state, 'ok');
+  assert.match(b.text, /\/home\/me\/\.tmux\.conf/);
+  assert.match(b.text, /new tmux servers/);
+  assert.match(b.text, /this one already does/);
+});
+
+test('the config-file hint says what will be written, or that one will be created', () => {
+  assert.equal(configFileHint('/home/me/.tmux.conf'), '/home/me/.tmux.conf');
+  // tmux lists them in load order, so the LAST is the user's own.
+  assert.equal(configFileHint('/etc/tmux.conf,/home/me/.tmux.conf'), '/home/me/.tmux.conf');
+  assert.match(configFileHint(''), /no tmux config yet/);
+  assert.match(configFileHint(null), /no tmux config yet/);
 });
 
 test('a rebuild that could not put the geometry back says so', () => {

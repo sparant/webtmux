@@ -35,7 +35,7 @@ import { resolveRestoreView, planRestoreLanding } from './restore-view.js';
 import { saveResultBanner } from './save-target.js';
 import { DEFAULT_SAVE_SCOPE, normalizeScope, isScrollback, fetchingText } from './save-scope.js';
 import {
-  ACTION_DEFAULT, ACTION_RESIZE, ACTION_CLEAR, actionBanner, formatBytes,
+  ACTION_DEFAULT, ACTION_PERSIST, ACTION_RESIZE, ACTION_CLEAR, actionBanner, formatBytes,
 } from './scrollback.js';
 import { IS_MAC } from './os.js';
 import { stateStore } from './state-store.js';
@@ -1227,6 +1227,16 @@ export class SplitManager {
   // and conflating them is how you kill a running program by changing a default.
   setDefaultHistoryLimit(limit) {
     this._historyAction(ACTION_DEFAULT, limit, false);
+  }
+
+  // The same default, written into the tmux CONFIG FILE so a tmux server started
+  // later comes up with it. Separate from setDefaultHistoryLimit because they
+  // answer different questions — "what will the next window get" versus "what will
+  // the next tmux get" — and the second is the one people discover the hard way,
+  // after a reboot puts everything back to 2,000. It sets the live default too;
+  // a saved setting the running server disagreed with would be its own puzzle.
+  persistDefaultHistoryLimit(limit) {
+    this._historyAction(ACTION_PERSIST, limit, false);
   }
 
   // Rebuild this window's panes at `limit` lines. Destructive: see scrollback.js's

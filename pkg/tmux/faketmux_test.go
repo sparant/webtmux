@@ -45,6 +45,13 @@ type fakeServer struct {
 	// nextPane numbers the panes split-window creates, so a test can watch a
 	// rebuild replace a window's panes one at a time.
 	nextPane int
+	// runShellVerdict, when set, is what a `run-shell` writes into @wt_history_conf
+	// — standing in for the config-writing script, which really does report back
+	// through a tmux option (see persistScript).
+	runShellVerdict string
+	// buffers records the tmux buffers capture-pane filled, so a test can see that
+	// a rebuild captured the pane it was about to destroy.
+	buffers map[string]bool
 
 	// fail maps a tmux subcommand name to an error to return instead of output.
 	fail map[string]error
@@ -229,6 +236,30 @@ func (f *fakeServer) run(args ...string) (string, error) {
 		// history-limit in force RIGHT NOW for its session, while existing panes keep
 		// theirs. That is the whole reason a resize has to rebuild.
 		return f.splitWindow(args), nil
+
+	case "capture-pane":
+		if b := flagValue(args, "-b"); b != "" {
+			f.mu.Lock()
+			if f.buffers == nil {
+				f.buffers = map[string]bool{}
+			}
+			f.buffers[b] = true
+			f.mu.Unlock()
+		}
+		return "", nil
+
+	case "run-shell":
+		// The real script reports its verdict by setting a tmux option; the fake
+		// does the same, so the caller's round trip is exercised rather than stubbed.
+		if f.runShellVerdict != "" {
+			f.mu.Lock()
+			if f.options == nil {
+				f.options = map[string]string{}
+			}
+			f.options["global/"+historyConfOption] = f.runShellVerdict
+			f.mu.Unlock()
+		}
+		return "", nil
 
 	case "kill-pane":
 		f.killPane(target)

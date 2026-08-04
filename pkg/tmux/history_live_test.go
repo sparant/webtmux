@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -333,4 +334,180 @@ func paneGeometry(layout string) string {
 		layout = layout[i+1:]
 	}
 	return layoutLeaf.ReplaceAllString(layout, "${1}#")
+}
+
+// The point of the whole exercise: a bigger buffer that still holds what you had.
+//
+// Against a real tmux, because the replay is a claim about what lands in a NEW
+// pane's grid when text is printed into it, and no fake can tell you that.
+func TestLiveResizeCarriesTheScrollbackAcross(t *testing.T) {
+	run, _ := liveTmux(t)
+	c := newControllerWithRunner("live", false, "", run)
+	win := liveField(t, run, "live", "#{window_id}")
+
+	// Deeper than a screen, so most of it is HISTORY rather than what is visible —
+	// the part a rebuild used to throw away.
+	if _, err := run("send-keys", "-t", win,
+		`clear; for i in $(seq 1 600); do printf '\033[32mkeep-me-%s\033[0m\n' $i; done`, "Enter"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, run, func() bool {
+		panes, err := historyPanes(run, win)
+		return err == nil && len(panes) == 1 && panes[0].Size > 500
+	})
+	before := mustPanes(t, run, win)[0]
+	if before.Size < 500 {
+		t.Fatalf("the pane never filled (size %d); the replay would prove nothing", before.Size)
+	}
+
+	res, err := c.ResizeWindowHistory(win, 50000, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Replayed != 1 {
+		t.Fatalf("replayed %d of %d panes", res.Replayed, res.Rebuilt)
+	}
+	// The replacement's shell has to finish printing the buffer before the history
+	// is there to read.
+	waitFor(t, run, func() bool {
+		panes, err := historyPanes(run, win)
+		return err == nil && len(panes) == 1 && panes[0].Size > 500
+	})
+	after := mustPanes(t, run, win)[0]
+	if after.Limit != 50000 {
+		t.Errorf("the rebuilt pane holds %d lines, want 50000", after.Limit)
+	}
+	if after.Size < before.Size {
+		t.Errorf("history shrank from %d to %d lines in the rebuild", before.Size, after.Size)
+	}
+	// Not just a count — the OLDEST line, the one furthest from the screen, is the
+	// one a truncated replay would lose first.
+	whole, err := run("capture-pane", "-p", "-S", "-", "-t", win)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"keep-me-1\n", "keep-me-600"} {
+		if !strings.Contains(whole, want) {
+			t.Errorf("%q did not survive the rebuild", strings.TrimSuffix(want, "\n"))
+		}
+	}
+	// Colours too: the capture is taken with -e and replayed into a terminal, so
+	// the old output should come back looking like itself.
+	coloured, err := run("capture-pane", "-p", "-e", "-S", "-", "-t", win)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(coloured, "\033[32m") {
+		t.Error("the replay came back colourless")
+	}
+	// And it is a working pane, not a `cat` that ended: the shell has to be there.
+	waitFor(t, run, func() bool {
+		panes, _ := historyPanes(run, win)
+		return len(panes) == 1 && paneIsIdle(panes[0].Command)
+	})
+	if got := mustPanes(t, run, win)[0].Command; !paneIsIdle(got) {
+		t.Errorf("the rebuilt pane is running %q, not a shell", got)
+	}
+}
+
+// Persisting the default: the config file is rewritten, and — the only claim that
+// matters — a tmux server started AFTERWARDS comes up with it.
+func TestLivePersistSurvivesAServerRestart(t *testing.T) {
+	run, _ := liveTmux(t)
+	c := newControllerWithRunner("live", false, "", run)
+	win := liveField(t, run, "live", "#{window_id}")
+
+	home := os.Getenv("HOME")
+	if home == "" {
+		t.Skip("no HOME to write a tmux config into")
+	}
+	conf := filepath.Join(home, ".tmux.conf")
+	// A config with content worth preserving, including a history-limit line that
+	// must be REPLACED rather than duplicated.
+	original := "# my settings\nset -g mouse on\nset -g history-limit 4000\nset -g status-style bg=blue\n"
+	if err := os.WriteFile(conf, []byte(original), 0o644); err != nil {
+		t.Skipf("cannot write %s: %v", conf, err)
+	}
+	t.Cleanup(func() { _ = os.Remove(conf) })
+
+	path, err := c.PersistDefaultHistoryLimit(win, 77000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != conf {
+		t.Errorf("wrote %q, want %q", path, conf)
+	}
+	body, err := os.ReadFile(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if !strings.Contains(text, "set -g history-limit 77000") {
+		t.Errorf("the new limit is not in the config:\n%s", text)
+	}
+	if strings.Contains(text, "history-limit 4000") {
+		t.Errorf("the old history-limit line survived, so the config now has two:\n%s", text)
+	}
+	// Everything else in the file is the user's and must come through untouched.
+	for _, keep := range []string{"# my settings", "set -g mouse on", "set -g status-style bg=blue"} {
+		if !strings.Contains(text, keep) {
+			t.Errorf("the rewrite dropped %q:\n%s", keep, text)
+		}
+	}
+
+	// The claim: a FRESH tmux server reads it. This is the whole difference between
+	// this control and the one next to it.
+	if _, err := run("kill-server"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, run, func() bool {
+		_, err := run("list-sessions")
+		return err != nil // the old server is gone
+	})
+	if _, err := run("new-session", "-d", "-s", "reborn", "-x", "80", "-y", "24"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := globalHistoryLimit(run); got != 77000 {
+		t.Errorf("the new server came up at %d lines — the setting did not survive", got)
+	}
+	if got := liveField(t, run, "reborn", "#{history_limit}"); got != "77000" {
+		t.Errorf("a pane in the new server holds %s lines, want 77000", got)
+	}
+
+	// Idempotent: doing it again leaves one line, not two.
+	c2 := newControllerWithRunner("reborn", false, "", run)
+	win2 := liveField(t, run, "reborn", "#{window_id}")
+	if _, err := c2.PersistDefaultHistoryLimit(win2, 88000); err != nil {
+		t.Fatal(err)
+	}
+	body, _ = os.ReadFile(conf)
+	if n := strings.Count(string(body), "history-limit"); n != 1 {
+		t.Errorf("the config has %d history-limit lines after two saves:\n%s", n, body)
+	}
+}
+
+// A system-wide config is not the user's to rewrite.
+func TestLivePersistCreatesAUserConfigRatherThanEditingASystemOne(t *testing.T) {
+	run, _ := liveTmux(t)
+	c := newControllerWithRunner("live", false, "", run)
+	win := liveField(t, run, "live", "#{window_id}")
+
+	home := os.Getenv("HOME")
+	if home == "" {
+		t.Skip("no HOME")
+	}
+	conf := filepath.Join(home, ".tmux.conf")
+	_ = os.Remove(conf) // this server loaded no user config
+	t.Cleanup(func() { _ = os.Remove(conf) })
+
+	path, err := c.PersistDefaultHistoryLimit(win, 33000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(path, home) {
+		t.Errorf("wrote %q, which is outside the user's home", path)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("reported writing %s but it is not there: %v", path, err)
+	}
 }
