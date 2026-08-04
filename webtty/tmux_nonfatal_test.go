@@ -87,6 +87,14 @@ type countingCapture struct {
 	block   chan struct{} // when non-nil, CaptureWindows waits on it
 	paneDir string
 	err     error
+
+	// The scrollback half: what CaptureScrollback returns, whether it fails, and
+	// the window ids it was asked for (so a test can assert which buffer a save
+	// actually read rather than inferring it from the bytes written).
+	scrollback     string
+	scrollbackErr  error
+	scrollbackHold chan struct{} // when non-nil, CaptureScrollback waits on it
+	scrollbackFor  []string
 }
 
 type captureCall struct {
@@ -113,6 +121,47 @@ func (c *countingCapture) CaptureWindows(ids []string, force bool) ([]tmux.Captu
 }
 
 func (c *countingCapture) PaneCurrentPath(string) (string, error) { return c.paneDir, nil }
+
+func (c *countingCapture) CaptureScrollback(windowID string) (string, error) {
+	c.mu.Lock()
+	if c.cond == nil {
+		c.cond = sync.NewCond(&c.mu)
+	}
+	c.scrollbackFor = append(c.scrollbackFor, windowID)
+	c.cond.Broadcast()
+	hold, text, err := c.scrollbackHold, c.scrollback, c.scrollbackErr
+	c.mu.Unlock()
+	if hold != nil {
+		<-hold
+	}
+	if err != nil {
+		return "", err
+	}
+	return text, nil
+}
+
+// scrollbackCalls is the window ids CaptureScrollback has been asked for.
+func (c *countingCapture) scrollbackCalls() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.scrollbackFor...)
+}
+
+// waitScrollback blocks until n scrollback reads have STARTED — the way a test
+// synchronizes with a read that is deliberately parked inside the provider.
+func (c *countingCapture) waitScrollback(t *testing.T, n int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if len(c.scrollbackCalls()) >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d scrollback reads after 5s, wanted %d", len(c.scrollbackCalls()), n)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
 
 func (c *countingCapture) snapshot() []captureCall {
 	c.mu.Lock()

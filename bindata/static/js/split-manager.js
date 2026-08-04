@@ -33,6 +33,7 @@ import { buildMruOrder } from './mru-order.js';
 import { SplitPersistence } from './split-state.js';
 import { resolveRestoreView, planRestoreLanding } from './restore-view.js';
 import { saveResultBanner } from './save-target.js';
+import { DEFAULT_SAVE_SCOPE, normalizeScope, isScrollback, fetchingText } from './save-scope.js';
 import { IS_MAC } from './os.js';
 import { stateStore } from './state-store.js';
 import { clientStore } from './client-store.js';
@@ -252,6 +253,10 @@ export class SplitManager {
     // and the pre-save "where would this land?" answer that goes with it.
     unit.onSaveResult = (res) => this.onSaveResult(res);
     unit.onSaveInfo = (info) => this.onSaveInfo(info);
+    // A whole-buffer read coming back for a download. Deliberately NOT routed
+    // into the capture cache: it is a one-shot object bigger than everything
+    // else in the page, and the download is the only thing that ever wants it.
+    unit.onScrollbackData = (payload) => this.onScrollbackData(payload);
     // Clicking the terminal collapses the shared sidebar out of the way (unless pinned).
     unit.onTerminalMousedown = () => {
       const sb = this.sidebar;
@@ -970,18 +975,55 @@ export class SplitManager {
     if (this.toolbar) this.toolbar.copyMode = !inMode;
   }
 
-  // Save the FOCUSED pane's entire captured buffer to a downloaded text file.
-  // We do the tmux capture-pane → save-buffer flow ourselves off the shared
-  // CaptureCache (the same snapshot Exposé/Preview read): force a fresh capture of
-  // this one window, then — as soon as its frame lands (or a short grace period
-  // elapses) — decode it, strip SGR colour codes, and hand the browser a .txt
-  // download named for the session + window.
-  savePaneBuffer() {
+  // Download the FOCUSED pane's buffer to the browser as a .txt.
+  //
+  // `scope` decides WHICH buffer (see save-scope.js), and the two scopes come
+  // from two different places for a reason:
+  //
+  //   • the SCREEN comes out of the shared CaptureCache — the snapshot Exposé and
+  //     the previews already keep fresh, so a screen download costs nothing new;
+  //   • the SCROLLBACK is fetched on its own request and never cached. It is
+  //     bounded only by tmux's history-limit, it is wanted once, and putting it
+  //     in the cache that a 500ms poll walks would make the biggest object in
+  //     the page the one held longest.
+  savePaneBuffer(scope = DEFAULT_SAVE_SCOPE) {
+    return isScrollback(scope) ? this._downloadScrollback() : this._downloadScreen();
+  }
+
+  // The whole buffer: ask the server, wait for the frame carrying OUR token.
+  _downloadScrollback() {
+    const u = this.focusedUnit;
+    const id = u?.layout?.activeWindowId;
+    if (!id || !u) return;
+    const token = (this._scrollbackToken = (this._scrollbackToken || 0) + 1);
+    const fname = this.suggestedSaveName();
+    this._setSaveStatus({ state: 'saving', text: fetchingText(DEFAULT_SAVE_SCOPE) });
+    if (!u.sendScrollbackRequest(id, token)) {
+      this._setSaveStatus({ state: 'err', text: 'Not connected to webtmux — nothing to read.' });
+      return;
+    }
+    // A deep history takes a tmux fork and a big frame; a request that never
+    // comes back must end in a sentence, not in a banner that says "reading…"
+    // forever. The token is what makes giving up safe: a late reply to THIS
+    // request is ignored rather than downloaded under a later request's name.
+    const timer = setTimeout(() => {
+      if (this._pendingScrollback?.token !== token) return;
+      this._pendingScrollback = null;
+      this._setSaveStatus({ state: 'err', text: 'Timed out reading the buffer. Try again, or save the visible screen.' });
+    }, SCROLLBACK_TIMEOUT_MS);
+    this._pendingScrollback = { token, windowId: id, fname, timer };
+  }
+
+  // The visible screen: force a fresh capture of this one window, then — as soon
+  // as its frame lands (or a short grace period elapses) — decode it, strip SGR
+  // colour codes, and hand the browser a .txt named for the session + window.
+  _downloadScreen() {
     const u = this.focusedUnit;
     const id = u?.layout?.activeWindowId;
     if (!id) return;
     const cache = this.captureCache;
     const fname = this.suggestedSaveName();
+    this._setSaveStatus({ state: 'saving', text: fetchingText('screen') });
 
     let done = false;
     const finish = () => {
@@ -989,8 +1031,11 @@ export class SplitManager {
       done = true;
       cache.removeEventListener('update', onUpdate);
       const entry = cache.get(id);
-      if (!entry) return; // nothing captured yet — nothing to write
-      downloadText(fname, paneBufferText(entry));
+      if (!entry) {
+        this._setSaveStatus({ state: 'err', text: 'Nothing captured for this window yet.' });
+        return;
+      }
+      this._deliverDownload(fname, paneBufferText(entry));
     };
     // Only OUR window's frame finishes the save: 'update' also fires for every
     // other surface's poll (PiP 1.5s, sidebar 5s) and for the empty recency-only
@@ -1004,6 +1049,38 @@ export class SplitManager {
     cache.addEventListener('update', onUpdate);
     cache.request([id], true);
     setTimeout(finish, 1200);
+  }
+
+  // A TmuxScrollbackData frame arrived. Only the request currently being waited
+  // on is honored — an answer to a request already given up on is dropped, not
+  // downloaded, because by now it is a different window's or a stale buffer.
+  onScrollbackData(payload) {
+    const pending = this._pendingScrollback;
+    if (!pending || !payload || payload.token !== pending.token) return;
+    clearTimeout(pending.timer);
+    this._pendingScrollback = null;
+    if (payload.error) {
+      this._setSaveStatus({ state: 'err', text: payload.error });
+      return;
+    }
+    this._deliverDownload(pending.fname, decodeScrollback(payload.data));
+  }
+
+  // Hand the browser the file and SAY how much came out.
+  //
+  // The size is the point, not decoration. The whole defect being fixed here was
+  // invisible — a download of the last 24 rows looks exactly like a download of
+  // everything until you open it — so the confirmation states the amount rather
+  // than just "done".
+  _deliverDownload(fname, text) {
+    downloadText(fname, text);
+    const lines = text ? text.split('\n').length : 0;
+    this._setSaveStatus({ state: 'ok', text: `Downloaded ${fname} — ${lines.toLocaleString()} lines, ${formatBytes(text.length)}` });
+  }
+
+  // Post one line of feedback into the save dropdown (its only place to speak).
+  _setSaveStatus(status) {
+    if (this.toolbar) this.toolbar.saveStatus = status;
   }
 
   // A sensible default filename for the FOCUSED pane's buffer: "session-index-name.txt".
@@ -1023,18 +1100,21 @@ export class SplitManager {
   // user-typed `path`. Unlike savePaneBuffer (a browser download), the server does
   // the capture + write itself and resolves a relative path against the pane's own
   // working directory. The outcome arrives via onSaveResult (toolbar feedback).
-  savePaneBufferToPath(path, overwrite = false) {
+  savePaneBufferToPath(path, overwrite = false, scope = DEFAULT_SAVE_SCOPE) {
     const u = this.focusedUnit;
     const id = u?.layout?.activeWindowId;
     if (!id || !u) return;
     const p = String(path || '').trim();
     if (!p) return;
     // Remember what was asked for: the server refuses an existing file on the
-    // first ask, and answering "Overwrite" has to re-send the SAME path rather
-    // than re-read an input the user may have clicked away from.
-    this._lastSaveRequest = { windowId: id, path: p, unit: u };
-    if (this.toolbar) this.toolbar.saveStatus = { state: 'saving', text: 'Saving…' };
-    u.sendSavePaneFile(id, p, this.saveDir(), overwrite);
+    // first ask, and answering "Overwrite" has to re-send the SAME path — and the
+    // same SCOPE — rather than re-read controls the user may have clicked away
+    // from. A confirmed overwrite that silently changed which buffer it wrote
+    // would be the one case where "Overwrite" answers a different question than
+    // the one that was asked.
+    this._lastSaveRequest = { windowId: id, path: p, unit: u, scope: normalizeScope(scope) };
+    this._setSaveStatus({ state: 'saving', text: 'Saving…' });
+    u.sendSavePaneFile(id, p, this.saveDir(), overwrite, normalizeScope(scope));
   }
 
   // "Overwrite" in the save dropdown: re-send the refused request with the answer
@@ -1042,8 +1122,8 @@ export class SplitManager {
   confirmOverwriteSave() {
     const req = this._lastSaveRequest;
     if (!req || !req.unit) return;
-    if (this.toolbar) this.toolbar.saveStatus = { state: 'saving', text: 'Saving…' };
-    req.unit.sendSavePaneFile(req.windowId, req.path, this.saveDir(), true);
+    this._setSaveStatus({ state: 'saving', text: 'Saving…' });
+    req.unit.sendSavePaneFile(req.windowId, req.path, this.saveDir(), true, req.scope);
   }
 
   // Ask the server where a save for the FOCUSED window would land. Called when the
@@ -1891,6 +1971,30 @@ export class SplitManager {
 }
 
 // --- pane-buffer save helpers ------------------------------------------------
+
+// How long to wait for a whole-buffer read before saying so. Generous: it is one
+// tmux fork over a history that can be 100k lines, on a socket that may be busy,
+// and the cost of waiting is a banner while the cost of giving up early is a
+// download the user has to ask for twice.
+const SCROLLBACK_TIMEOUT_MS = 30000;
+
+// Decode a TmuxScrollbackData payload's base64 into text. Same byte path as a
+// capture (atob -> Uint8Array -> UTF-8) because it is the same kind of thing: raw
+// terminal output, which may hold multi-byte characters that a naive atob-to-
+// string would tear in half.
+function decodeScrollback(b64) {
+  if (!b64) return '';
+  const text = new TextDecoder().decode(CaptureCache.decodeAnsi({ data: b64 }));
+  return text.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+// Byte counts a person can read at a glance — the confirmation's whole job is to
+// make "how much did I actually get?" answerable without opening the file.
+function formatBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 // Decode a capture entry to plain text: base64 ANSI -> UTF-8, then strip SGR
 // colour codes (the capture is stored WITH colour, same as the Exposé thumbnails)

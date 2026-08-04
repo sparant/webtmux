@@ -55,6 +55,7 @@ export const MSG = {
   TmuxSetState: 'P',
   TmuxRefresh: 'Q',
   TmuxSaveInfoRequest: 'R',
+  TmuxScrollbackRequest: 'S',
 
   // Output (server -> client)
   Output: '1',
@@ -73,6 +74,10 @@ export const MSG = {
   TmuxError: 'B',
   TmuxSaveResult: 'C',
   TmuxSaveInfo: 'D',
+  // One window's ENTIRE pane buffer, base64, answering a TmuxScrollbackRequest.
+  // Not a TmuxCaptureData: it is not a screen and must never reach the capture
+  // cache — it is handed straight to a download and dropped.
+  TmuxScrollbackData: 'E',
 };
 
 // Scroll-wheel behavior. Cycled by the sidebar button through all four:
@@ -97,7 +102,8 @@ const TMUX_MSG_TYPES = new Set([
   MSG.TmuxSwitchSession, MSG.TmuxRenameWindow, MSG.TmuxCaptureRequest,
   MSG.TmuxMoveWindow, MSG.TmuxNewSession, MSG.TmuxRenameSession, MSG.TmuxKillWindow,
   MSG.TmuxKillSession, MSG.TmuxLinkWindow, MSG.TmuxUnlinkWindow,
-  MSG.TmuxSavePaneFile, MSG.TmuxSaveInfoRequest, MSG.TmuxSetState, MSG.TmuxRefresh,
+  MSG.TmuxSavePaneFile, MSG.TmuxSaveInfoRequest, MSG.TmuxScrollbackRequest,
+  MSG.TmuxSetState, MSG.TmuxRefresh,
 ]);
 
 // --- liveness heartbeat -------------------------------------------------------
@@ -1453,6 +1459,17 @@ export class TerminalUnit {
         }
         break;
 
+      case MSG.TmuxScrollbackData:
+        // A whole pane buffer came back. Routed straight through to the
+        // SplitManager, which matches it against the request it is waiting on and
+        // hands it to a download — it is never cached anywhere.
+        try {
+          this.onScrollbackData?.(JSON.parse(payload));
+        } catch (e) {
+          console.warn('Bad scrollback data:', e);
+        }
+        break;
+
       case MSG.TmuxSaveResult:
         // Result of a "save pane buffer to a server file" request; SplitManager
         // routes it to the toolbar's save dropdown for success/error feedback.
@@ -1891,9 +1908,27 @@ export class TerminalUnit {
   // `overwrite` is the answer to the server's "that file already exists"
   // refusal, which it never assumes: a save into a taken name comes back as a
   // question (see savepath.go) and only a request carrying this replaces the file.
-  sendSavePaneFile(windowId, path, dir = '', overwrite = false) {
+  // `scope` picks WHICH buffer gets written — the whole scrollback or just the
+  // visible screen (see save-scope.js). The server honors the same two words for
+  // the download below, so the dropdown's choice means one thing everywhere.
+  sendSavePaneFile(windowId, path, dir = '', overwrite = false, scope = '') {
     if (!this.isConnected()) return false;
-    return this.sendMessage(MSG.TmuxSavePaneFile, JSON.stringify({ windowId, path, dir, overwrite }));
+    return this.sendMessage(MSG.TmuxSavePaneFile,
+      JSON.stringify({ windowId, path, dir, overwrite, scope }));
+  }
+
+  // Ask for a window's ENTIRE pane buffer — tmux history plus the visible screen
+  // — for a browser download. Read-only on the server (it forks `capture-pane
+  // -S -`), so it works on a read-only webtmux, which is the point: downloading
+  // is the one save that asks nothing of anyone's filesystem.
+  //
+  // `token` comes back on the reply. The browser gives up on a slow read and the
+  // user can click again, so a reply has to identify the request it answers —
+  // without that, a late first answer would satisfy the second download with the
+  // buffer from before.
+  sendScrollbackRequest(windowId, token) {
+    if (!this.isConnected()) return false;
+    return this.sendMessage(MSG.TmuxScrollbackRequest, JSON.stringify({ windowId, token }));
   }
 
   // Ask where a save for this window WOULD land — which directory a relative path

@@ -50,7 +50,7 @@ A tab flashes amber when its window has stopped working, and an arrow flashes wh
 - App wide toggles:
   - Copy-mode indicator/toggle
   - a single **mouse capture** dropdown holding both gesture questions — `click+drag:` (who gets a mouse press, the program or a text selection) and `copymode on scroll:` (who gets the wheel).
-  - save (⤓) button to download your buffer locally or remotely
+  - save (⤓) button to download your buffer locally or remotely — whole scrollback by default, or just the visible screen
   - focus dots tell you which region you are in.
   - a hidden build-id chip (Ctrl+Alt+B, copies the build id when revealed).
 
@@ -140,7 +140,7 @@ Keep an eye on specific windows, even while you focus on others.
 
 ![Save replayed: the ⤓ dropdown explains where a save lands up front, and Save confirms the exact path the file was written to](screenshots/save-file.gif)
 
-- Toolbar ⤓ saves the focused pane's scrollback: download to the browser, or write a file on the machine webtmux runs on — container-aware, with the save location explained up front and configurable via `WEBTMUX_SAVE_DIR` / `WEBTMUX_PATH_MAP` / `WEBTMUX_HOME` / `WEBTMUX_IN_CONTAINER` (details in the save section below).
+- Toolbar ⤓ saves the focused pane's buffer — the **entire scrollback** (the default) or just the visible screen: download to the browser, or write a file on the machine webtmux runs on — container-aware, with the save location explained up front and configurable via `WEBTMUX_SAVE_DIR` / `WEBTMUX_PATH_MAP` / `WEBTMUX_HOME` / `WEBTMUX_IN_CONTAINER` (details in the save section below).
 
 ### Keyboard navigation & discoverability
 
@@ -682,6 +682,23 @@ The toolbar's ⤓ button either downloads the focused pane's buffer to your
 browser, or writes it to a file **on the machine tmux runs on** — which is the
 machine running `webtmux`, and those are not always the same filesystem.
 
+The dropdown asks **which buffer** first, and defaults to the whole one:
+
+| Scope                       | What you get                                                                          |
+| --------------------------- | ------------------------------------------------------------------------------------- |
+| **Entire scrollback buffer** (default) | Everything tmux still holds for that pane — `capture-pane -S -`, so the build output that scrolled past hours ago comes too. Bounded by tmux's own `history-limit` |
+| **Visible screen only**     | Just the rows on screen right now — the same snapshot the Exposé thumbnails use        |
+
+The choice applies to both destinations, and resets to the whole buffer every
+time the menu opens: a scope is a decision about one save, not a preference, and
+"I asked for the log and got the last 24 rows" is the failure worth designing
+out. The download confirms how much text actually came out (lines and size),
+because a screenful looks exactly like a complete save until you open the file.
+
+Reading a scrollback is a read like any other capture, so it works on a
+read-only server (one started without `-w`) — which is the only kind of save
+such a server can offer.
+
 The common trap is running webtmux in a container that mounts only the tmux
 control socket. tmux then reports pane directories as _host_ paths
 (`/home/you/Projects`) that the writing process cannot see, and a relative save
@@ -697,7 +714,7 @@ report success for a file that dies with the container. Instead the dropdown
 outside" — checks that it exists and is writable, and remembers it (in the shared
 tmux UI state, so every client on that server gets the answer). A remembered
 directory that later disappears re-opens the question rather than silently
-redirecting your file. "Download to browser" needs no directory at all.
+redirecting your file. Downloading to your browser needs no directory at all.
 
 An operator can answer the question up front instead, by mounting a directory
 into the container and naming it in `WEBTMUX_SAVE_DIR`; that variable is how

@@ -90,7 +90,7 @@ func TestMissingDirectoryIsExplainedNotJustReported(t *testing.T) {
 		t.Fatal("expected an error for a directory that does not exist here")
 	}
 	msg := err.Error()
-	for _, want := range []string{"/home/you/Projects", "container", env.BaseDir, "Download to browser"} {
+	for _, want := range []string{"/home/you/Projects", "container", env.BaseDir, "downloading to your browser"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error message is missing %q:\n  %s", want, msg)
 		}
@@ -164,7 +164,7 @@ func TestContainerWithNoSharedDirectoryRefusesToSave(t *testing.T) {
 		if err == nil {
 			t.Fatalf("%q should be refused when nothing is shared", path)
 		}
-		for _, want := range []string{"Download to browser", "WEBTMUX_SAVE_DIR", "container"} {
+		for _, want := range []string{"to your browser", "WEBTMUX_SAVE_DIR", "container"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("refusal for %q is missing %q:\n  %s", path, want, err)
 			}

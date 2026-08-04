@@ -299,3 +299,100 @@ func TestCaptureCoalescesWithinTTL(t *testing.T) {
 		t.Fatalf("expected force bypass (3 forks), got %d", len(f.captureArgs))
 	}
 }
+
+// The whole-buffer read: -S - (from the oldest history line) against the
+// window's ACTIVE PANE, not the window id — the same pane the screen capture
+// picks, so "entire buffer" and "visible screen" are two views of one thing.
+func TestCaptureScrollbackReadsWholeHistoryOfActivePane(t *testing.T) {
+	f := &fakeTmux{
+		listOut: buildList(
+			[]string{"@0", "services", "0", "%0", "80", "24", "zsh"},
+			[]string{"@7", "services", "1", "%9", "80", "24", "build"},
+		),
+		captureOut: "old line\nnewer line\n",
+	}
+	s := newCaptureStoreWithRunner(f.run, time.Now)
+
+	text, err := s.CaptureScrollback("@7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "old line\nnewer line\n" {
+		t.Errorf("unexpected scrollback text: %q", text)
+	}
+	if len(f.captureArgs) != 1 {
+		t.Fatalf("expected 1 capture-pane fork, got %d", len(f.captureArgs))
+	}
+	args := strings.Join(f.captureArgs[0], " ")
+	if !strings.Contains(args, "-S -") {
+		t.Errorf("scrollback capture must start at the oldest history line (-S -): %q", args)
+	}
+	if !strings.Contains(args, "-t %9") {
+		t.Errorf("scrollback must target the window's active pane: %q", args)
+	}
+	// A saved file is plain text; colors are for thumbnails.
+	if strings.Contains(args, "-e") {
+		t.Errorf("scrollback must not request SGR escapes: %q", args)
+	}
+}
+
+// A pane's screen is always full height, so a capture ends in one blank line per
+// unused row. In a file those are a screenful of nothing — trimmed, and the text
+// ends on exactly one newline.
+func TestCaptureScrollbackTrimsTrailingBlankRows(t *testing.T) {
+	f := &fakeTmux{
+		listOut:    buildList([]string{"@0", "services", "0", "%0", "80", "24", "zsh"}),
+		captureOut: "done\n\n\n\n\n",
+	}
+	s := newCaptureStoreWithRunner(f.run, time.Now)
+
+	text, err := s.CaptureScrollback("@0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "done\n" {
+		t.Errorf("expected trailing blank rows trimmed, got %q", text)
+	}
+
+	// An empty pane is empty, not a lone newline.
+	f2 := &fakeTmux{
+		listOut:    buildList([]string{"@0", "services", "0", "%0", "80", "24", "zsh"}),
+		captureOut: "\n\n\n",
+	}
+	if text, err := newCaptureStoreWithRunner(f2.run, time.Now).CaptureScrollback("@0"); err != nil || text != "" {
+		t.Errorf("empty pane: got %q, %v", text, err)
+	}
+}
+
+// The scrollback is the biggest object this process can hold and is worth
+// nothing after the download it was fetched for. It must never land in the
+// screen cache the 500ms thumbnail poll reads.
+func TestCaptureScrollbackIsNotCached(t *testing.T) {
+	f := &fakeTmux{
+		listOut:    buildList([]string{"@0", "services", "0", "%0", "80", "24", "zsh"}),
+		captureOut: "a long history\n",
+	}
+	s := newCaptureStoreWithRunner(f.run, time.Now)
+
+	if _, err := s.CaptureScrollback("@0"); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	cached := len(s.byWindow)
+	s.mu.Unlock()
+	if cached != 0 {
+		t.Errorf("scrollback leaked into the screen cache: %d entries", cached)
+	}
+	// …and a screen capture right after still forks for its own (colored) screen
+	// rather than serving the scrollback's text.
+	entries, err := s.CaptureWindows([]string{"@0"}, false)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("screen capture after scrollback: %v (%d entries)", err, len(entries))
+	}
+	if len(f.captureArgs) != 2 {
+		t.Fatalf("expected a separate fork for the screen, got %d total", len(f.captureArgs))
+	}
+	if !strings.Contains(strings.Join(f.captureArgs[1], " "), "-e") {
+		t.Error("the screen capture after a scrollback must still be the colored one")
+	}
+}

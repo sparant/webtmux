@@ -321,6 +321,52 @@ func (s *CaptureStore) captureOne(w WindowInfo) (CaptureEntry, error) {
 	}, nil
 }
 
+// CaptureScrollback returns a window's ENTIRE pane buffer — the whole tmux
+// history plus the visible screen — as plain text, for "save the buffer".
+//
+// Deliberately NOT a CaptureEntry and deliberately NOT cached. Everything else
+// in this store trades in screens: a fixed rows×cols snapshot, cheap enough to
+// re-fetch on a 500ms poll and to hold one of per window. A scrollback is the
+// other kind of object — bounded only by tmux's history-limit (100k lines is an
+// ordinary setting), fetched only when a person clicks Save, and worth nothing
+// afterwards. Caching it would put the biggest object in the process in a map
+// that exists to serve thumbnails.
+//
+// Plain text, not SGR: unlike a thumbnail this is only ever written to a .txt.
+// So no -e, and nothing downstream has to strip colors back out.
+//
+// Same pane as the screen capture, resolved the same way (EnumerateWindows ->
+// active PaneID). That matters more here than it looks: the save dropdown offers
+// "entire buffer" and "visible screen" as two views of ONE thing, and they stop
+// being that the moment the two paths can pick different panes of a split window.
+func (s *CaptureStore) CaptureScrollback(windowID string) (string, error) {
+	target := windowID
+	if placements, err := s.EnumerateWindows(); err == nil {
+		for _, p := range placements {
+			if p.WindowID == windowID && p.PaneID != "" {
+				target = p.PaneID
+				break
+			}
+		}
+	}
+	// -S - starts at the OLDEST line in the history (the whole point); -E defaults
+	// to the bottom of the visible screen, so the range is history + screen. -p
+	// prints to stdout. Read-only: capture-pane never moves the active pane or
+	// disturbs a client, so this is safe against any window at any time.
+	out, err := s.run("capture-pane", "-p", "-S", "-", "-t", target)
+	if err != nil {
+		return "", err
+	}
+	// A pane's screen is always full height, so the capture ends in one blank line
+	// per unused row below the prompt. Harmless on a thumbnail; in a file they are
+	// a screenful of nothing at the end. Trim, then end on exactly one newline.
+	out = strings.TrimRight(out, "\n")
+	if out == "" {
+		return "", nil
+	}
+	return out + "\n", nil
+}
+
 // PaneCurrentPath returns the working directory of the given window's ACTIVE
 // pane (#{pane_current_path}) — "where tmux is running" for that window, the
 // base a relative save path resolves against (see webtty.handleSavePaneFile).

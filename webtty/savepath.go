@@ -34,7 +34,7 @@ package webtty
 // is always there and always writable, so without that declaration a save would
 // succeed into storage that dies with the container. So when webtmux is
 // containerized and nothing is declared, saving is refused (SaveEnv.Blocked) and
-// the UI points at "Download to browser", which needs no mount at all.
+// the UI points at downloading to your browser, which needs no mount at all.
 //
 // That is the DEFAULT state of the webtmux container in this repo's deployment:
 // it mounts only the tmux control socket, on purpose — no host filesystem is
@@ -450,7 +450,7 @@ func outsideMessage(resolved string, roots []string) string {
 	}
 	return fmt.Sprintf("%s is outside the directories webtmux may write to (%s). "+
 		"Save inside one of them, name a different directory in the save dropdown, "+
-		`or set WEBTMUX_SAVE_DIR; "Download to browser" always works.`,
+		`or set WEBTMUX_SAVE_DIR; downloading to your browser always works.`,
 		resolved, strings.Join(roots, ", "))
 }
 
@@ -545,7 +545,7 @@ func existsMessage(path string) string {
 func blockedMessage() string {
 	return "webtmux does not know a directory it shares with the machine tmux runs on, so a file saved " +
 		`here could land inside the container and vanish with it. Name a mounted directory in the ` +
-		`save dropdown (webtmux checks it), use "Download to browser", or set WEBTMUX_SAVE_DIR.`
+		`save dropdown (webtmux checks it), download to your browser instead, or set WEBTMUX_SAVE_DIR.`
 }
 
 // baseDirSuffix is " (saves in <dir>)" when there is one, else "" — so a message
@@ -569,7 +569,7 @@ func missingDirMessage(env SaveEnv, dir string) string {
 	if env.BaseDir != "" {
 		msg += fmt.Sprintf(". A plain file name saves in %s", env.BaseDir)
 	}
-	msg += `; "Download to browser" always works.`
+	msg += `; downloading to your browser always works.`
 	return msg
 }
 

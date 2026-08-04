@@ -41,7 +41,7 @@ export function saveHint(info) {
       text: 'webtmux runs in a container and does not know a directory it shares with the machine '
         + 'tmux runs on, so a file saved now could vanish with the container. Name one above — a path '
         + 'as webtmux sees it (e.g. /data), mounted from outside — and it will be remembered. '
-        + '"Download to browser" needs no directory at all.',
+        + 'Downloading to your browser needs no directory at all.',
     };
   }
   if (!info || !info.baseDir) return { text: DEFAULT_SAVE_HINT, level: 'info' };
@@ -69,14 +69,14 @@ export function saveHint(info) {
     const pane = info.paneDir || "the pane's directory";
     return {
       level: 'warn',
-      text: `⚠ ${pane} — ${why}. A plain file name saves in ${where} instead; "Download to browser" always works.`,
+      text: `⚠ ${pane} — ${why}. A plain file name saves in ${where} instead; downloading to your browser always works.`,
     };
   }
 
   if (!info.writable) {
     return {
       level: 'warn',
-      text: `⚠ webtmux cannot write to ${where}. Try another directory, or "Download to browser".`,
+      text: `⚠ webtmux cannot write to ${where}. Try another directory, or download to your browser instead.`,
     };
   }
 

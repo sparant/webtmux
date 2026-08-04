@@ -44,6 +44,12 @@ type WebTTY struct {
 	// CaptureWindows call and a rate limit on the TTL bypass. See tmux.go.
 	captures captureLimiter
 
+	// scrollbacks bounds the OTHER capture path: one in-flight full-buffer read
+	// per connection. Separate from `captures` on purpose — a scrollback is
+	// unbounded in size and must not be coalesced away silently (see
+	// handleScrollbackRequest).
+	scrollbacks scrollbackLimiter
+
 	// ctxMu guards runCtx, the context Run was given. Capture goroutines read it
 	// to stop working for a connection that has already gone. Set once, in Run;
 	// nil when a handler is driven directly (tests), which the readers allow for.

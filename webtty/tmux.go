@@ -1,6 +1,7 @@
 package webtty
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -60,6 +61,9 @@ type CaptureProvider interface {
 	// PaneCurrentPath is the active pane's working directory for windowID — the
 	// base a relative "save to file" path resolves against (see handleSavePaneFile).
 	PaneCurrentPath(windowID string) (string, error)
+	// CaptureScrollback is the WHOLE pane buffer (tmux history + screen) as plain
+	// text, for a save. Uncached and unbounded; asked for only on a user gesture.
+	CaptureScrollback(windowID string) (string, error)
 }
 
 // SetCaptureProvider hands this connection the shared capture store. Parallel to
@@ -162,6 +166,10 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 	// Same for the read-only "where would a save land?" probe.
 	if msgType == TmuxSaveInfoRequest {
 		return wt.handleSaveInfo(payload)
+	}
+	// And for the full-buffer read behind "Download to browser".
+	if msgType == TmuxScrollbackRequest {
+		return wt.handleScrollbackRequest(payload)
 	}
 
 	if wt.tmuxCtrl == nil {
@@ -533,6 +541,130 @@ func cleanPaneText(ansi []byte) string {
 	return strings.ReplaceAll(s, "\r\n", "\n")
 }
 
+// ---- save scope -----------------------------------------------------------
+//
+// A pane has two buffers a person might mean by "save this", and for years the
+// UI only ever produced the smaller one: the VISIBLE SCREEN, because the save
+// was built on the capture store that feeds Exposé thumbnails, where a screen is
+// all anyone wanted. What a terminal is actually FOR — the output that has
+// already scrolled past — was the part you could not get out.
+//
+// So the scope is now named on the wire rather than implied by which code path
+// ran, with the same two values honored by both destinations (browser download
+// and server-side file). An absent scope means the screen: that is what every
+// request predating this field meant, and a client whose cached JS is a version
+// behind must keep getting what it asked for rather than a 40MB surprise.
+const (
+	scopeScreen     = "screen"
+	scopeScrollback = "scrollback"
+)
+
+// wantsScrollback reads the wire value. Only the explicit word counts.
+func wantsScrollback(scope string) bool {
+	return strings.TrimSpace(scope) == scopeScrollback
+}
+
+// scrollbackLimiter allows ONE in-flight full-buffer capture per connection.
+//
+// Unlike the screen-capture limiter this does not exist to coalesce a poll —
+// nothing polls a scrollback; it is a click. It exists because the click can be
+// repeated while the first fork is still walking a 100k-line history, and each
+// one costs a tmux fork plus its whole output held in memory twice (the capture
+// and its base64). The second request is REFUSED, not dropped: a dropped one
+// leaves the browser's download waiting on a reply that will never come.
+type scrollbackLimiter struct {
+	mu       sync.Mutex
+	inFlight bool
+}
+
+func (l *scrollbackLimiter) begin() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.inFlight {
+		return false
+	}
+	l.inFlight = true
+	return true
+}
+
+func (l *scrollbackLimiter) end() {
+	l.mu.Lock()
+	l.inFlight = false
+	l.mu.Unlock()
+}
+
+// scrollbackOutcome is the TmuxScrollbackData payload. The text rides as base64
+// for the same reason a capture does: it is arbitrary terminal output, and a
+// pane that printed a stray invalid UTF-8 byte would otherwise have it silently
+// rewritten to U+FFFD by json.Marshal on its way to a file the user asked to be
+// a copy of that pane.
+type scrollbackOutcome struct {
+	WindowID string `json:"windowId"`
+	// Token is the client's request id, echoed back. The browser starts a download
+	// on the reply, so it has to know that THIS reply is the one it is waiting for
+	// and not the answer to a request it already timed out on.
+	Token int    `json:"token"`
+	Data  string `json:"data"`
+	Error string `json:"error"`
+}
+
+// handleScrollbackRequest reads one window's entire pane buffer and streams it
+// back as a TmuxScrollbackData. Read-only (see authority.go).
+//
+// The capture runs in a goroutine for the same reason the screen captures do —
+// a slow tmux must not block this connection's read loop — and more so here,
+// where "slow" is proportional to the history limit rather than to a screen.
+func (wt *WebTTY) handleScrollbackRequest(payload []byte) error {
+	var req struct {
+		WindowID string `json:"windowId"`
+		Token    int    `json:"token"`
+	}
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return wt.sendScrollback(scrollbackOutcome{Error: "invalid scrollback request"})
+	}
+	if wt.captureProvider == nil {
+		return wt.sendScrollback(scrollbackOutcome{
+			WindowID: req.WindowID, Token: req.Token,
+			Error: "reading the buffer is unavailable (not a tmux session)",
+		})
+	}
+	if !wt.scrollbacks.begin() {
+		return wt.sendScrollback(scrollbackOutcome{
+			WindowID: req.WindowID, Token: req.Token,
+			Error: "already reading a buffer — try again in a moment",
+		})
+	}
+	ctx := wt.connCtx()
+	go func() {
+		defer wt.scrollbacks.end()
+		text, err := wt.captureProvider.CaptureScrollback(req.WindowID)
+		if ctx != nil && ctx.Err() != nil {
+			return // connection gone; don't pay to base64 a dead download
+		}
+		out := scrollbackOutcome{WindowID: req.WindowID, Token: req.Token}
+		if err != nil {
+			log.Printf("scrollback capture of %s failed: %v", req.WindowID, err)
+			out.Error = "could not read the pane's buffer"
+		} else {
+			out.Data = base64.StdEncoding.EncodeToString([]byte(text))
+			log.Printf("read scrollback of pane %s (%d bytes)", req.WindowID, len(text))
+		}
+		if err := wt.sendScrollback(out); err != nil {
+			log.Printf("failed to send scrollback data: %v", err)
+		}
+	}()
+	return nil
+}
+
+// sendScrollback writes one TmuxScrollbackData frame.
+func (wt *WebTTY) sendScrollback(out scrollbackOutcome) error {
+	data, err := json.Marshal(out)
+	if err != nil {
+		return fmt.Errorf("failed to marshal scrollback data: %w", err)
+	}
+	return wt.masterWrite(append([]byte{TmuxScrollbackData}, data...))
+}
+
 // handleSaveInfo answers "where would a save go?" for one window, WITHOUT
 // writing anything — the save dropdown asks as it opens so it can name the
 // directory a relative path will land in, and flag the container case, before
@@ -577,6 +709,9 @@ func (wt *WebTTY) handleSavePaneFile(payload []byte) error {
 		// same window collide by construction, and the previous one used to
 		// disappear without a word. Absent/false = refuse and ask.
 		Overwrite bool `json:"overwrite"`
+		// Scope: which buffer to write — the whole scrollback or just the visible
+		// screen. Absent means the screen (see the scope constants).
+		Scope string `json:"scope"`
 	}
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return wt.sendSaveResult(saveOutcome{Error: "invalid save request"})
@@ -605,11 +740,24 @@ func (wt *WebTTY) handleSavePaneFile(payload []byte) error {
 			Path: resolved, Error: existsMessage(resolved), Exists: true, Env: env,
 		})
 	}
-	entries, err := wt.captureProvider.CaptureWindows([]string{req.WindowID}, true)
-	if err != nil || len(entries) == 0 {
-		return wt.sendSaveResult(saveOutcome{Error: "could not capture the pane buffer", Env: env})
+	var text string
+	if wantsScrollback(req.Scope) {
+		// The whole history. Already plain text (captured without -e), but run it
+		// through the same cleaner anyway: one function decides what a saved file
+		// looks like, and neither scope gets to drift into its own idea of that.
+		raw, err := wt.captureProvider.CaptureScrollback(req.WindowID)
+		if err != nil {
+			log.Printf("scrollback capture of %s failed: %v", req.WindowID, err)
+			return wt.sendSaveResult(saveOutcome{Error: "could not read the pane's buffer", Env: env})
+		}
+		text = cleanPaneText([]byte(raw))
+	} else {
+		entries, err := wt.captureProvider.CaptureWindows([]string{req.WindowID}, true)
+		if err != nil || len(entries) == 0 {
+			return wt.sendSaveResult(saveOutcome{Error: "could not capture the pane buffer", Env: env})
+		}
+		text = cleanPaneText(entries[0].ANSI)
 	}
-	text := cleanPaneText(entries[0].ANSI)
 	if err := os.WriteFile(resolved, []byte(text), 0o644); err != nil {
 		return wt.sendSaveResult(saveOutcome{
 			Path: resolved, Error: writeErrorMessage(resolved, err), Env: env,
@@ -653,7 +801,7 @@ func isTmuxMessage(msgType byte) bool {
 		TmuxSwitchSession, TmuxRenameWindow, TmuxMoveWindow, TmuxNewSession,
 		TmuxRenameSession, TmuxKillWindow, TmuxKillSession, TmuxLinkWindow,
 		TmuxUnlinkWindow, TmuxCaptureRequest, TmuxSavePaneFile, TmuxSaveInfoRequest,
-		TmuxSetState, TmuxRefresh:
+		TmuxScrollbackRequest, TmuxSetState, TmuxRefresh:
 		return true
 	default:
 		return false
