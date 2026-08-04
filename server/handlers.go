@@ -379,8 +379,14 @@ func (server *Server) handleAuthToken(w http.ResponseWriter, r *http.Request) {
 }
 
 // Build identity, stamped at build time via -ldflags (Makefile BUILD_OPTIONS, fed
-// the git short-hash + build time; launch.sh passes the host commit as a build-arg).
-// Surfaced to the UI so the toolbar can show which build is actually running.
+// the git short-hash + the commit's timestamp; launch.sh passes the host commit as
+// a build-arg). Surfaced to the UI so the toolbar can show which build is running.
+//
+// BuildTime is the COMMIT's committer time, not the moment the compiler ran —
+// deliberately, so that a commit determines the binary byte for byte (see the
+// reproducibility notes in the Makefile). It identifies the source at least as
+// well for "which build is this?", and unlike a wall clock it is the same on
+// every machine that builds it.
 var (
 	BuildCommit = "dev"
 	BuildTime   = ""

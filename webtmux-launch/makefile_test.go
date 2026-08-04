@@ -56,8 +56,15 @@ func TestLauncherBuildHasNoWebtmuxPrerequisite(t *testing.T) {
 	}
 	for _, line := range strings.Split(string(b), "\n") {
 		if strings.HasPrefix(line, "release:") || strings.HasPrefix(line, "dev:") {
-			if deps := strings.TrimSpace(strings.SplitN(line, ":", 2)[1]); deps != "" {
-				t.Errorf("%s should have no prerequisites, has %q", line, deps)
+			for _, dep := range strings.Fields(strings.SplitN(line, ":", 2)[1]) {
+				// check-toolchain builds nothing — it refuses to run the build
+				// with a compiler other than the pinned one. What this test
+				// forbids is a prerequisite that produces an artifact, i.e. a
+				// webtmux payload sneaking back into the launcher's build.
+				if dep == "check-toolchain" {
+					continue
+				}
+				t.Errorf("%s should have no build prerequisites, has %q", line, dep)
 			}
 		}
 	}

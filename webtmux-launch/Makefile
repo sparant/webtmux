@@ -22,7 +22,13 @@ PLATFORMS = darwin/arm64 darwin/amd64 linux/amd64
 # `make -C webtmux-launch && ../builds/webtmux-launch <host>` just works.
 OUTPUT_DIR ?= ../builds
 
-VERSION ?= $(shell git describe --tags 2>/dev/null || echo "dev")
+# Pinned toolchain, kept equal to the root Makefile's GO_VERSION and the
+# Dockerfile's ARG default — TestPinnedGoVersionAgrees fails if they drift.
+# Same reason as the root build: a different compiler emits different bytes, so
+# a released launcher nobody can rebuild is a released launcher nobody can audit.
+GO_VERSION = 1.23.12
+
+VERSION ?= $(shell git describe --tags --dirty 2>/dev/null || echo "dev")
 # Filled in by Stage 0 (the GitHub fork). Until then a release build has no
 # release to fetch from and must be pointed at a local source.
 REPO_OWNER ?=
@@ -35,9 +41,25 @@ LDFLAGS = -s -w \
   -X main.RepoName=$(REPO_NAME) \
   -X main.DefaultWebtmuxVersion=$(WEBTMUX_VERSION)
 
-export CGO_ENABLED=0
+# reproducibility, for the same reasons as the root Makefile — see its header.
+# -trimpath: without it the binary embeds the build directory, so the same
+# commit built in two checkouts is two different binaries (and -s -w does not
+# strip those paths). -buildvcs=false: otherwise `go build` stamps .git state
+# when a .git is present and omits it when it is not, which is the difference
+# between a worktree build and a container build of one commit.
+BUILD_FLAGS = -trimpath -buildvcs=false
 
-.PHONY: all dev release test e2e clean help
+export CGO_ENABLED=0
+# Pin every compiler-visible environment input at the Go 1.23 defaults so a
+# caller's exported GOFLAGS/GOARM cannot change the output bytes.
+export GOTOOLCHAIN=local
+export GOFLAGS=
+export GOEXPERIMENT=
+export GOAMD64=v1
+export GOARM=7,hardfloat
+export GO386=sse2
+
+.PHONY: all dev release test e2e clean help check-toolchain
 
 all: dev
 
@@ -49,24 +71,38 @@ all: dev
 #   make && ../builds/webtmux-launch testbox
 dev:
 	@mkdir -p $(OUTPUT_DIR)
-	go build -ldflags "$(LDFLAGS) -X main.DefaultSource=$(abspath $(OUTPUT_DIR))" \
+	go build $(BUILD_FLAGS) -ldflags "$(LDFLAGS) -X main.DefaultSource=$(abspath $(OUTPUT_DIR))" \
 		-o $(OUTPUT_DIR)/$(NAME) .
 	@echo "Done: $(OUTPUT_DIR)/$(NAME) (source: $(abspath $(OUTPUT_DIR)))"
 
 # main.DefaultSource is left EMPTY on purpose: a released launcher that defaulted
 # to some directory on the builder's machine would look for a path that does not
 # exist on the user's. Asserted by TestReleaseBuildHasNoDefaultSource.
-release:
+#
+# check-toolchain first: a release built by an unpinned compiler is one nobody
+# else can reproduce, and that is worth failing over — unlike `dev`, which is
+# left unguarded so ordinary work needs no exact Go version.
+release: check-toolchain
 	@mkdir -p $(OUTPUT_DIR)
 	@echo "Building $(NAME) $(VERSION)..."
 	@for platform in $(PLATFORMS); do \
 		os=$$(echo $$platform | cut -d/ -f1); \
 		arch=$$(echo $$platform | cut -d/ -f2); \
 		echo "  Building $$os/$$arch..."; \
-		GOOS=$$os GOARCH=$$arch go build -ldflags "$(LDFLAGS)" \
+		GOOS=$$os GOARCH=$$arch go build $(BUILD_FLAGS) -ldflags "$(LDFLAGS)" \
 			-o $(OUTPUT_DIR)/$(NAME)-$$os-$$arch . || exit 1; \
 	done
 	@ls -lh $(OUTPUT_DIR)/$(NAME)-*
+
+# Same guard, same wording as the root Makefile's check-toolchain.
+check-toolchain:
+	@have=$$(go env GOVERSION 2>/dev/null || echo "none"); \
+	if [ "$$have" != "go$(GO_VERSION)" ]; then \
+		echo "Toolchain mismatch: this Go is $$have, the pinned toolchain is go$(GO_VERSION)."; \
+		echo "  Override (output will not match a release):  ALLOW_TOOLCHAIN_DRIFT=1"; \
+		[ -n "$(ALLOW_TOOLCHAIN_DRIFT)" ] || exit 1; \
+		echo "  ALLOW_TOOLCHAIN_DRIFT set — continuing with $$have"; \
+	fi
 
 test:
 	go test ./...
