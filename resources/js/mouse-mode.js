@@ -126,6 +126,73 @@ export function forceSelectionModifier(isMac) {
   return isMac ? { altKey: true } : { shiftKey: true };
 }
 
+// ---- Shift-click: move the END of a selection that already exists -------------
+//
+// A drag fixes both ends of a selection in one gesture, so getting the far end
+// wrong costs you the whole thing — and in a pane that is still printing, what you
+// were selecting has moved by the time you start over. Shift-click is the answer
+// everything else already uses (editors, file lists, the browser's own text): the
+// end you started from stays where it is, and only the endpoint follows the click.
+//
+// It is re-implemented here rather than left to xterm, which does have the gesture,
+// because xterm takes that path only while its local selection is ENABLED
+// (`this._enabled && event.shiftKey` in SelectionService._handleMouseDown) — and it
+// is disabled in exactly the panes where this matters most, the mouse-grabbing TUIs
+// whose drags only ever selected by being forced past the mouse report in the first
+// place. Re-selecting from the remembered anchor behaves identically in both.
+
+// Is this press an "adjust what I already selected" rather than "start a new one"?
+//
+// Shift on every platform: it is the conventional extend modifier, and on a Mac it
+// is not the force-selection modifier (that is option), so the two never collide.
+// On Windows/Linux they are the same key, which stays safe because a press claimed
+// here never reaches xterm at all — with nothing selected this says no, so a plain
+// shift-drag keeps its old meaning of "select past the program".
+export function isExtendPress({ shiftKey = false, button = 0, hasSelection = false } = {}) {
+  return !!shiftKey && button === 0 && !!hasSelection;
+}
+
+// Cells are compared and subtracted as a single buffer offset — the row/column pair
+// orders the wrong way round otherwise (row 4 column 0 is AFTER row 3 column 70).
+export function cellOffset(cell, cols) {
+  return cell.y * cols + cell.x;
+}
+
+// Which end of the selection stays put while the other follows the click.
+//
+// The remembered anchor is the true one — the cell the gesture that made this
+// selection started from — and it is trusted for as long as it is still an end of
+// what is actually selected. That holds across a run of shift-clicks, because each
+// one re-selects from it: the pivot doesn't creep towards the pointer.
+//
+// It won't hold if the selection was changed by something we weren't watching, so
+// the fallback is the end FARTHEST from the click. That is the reading that keeps
+// the near side moving and the far side still, which is what the gesture means even
+// when its history has been lost.
+export function extendAnchor(anchor, sel, point, cols) {
+  const off = (c) => cellOffset(c, cols);
+  if (anchor && (off(anchor) === off(sel.start) || off(anchor) === off(sel.end))) {
+    return { x: anchor.x, y: anchor.y };
+  }
+  const p = off(point);
+  return Math.abs(p - off(sel.start)) >= Math.abs(p - off(sel.end))
+    ? { x: sel.start.x, y: sel.start.y }
+    : { x: sel.end.x, y: sel.end.y };
+}
+
+// The selection running between the anchor and the pointer, in the (column, row,
+// length) form terminal.select() takes. Either order is ordinary — shift-clicking
+// BEFORE the anchor is how you extend a selection backwards — so the span is built
+// from the lower offset. A click that lands on the anchor itself keeps one cell
+// selected rather than emptying the highlight, which would also throw away the
+// anchor's only evidence that it is still an end of the selection.
+export function selectionSpan(anchor, point, cols) {
+  const a = cellOffset(anchor, cols);
+  const b = cellOffset(point, cols);
+  const from = Math.min(a, b);
+  return { x: from % cols, y: Math.floor(from / cols), length: Math.max(1, Math.abs(b - a)) };
+}
+
 // PressArbiter — holds a press back just long enough to tell a click from a drag.
 //
 // Used only by 'adaptive-probe', and only while a program is grabbing the mouse.

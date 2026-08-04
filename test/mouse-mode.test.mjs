@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import {
   MOUSE_MODES, normalizeMouseMode, resolvePress, deferredVerdict, movedEnough,
   needsForcedSelection, forceSelectionModifier, leaveCopyModeFirst, PressArbiter,
-  DRAG_SLOP_PX,
+  DRAG_SLOP_PX, isExtendPress, cellOffset, extendAnchor, selectionSpan,
 } from '../resources/js/mouse-mode.js';
 
 // ---- mode normalisation ------------------------------------------------------
@@ -201,4 +201,74 @@ test('deferredVerdict keeps drag as the only gesture the buffer claims', () => {
   assert.equal(deferredVerdict('drag'), 'buffer');
   assert.equal(deferredVerdict('click'), 'app');
   assert.equal(deferredVerdict('hold'), 'app');
+});
+
+// ---- shift-click: adjust an existing selection's endpoint ---------------------
+
+test('shift-click is an adjustment only when there is something to adjust', () => {
+  // With nothing selected the press has to fall through untouched: on Linux shift
+  // is also the force-selection modifier, and claiming it unconditionally would
+  // eat the shift-drag that selects over a mouse-grabbing program.
+  assert.equal(isExtendPress({ shiftKey: true, hasSelection: true }), true);
+  assert.equal(isExtendPress({ shiftKey: true, hasSelection: false }), false);
+  assert.equal(isExtendPress({ shiftKey: false, hasSelection: true }), false);
+  assert.equal(isExtendPress({ shiftKey: true, hasSelection: true, button: 2 }), false,
+    'right-click stays the program/browser menu');
+  assert.equal(isExtendPress({}), false);
+});
+
+test('cells order by buffer position, not by column', () => {
+  // The whole reason offsets exist here: row 4 column 0 comes AFTER row 3 column 70.
+  assert.ok(cellOffset({ x: 0, y: 4 }, 80) > cellOffset({ x: 70, y: 3 }, 80));
+});
+
+const SEL = { start: { x: 10, y: 5 }, end: { x: 20, y: 7 } };   // a forward drag
+const COLS = 80;
+
+test('a remembered anchor is kept, so repeated shift-clicks pivot on one point', () => {
+  const anchor = { x: 10, y: 5 };
+  // Clicking well past the far end must NOT re-anchor on the end nearest it.
+  const kept = extendAnchor(anchor, SEL, { x: 40, y: 9 }, COLS);
+  assert.deepEqual(kept, anchor);
+  // ...and clicking back the other way keeps the same pivot rather than flipping.
+  assert.deepEqual(extendAnchor(anchor, SEL, { x: 2, y: 1 }, COLS), anchor);
+});
+
+test('an upward drag anchors at its BOTTOM end, and extending honours that', () => {
+  const anchor = { x: 20, y: 7 };            // the press that started it, dragged up
+  assert.deepEqual(extendAnchor(anchor, SEL, { x: 0, y: 2 }, COLS), anchor);
+  // Extending from there runs from the click up to the anchor, not down from the top.
+  assert.deepEqual(selectionSpan(anchor, { x: 0, y: 2 }, COLS),
+    { x: 0, y: 2, length: 5 * COLS + 20 });
+});
+
+test('a selection with no anchor of ours extends from the end farthest from the click', () => {
+  // Nothing else is knowable, and it is the reading that keeps the near side moving.
+  assert.deepEqual(extendAnchor(null, SEL, { x: 30, y: 9 }, COLS), SEL.start);
+  assert.deepEqual(extendAnchor(null, SEL, { x: 0, y: 1 }, COLS), SEL.end);
+  // A stale anchor — one that is no longer an end of what is selected — is no
+  // better than none, and must not be trusted just because it exists.
+  assert.deepEqual(extendAnchor({ x: 3, y: 99 }, SEL, { x: 30, y: 9 }, COLS), SEL.start);
+});
+
+test('the span runs from whichever side is lower, so backwards extends work', () => {
+  const anchor = { x: 10, y: 5 };
+  assert.deepEqual(selectionSpan(anchor, { x: 15, y: 5 }, COLS), { x: 10, y: 5, length: 5 });
+  assert.deepEqual(selectionSpan(anchor, { x: 5, y: 5 }, COLS), { x: 5, y: 5, length: 5 });
+  assert.deepEqual(selectionSpan(anchor, { x: 12, y: 6 }, COLS),
+    { x: 10, y: 5, length: COLS + 2 });
+});
+
+test('a click on the anchor itself leaves a cell selected, not an empty highlight', () => {
+  // An emptied selection would also throw away the anchor's only proof that it is
+  // still an end of the selection — the next shift-click would have to guess.
+  assert.deepEqual(selectionSpan({ x: 10, y: 5 }, { x: 10, y: 5 }, COLS),
+    { x: 10, y: 5, length: 1 });
+});
+
+test('an endpoint at the end of a line normalises onto the next row', () => {
+  // A boundary click can land on column `cols`, which is not a cell — as an offset
+  // it is simply the start of the row below, which is where select() wants it.
+  assert.deepEqual(selectionSpan({ x: COLS, y: 4 }, { x: 10, y: 6 }, COLS),
+    { x: 0, y: 5, length: COLS + 10 });
 });

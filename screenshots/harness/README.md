@@ -37,6 +37,9 @@ Pieces:
   spinner), `verify-mousemode.js` (who gets a click/drag over a mouse-grabbing program),
   `verify-ux6.js` (MRU chord with an empty capture cache, Exposé's status filter, the
   mouse-capture dropdown, the paired sidebar toggles, paste-trim on rename),
+  `verify-shift-extend.js` (shift-click adjusts the end of an existing selection from
+  its original anchor — in a plain shell and over a mouse-grabbing program, where it
+  must reach neither the program nor the copy-mode exit),
   `verify-state-sync.js` (TWO browser contexts against one tmux server: a cold-cache
   client must not erase the other's split/preview, must converge on it, and a killed
   window must not be resurrected by the next push).
