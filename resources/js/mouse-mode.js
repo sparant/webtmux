@@ -193,6 +193,24 @@ export function selectionSpan(anchor, point, cols) {
   return { x: from % cols, y: Math.floor(from / cols), length: Math.max(1, Math.abs(b - a)) };
 }
 
+// How long a selection lives: until the text under it is no longer on screen.
+//
+// A highlight names TEXT, but xterm holds it as buffer coordinates — and this
+// terminal runs with `scrollback: 0`, so tmux REPAINTS the same viewport rather than
+// scrolling it. The moment a different window's output is painted into the pane,
+// every coordinate in the selection points at a character nobody chose, and what is
+// left is a rectangle sitting over unrelated text. Worse, it is a sticky one: over a
+// mouse-grabbing program a press never reaches xterm's selection service, so clicking
+// about does not clear it either.
+//
+// `shown` is the window whose content is on screen; `next` is the one about to be.
+// Either being unknown means we cannot say the view moved — the first layout after a
+// connect establishes what is on screen rather than changing it — and a highlight the
+// user made is never dropped on a guess.
+export function viewLeftItsWindow({ shown = null, next = null } = {}) {
+  return !!shown && !!next && shown !== next;
+}
+
 // PressArbiter — holds a press back just long enough to tell a click from a drag.
 //
 // Used only by 'adaptive-probe', and only while a program is grabbing the mouse.
