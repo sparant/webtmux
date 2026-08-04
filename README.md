@@ -584,6 +584,45 @@ the supported way to consume webtmux from another repo's image build: build the
 artifact, then `COPY` it in — the binary is `CGO_ENABLED=0` static with embedded
 assets, so it needs nothing from the builder image at runtime.
 
+#### Reproducible builds
+
+From v0.1.1, a released binary can be re-derived from its source by anyone:
+
+```bash
+make release-from-commit REF=v0.1.1   # -> builds/webtmux-* + SHA256SUMS
+```
+
+Compare the result against the release's published `SHA256SUMS` — they match, on
+any machine, in any directory, at any time. The build needs only `git` and
+`docker`; the Go toolchain is a pinned container, so there is nothing to install
+and nothing to match by hand.
+
+What makes that hold, since none of it is automatic:
+
+- **The build stamp is the commit's own timestamp**, not the clock. `date` in a
+  build makes every binary of one commit unique, which is precisely what stops
+  anyone from checking a published one.
+- **`-trimpath` and `-buildvcs=false`.** Without them a Go binary carries the
+  directory it was compiled in (`-s -w` does *not* strip those), so the same
+  source built in two places is two different binaries.
+- **The compiler is pinned to an exact patch version** (`GO_VERSION` in the
+  Makefile, matched by the Dockerfile and the launcher's Makefile — a test fails
+  if the three drift apart). A different compiler is a different binary.
+- **The source is a `git archive` of the ref**, so nothing uncommitted, untracked
+  or left over from a previous build can reach the compiler. A build from a dirty
+  tree stamps `-dirty` and cannot be mistaken for a tag.
+- **`GOFLAGS`, `GOEXPERIMENT`, `GOAMD64`, `GOARM` and `GO386` are pinned** at
+  their current defaults so a caller's environment cannot change the output.
+
+```bash
+make verify-repro REF=v0.1.1   # builds it twice, in two directories, and diffs
+```
+
+`verify-repro` is the check that matters: building twice in one place proves
+almost nothing, because the inputs that leak are the ones that differ *between*
+places. Binaries published before v0.1.1 were built without any of this and
+cannot be reproduced — for those, the published `SHA256SUMS` is the only record.
+
 ## Usage
 
 ### Basic Usage
@@ -770,28 +809,42 @@ make build
 # Cross-compile all platforms
 make cross-compile
 
+# The same, in the pinned container — no local Go needed
+make docker-cross-compile
+
 # Cross-compile + builds/SHA256SUMS, then print the gh publish command
 make release-binaries
 
 # Create release archives (tarballs — predates GitHub Releases)
 make release
+
+# Check bindata/static still matches resources/ (also run by `make test`)
+make verify-assets
 ```
 
 #### Cutting a release
 
-Tag first, then build from the tag, so `git describe` stamps the version with no
-`VERSION=` override:
+Tag first, then build **the tag** — not the checkout:
 
 ```bash
-git tag -a v0.1.0 -m "webtmux v0.1.0"
-make release-binaries
-./builds/webtmux-linux-amd64 --version    # must say v0.1.0, not dev
+git tag -a v0.1.1 -m "webtmux v0.1.1"
+make release-from-commit REF=v0.1.1
+./builds/webtmux-linux-amd64 --version    # must say v0.1.1 exactly
 ```
 
-`release-binaries` stops there and prints the `gh release create` command; run it
-yourself after looking at the assets. The printed command passes
-`--repo $(RELEASE_REPO)` because `gh` cannot infer the target from a remote in
-every checkout — override `RELEASE_REPO` if you publish to a different fork.
+`release-from-commit` compiles a `git archive` of the ref in the pinned
+container, writes all six binaries plus `SHA256SUMS`, and checks them. Because
+the source and every stamp come from the ref, the output is byte-identical to
+what anyone else building that tag gets — see *Reproducible builds* above. It
+needs no local Go, and it does not care what is checked out or how far past the
+tag `HEAD` has moved.
+
+`make release-binaries` is the older local-toolchain path and still works; it
+requires the pinned Go version (`make check-toolchain` explains the mismatch) and
+prints the `gh release create` command rather than running it, so the assets can
+be reviewed first. That command passes `--repo $(RELEASE_REPO)` because `gh`
+cannot infer the target from a remote in every checkout — override
+`RELEASE_REPO` if you publish to a different fork.
 
 Two rules the launcher depends on:
 
