@@ -134,6 +134,7 @@ Keep an eye on specific windows, even while you focus on others.
 - Scroll-mode choices including an "auto+" default and adaptive wheel modes; Ctrl+Alt+[ toggles copy/scrollback mode.
 - **Click-and-drag selects text even over a program holding the mouse** (Claude Code, vim, htop) — no entering copy mode by hand first. The toolbar's mouse-capture dropdown sets who gets a press under `click+drag:`, in the same four steps as the wheel under `copymode on scroll:`: `app` (all to the program) / `buf` (all to the buffer) / `auto` (a program that asked for the mouse gets it) / `auto+` (the default: clicks reach the program, drags select). Shift-drag (⌥-drag on a Mac) still forces a selection in any mode.
 - Starting a selection puts the pane in copy mode for you, so the indicator is honest and dragging to the pane edge scrolls for more. In `auto+`, clicking away drops back out of copy mode — the click after that reaches the program as usual.
+- **Shift-click moves the end of the selection you already have** instead of starting a new one — the end you dragged from stays put, so an overshoot is one click to fix rather than a whole drag to repeat. Shift-drag keeps moving that end while held, and clicking past the anchor turns the selection around. Works over a mouse-grabbing program too, where it neither reaches the program nor drops the pane out of copy mode. With nothing selected, shift-drag still means "force a selection" as before.
 
 ### Save pane buffer to a file
 

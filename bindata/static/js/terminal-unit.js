@@ -22,6 +22,7 @@ import { renameSessionPayload } from './tmux-payloads.js';
 import {
   normalizeMouseMode, resolvePress, needsForcedSelection, forceSelectionModifier,
   movedEnough, leaveCopyModeFirst, PressArbiter,
+  isExtendPress, extendAnchor, selectionSpan, cellOffset,
 } from './mouse-mode.js';
 import { writeAuthority, READ_ONLY_NOTICE } from './write-guard.js';
 
@@ -391,8 +392,10 @@ export class TerminalUnit {
         const selection = this.terminal.getSelection();
         if (selection) {
           copyText(selection);   // execCommand fallback covers plain-HTTP LAN access
-          // Clear the highlight once copied.
+          // Clear the highlight once copied — and with it the anchor, since the
+          // next selection will be a new gesture with an anchor of its own.
           this.terminal.clearSelection();
+          this._selAnchor = null;
           // Deliberately STAY in copy-mode after copying: you often want to copy
           // several regions in a row (e.g. to paste into different windows) without
           // re-entering the scrollback each time. Paste is what drops you back to
@@ -801,6 +804,7 @@ export class TerminalUnit {
         if (leaveCopyModeFirst({ mode: this.mouseMode, verdict, inCopyMode: this.inCopyMode })) {
           this.exitCopyMode();
           this.terminal?.clearSelection();
+          this._selAnchor = null;
           return;
         }
         this._replayPressToApp(press);
@@ -832,6 +836,30 @@ export class TerminalUnit {
       if (this.onTerminalMousedown) this.onTerminalMousedown();
 
       release();                          // whatever came before is done with
+
+      // Shift-click adjusts the selection already on screen instead of starting a
+      // new one: same anchor, new endpoint. It is decided before anything else
+      // because none of the questions below apply to it — the program is not being
+      // given this press either way, and the pane's copy mode is left exactly as
+      // the drag that made the selection left it (dropping out of it here would
+      // take the highlight with it, which is the opposite of adjusting it).
+      if (isExtendPress({ shiftKey: e.shiftKey, button: e.button,
+                          hasSelection: !!this.terminal?.hasSelection?.() })
+          && this._extendSelectionTo(e.clientX, e.clientY)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        press = { x: e.clientX, y: e.clientY, lastX: e.clientX, lastY: e.clientY,
+                  detail: e.detail, verdict: 'extend', live: this._mouseTracking(),
+                  extending: true, dragging: false, selecting: true,
+                  done: false, reasserts: 0, anchorText: '' };
+        // Held and dragged, the same press keeps moving that endpoint — so an
+        // adjustment that overshoots is fixed without letting go, and a shift-drag
+        // reads the same way as the click it starts with.
+        document.addEventListener('mousemove', onDocMove, true);
+        document.addEventListener('mouseup', onDocUp, true);
+        return;
+      }
+
       // Two different questions, and conflating them is a bug in both directions:
       //   wants — does a program want the mouse? decides WHO gets the press.
       //   live  — is xterm reporting the mouse right now? decides whether the
@@ -876,10 +904,29 @@ export class TerminalUnit {
       else arbiter.start(e.clientX, e.clientY);
     }, true);
 
+    // Auto-scroll only when dragging near/past the top or bottom edge. Measured
+    // at the document, so it keeps scrolling once the pointer leaves the pane —
+    // which is exactly where a drag-to-select-more ends up.
+    const trackEdge = (clientY) => {
+      const rect = container.getBoundingClientRect();
+      const edge = 28;
+      let dir = 0;
+      if (clientY < rect.top + edge) dir = -1;          // older history
+      else if (clientY > rect.bottom - edge) dir = 1;   // newer
+      setEdge(dir);
+    };
+
     const onDocMove = (e) => {
       if (!press) return;
       if ((e.buttons & 1) === 0) { release(); return; }   // only while left-dragging
       press.lastX = e.clientX; press.lastY = e.clientY;
+      // A shift-click being dragged: every move is another endpoint, re-selected
+      // from the anchor that has not moved.
+      if (press.extending) {
+        this._extendSelectionTo(e.clientX, e.clientY);
+        trackEdge(e.clientY);
+        return;
+      }
       // Still undecided: this move may be what settles it (and if it does, the
       // selection is started from the anchor, not from here).
       if (arbiter.pending) { arbiter.move(e.clientX, e.clientY); return; }
@@ -896,15 +943,7 @@ export class TerminalUnit {
         // was the one that started it.
         this._guardSelection(press);
       }
-      // Auto-scroll only when dragging near/past the top or bottom edge. Measured
-      // at the document, so it keeps scrolling once the pointer leaves the pane —
-      // which is exactly where a drag-to-select-more ends up.
-      const rect = container.getBoundingClientRect();
-      const edge = 28;
-      let dir = 0;
-      if (e.clientY < rect.top + edge) dir = -1;          // older history
-      else if (e.clientY > rect.bottom - edge) dir = 1;   // newer
-      setEdge(dir);
+      trackEdge(e.clientY);
     };
 
     const onDocUp = () => {
@@ -917,6 +956,10 @@ export class TerminalUnit {
       // button, and a repair made after the release has to close itself with a
       // mouseup or xterm is left mid-drag.
       if (press) press.done = true;
+      // ...and so does the anchor, which is the only record of WHICH end of the
+      // finished selection the gesture started from. A shift-click reads it much
+      // later, by which time the press is long gone.
+      if (press && !press.extending) this._recordSelectionAnchor(press);
       release();
     };
   }
@@ -1127,6 +1170,76 @@ export class TerminalUnit {
     this._dispatchPress(press, {});
   }
 
+  // The buffer cell a screen point names. Rows floor into the row they land on;
+  // columns round to the nearest column BOUNDARY instead, because a selection's
+  // edge lives between characters — clicking the right half of a character takes
+  // it, the left half doesn't. (xterm decides its own drags the same way: half a
+  // cell added before rounding, in getCoords(..., isSelection).)
+  _cellAtPoint(clientX, clientY) {
+    const el = this._xtermScreen();
+    const t = this.terminal;
+    const rows = t?.rows || 0, cols = t?.cols || 0;
+    if (!el || !rows || !cols) return null;
+    const box = el.getBoundingClientRect();
+    if (!box.width || !box.height) return null;
+    const row = Math.floor(((clientY - box.top) / box.height) * rows);
+    const col = Math.round(((clientX - box.left) / box.width) * cols);
+    return {
+      x: Math.min(cols, Math.max(0, col)),
+      // Absolute buffer row: terminal.select() and getSelectionPosition() both
+      // speak buffer coordinates, and the viewport is only at 0 while nothing has
+      // scrolled.
+      y: (t.buffer?.active?.viewportY || 0) + Math.min(rows - 1, Math.max(0, row)),
+    };
+  }
+
+  // Re-select from the anchor to this point. The selection is written straight into
+  // xterm rather than replayed as a press, so it works the same over a program that
+  // is grabbing the mouse (where xterm's own shift-click does nothing at all — see
+  // mouse-mode.js). Returns false when there is nothing to extend, which is the
+  // caller's cue to let the press be an ordinary one.
+  _extendSelectionTo(clientX, clientY) {
+    const t = this.terminal;
+    const sel = t?.getSelectionPosition?.();
+    if (!sel) return false;
+    const point = this._cellAtPoint(clientX, clientY);
+    if (!point) return false;
+    const anchor = extendAnchor(this._selAnchor, sel, point, t.cols);
+    const span = selectionSpan(anchor, point, t.cols);
+    if (span.y < 0) return false;
+    this._selAnchor = anchor;
+    // The repair watcher belongs to the drag that made this selection, and it
+    // remembers that drag's endpoints. Left running it would answer the next wipe
+    // by rebuilding the span this adjustment just replaced.
+    if (this._selGuard) { clearTimeout(this._selGuard); this._selGuard = null; }
+    this._selGuardPress = null;
+    // Setting a selection fires the change event; the guard above is gone, but the
+    // flag also covers a guard armed by some other in-flight gesture.
+    this._restoringSelection = true;
+    try { t.select(span.x, span.y, span.length); } finally { this._restoringSelection = false; }
+    return true;
+  }
+
+  // Remember which END of the selection the gesture that made it started from, so a
+  // later shift-click pivots on the right one — a drag made upwards anchors at the
+  // BOTTOM, and extending it from the top would grow the wrong way.
+  //
+  // The press point is matched against the (order-normalised) ends rather than
+  // trusted as the anchor itself, so a double-click that snapped to a word boundary
+  // and a drag that ended a few pixels off both still name a real end.
+  _recordSelectionAnchor(press) {
+    const t = this.terminal;
+    const sel = t?.getSelectionPosition?.();
+    if (!sel) { this._selAnchor = null; return; }
+    // Followed to wherever the press's line has scrolled to, for the same reason
+    // the repair follows it (see _anchorY).
+    const from = this._cellAtPoint(press.x, this._anchorY(press));
+    if (!from) { this._selAnchor = { ...sel.start }; return; }
+    const off = (c) => cellOffset(c, t.cols);
+    this._selAnchor = Math.abs(off(from) - off(sel.start)) <= Math.abs(off(from) - off(sel.end))
+      ? { ...sel.start } : { ...sel.end };
+  }
+
   // Scroll the tmux buffer, and take any highlight with it.
   //
   // Every scroll goes through here rather than sending the message directly,
@@ -1167,13 +1280,22 @@ export class TerminalUnit {
     let ey = pos.end.y + rows, ex = pos.end.x;
     // Guarded because re-selecting fires selection-change events, and the repair
     // watcher from a just-finished drag must not read this as a wipe to undo.
+    // The shift-click anchor names a cell in the same buffer, so it moves with it —
+    // and once it has been scrolled off, it is dropped rather than left pointing at
+    // a row that no longer exists (extendAnchor falls back on its own from there).
+    const dropAnchor = () => { this._selAnchor = null; };
+    if (this._selAnchor) {
+      const ay = this._selAnchor.y + rows;
+      if (ay < 0 || ay > lastRow) dropAnchor();
+      else this._selAnchor = { x: this._selAnchor.x, y: ay };
+    }
     this._restoringSelection = true;
     try {
-      if (ey < 0 || sy > lastRow) { t.clearSelection(); return; }
+      if (ey < 0 || sy > lastRow) { t.clearSelection(); dropAnchor(); return; }
       if (sy < 0) { sy = 0; sx = 0; }                 // clip the part scrolled off the top
       if (ey > lastRow) { ey = lastRow; ex = cols; }  // ...and off the bottom
       const length = (ey - sy) * cols + (ex - sx);
-      if (length <= 0) { t.clearSelection(); return; }
+      if (length <= 0) { t.clearSelection(); dropAnchor(); return; }
       t.select(sx, sy, length);
     } finally {
       this._restoringSelection = false;
