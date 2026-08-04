@@ -22,7 +22,7 @@ import { renameSessionPayload } from './tmux-payloads.js';
 import {
   normalizeMouseMode, resolvePress, needsForcedSelection, forceSelectionModifier,
   movedEnough, leaveCopyModeFirst, PressArbiter,
-  isExtendPress, extendAnchor, selectionSpan, cellOffset,
+  isExtendPress, extendAnchor, selectionSpan, cellOffset, viewLeftItsWindow,
 } from './mouse-mode.js';
 import { writeAuthority, READ_ONLY_NOTICE } from './write-guard.js';
 
@@ -217,6 +217,10 @@ export class TerminalUnit {
     this.desiredWindowIndex = null;
     this.desiredSession = null;
     this.restorePending = false;
+    // The window whose text is on screen right now, as far as any highlight is
+    // concerned. Not the same thing as desiredWindowId, which is where we WANT to
+    // be (and is set mid-restore, before the content arrives) — see _viewChanged.
+    this._shownWindowId = null;
     // While a post-reconnect restore hop is in flight, the window this region is
     // PARKED on — where the fresh attach dropped us, not anywhere the user went.
     // Read by SplitManager._markWorkAlerts, which otherwise treats "on screen in a
@@ -1280,6 +1284,30 @@ export class TerminalUnit {
     this._shiftSelection(up ? n : -n);
   }
 
+  // Drop the highlight, and everything that would put it back — for when the text it
+  // named has left the screen (see viewLeftItsWindow for why that ends a selection).
+  //
+  // The guard goes with it. That watcher exists to undo a wipe (see _guardSelection),
+  // and this wipe is deliberate: left armed, it would re-assert the very highlight
+  // being removed, against the new window's text.
+  _dropSelection() {
+    if (this._selGuard) { clearTimeout(this._selGuard); this._selGuard = null; }
+    this._selGuardPress = null;
+    this._selAnchor = null;
+    this.terminal?.clearSelection();
+  }
+
+  // Record which window this pane is now showing, and say whether that is a change.
+  // Read from the LAYOUT rather than from our own selectWindow calls, so switches we
+  // did not make are caught too: tmux's own `prefix n` typed into the pane, another
+  // client moving this session, the hop a reconnect restores.
+  _noteShownWindow() {
+    const next = this.layout?.activeWindowId || null;
+    const changed = viewLeftItsWindow({ shown: this._shownWindowId, next });
+    this._shownWindowId = next;
+    return changed;
+  }
+
   // Move the selection `rows` down the buffer (negative = up), clipping it to what
   // is still on screen and dropping it once it has scrolled entirely out of view —
   // a highlight parked on a line nobody can see is worse than none.
@@ -1444,6 +1472,9 @@ export class TerminalUnit {
 
       case MSG.TmuxLayoutUpdate:
         this.layout = JSON.parse(payload);
+        // A different window is on screen now, so any highlight is over text that is
+        // no longer there — see viewLeftItsWindow.
+        if (this._noteShownWindow()) this._dropSelection();
         this._syncCopyModeFromLayout();
         this._rememberOrRestore();
         this.dispatchLayoutUpdate();
@@ -1743,6 +1774,10 @@ export class TerminalUnit {
   }
 
   selectWindow(windowId) {
+    // The highlight belongs to the window being left. Dropped BEFORE the optimistic
+    // paint below, so it never gets a frame over the new window's text — the layout
+    // that follows would drop it anyway, but a round-trip later.
+    if (viewLeftItsWindow({ shown: this._shownWindowId, next: windowId })) this._dropSelection();
     // Optimistic paint FIRST so the switch looks instant on every path that ends
     // here (sidebar click, ↑/↓ arrow-nav, Exposé click); the server's
     // select-window repaint overwrites it a beat later (authoritative).
