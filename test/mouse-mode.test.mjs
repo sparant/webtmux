@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import {
   MOUSE_MODES, normalizeMouseMode, resolvePress, deferredVerdict, movedEnough,
   needsForcedSelection, forceSelectionModifier, leaveCopyModeFirst, PressArbiter,
-  DRAG_SLOP_PX, isExtendPress, cellOffset, extendAnchor, selectionSpan,
+  DRAG_SLOP_PX, isExtendPress, cellOffset, extendAnchor, selectionSpan, viewLeftItsWindow,
 } from '../resources/js/mouse-mode.js';
 
 // ---- mode normalisation ------------------------------------------------------
@@ -271,4 +271,22 @@ test('an endpoint at the end of a line normalises onto the next row', () => {
   // it is simply the start of the row below, which is where select() wants it.
   assert.deepEqual(selectionSpan({ x: COLS, y: 4 }, { x: 10, y: 6 }, COLS),
     { x: 0, y: 5, length: COLS + 10 });
+});
+
+// ---- how long a selection lives ----------------------------------------------
+
+test('a highlight ends when a different window is painted into the pane', () => {
+  // The bug: the coordinates stay valid while the TEXT under them does not, so the
+  // highlight sat over whatever the next window happened to print in those cells.
+  assert.equal(viewLeftItsWindow({ shown: '@3', next: '@4' }), true);
+  assert.equal(viewLeftItsWindow({ shown: '@3', next: '@3' }), false);
+});
+
+test('a view we cannot name is never treated as a change', () => {
+  // The first layout after a connect ESTABLISHES what is on screen; reading it as a
+  // switch would drop a selection nothing had disturbed. Same for a window id the
+  // layout did not carry — a selection is not thrown away on a guess.
+  assert.equal(viewLeftItsWindow({ shown: null, next: '@4' }), false);
+  assert.equal(viewLeftItsWindow({ shown: '@3', next: null }), false);
+  assert.equal(viewLeftItsWindow({}), false);
 });

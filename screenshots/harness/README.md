@@ -40,6 +40,9 @@ Pieces:
   `verify-shift-extend.js` (shift-click adjusts the end of an existing selection from
   its original anchor — in a plain shell and over a mouse-grabbing program, where it
   must reach neither the program nor the copy-mode exit),
+  `verify-window-selection.js` (a highlight ends when the window under it does —
+  on the UI's own switch and on one it never made, with nothing left painted, while
+  an unrelated layout push still leaves a selection alone),
   `verify-state-sync.js` (TWO browser contexts against one tmux server: a cold-cache
   client must not erase the other's split/preview, must converge on it, and a killed
   window must not be resurrected by the next push).
