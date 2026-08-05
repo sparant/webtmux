@@ -114,6 +114,30 @@ export function paneIsIdle(command) {
   return IDLE_SHELLS.has(String(command || '').trim().replace(/^-/, ''));
 }
 
+// Would rebuilding this pane destroy something? The question the confirmation
+// actually asks, and it is NOT answerable from the foreground process alone: a
+// pane launched as `sh -c "deploy.sh"` reports `sh`, which reads as an idle
+// prompt. A pane tmux was given a command for is not a bare shell whatever its
+// foreground process is called, and its startCommand says so.
+export function paneIsWork(p) {
+  return !paneIsIdle(p?.command) || !!p?.startCommand;
+}
+
+// What to CALL this pane's work. The launch command beats the process name when
+// there is one — "sh -c \"deploy.sh\"" rather than a bare "sh" — and it is also
+// exactly what a re-run would put back.
+export function workName(p) {
+  return p?.startCommand || p?.command || '';
+}
+
+// The panes a rebuild could put back as they were: the ones tmux knows a launch
+// command for. A program you started by typing at a prompt is not one of them —
+// tmux never saw it — which is why this is a subset of what a resize kills, not
+// all of it.
+export function relaunchable(panes, limit) {
+  return panesToRebuild(panes, limit).filter((p) => !!p.startCommand);
+}
+
 // Which panes a resize would actually touch — the ones not already the right
 // size. A pane that already holds the requested number of lines is left running.
 export function panesToRebuild(panes, limit) {
@@ -123,9 +147,7 @@ export function panesToRebuild(panes, limit) {
 // The commands a resize would kill. Empty means every affected pane is sitting at
 // a prompt and the rebuild is cheap.
 export function busyCommands(panes, limit) {
-  return panesToRebuild(panes, limit)
-    .filter((p) => !paneIsIdle(p.command))
-    .map((p) => p.command);
+  return panesToRebuild(panes, limit).filter(paneIsWork).map(workName);
 }
 
 // What the resize button is about to do, said plainly enough to decide on.
@@ -135,21 +157,33 @@ export function busyCommands(panes, limit) {
 // only irreversible part left is the running program — and the wording never
 // softens THAT, because tmux offers no way to avoid it: a running process cannot
 // be moved into a new pane.
-export function resizePlan(panes, limit) {
+export function resizePlan(panes, limit, rerun = true) {
   const todo = panesToRebuild(panes, limit);
   if (!todo.length) {
     return { none: true, needsConfirm: false, text: `Every pane already holds ${formatLines(limit)} lines.` };
   }
-  const busy = busyCommands(panes, limit);
+  const back = relaunchable(panes, limit);
+  // What is offered is separate from what is left over: a pane tmux can relaunch
+  // is not a loss the user has to accept, so with the box ticked it drops out of
+  // the warning entirely and appears as a promise instead.
+  const busy = rerun
+    ? busyCommands(panes, limit).filter((c) => !back.some((p) => workName(p) === c))
+    : busyCommands(panes, limit);
   const one = todo.length === 1;
   const count = `${todo.length} pane${one ? '' : 's'}`;
   const head = `tmux cannot resize a pane's buffer, so this rebuilds ${count} at `
     + `${formatLines(limit)} lines. The current scrollback is carried across.`;
+  const relaunch = rerun && back.length
+    ? ` ${back.map(workName).join(', ')} ${back.length === 1 ? 'is' : 'are'} started again `
+      + '\u2014 restarted from scratch, not resumed.'
+    : '';
   if (!busy.length) {
     return {
       none: false,
       needsConfirm: true,
-      text: `${head} The shell${one ? '' : 's'} restart${one ? 's' : ''} in the same place.`,
+      relaunchable: back,
+      text: `${head}${relaunch}`
+        + (relaunch ? '' : ` The shell${one ? '' : 's'} restart${one ? 's' : ''} in the same place.`),
     };
   }
   // The one cost nothing can soften, so it is stated in full and the escape hatch
@@ -161,9 +195,12 @@ export function resizePlan(panes, limit) {
     none: false,
     needsConfirm: true,
     busy,
-    text: `${head} But it KILLS ${busy.join(', ')}: a running program cannot be moved `
-      + 'into a new pane. To keep one, hand it over yourself first with reptyr '
-      + '(Linux, needs ptrace permission), then resize.',
+    relaunchable: back,
+    text: `${head}${relaunch} But it KILLS ${busy.join(', ')}: tmux never saw `
+      + `${busy.length === 1 ? 'that command' : 'those commands'}, so there is nothing `
+      + 'to start again, and a running program cannot be moved into a new pane. To '
+      + 'keep one, hand it over yourself first with reptyr (Linux, needs ptrace '
+      + 'permission), then resize.',
   };
 }
 
@@ -193,7 +230,8 @@ export function actionBanner(res) {
       if (r.replayed >= r.rebuilt) bits.push('scrollback carried across');
       else if (r.replayed) bits.push(`scrollback carried across for ${r.replayed} of them`);
       else bits.push('the old scrollback could not be read, so they start empty');
-      if (r.restarted?.length) bits.push(`restarted ${r.restarted.join(', ')}`);
+      if (r.rerun?.length) bits.push(`started ${r.rerun.join(', ')} again`);
+      if (r.restarted?.length) bits.push(`lost ${r.restarted.join(', ')}`);
       // Said out loud rather than left to be noticed: the panes are the size you
       // asked for, but they are not the shape you left them in.
       if (r.layoutRestored === false) bits.push('pane sizes could not be restored');

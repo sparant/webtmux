@@ -46,7 +46,9 @@ type TmuxController interface {
 	// PersistDefaultHistoryLimit additionally writes it into the tmux config file,
 	// so a tmux server started later comes up with it. Returns the path written.
 	PersistDefaultHistoryLimit(windowID string, limit int) (string, error)
-	ResizeWindowHistory(windowID string, limit int, force bool) (tmux.HistoryResize, error)
+	// force is the user's agreement to kill what is running; rerun asks that panes
+	// tmux knows a launch command for come back running it rather than as shells.
+	ResizeWindowHistory(windowID string, limit int, force, rerun bool) (tmux.HistoryResize, error)
 	ClearWindowHistory(windowID string) error
 	EnterCopyMode() error
 	ExitCopyMode() error

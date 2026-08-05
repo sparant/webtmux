@@ -87,7 +87,7 @@ func (c *failCtrl) ClearWindowHistory(string) error { return c.note("clear-histo
 func (c *failCtrl) PersistDefaultHistoryLimit(string, int) (string, error) {
 	return "", c.note("persist history-limit")
 }
-func (c *failCtrl) ResizeWindowHistory(string, int, bool) (tmux.HistoryResize, error) {
+func (c *failCtrl) ResizeWindowHistory(string, int, bool, bool) (tmux.HistoryResize, error) {
 	return tmux.HistoryResize{}, c.note("resize-history")
 }
 

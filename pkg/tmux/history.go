@@ -42,7 +42,7 @@ import (
 //
 // The SCROLLBACK, though, does not have to be lost, and isn't. The old pane is
 // captured whole and replayed into its replacement, so a resize keeps every line
-// and its colours — see replayCommand. It goes through a tmux BUFFER rather than
+// and its colours — see launchCommand. It goes through a tmux BUFFER rather than
 // a temp file on purpose: the buffer lives in the tmux server, so the text never
 // has to cross a filesystem that webtmux and tmux might not share (the
 // containerized deployment savepath.go exists for).
@@ -71,6 +71,12 @@ type PaneHistory struct {
 	Size    int   `json:"size"`
 	Bytes   int64 `json:"bytes"`
 	Command string `json:"command"`
+	// StartCommand is #{pane_start_command}: what tmux itself LAUNCHED this pane
+	// with, un-quoted back into something runnable. Empty for a plain shell pane —
+	// and empty for anything you started by typing at a prompt, which tmux never
+	// saw. It is what lets a rebuild put the pane back as it was rather than as a
+	// bare shell; see ResizeWindowHistory's `rerun`.
+	StartCommand string `json:"startCommand"`
 }
 
 // HistoryReport is what one window's scrollback looks like right now, plus the
@@ -107,6 +113,8 @@ type HistoryResize struct {
 	// has already shown these in a confirmation; echoing them back is what makes
 	// the result a receipt rather than a promise.
 	Restarted []string `json:"restarted"`
+	// Rerun names the launch commands that were started again in the rebuilt panes.
+	Rerun []string `json:"rerun"`
 	// Replayed is how many rebuilt panes carried their old scrollback across. It
 	// is reported separately from Rebuilt because the two can differ — a pane whose
 	// capture fails is still rebuilt, just empty — and "your history came with it"
@@ -188,6 +196,53 @@ func panePaths(run tmuxRunner, windowID string) map[string]string {
 	return paths
 }
 
+// paneStartCommands maps pane id -> the command tmux LAUNCHED that pane with,
+// ready to run again. Its own fork for the same reason panePaths is one: a launch
+// command is free-form (it can contain the field separator, since a shell
+// pipeline is a perfectly ordinary thing to launch a pane with), so it needs the
+// last slot of a row, and only one field can have it.
+//
+// Two transformations on the way out, both of which matter:
+//
+//   - tmux reports the value in its DISPLAY form — wrapped in quotes, with inner
+//     quotes escaped. Handing that to a shell would try to run a command whose
+//     name is the whole quoted string. unquoteStartCommand puts it back.
+//   - a pane that webtmux itself rebuilt was launched with the replay prefix in
+//     front of its real command (see launchCommand), so that is stripped. Without
+//     it every rebuild would nest one more prefix inside the last one.
+func paneStartCommands(run tmuxRunner, windowID string) map[string]string {
+	out, err := run("list-panes", "-t", windowID, "-F", "#{pane_id} #{pane_start_command}")
+	if err != nil {
+		return nil
+	}
+	cmds := make(map[string]string)
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		i := strings.IndexByte(line, ' ')
+		if i <= 0 {
+			continue
+		}
+		if cmd := stripReplayPrefix(unquoteStartCommand(line[i+1:])); cmd != "" {
+			cmds[line[:i]] = cmd
+		}
+	}
+	return cmds
+}
+
+// unquoteStartCommand turns tmux's displayed form of a launch command back into
+// the command itself: one layer of surrounding double quotes off, and the escapes
+// inside undone. Verified to round-trip against a live tmux — re-launching a pane
+// with the result yields a pane whose own #{pane_start_command} matches the
+// original exactly.
+func unquoteStartCommand(raw string) string {
+	s := strings.TrimSpace(raw)
+	if len(s) >= 2 && strings.HasPrefix(s, `"`) && strings.HasSuffix(s, `"`) {
+		s = s[1 : len(s)-1]
+	}
+	s = strings.ReplaceAll(s, `\"`, `"`)
+	s = strings.ReplaceAll(s, `\\`, `\`)
+	return strings.TrimSpace(s)
+}
+
 // sessionIDOfWindow resolves the session a window target lands in, as a
 // #{session_id} ("$3").
 //
@@ -260,6 +315,11 @@ func buildHistoryReport(run tmuxRunner, windowID string) (HistoryReport, error) 
 	if err != nil {
 		return rep, err
 	}
+	if starts := paneStartCommands(run, windowID); len(starts) > 0 {
+		for i := range panes {
+			panes[i].StartCommand = starts[panes[i].PaneID]
+		}
+	}
 	rep.Panes = panes
 	if g, err := globalHistoryLimit(run); err == nil {
 		rep.Global = g
@@ -301,11 +361,33 @@ var idleShells = map[string]bool{
 	"ksh": true, "mksh": true, "ash": true, "csh": true, "tcsh": true,
 }
 
-// paneIsIdle reports whether rebuilding this pane would kill anything a person
-// would miss.
+// paneIsIdle reports whether a pane's FOREGROUND command is just a prompt.
 func paneIsIdle(command string) bool {
 	c := strings.TrimPrefix(strings.TrimSpace(command), "-")
 	return idleShells[c]
+}
+
+// paneIsWork is the question the confirmation actually asks: would rebuilding
+// this pane destroy something?
+//
+// #{pane_current_command} alone gets this wrong in one important shape. A pane
+// launched as `sh -c "…"` reports `sh`, which reads as an idle prompt — so a
+// long-running script started that way would have been rebuilt with no
+// confirmation at all. A pane tmux was given a command for is not a bare shell by
+// definition, whatever its foreground process happens to be called, and its
+// #{pane_start_command} says so.
+func paneIsWork(p PaneHistory) bool {
+	return !paneIsIdle(p.Command) || p.StartCommand != ""
+}
+
+// workName is what the confirmation calls this pane's work. A launch command is
+// more use than a process name when there is one ("sh -c \"deploy.sh\"" rather
+// than a bare "sh"), and it is what a re-run would put back.
+func workName(p PaneHistory) string {
+	if p.StartCommand != "" {
+		return p.StartCommand
+	}
+	return p.Command
 }
 
 // BusyCommands lists the commands in a report that a rebuild would kill. Exposed
@@ -314,10 +396,10 @@ func paneIsIdle(command string) bool {
 func BusyCommands(panes []PaneHistory, limit int) []string {
 	var busy []string
 	for _, p := range panes {
-		if p.Limit == limit || paneIsIdle(p.Command) {
+		if p.Limit == limit || !paneIsWork(p) {
 			continue
 		}
-		busy = append(busy, p.Command)
+		busy = append(busy, workName(p))
 	}
 	return busy
 }
@@ -536,7 +618,7 @@ func (c *Controller) ClearWindowHistory(windowID string) error {
 //
 // `force` is the user's answer to "this kills what is running". Without it a
 // window holding anything but shells is refused rather than guessed at.
-func (c *Controller) ResizeWindowHistory(windowID string, limit int, force bool) (HistoryResize, error) {
+func (c *Controller) ResizeWindowHistory(windowID string, limit int, force, rerun bool) (HistoryResize, error) {
 	var res HistoryResize
 	if limit < HistoryLimitMin || limit > HistoryLimitMax {
 		return res, fmt.Errorf("%w: a history limit of %d is outside %d..%d",
@@ -548,6 +630,15 @@ func (c *Controller) ResizeWindowHistory(windowID string, limit int, force bool)
 	}
 	if len(panes) == 0 {
 		return res, fmt.Errorf("%w: window %s has no panes", ErrRefused, windowID)
+	}
+	// Read the launch commands HERE rather than trusting the report the caller was
+	// looking at: it is as old as the dropdown has been open, and this is the
+	// moment panes are about to be replaced on the strength of what it says. They
+	// feed BOTH decisions below — whether a pane counts as work at all, and
+	// whether it can be put back as it was.
+	starts := paneStartCommands(c.run, windowID)
+	for i := range panes {
+		panes[i].StartCommand = starts[panes[i].PaneID]
 	}
 
 	var todo []PaneHistory
@@ -598,7 +689,14 @@ func (c *Controller) ResizeWindowHistory(windowID string, limit int, force bool)
 		}
 	}()
 
-	startCmd := c.paneStartCommand(sid)
+	shellCmd := c.defaultPaneCommand(sid)
+	// Which panes may be put back as they were, rather than as bare shells.
+	relaunch := map[string]string{}
+	if rerun {
+		for _, p := range Relaunchable(todo, limit) {
+			relaunch[p.PaneID] = p.StartCommand
+		}
+	}
 	newByOld := make(map[string]string, len(todo))
 	var walkErr error
 	for _, p := range todo {
@@ -611,8 +709,17 @@ func (c *Controller) ResizeWindowHistory(windowID string, limit int, force bool)
 		// reason to abandon the resize — it costs the history, which is exactly
 		// what the old behaviour cost every time — so it degrades to a plain shell.
 		replay := c.captureForReplay(p.PaneID)
-		if replay != "" {
-			args = append(args, replayCommand(replay, startCmd))
+		// A pane tmux launched with a command comes back running it; anything else
+		// comes back as the shell a new pane would be. Note what this is NOT: the
+		// program is RESTARTED, not preserved — see the file comment on why nothing
+		// can preserve it — so the decision belongs to the caller's user, and
+		// `rerun` is their answer.
+		cmd := shellCmd
+		if rc := relaunch[p.PaneID]; rc != "" {
+			cmd = rc
+		}
+		if replay != "" || cmd != shellCmd {
+			args = append(args, launchCommand(replay, cmd, cmd == shellCmd))
 		}
 		out, err := c.runTmux(args...)
 		newID := strings.TrimSpace(out)
@@ -639,8 +746,12 @@ func (c *Controller) ResizeWindowHistory(windowID string, limit int, force bool)
 		if replay != "" {
 			res.Replayed++
 		}
-		if !paneIsIdle(p.Command) {
-			res.Restarted = append(res.Restarted, p.Command)
+		if rc := relaunch[p.PaneID]; rc != "" {
+			res.Rerun = append(res.Rerun, rc)
+		} else if paneIsWork(p) {
+			// Only the ones that did NOT come back are "restarted" in the sense the
+			// receipt means: work that is simply gone.
+			res.Restarted = append(res.Restarted, workName(p))
 		}
 	}
 
@@ -724,8 +835,25 @@ func (c *Controller) dropBuffer(name string) {
 	_, _ = c.runTmux("delete-buffer", "-b", name)
 }
 
-// replayCommand is what the replacement pane runs: print the captured buffer,
-// discard it, then become the shell a pane normally is.
+// replayJoint separates the replay preamble from the command the pane is really
+// there to run. It is a marker rather than a mere `;` because tmux REMEMBERS the
+// whole line as the pane's #{pane_start_command}: without something to cut on,
+// every rebuild would read the last rebuild's preamble back as part of the
+// command and nest one more copy inside it.
+//
+// `:` is the shell's no-op builtin, so the marker costs nothing and — unlike a
+// `#` comment — does not swallow the rest of the line.
+const replayJoint = "; : wt-replay; exec "
+
+// shellJoint marks the other case: the pane is simply a shell, and its command is
+// only there because the replay had to be prefixed to something. Distinguishing
+// the two is what keeps a rebuilt SHELL from looking like a pane tmux was told to
+// run `/bin/bash -l` in — which would make it "work" to the busy check and offer a
+// pointless "re-run" for it.
+const shellJoint = "; : wt-shell; exec "
+
+// launchCommand is what a replacement pane is spawned with: replay the captured
+// buffer if there is one, then become `cmd`.
 //
 // `tmux save-buffer -b <name> -` writes the buffer to stdout — the pane's own
 // terminal — which is what puts those lines into the NEW pane's history. It is
@@ -735,29 +863,70 @@ func (c *Controller) dropBuffer(name string) {
 // Every step is failure-tolerant. A tmux that isn't on PATH, a buffer that went
 // missing: the redirections swallow it and the `exec` still happens, so the worst
 // case is the pane you would have had anyway. What must NEVER happen is a pane
-// that fails to become a shell.
-func replayCommand(buffer, startCmd string) string {
+// that fails to start its command.
+//
+// With no buffer to replay the command is passed through ALONE, so the pane's
+// #{pane_start_command} reads exactly as it would for a natively created pane.
+func launchCommand(buffer, cmd string, isShell bool) string {
+	if buffer == "" {
+		return cmd
+	}
+	joint := replayJoint
+	if isShell {
+		joint = shellJoint
+	}
 	b := shellQuote(buffer)
-	return fmt.Sprintf("tmux save-buffer -b %s - 2>/dev/null; tmux delete-buffer -b %s 2>/dev/null; %s",
-		b, b, startCmd)
+	return fmt.Sprintf("tmux save-buffer -b %s - 2>/dev/null; tmux delete-buffer -b %s 2>/dev/null%s%s",
+		b, b, joint, cmd)
 }
 
-// paneStartCommand is what tmux itself would have run in a new pane: the
+// stripReplayPrefix recovers the real command from a pane webtmux rebuilt, or ""
+// when the pane is one webtmux rebuilt as a plain shell.
+func stripReplayPrefix(cmd string) string {
+	if strings.Contains(cmd, shellJoint) {
+		return ""
+	}
+	if i := strings.Index(cmd, replayJoint); i >= 0 {
+		return strings.TrimSpace(cmd[i+len(replayJoint):])
+	}
+	return cmd
+}
+
+// defaultPaneCommand is what tmux itself would have run in a new pane: the
 // session's default-command if it has one, else its shell as a LOGIN shell —
 // which is what tmux does when default-command is empty. Reproducing that is the
 // difference between a rebuilt pane that behaves like a new one and one that
 // quietly skipped the user's profile.
-func (c *Controller) paneStartCommand(sessionID string) string {
+func (c *Controller) defaultPaneCommand(sessionID string) string {
 	if cmd, _ := optionValue(c.run, "show-options", "-v", "-A", "-t", sessionID, "default-command"); cmd != "" {
-		return "exec " + cmd
+		return cmd
 	}
 	shell, _ := optionValue(c.run, "show-options", "-v", "-A", "-t", sessionID, "default-shell")
 	if shell == "" {
 		// tmux always has a default-shell, so this is only reachable on a tmux too
 		// old to report it; the pane's own $SHELL is the same answer by another route.
-		return `exec "${SHELL:-/bin/sh}" -l`
+		return `"${SHELL:-/bin/sh}" -l`
 	}
-	return "exec " + shellQuote(shell) + " -l"
+	return shellQuote(shell) + " -l"
+}
+
+// Relaunchable is the subset of a rebuild that could be put back as it was: panes
+// doing real work that tmux knows the launch command for. Exposed so the browser
+// names exactly what it is offering to restart and the server acts on the same
+// set — the same discipline as BusyCommands.
+//
+// An IDLE pane is never in it, even when it has a start command (a pane webtmux
+// rebuilt records one): a shell comes back as a shell either way, so offering to
+// "re-run" it would be a checkbox that does nothing anyone can see.
+func Relaunchable(panes []PaneHistory, limit int) []PaneHistory {
+	var out []PaneHistory
+	for _, p := range panes {
+		if p.Limit == limit || p.StartCommand == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 // shellQuote wraps a value for the `sh -c` line tmux runs a pane command through.

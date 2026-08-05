@@ -15,7 +15,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   HISTORY_MAX, parseLimit, formatLines, formatBytes, windowUsage,
-  paneIsIdle, panesToRebuild, busyCommands, resizePlan, actionBanner, configFileHint,
+  paneIsIdle, paneIsWork, workName, relaunchable,
+  panesToRebuild, busyCommands, resizePlan, actionBanner, configFileHint,
   ACTION_DEFAULT, ACTION_PERSIST, ACTION_RESIZE, ACTION_CLEAR,
 } from '../resources/js/scrollback.js';
 
@@ -93,6 +94,41 @@ test('panes already at the requested size are neither rebuilt nor warned about',
   assert.deepEqual(busyCommands(panes, 50000), ['claude']);
 });
 
+test('a pane launched with a shell command is work, not an idle prompt', () => {
+  // `sh -c "deploy.sh"` reports its foreground process as `sh`. Reading that as a
+  // prompt would rebuild the pane — killing the script — without asking.
+  const script = pane({ command: 'sh', startCommand: 'sh -c "deploy.sh"' });
+  const prompt = pane({ command: 'sh' });
+  assert.equal(paneIsWork(script), true);
+  assert.equal(paneIsWork(prompt), false);
+  // …and it is named by what it IS, not by the process that happens to host it.
+  assert.equal(workName(script), 'sh -c "deploy.sh"');
+  assert.deepEqual(busyCommands([script, prompt], 50000), ['sh -c "deploy.sh"']);
+});
+
+test('only panes tmux launched can be started again', () => {
+  const panes = [
+    pane({ paneId: '%0', command: 'vim' }),                        // typed at a prompt
+    pane({ paneId: '%1', command: 'htop', startCommand: 'htop' }),  // tmux launched it
+    pane({ paneId: '%2', command: 'bash' }),                        // plain shell
+    pane({ paneId: '%3', command: 'htop', startCommand: 'htop', limit: 50000 }), // untouched
+  ];
+  assert.deepEqual(relaunchable(panes, 50000).map((p) => p.paneId), ['%1']);
+});
+
+test('a plan that can start the command again promises it instead of warning', () => {
+  const panes = [pane({ command: 'htop', startCommand: 'htop -d 5' })];
+  const withRerun = resizePlan(panes, 50000, true);
+  assert.match(withRerun.text, /htop -d 5 is started again/);
+  assert.match(withRerun.text, /not resumed/, 'a restart is not a rescue, and says so');
+  assert.doesNotMatch(withRerun.text, /KILLS/);
+  assert.deepEqual(withRerun.relaunchable.map((p) => p.paneId), ['%0']);
+
+  // Untick it and the same pane is back to being a loss.
+  const without = resizePlan(panes, 50000, false);
+  assert.match(without.text, /KILLS htop -d 5/);
+});
+
 test('the resize plan names what dies, and the one way to keep it', () => {
   const plan = resizePlan([
     pane({ paneId: '%0', command: 'bash' }),
@@ -141,12 +177,17 @@ test('the resize banner is a receipt: how many, and what it cost', () => {
   const b = actionBanner({
     action: ACTION_RESIZE, ok: true,
     panes: [{ limit: 50000 }],
-    resize: { rebuilt: 2, skipped: 1, replayed: 2, restarted: ['claude'], layoutRestored: true },
+    resize: {
+      rebuilt: 3, skipped: 1, replayed: 3, rerun: ['htop -d 5'],
+      restarted: ['claude'], layoutRestored: true,
+    },
   });
-  assert.match(b.text, /Rebuilt 2 panes at 50,000 lines/);
+  assert.match(b.text, /Rebuilt 3 panes at 50,000 lines/);
   assert.match(b.text, /1 already the right size/);
   assert.match(b.text, /scrollback carried across/);
-  assert.match(b.text, /restarted claude/);
+  // The two outcomes are worded apart on purpose: one came back, one did not.
+  assert.match(b.text, /started htop -d 5 again/);
+  assert.match(b.text, /lost claude/);
 });
 
 test('a rebuild that could not carry the scrollback says which panes lost it', () => {

@@ -136,14 +136,14 @@ func TestLiveResizeRebuildsAWindowAndKeepsItsShape(t *testing.T) {
 	geomBefore := paneGeometry(layoutBefore)
 
 	// Without force it must refuse, and cost nothing.
-	if _, err := c.ResizeWindowHistory(win, 50000, false); err == nil {
+	if _, err := c.ResizeWindowHistory(win, 50000, false, false); err == nil {
 		t.Fatal("resized a window running `sleep` without being told to")
 	}
 	if after, _ := historyPanes(run, win); len(after) != 3 || after[0].PaneID != before[0].PaneID {
 		t.Fatal("the refusal disturbed the window")
 	}
 
-	res, err := c.ResizeWindowHistory(win, 50000, true)
+	res, err := c.ResizeWindowHistory(win, 50000, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestLiveResizeDoesNotChangeTheDefaultForNewWindows(t *testing.T) {
 	if _, err := run("set-option", "-g", "history-limit", "3000"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.ResizeWindowHistory(win, 50000, true); err != nil {
+	if _, err := c.ResizeWindowHistory(win, 50000, true, false); err != nil {
 		t.Fatal(err)
 	}
 	global, err := globalHistoryLimit(run)
@@ -360,7 +360,7 @@ func TestLiveResizeCarriesTheScrollbackAcross(t *testing.T) {
 		t.Fatalf("the pane never filled (size %d); the replay would prove nothing", before.Size)
 	}
 
-	res, err := c.ResizeWindowHistory(win, 50000, false)
+	res, err := c.ResizeWindowHistory(win, 50000, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,7 +373,11 @@ func TestLiveResizeCarriesTheScrollbackAcross(t *testing.T) {
 		panes, err := historyPanes(run, win)
 		return err == nil && len(panes) == 1 && panes[0].Size > 500
 	})
-	after := mustPanes(t, run, win)[0]
+	afterPanes, err := buildHistoryReport(run, win)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := afterPanes.Panes[0]
 	if after.Limit != 50000 {
 		t.Errorf("the rebuilt pane holds %d lines, want 50000", after.Limit)
 	}
@@ -509,5 +513,78 @@ func TestLivePersistCreatesAUserConfigRatherThanEditingASystemOne(t *testing.T) 
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("reported writing %s but it is not there: %v", path, err)
+	}
+}
+
+// A window tmux launched with a command comes back running it — at the new size,
+// with its scrollback. Against a real tmux, because the whole mechanism rests on
+// tmux's own quoting of #{pane_start_command} round-tripping through a respawn.
+func TestLiveResizeRelaunchesTheWindowsCommand(t *testing.T) {
+	run, _ := liveTmux(t)
+	c := newControllerWithRunner("live", false, "", run)
+
+	// A pane tmux itself launched, with arguments and nested quotes — the shape
+	// most likely to be mangled by a naive un-quote.
+	if _, err := run("new-window", "-d", "-t", "live:", "-n", "job",
+		`sh -c "echo LAUNCHED-ONCE; sleep 600"`); err != nil {
+		t.Fatal(err)
+	}
+	win := liveField(t, run, "live:job", "#{window_id}")
+	waitFor(t, run, func() bool {
+		panes, err := historyPanes(run, win)
+		return err == nil && len(panes) == 1 && !paneIsIdle(panes[0].Command)
+	})
+	rep, err := buildHistoryReport(run, win)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Panes) != 1 || rep.Panes[0].StartCommand == "" {
+		t.Fatalf("tmux reported no launch command: %+v", rep.Panes)
+	}
+	want := rep.Panes[0].StartCommand
+
+	res, err := c.ResizeWindowHistory(win, 50000, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Rerun) != 1 {
+		t.Fatalf("rerun = %v, want the launch command", res.Rerun)
+	}
+	waitFor(t, run, func() bool {
+		panes, err := historyPanes(run, win)
+		return err == nil && len(panes) == 1 && !paneIsIdle(panes[0].Command)
+	})
+	afterPanes, err := buildHistoryReport(run, win)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := afterPanes.Panes[0]
+	if after.Limit != 50000 {
+		t.Errorf("the relaunched pane holds %d lines, want 50000", after.Limit)
+	}
+	// `sh -c "…"` reports its foreground process as `sh`, so "did it come back
+	// running something" is answered by the launch command tmux recorded for the
+	// NEW pane, not by the process name.
+	if !paneIsWork(after) {
+		t.Errorf("the pane came back as a bare shell (%q), not running its command", after.Command)
+	}
+	// It really RAN: the marker is printed on each launch, and the replayed
+	// scrollback carries the first one, so there are two.
+	whole, err := run("capture-pane", "-p", "-S", "-", "-t", win)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(whole, "LAUNCHED-ONCE"); n < 2 {
+		t.Errorf("found %d launches in the buffer, want the replayed one plus the new one:\n%s", n, whole)
+	}
+	// And the rebuilt pane records the SAME launch command, so a second rebuild
+	// sees the command rather than the replay preamble wrapped around it.
+	rep2, err := buildHistoryReport(run, win)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rep2.Panes[0].StartCommand; got != want {
+		t.Errorf("launch command after the rebuild = %q, want %q — a third rebuild "+
+			"would nest another preamble inside it", got, want)
 	}
 }

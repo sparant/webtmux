@@ -44,6 +44,11 @@ type historyRequest struct {
 	// Force is the user's answer to "this kills what is running in the window".
 	// A resize of a window holding anything but shells is refused without it.
 	Force bool `json:"force"`
+	// Rerun asks that a rebuilt pane come back running the command tmux launched
+	// it with, instead of as a bare shell. Only panes tmux actually knows a launch
+	// command for are affected — a program started by typing at a prompt is not one
+	// tmux ever saw. See tmux.Relaunchable.
+	Rerun bool `json:"rerun"`
 }
 
 // historyOutcome is the TmuxHistoryInfo payload: the report, plus what the action
@@ -108,7 +113,7 @@ func (wt *WebTTY) handleHistoryAction(payload []byte) error {
 		savedTo, err = wt.tmuxCtrl.PersistDefaultHistoryLimit(req.WindowID, req.Limit)
 		actErr = err
 	case historyActionResize:
-		r, err := wt.tmuxCtrl.ResizeWindowHistory(req.WindowID, req.Limit, req.Force)
+		r, err := wt.tmuxCtrl.ResizeWindowHistory(req.WindowID, req.Limit, req.Force, req.Rerun)
 		resize, actErr = &r, err
 	case historyActionClear:
 		actErr = wt.tmuxCtrl.ClearWindowHistory(req.WindowID)

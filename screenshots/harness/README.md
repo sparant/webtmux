@@ -51,10 +51,10 @@ Pieces:
   `verify-scrollback-buffer.js` (the ⛁ dropdown: reported sizes match `tmux display -p`,
   setting the default leaves existing windows alone, a confirmed resize rebuilds a
   3-pane window in place at the new size, keeps its shape AND carries the scrollback
-  across (oldest line + colours), saving for next time writes the tmux config and a
-  SEPARATE tmux server started afterwards comes up at that size, clear empties every
-  pane — and with `WT_PERMIT_WRITE=0` the sizes are still shown but nothing can
-  change them).
+  across (oldest line + colours), a window tmux launched with a command offers to
+  start it again and does, saving for next time writes the tmux config and a SEPARATE
+  tmux server started afterwards comes up at that size, clear empties every pane —
+  and with `WT_PERMIT_WRITE=0` the sizes are still shown but nothing can change them).
 - `driver-gifs.js` — records one video per animated feature, each scene
   replaying its README section's bullets in order (split → drag divider →
   close; hover → preview → restore; lights change → tabs flash until viewed;

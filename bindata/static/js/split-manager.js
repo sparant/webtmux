@@ -1243,20 +1243,20 @@ export class SplitManager {
   // resizePlan for the sentence the toolbar makes the user agree to first, and
   // pkg/tmux/history.go for why tmux leaves no gentler option. `force` is that
   // agreement; without it the server refuses a window running anything but shells.
-  resizeWindowHistory(limit, force = false) {
-    this._historyAction(ACTION_RESIZE, limit, force);
+  resizeWindowHistory(limit, force = false, rerun = true) {
+    this._historyAction(ACTION_RESIZE, limit, force, rerun);
   }
 
   clearWindowHistory() {
     this._historyAction(ACTION_CLEAR, 0, false);
   }
 
-  _historyAction(action, limit, force) {
+  _historyAction(action, limit, force, rerun = false) {
     const u = this.focusedUnit;
     const id = u?.layout?.activeWindowId;
     if (!id || !u || !this.toolbar) return;
     this.toolbar.historyStatus = { state: 'saving', text: 'Asking tmux…' };
-    if (!u.sendHistoryAction(id, action, Number(limit) || 0, !!force)) {
+    if (!u.sendHistoryAction(id, action, Number(limit) || 0, !!force, !!rerun)) {
       // A refused send (read-only, or a closed socket) already explains itself in
       // the notice line; clear the pending banner so the panel isn't left waiting
       // on a reply that was never asked for.

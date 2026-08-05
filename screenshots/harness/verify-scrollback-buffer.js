@@ -23,6 +23,8 @@
 //   6. …and does not change the default for new windows on the way.
 //   9. "Also save it for future tmux servers" writes the tmux config, provably:
 //      a SEPARATE tmux server started afterwards comes up at the saved size.
+//  10. A window tmux LAUNCHED with a command offers to start it again, and does:
+//      the rebuilt pane is running it, at the new size.
 //   7. "Clear" empties the history without disturbing what is running.
 //   8. With WT_PERMIT_WRITE=0 the panel still SHOWS the sizes (reading them
 //      changes nothing) and offers none of the controls that would.
@@ -289,6 +291,53 @@ async function main() {
   check('a brand-new tmux server starts at the saved size', freshLimit === '64000',
     `fresh server pane = ${freshLimit} lines`);
   try { execFileSync('tmux', ['-S', OTHER, 'kill-server'], { stdio: 'ignore' }); } catch (e) { /* gone */ }
+
+  // ---- 10. a window tmux launched with a command comes back running it --------
+  // A window of its own, because the focused one is a plain shell and tmux knows
+  // no command for it — which is exactly the distinction being tested.
+  tmux('new-window', '-d', '-t', 'dev:', '-n', 'job',
+    'sh -c "echo LAUNCHED-ONCE; sleep 600"');
+  await sleep(1500);
+  const jobWin = field('dev:job', '#{window_id}');
+  await mgr((m, id) => m.focusedUnit?.selectWindow?.(id) ?? m.pickRecentWindow?.({ id }), jobWin);
+  await sleep(1500);
+  const focused = await mgr((m) => m.focusedUnit?.layout?.activeWindowId);
+  if (focused !== jobWin) {
+    // Fall back to driving tmux directly; the claim is about the rebuild, not
+    // about how the browser got there.
+    tmux('select-window', '-t', jobWin);
+    await sleep(1500);
+  }
+  await reopenMenu();
+  await typeLimit('resize this window', 100000);
+  const jobAsk = await confirmText();
+  check('a launched window offers to start its command again',
+    /LAUNCHED-ONCE|sleep 600|started again/i.test(jobAsk), jobAsk.slice(0, 200));
+  const tick = await toolbar((n, rr) => {
+    const box = rr.querySelector('.hist-rerun input');
+    return box ? { present: true, checked: box.checked } : { present: false };
+  });
+  check('…with the tickbox on by default', tick.present && tick.checked, JSON.stringify(tick));
+  await clickConfirm();
+  for (let i = 0; i < 40; i++) {
+    if (paneRows(jobWin).every((p) => p.limit === 100000)) break;
+    await sleep(250);
+  }
+  const jobRows = paneRows(jobWin);
+  check('the relaunched pane is at the new size',
+    jobRows.length === 1 && jobRows[0].limit === 100000,
+    jobRows.map((p) => `${p.id}=${p.limit}`).join(' '));
+  check('…and tmux records the same launch command for it',
+    /sleep 600/.test(field(jobWin, '#{pane_start_command}')),
+    field(jobWin, '#{pane_start_command}'));
+  const jobBuffer = tmux('capture-pane', '-p', '-S', '-', '-t', jobWin);
+  check('…and it really ran again (the replayed launch plus the new one)',
+    (jobBuffer.match(/LAUNCHED-ONCE/g) || []).length >= 2,
+    `${(jobBuffer.match(/LAUNCHED-ONCE/g) || []).length} launches in the buffer`);
+  await closeMenu();
+  tmux('kill-window', '-t', jobWin);
+  tmux('select-window', '-t', win);
+  await sleep(1200);
 
   // ---- 7. clear empties the history and disturbs nothing else -----------------
   await closeMenu();

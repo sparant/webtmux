@@ -158,9 +158,13 @@ Keep an eye on specific windows, even while you focus on others.
   for: a pane's buffer is fixed when the pane is created. webtmux rebuilds the
   window's panes at the new size in place — same window, same name, same index,
   same shape — **and carries the existing scrollback across**, colours and all.
-  What it cannot carry is a running program: a pty can't be reparented, so
-  anything but a shell is killed, and the confirmation names it first. (To keep
-  one, hand it to a new pane yourself with `reptyr`, then resize.)
+  A running program cannot be carried (a pty can't be reparented), but if tmux
+  *launched* the window with a command (`#{pane_start_command}`) the rebuilt pane
+  offers to start it again — ticked by default, naming the exact command, and
+  clear that it restarts from scratch rather than resuming. A program you started
+  by typing at a prompt is one tmux never saw, so it is simply killed and the
+  confirmation says so. (To keep one, hand it to a new pane yourself with
+  `reptyr`, then resize.)
 - **Clear** empties every pane's history in the window (not just the visible
   one), leaving the screen and everything running untouched.
 - Reading the sizes works on a read-only server (`-w` absent); changing them

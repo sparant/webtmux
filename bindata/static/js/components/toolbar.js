@@ -28,7 +28,7 @@ import {
 } from '../save-scope.js';
 import {
   HISTORY_PRESETS, parseLimit, formatLines, formatBytes, windowUsage, resizePlan,
-  configFileHint,
+  configFileHint, workName,
 } from '../scrollback.js';
 import { READ_ONLY_NOTICE } from '../write-guard.js';
 import { copyText } from '../clipboard.js';
@@ -807,6 +807,24 @@ class WebtmuxToolbar extends LitElement {
       text-align: left;
     }
     .hist-persist:hover { border-color: #4a9eff; color: #fff; }
+    /* The "start it again afterwards" tickbox, shown only when tmux actually knows
+       the window's launch command. Same shape as the save dropdown's scope options,
+       since it is the same kind of thing: a choice about what the button you are
+       looking at will do. */
+    .hist-rerun {
+      display: flex;
+      gap: 6px;
+      align-items: flex-start;
+      padding: 6px;
+      border: 1px solid #7a5a24;
+      border-radius: 4px;
+      background: #241b0d;
+      color: #f2c774;
+      font-size: 11px;
+      line-height: 1.4;
+      cursor: pointer;
+    }
+    .hist-rerun input { margin: 2px 0 0; accent-color: #f0a742; cursor: pointer; }
     /* The transient explanation line (read-only refusals, controller refusals).
        Sits in the bar itself so it is visible wherever the click happened. */
     .notice {
@@ -1462,13 +1480,18 @@ class WebtmuxToolbar extends LitElement {
   // Ask to rebuild. Never acts on the click: a rebuild kills what is running and
   // discards the scrollback, and neither is recoverable, so the plan is put on
   // screen in words first (see scrollback.js's resizePlan).
-  _askResize() {
+  _askResize(rerun = true) {
     const parsed = parseLimit(this._resizeValue());
     if (!parsed.ok) { this.historyStatus = { state: 'err', text: parsed.error }; return; }
-    const plan = resizePlan(this.historyInfo?.panes || [], parsed.value);
+    const plan = resizePlan(this.historyInfo?.panes || [], parsed.value, rerun);
     if (plan.none) { this.historyStatus = { state: 'ok', text: plan.text }; return; }
     this.historyStatus = null;
-    this.historyConfirm = { kind: 'resize', limit: parsed.value, label: 'Rebuild', text: plan.text };
+    // `relaunchable` drives the tickbox below; ticking it re-computes the plan,
+    // because what the rebuild costs genuinely changes with the answer.
+    this.historyConfirm = {
+      kind: 'resize', limit: parsed.value, label: 'Rebuild', text: plan.text,
+      rerun, relaunchable: plan.relaunchable || [],
+    };
   }
 
   _askClear() {
@@ -1489,7 +1512,7 @@ class WebtmuxToolbar extends LitElement {
     this.historyConfirm = null;
     // force: the user has just read what it costs and said yes. The server refuses
     // a rebuild without it (webtty/history.go), so this flag IS the confirmation.
-    if (c.kind === 'resize') this.manager?.resizeWindowHistory(c.limit, true);
+    if (c.kind === 'resize') this.manager?.resizeWindowHistory(c.limit, true, !!c.rerun);
     else this.manager?.clearWindowHistory();
   }
 
@@ -1615,6 +1638,19 @@ class WebtmuxToolbar extends LitElement {
 
         ${confirm ? html`
           <div class="save-status confirm">${confirm.text}</div>
+          ${confirm.relaunchable?.length ? html`
+            <label class="hist-rerun">
+              <input
+                type="checkbox"
+                .checked=${!!confirm.rerun}
+                @change=${(e) => this._askResize(e.target.checked)}
+              >
+              <span>Start ${confirm.relaunchable.map(workName).join(', ')} again afterwards
+                <span class="save-scope-note">tmux launched this window with it, so the
+                  rebuilt pane can run it too — from the beginning, not where it left
+                  off.</span></span>
+            </label>
+          ` : ''}
           <div class="save-confirm">
             <button @click=${() => this._doHistoryConfirm()}>${confirm.label}</button>
             <button class="cancel" @click=${() => { this.historyConfirm = null; }}>Cancel</button>

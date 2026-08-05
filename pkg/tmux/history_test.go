@@ -132,7 +132,7 @@ func TestResizeRebuildsEveryPaneAtTheNewLimit(t *testing.T) {
 	f := historyServer()
 	c := historyController(f)
 
-	res, err := c.ResizeWindowHistory("@0", 50000, false)
+	res, err := c.ResizeWindowHistory("@0", 50000, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestResizeRestoresTheSessionOptionItBorrowed(t *testing.T) {
 	f := historyServer()
 	c := historyController(f)
 
-	if _, err := c.ResizeWindowHistory("@0", 50000, false); err != nil {
+	if _, err := c.ResizeWindowHistory("@0", 50000, false, false); err != nil {
 		t.Fatal(err)
 	}
 	if v, pinned := f.options["$0/history-limit"]; pinned {
@@ -192,7 +192,7 @@ func TestResizeRestoresASessionsOwnValue(t *testing.T) {
 	f.options["$0/history-limit"] = "500"
 	c := historyController(f)
 
-	if _, err := c.ResizeWindowHistory("@0", 50000, false); err != nil {
+	if _, err := c.ResizeWindowHistory("@0", 50000, false, false); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.options["$0/history-limit"]; got != "500" {
@@ -207,7 +207,7 @@ func TestResizeRefusesToKillRunningWorkWithoutForce(t *testing.T) {
 	f.panes[1]["pane_current_command"] = "claude"
 	c := historyController(f)
 
-	res, err := c.ResizeWindowHistory("@0", 50000, false)
+	res, err := c.ResizeWindowHistory("@0", 50000, false, false)
 	if !errors.Is(err, ErrRefused) {
 		t.Fatalf("err = %v, want a refusal", err)
 	}
@@ -225,7 +225,7 @@ func TestResizeWithForceRebuildsAndReportsWhatItKilled(t *testing.T) {
 	f.panes[1]["pane_current_command"] = "claude"
 	c := historyController(f)
 
-	res, err := c.ResizeWindowHistory("@0", 50000, true)
+	res, err := c.ResizeWindowHistory("@0", 50000, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +245,7 @@ func TestResizeSkipsPanesAlreadyAtTheLimit(t *testing.T) {
 	f.panes[0]["history_limit"] = "50000"
 	c := historyController(f)
 
-	res, err := c.ResizeWindowHistory("@0", 50000, false)
+	res, err := c.ResizeWindowHistory("@0", 50000, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestResizeToTheSizeItAlreadyIsChangesNothing(t *testing.T) {
 	f := historyServer()
 	c := historyController(f)
 
-	res, err := c.ResizeWindowHistory("@0", 2000, false)
+	res, err := c.ResizeWindowHistory("@0", 2000, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,7 @@ func TestResizeStopsAndReportsWhenAPaneCannotBeSplit(t *testing.T) {
 	f.fail = map[string]error{"split-window": errors.New("no space for new pane")}
 	c := historyController(f)
 
-	res, err := c.ResizeWindowHistory("@0", 50000, false)
+	res, err := c.ResizeWindowHistory("@0", 50000, false, false)
 	if !errors.Is(err, ErrRefused) {
 		t.Fatalf("err = %v, want a refusal explaining the failure", err)
 	}
@@ -417,7 +417,7 @@ func TestResizeCapturesEachPaneAndReplaysItIntoTheReplacement(t *testing.T) {
 	f := historyServer()
 	c := historyController(f)
 
-	res, err := c.ResizeWindowHistory("@0", 50000, false)
+	res, err := c.ResizeWindowHistory("@0", 50000, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -453,7 +453,7 @@ func TestResizeStillRebuildsWhenTheCaptureFails(t *testing.T) {
 	f.fail = map[string]error{"capture-pane": errors.New("nope")}
 	c := historyController(f)
 
-	res, err := c.ResizeWindowHistory("@0", 50000, false)
+	res, err := c.ResizeWindowHistory("@0", 50000, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,12 +470,13 @@ func TestResizeStillRebuildsWhenTheCaptureFails(t *testing.T) {
 	}
 }
 
-// The replay command must fail SAFE: whatever goes wrong, the pane still becomes
-// a shell. A pane that dies on a bad replay is worse than one with no history.
-func TestReplayCommandAlwaysEndsInAShell(t *testing.T) {
-	cmd := replayCommand("wt-replay-3", "exec '/bin/zsh' -l")
+// The launch command must fail SAFE: whatever goes wrong in the replay, the pane
+// still becomes what it is meant to be. A pane that dies on a bad replay is worse
+// than one with no history.
+func TestLaunchCommandAlwaysEndsInTheRealCommand(t *testing.T) {
+	cmd := launchCommand("wt-replay-3", "'/bin/zsh' -l", true)
 	if !strings.HasSuffix(cmd, "exec '/bin/zsh' -l") {
-		t.Errorf("replay command does not end by becoming the shell: %q", cmd)
+		t.Errorf("launch command does not end by becoming the shell: %q", cmd)
 	}
 	if strings.Count(cmd, "2>/dev/null") != 2 {
 		t.Errorf("the tmux calls are not failure-tolerant: %q", cmd)
@@ -483,6 +484,49 @@ func TestReplayCommandAlwaysEndsInAShell(t *testing.T) {
 	// `;` not `&&`: a failed replay must not swallow the shell.
 	if strings.Contains(cmd, "&&") {
 		t.Errorf("a failed replay would skip the shell: %q", cmd)
+	}
+	// With nothing to replay the command is passed through ALONE, so the pane's
+	// own #{pane_start_command} reads like a natively created pane's.
+	if got := launchCommand("", "htop", false); got != "htop" {
+		t.Errorf("launchCommand with no buffer = %q, want the bare command", got)
+	}
+}
+
+// tmux remembers the whole spawn line as #{pane_start_command}, so a rebuilt
+// pane's command has the replay preamble in front of it. Reading it back has to
+// cut that off — otherwise each rebuild nests one more copy inside the last.
+func TestReplayPrefixIsStrippedBackOff(t *testing.T) {
+	cmd := launchCommand("wt-replay-3", "htop -d 5", false)
+	if got := stripReplayPrefix(cmd); got != "htop -d 5" {
+		t.Errorf("stripReplayPrefix(%q) = %q", cmd, got)
+	}
+	// Twice-rebuilt: the value read back is already clean, so a second pass is a
+	// no-op rather than eating the real command.
+	if got := stripReplayPrefix("htop -d 5"); got != "htop -d 5" {
+		t.Errorf("a command with no preamble was altered: %q", got)
+	}
+	// A pane webtmux rebuilt as a plain SHELL reports no command at all: it is a
+	// shell, not a pane someone asked to run /bin/bash in. Otherwise the busy check
+	// would call every rebuilt shell "work" and refuse to touch it again.
+	shell := launchCommand("wt-replay-3", "'/bin/bash' -l", true)
+	if got := stripReplayPrefix(shell); got != "" {
+		t.Errorf("a rebuilt shell reported a launch command of %q", got)
+	}
+}
+
+// tmux reports a launch command in its DISPLAY form. Handing that to a shell
+// would run a command whose NAME is the whole quoted string.
+func TestUnquoteStartCommand(t *testing.T) {
+	cases := map[string]string{
+		`"sleep 5000"`:                          "sleep 5000",
+		`"sh -c \"echo hi; sleep 4000\""`:       `sh -c "echo hi; sleep 4000"`,
+		``:                                      "",
+		`htop`:                                  "htop", // already bare
+	}
+	for raw, want := range cases {
+		if got := unquoteStartCommand(raw); got != want {
+			t.Errorf("unquoteStartCommand(%s) = %q, want %q", raw, got, want)
+		}
 	}
 }
 
@@ -610,4 +654,129 @@ func contains(argv []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// ---- putting the pane back as it was ---------------------------------------
+
+// A pane tmux LAUNCHED with a command can come back running it. This is the
+// difference between a rebuilt `htop` window and a window that used to be htop.
+func TestResizeRerunsTheLaunchCommand(t *testing.T) {
+	f := historyServer()
+	f.panes[1]["pane_current_command"] = "htop"
+	f.panes[1]["pane_start_command"] = `"htop -d 5"`
+	c := historyController(f)
+
+	res, err := c.ResizeWindowHistory("@0", 50000, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Rerun) != 1 || res.Rerun[0] != "htop -d 5" {
+		t.Errorf("rerun = %v, want [htop -d 5]", res.Rerun)
+	}
+	// …and it is NOT also reported as work that was simply lost. The receipt has
+	// to distinguish "came back" from "gone".
+	if len(res.Restarted) != 0 {
+		t.Errorf("restarted = %v, but it was relaunched", res.Restarted)
+	}
+	var relaunched bool
+	for _, argv := range f.argv("split-window") {
+		if strings.Contains(argv[len(argv)-1], "exec htop -d 5") {
+			relaunched = true
+		}
+	}
+	if !relaunched {
+		t.Error("no split-window was told to run the launch command")
+	}
+}
+
+// …and without the flag it does not, however well tmux knows the command.
+func TestResizeDoesNotRerunUnlessAsked(t *testing.T) {
+	f := historyServer()
+	f.panes[1]["pane_current_command"] = "htop"
+	f.panes[1]["pane_start_command"] = `"htop -d 5"`
+	c := historyController(f)
+
+	res, err := c.ResizeWindowHistory("@0", 50000, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Rerun) != 0 {
+		t.Errorf("rerun = %v without being asked", res.Rerun)
+	}
+	// Named by its LAUNCH command, which is more use than the process name when
+	// tmux knows one — and is exactly what a re-run would have put back.
+	if len(res.Restarted) != 1 || res.Restarted[0] != "htop -d 5" {
+		t.Errorf("restarted = %v, want [htop -d 5] — it was killed and not put back", res.Restarted)
+	}
+	for _, argv := range f.argv("split-window") {
+		if strings.Contains(argv[len(argv)-1], "htop") {
+			t.Errorf("a pane was relaunched anyway: %q", argv[len(argv)-1])
+		}
+	}
+}
+
+// A pane whose foreground process is `sh` is the shape that used to slip through:
+// `sh -c "deploy.sh"` reports `sh`, which reads as an idle prompt. A launch
+// command is what says otherwise.
+func TestAPaneLaunchedWithAShellCommandCountsAsWork(t *testing.T) {
+	script := PaneHistory{PaneID: "%0", Command: "sh", Limit: 2000,
+		StartCommand: `sh -c "deploy.sh"`}
+	prompt := PaneHistory{PaneID: "%1", Command: "sh", Limit: 2000}
+	if !paneIsWork(script) {
+		t.Error("a pane running `sh -c \"deploy.sh\"` was taken for an idle prompt — " +
+			"it would have been rebuilt, and the script killed, without asking")
+	}
+	if paneIsWork(prompt) {
+		t.Error("a bare `sh` prompt was taken for work")
+	}
+	busy := BusyCommands([]PaneHistory{script, prompt}, 50000)
+	if len(busy) != 1 || busy[0] != `sh -c "deploy.sh"` {
+		t.Errorf("BusyCommands = %v, want the launch command named", busy)
+	}
+	if len(Relaunchable([]PaneHistory{script, prompt}, 50000)) != 1 {
+		t.Error("the script pane cannot be put back, though tmux knows how")
+	}
+}
+
+// A program you typed at a prompt is not one tmux ever saw, so there is nothing
+// to re-run and the offer must not be made.
+func TestRelaunchableSkipsWhatTmuxNeverLaunched(t *testing.T) {
+	panes := []PaneHistory{
+		// Typed at the prompt: busy, but tmux knows no command for it.
+		{PaneID: "%0", Command: "vim", Limit: 2000, StartCommand: ""},
+		// Launched by tmux, and still running: the case this exists for.
+		{PaneID: "%1", Command: "htop", Limit: 2000, StartCommand: "htop"},
+		// An ordinary shell pane: tmux was given no command, so there is nothing to
+		// put back. (A pane webtmux rebuilt as a shell reports the same nothing —
+		// see TestReplayPrefixIsStrippedBackOff.)
+		{PaneID: "%2", Command: "bash", Limit: 2000, StartCommand: ""},
+		// Already the right size: not touched at all.
+		{PaneID: "%3", Command: "htop", Limit: 50000, StartCommand: "htop"},
+	}
+	got := Relaunchable(panes, 50000)
+	if len(got) != 1 || got[0].PaneID != "%1" {
+		ids := []string{}
+		for _, p := range got {
+			ids = append(ids, p.PaneID)
+		}
+		t.Errorf("Relaunchable = %v, want just [%%1]", ids)
+	}
+}
+
+// The report has to carry the launch command, since the browser names it in the
+// confirmation before anyone agrees to restart it.
+func TestReportCarriesTheLaunchCommandUnquoted(t *testing.T) {
+	f := historyServer()
+	f.panes[0]["pane_start_command"] = `"sh -c \"echo hi; sleep 9\""`
+	rep, err := buildHistoryReport(f.run, "@0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rep.Panes[0].StartCommand; got != `sh -c "echo hi; sleep 9"` {
+		t.Errorf("startCommand = %q, want it un-quoted back into something runnable", got)
+	}
+	// A plain shell pane has none, and must not be given one.
+	if got := rep.Panes[1].StartCommand; got != "" {
+		t.Errorf("a shell pane reported a launch command of %q", got)
+	}
 }

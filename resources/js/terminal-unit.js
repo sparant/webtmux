@@ -2006,13 +2006,14 @@ export class TerminalUnit {
 
   // Change a scrollback buffer: 'default' (what NEW windows are born with),
   // 'resize' (rebuild this window's panes at a new size — destructive, hence
-  // `force`), or 'clear'. The reply is the same TmuxHistoryInfo frame, carrying
+  // `force`; `rerun` asks that panes tmux knows a launch command for come back
+  // running it rather than as bare shells), or 'clear'. The reply is the same TmuxHistoryInfo frame, carrying
   // the outcome AND the numbers it produced, so the panel can never report a
   // change beside figures from before it.
-  sendHistoryAction(windowId, action, limit = 0, force = false) {
+  sendHistoryAction(windowId, action, limit = 0, force = false, rerun = false) {
     if (!this.isConnected()) return false;
     return this.sendMessage(MSG.TmuxHistoryAction,
-      JSON.stringify({ windowId, action, limit, force }));
+      JSON.stringify({ windowId, action, limit, force, rerun }));
   }
 
   enterCopyMode() {

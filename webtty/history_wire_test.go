@@ -275,7 +275,7 @@ func TestResizeReceiptReachesTheBrowser(t *testing.T) {
 // ErrRefused and a sentence naming what would be killed.
 type refuseHistoryCtrl struct{ failCtrl }
 
-func (c *refuseHistoryCtrl) ResizeWindowHistory(string, int, bool) (tmux.HistoryResize, error) {
+func (c *refuseHistoryCtrl) ResizeWindowHistory(string, int, bool, bool) (tmux.HistoryResize, error) {
 	c.calls++
 	c.seen = append(c.seen, "resize-history")
 	return tmux.HistoryResize{}, fmt.Errorf("%w: rebuilding this window would kill claude", tmux.ErrRefused)
@@ -300,7 +300,7 @@ type resizeCtrl struct {
 	res tmux.HistoryResize
 }
 
-func (c *resizeCtrl) ResizeWindowHistory(string, int, bool) (tmux.HistoryResize, error) {
+func (c *resizeCtrl) ResizeWindowHistory(string, int, bool, bool) (tmux.HistoryResize, error) {
 	c.calls++
 	c.seen = append(c.seen, "resize-history")
 	return c.res, nil
