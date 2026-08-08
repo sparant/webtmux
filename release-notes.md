@@ -1,61 +1,107 @@
-# webtmux v0.1.0
+# webtmux v0.2.0
 
-First tagged release of this fork. Until now every binary reported its version as
-`dev`, because the repository carried no tags for `git describe` to find — so this
-release exists as much to make a binary able to say *what it is* as to publish one.
+The second tagged release of this fork, and the first whose binaries can be
+re-derived from the tag they were built from.
 
-`0.1.0` rather than `1.0.0` deliberately: this is a personal fork and makes no
-compatibility promise yet. `1.x` would also collide with gotty's lineage.
+Most of what is here came from asking what a feature already *promises* and then
+finding the place it quietly does not keep that promise: a save button that could
+only produce the smaller of a pane's two buffers, a scrollback limit you can raise
+with no effect on the window in front of you, a copy that silently destroys the
+last one, a highlight that outlives the text it named.
 
-## What this fork adds over upstream
+## Copy buffers — copy several things, paste them one at a time
 
-A browser UI built around watching many tmux windows at once, rather than
-attaching to one:
+A system clipboard holds exactly one thing, so gathering three snippets out of a
+scrollback meant three round trips, and every intermediate copy destroyed the last
+one silently.
 
-- **Stoplights and work alerts** — every window reports green (working) / amber
-  (prompting you) / red (waiting for work) via the tmux option `@wt_working`, and
-  anything showing that window flashes when it changes while you are looking
-  elsewhere. Built for keeping an eye on a fleet of coding agents.
-- **Four ways to monitor and reach a window** — Exposé mosaic, picture-in-picture
-  and preview bar, sidebar window tree, and a most-recently-used tab strip.
-- **Hover previews** — pointing at any window paints it full-size in a real
-  terminal region, and puts back what you were looking at when you move away.
-- **Split view** — side-by-side live regions, each an independent tmux view backed
-  by its own grouped session.
-- **State persistence** — the UI's visual state survives a reload, stored in tmux
-  itself.
-- **`webtmux-launch`** — run webtmux against a remote machine from your laptop.
-  It installs webtmux on the target over SSH and supervises the tunnel; the target
-  needs only `ssh` and `tmux`.
+- A list of copy buffers with one FOCUSED entry, and one rule tying it to the
+  machine's single clipboard: **the focused buffer is the clipboard.** Focusing a
+  row writes it there, so this is not a second clipboard fighting the real one —
+  it is a way to choose what the real one holds. Cmd/Ctrl+V keeps working
+  everywhere, including in other applications.
+- Whether a copy ADDS a buffer or REUSES one is decided by a single question: has
+  the focused buffer been pasted yet? Copy before pasting and both are kept; copy
+  after pasting and the spent slot is reused. So gathering grows the list and
+  ordinary copy-paste never does — the panel stays one row for anyone who does not
+  want the feature.
+- Copying while the panel is shut floats it in for a couple of seconds so you can
+  see where the copy landed: always floating (no terminal is resized), never taking
+  the keyboard, and dismissed early by anything else you do. A panel you opened
+  yourself is left alone — never auto-collapsed, because it was never auto-shown.
+- Ctrl+Alt+= (tmux's own `Prefix+=`, choose-buffer), or the toolbar's NORMAL/COPY
+  pill, which now opens the panel and carries a count. The copy/normal mode toggle
+  moved inside it; Ctrl+Alt+[ still flips the mode directly.
+- Buffers are per browser tab and survive a reload. They are deliberately not
+  shared through the tmux server: text you copied is not UI arrangement.
 
-## Authority and hardening
+## Scrollback: see it, resize it, and get all of it out
 
-Most of the features above were built assuming a trusted browser on a loopback
-port. This release closes the gaps that assumption left, because the launcher now
-makes remote use ordinary:
+- **The ⤓ save now defaults to the ENTIRE buffer.** Both destinations — the browser
+  download and the file written on the machine tmux runs on — were built on the
+  capture store that feeds the Exposé thumbnails, which holds only the VISIBLE
+  SCREEN. The one thing a terminal is kept for, the output that has already
+  scrolled past, was the part you could not get out, and nothing said so.
+- **Toolbar ⛁ answers the three things a fixed-capacity ring hides:** how many lines
+  a window can hold, how many it is holding (with a gauge that turns amber once
+  tmux is already dropping the oldest), and the fact that changing `history-limit`
+  does nothing to a pane that already exists.
+- **"Resize this window" is a rebuild**, because tmux has no resize — a pane's
+  buffer capacity is fixed when the pane is created. The window's panes are rebuilt
+  in place at the new size, same name, index and shape, **and the existing
+  scrollback is carried across**, colours included. It travels in a tmux buffer
+  rather than a temp file, so it works when webtmux is a container that cannot see
+  that filesystem.
+- A pane tmux itself launched with a command (`#{pane_start_command}`) offers to
+  start it again, naming the exact command. A program you started by typing at a
+  prompt is one tmux never saw, so the confirmation stops offering rather than
+  guessing.
+- **New windows** sets `history-limit` for everything created from then on, and
+  **Also save it for future tmux servers** writes the line into the tmux config
+  file tmux actually loaded, naming the file it wrote.
 
-- **`-w` (read-only) means watch again.** It gated exactly one thing — keystrokes
-  reaching the pty — while everything the browser learned to ask for afterwards
-  (select/kill/rename a window, switch or kill a session, rewrite the shared UI
-  state, write a file on the machine tmux runs on) arrived with no authority check.
-  A read-only server handed any authenticated client the whole tmux server plus a
-  filesystem write primitive. Every client→server message is now classified once
-  and enforced before dispatch; view-only is the set that changes nothing another
-  client can observe.
-- **Saving a pane buffer is confined to declared directories.** An absolute path
-  was honored as typed and a relative one could climb out with `../`. A resolved
-  path must now land inside a directory somebody actually named as a destination,
-  with symlinks resolved on both sides. A save also never replaces an existing file
-  without asking.
-- **tmux commands no longer guess.** Every mutation targets an exact window or
-  session, listings put machine-readable fields first so an arbitrary window name
-  cannot break parsing, identity reads are keyed by format rather than position,
-  and websocket reads and capture fan-out are bounded.
-- **The UI state protocol converges.** Concurrent browsers adopt the server's copy
-  per section instead of overwriting each other.
+## Selection
 
-Read-only is still not a sandbox — it is a browser-facing authority boundary. Bind
-loopback and tunnel over SSH, as the install steps below do.
+- **Shift-click moves the END of the selection you already have**, keeping the
+  anchor you dragged from — so an overshoot is one click to fix rather than a whole
+  drag repeated, which matters in a pane that is still printing. It works over a
+  mouse-grabbing program too, where xterm's own incremental-click path is disabled
+  and therefore unusable.
+- **A highlight now ends when the window under it does.** A selection names text,
+  but xterm holds it as buffer coordinates and tmux repaints the viewport rather
+  than scrolling it, so switching windows left a rectangle sitting over unrelated
+  text. The decision comes from the layout, so switches this browser did not make
+  are caught too — tmux's own `prefix n`, another client, a reconnect.
+
+## Reconnect and alerts
+
+- **A reload restores the connection; it does not answer your alerts.** Opening a
+  laptop to several tabs flashing, refreshing to get the connection back, and
+  finding every flash gone was the page's death being indistinguishable from a full
+  acknowledgement. The registry is now carried across the gap in per-tab storage,
+  which has exactly the right lifetime.
+- **A reconnect puts the primary region back in the session it was in**, instead of
+  landing on whatever window the shared base session happened to be showing — a
+  window nobody had opened, and which the recents strip correctly did not explain.
+
+## Reproducible builds
+
+**This is the first release whose assets can be checked against their source by
+anyone.** Four independent inputs used to leak into the binary, each invisible in
+normal use and each fatal to an audit: a `date`-derived build stamp, no `-trimpath`
+(`-s -w` does not strip file paths), a floating Go toolchain, and a docker context
+that was the working tree rather than the commit.
+
+```sh
+make release-from-commit REF=v0.2.0   # the release build — no local Go needed
+make verify-repro REF=v0.2.0          # proves it: same commit, two directories, same bytes
+```
+
+`verify-repro` deliberately varies the build *directory*, because building twice in
+one place proves nothing about the leak that actually occurred.
+
+v0.1.0's published assets were replaced with a reproducible rebuild after the fact,
+but its tag does not name the commit they were built from. v0.2.0's do.
 
 ## Install
 
@@ -64,7 +110,7 @@ repository is public, so no token and no `gh` is needed:
 
 ```bash
 curl -fsSL -o webtmux \
-  https://github.com/sparant/webtmux/releases/download/v0.1.0/webtmux-linux-amd64
+  https://github.com/sparant/webtmux/releases/download/v0.2.0/webtmux-linux-amd64
 chmod +x webtmux
 ./webtmux -a 127.0.0.1 -w tmux new-session -A -s main
 ```
@@ -75,17 +121,33 @@ and authentication is HTTP basic auth over plain HTTP.
 `SHA256SUMS` covers every binary in this release:
 
 ```bash
-curl -fsSL -O https://github.com/sparant/webtmux/releases/download/v0.1.0/SHA256SUMS
+curl -fsSL -O https://github.com/sparant/webtmux/releases/download/v0.2.0/SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS
 ```
 
 See the README's Installation section for a full fresh-machine walkthrough
 (tmux prerequisite, `~/.local/bin`, macOS quarantine xattr).
 
+## Upgrading from v0.1.0
+
+- **The toolbar's NORMAL/COPY pill no longer toggles copy mode** — it opens the copy
+  buffer panel, and the button that flips the mode is the first control inside it.
+  Ctrl+Alt+[ is unchanged if you want the mode without the panel.
+- **The ⤓ save defaults to the whole scrollback**, where it previously produced the
+  visible screen. Pick "visible screen" in the dropdown for the old behaviour.
+- If you pinned v0.1.0 with `webtmux-launch --webtmux-version v0.1.0` and hit a
+  `sha256 mismatch`, that is the pinned-version cache holding the sums from before
+  v0.1.0's assets were rebuilt: `rm -rf ~/.cache/webtmux-launch/v0.1.0`. That check
+  is the tamper detection, so it is not being loosened.
+
 ## Notes
 
 - **Asset names are an interface.** `webtmux-launch` builds its download URLs from
   them, so they will not be renamed. Adding platforms is safe.
+- Read-only (`-w` absent) is a browser-facing authority boundary, not a sandbox —
+  see v0.1.0's notes for what it does and does not cover. Bind loopback and tunnel
+  over SSH.
 - The browser UI still loads xterm.js and Tailwind from a CDN at runtime; removing
   that dependency is planned, not done.
-- Built with `CGO_ENABLED=0`; the binaries are static and embed their assets.
+- Built with `CGO_ENABLED=0` by a pinned Go 1.23.12; the binaries are static and
+  embed their assets.
