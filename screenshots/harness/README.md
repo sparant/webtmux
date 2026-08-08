@@ -46,6 +46,12 @@ Pieces:
   `verify-state-sync.js` (TWO browser contexts against one tmux server: a cold-cache
   client must not erase the other's split/preview, must converge on it, and a killed
   window must not be resurrected by the next push),
+  `verify-copybuffers.js` (the copy-buffer panel: ⌃⌥= opens it at one empty buffer, a
+  real ⌘C over a real xterm selection fills it AND the system clipboard, copying again
+  before pasting keeps both while copying after a paste reuses the slot, clicking a row
+  decides what ⌘V types into the pane, "+"/×/Clear, the toolbar pill opening the panel
+  with its count, both right-edge panels open without overlapping, and the buffers
+  surviving a reload — needs `permissions: ['clipboard-read','clipboard-write']`),
   `verify-scrollback-save.js` (the ⤓ dropdown saves the WHOLE buffer, asserted against
   the downloaded file),
   `verify-scrollback-buffer.js` (the ⛁ dropdown: reported sizes match `tmux display -p`,

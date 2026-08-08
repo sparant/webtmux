@@ -14,7 +14,10 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { CaptureCache } from './capture-cache.js';
 import { CopyModeArbiter, layoutModeWins } from './copy-mode.js';
-import { copyText } from './clipboard.js';
+// A copy from a pane goes through the ring, not straight to the clipboard: the
+// ring writes it to the clipboard AND keeps what was there before, which is the
+// whole point of it (see copy-buffers.js).
+import { copyBuffers } from './copy-buffer-store.js';
 import { stateStore } from './state-store.js';
 import { arrowSequence } from './arrow-keys.js';
 import { IS_MAC } from './os.js';
@@ -410,7 +413,10 @@ export class TerminalUnit {
       if ((ev.metaKey || ev.ctrlKey) && !ev.altKey && ev.key === 'c') {
         const selection = this.terminal.getSelection();
         if (selection) {
-          copyText(selection);   // execCommand fallback covers plain-HTTP LAN access
+          // Into the copy-buffer ring, which also puts it on the system clipboard
+          // (execCommand fallback covers plain-HTTP LAN access). Copying twice
+          // without pasting in between keeps BOTH — see copy-buffers.js.
+          copyBuffers.copy(selection);
           // Clear the highlight once copied — and with it the anchor, since the
           // next selection will be a new gesture with an anchor of its own.
           this.terminal.clearSelection();
@@ -443,6 +449,13 @@ export class TerminalUnit {
           // client with it ([lost tty]), and `String.fromCharCode(...bytes)` blew
           // the stack on a large paste before it even got that far.
           if (text) this.sendInput(text);
+          // The SYSTEM CLIPBOARD is what gets pasted, always — the ring chooses
+          // what is in it, it never substitutes for it. Telling the ring what just
+          // went out does two things: it marks the focused buffer as used (so the
+          // next copy reuses that slot instead of growing the list), and it adopts
+          // text that came from outside webtmux, so the panel can never point at a
+          // buffer that is not what ⌘V just delivered.
+          copyBuffers.pasted(text);
         }).catch(err => {
           console.warn('Failed to paste:', err);
         });
@@ -2095,7 +2108,12 @@ export class TerminalUnit {
             const binaryStr = atob(base64Data);
             const bytes = Uint8Array.from(binaryStr, c => c.charCodeAt(0));
             const text = new TextDecoder('utf-8').decode(bytes);
-            copyText(text);   // execCommand fallback covers plain-HTTP LAN access
+            // tmux's OWN copy (a mouse drag in copy mode, `y`, copy-pipe) arrives
+            // here, so it fills the ring exactly as ⌘C does — otherwise half the
+            // ways to copy in this app would bypass the buffers. When the same
+            // copy reaches the ring twice (⌘C over an xterm selection, then this),
+            // the ring's duplicate guard collapses it to one entry.
+            copyBuffers.copy(text);
           } catch (e) {
             // Silently ignore decode errors
           }
