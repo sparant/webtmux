@@ -29,6 +29,9 @@ import { stateStore } from '../state-store.js';
 import { workClass, workLabel, workTip } from '../stoplight.js';
 import { ALERT_CSS, alertClass, alertTip } from '../alert-flash.js';
 import { alertOf } from '../work-alerts.js';
+import {
+  terminalContentBox, cropBox, fitTransform, CropTracker, sameBox,
+} from '../content-bounds.js';
 
 const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css';
 const CORNERS = ['tl', 'tr', 'bl', 'br'];
@@ -676,7 +679,12 @@ class WebtmuxPip extends LitElement {
       rec.cols = entry.cols; rec.rows = entry.rows;
     }
     rec.term.write('\x1b[H\x1b[2J');
-    rec.term.write(CaptureCache.decodeAnsi(entry));
+    // Re-crop from the WRITE CALLBACK, not from here: xterm parses off a queue, so
+    // the buffer this frame's crop is measured from is only current once the write
+    // has actually been applied. _rescale re-uses the last crop whenever it is
+    // called for another reason (a resize, a transition ending), so the tile is
+    // never left un-scaled waiting for this.
+    rec.term.write(CaptureCache.decodeAnsi(entry), () => this._recrop(id));
     this._rescale(id);
 
     // Refresh label + session (rename/index can change on any capture). Keep the
@@ -720,11 +728,37 @@ class WebtmuxPip extends LitElement {
       allowProposedApi: true,
     });
     term.open(screen);
-    rec = { term, screen, cols: entry?.cols || 0, rows: entry?.rows || 0 };
+    rec = {
+      term, screen, cols: entry?.cols || 0, rows: entry?.rows || 0,
+      // Which part of the grid this tile is showing, and the hysteresis that keeps
+      // it from re-scaling on every capture. null crop = the whole grid.
+      crop: null,
+      cropTracker: new CropTracker(),
+    };
     this._terms.set(id, rec);
     return rec;
   }
 
+  // Measure where this window's ink is and let the tracker decide whether to move
+  // the crop. Only re-scales when the applied box actually changed — this runs on
+  // every capture, and most captures don't move the box at all.
+  _recrop(id) {
+    const rec = this._terms.get(id);
+    if (!rec) return;
+    const gc = rec.term.cols;
+    const gr = rec.term.rows;
+    const box = rec.cropTracker.update(
+      cropBox(terminalContentBox(rec.term), gc, gr), gc, gr,
+    );
+    const full = box.col === 0 && box.row === 0 && box.cols === gc && box.rows === gr;
+    const next = full ? null : box;
+    if (sameBox(rec.crop, next)) return;
+    rec.crop = next;
+    this._rescale(id);
+  }
+
+  // Fit the tile's terminal into its frame — the whole grid when there is no crop,
+  // otherwise just the cropped rectangle, blown up to fill the frame instead.
   _rescale(id) {
     const rec = this._terms.get(id);
     const tile = this._tileEl(id);
@@ -732,10 +766,16 @@ class WebtmuxPip extends LitElement {
     const frame = tile.querySelector('.pframe');
     if (!frame) return;
     requestAnimationFrame(() => {
-      const nw = rec.screen.offsetWidth || 1;
-      const nh = rec.screen.offsetHeight || 1;
-      const scale = Math.min(frame.clientWidth / nw, frame.clientHeight / nh);
-      rec.screen.style.transform = `scale(${scale})`;
+      const t = fitTransform({
+        box: rec.crop,
+        gridCols: rec.term.cols,
+        gridRows: rec.term.rows,
+        screenW: rec.screen.offsetWidth || 1,
+        screenH: rec.screen.offsetHeight || 1,
+        frameW: frame.clientWidth,
+        frameH: frame.clientHeight,
+      });
+      rec.screen.style.transform = t.css;
     });
   }
 

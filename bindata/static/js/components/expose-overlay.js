@@ -24,6 +24,9 @@ import {
 } from '../stoplight.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
 import { READ_ONLY_NOTICE } from '../write-guard.js';
+import {
+  terminalContentBox, cropBox, fitTransform, CropTracker, sameBox, trimBlankMargins,
+} from '../content-bounds.js';
 
 const N_MAX_TILES = 24;
 const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css';
@@ -672,6 +675,10 @@ class WebtmuxExpose extends LitElement {
       cols: entry.cols,
       rows: entry.rows,
       labelLeft: null,
+      // Which part of the grid this thumbnail shows (null = all of it), and the
+      // hysteresis that decides when that may change. See content-bounds.js.
+      crop: null,
+      cropTracker: new CropTracker(),
     };
 
     if (live) {
@@ -681,13 +688,15 @@ class WebtmuxExpose extends LitElement {
       rec.screen = screen;
       rec.term = this._makeTerm(entry);
       rec.term.open(screen);
-      rec.term.write(CaptureCache.decodeAnsi(entry));
+      rec.term.write(CaptureCache.decodeAnsi(entry), () => this._recrop(rec));
       this._rescale(rec);
     } else {
-      // Overflow: cheap plain-text preview (SGR stripped) — no renderer cost.
+      // Overflow: cheap plain-text preview (SGR stripped) — no renderer cost. Its
+      // blank margins go too: nothing scales here, so a screenful of leading blank
+      // rows would simply push the content out of a tile that clips at its edges.
       const pre = document.createElement('pre');
       pre.className = 'tile-pre';
-      pre.textContent = stripSgr(decodeUtf8(entry.data));
+      pre.textContent = trimBlankMargins(stripSgr(decodeUtf8(entry.data)));
       frame.appendChild(pre);
       rec.pre = pre;
     }
@@ -760,10 +769,12 @@ class WebtmuxExpose extends LitElement {
         rec.rows = entry.rows;
       }
       rec.term.write('\x1b[H\x1b[2J');
-      rec.term.write(CaptureCache.decodeAnsi(entry));
+      // The crop is measured from the WRITE CALLBACK: xterm parses off a queue, so
+      // the buffer is only this capture's screen once the write has been applied.
+      rec.term.write(CaptureCache.decodeAnsi(entry), () => this._recrop(rec));
       this._rescale(rec);
     } else if (rec.pre) {
-      rec.pre.textContent = stripSgr(decodeUtf8(entry.data));
+      rec.pre.textContent = trimBlankMargins(stripSgr(decodeUtf8(entry.data)));
     }
     if (rec.labelLeft) rec.labelLeft.innerHTML = labelHtml(entry); // name/index may change
   }
@@ -785,14 +796,38 @@ class WebtmuxExpose extends LitElement {
     });
   }
 
-  // CSS-scale a tile's terminal to fit its frame (letterboxed) once laid out.
+  // Re-measure where this window's ink is and let the tracker decide whether the
+  // thumbnail's crop should move. Runs on every capture; most of them don't move it.
+  _recrop(rec) {
+    if (!rec.term) return;
+    const gc = rec.term.cols;
+    const gr = rec.term.rows;
+    const box = rec.cropTracker.update(
+      cropBox(terminalContentBox(rec.term), gc, gr), gc, gr,
+    );
+    const full = box.col === 0 && box.row === 0 && box.cols === gc && box.rows === gr;
+    const next = full ? null : box;
+    if (sameBox(rec.crop, next)) return;
+    rec.crop = next;
+    this._rescale(rec);
+  }
+
+  // CSS-scale a tile's terminal to fit its frame (letterboxed) once laid out —
+  // the whole grid when there's no crop, otherwise the cropped rectangle blown up
+  // to fill the frame in its place.
   _rescale(rec) {
     if (!rec.screen || !rec.frame) return;
     requestAnimationFrame(() => {
-      const nw = rec.screen.offsetWidth || 1;
-      const nh = rec.screen.offsetHeight || 1;
-      const scale = Math.min(rec.frame.clientWidth / nw, rec.frame.clientHeight / nh);
-      rec.screen.style.transform = `scale(${scale})`;
+      const t = fitTransform({
+        box: rec.crop,
+        gridCols: rec.term ? rec.term.cols : rec.cols,
+        gridRows: rec.term ? rec.term.rows : rec.rows,
+        screenW: rec.screen.offsetWidth || 1,
+        screenH: rec.screen.offsetHeight || 1,
+        frameW: rec.frame.clientWidth,
+        frameH: rec.frame.clientHeight,
+      });
+      rec.screen.style.transform = t.css;
     });
   }
 

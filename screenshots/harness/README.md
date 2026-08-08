@@ -77,7 +77,17 @@ Pieces:
   across (oldest line + colours), a window tmux launched with a command offers to
   start it again and does, saving for next time writes the tmux config and a SEPARATE
   tmux server started afterwards comes up at that size, clear empties every pane —
-  and with `WT_PERMIT_WRITE=0` the sizes are still shown but nothing can change them).
+  and with `WT_PERMIT_WRITE=0` the sizes are still shown but nothing can change them),
+  `verify-content-zoom.js` (the content crop: a window drawing a dozen rows into a
+  54-row grid is zoomed ~3.4× in its PiP tile and its Exposé thumbnail while a window
+  that fills its grid keeps the plain letterbox scale it always had, the crop never
+  clips a cell of ink — re-measured in the page against the crop that was applied —
+  it doesn't move on most captures of a rolling log, and a hover preview into a
+  half-width region shows the window at native size instead of at 0.49×. Stages its
+  own full-screen fixture, because nothing `boot-tmux.sh` starts actually fills its
+  grid. `SHOTS=1` also writes a before/after pair of the preview bar to
+  `/src/.zoomshots` — worth looking at, since "the numbers say it zoomed" and "you
+  can read it now" are different claims).
 - `driver-gifs.js` — records one video per animated feature, each scene
   replaying its README section's bullets in order (split → drag divider →
   close; hover → preview → restore; lights change → tabs flash until viewed;

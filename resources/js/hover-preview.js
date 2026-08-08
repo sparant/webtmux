@@ -39,6 +39,7 @@
 // it isn't, the region is left alone — showing its own live window, unheld and
 // unmarked — until the frame lands. Nothing is ever painted that we can't date.
 import { CaptureCache, placementKey } from './capture-cache.js';
+import { terminalContentBox, cropBox, CropTracker } from './content-bounds.js';
 
 // How long the pointer must rest before the FIRST preview appears. Once one is up,
 // moving to another target switches instantly (see _engaged) — the pause is there
@@ -266,7 +267,12 @@ export class HoverPreview {
     // Commit to the target BEFORE anything is drawn, stamped with the request whose
     // reply we're waiting on. The region isn't taken and isn't marked yet — that
     // happens in _paint, if and when a frame dated at/after `since` arrives.
-    this._active = { unit, windowId, session, realWindowId: realId, since: this._ask(windowId) };
+    this._active = {
+      unit, windowId, session, realWindowId: realId, since: this._ask(windowId),
+      // Per-target, so browsing from one window to the next never inherits the
+      // previous one's crop (and its hysteresis) for a frame.
+      cropTracker: new CropTracker(),
+    };
     this._engaged = true;
     this._paint();
     this._notify();
@@ -303,7 +309,41 @@ export class HoverPreview {
     this._hold(a.unit);
     this._fit(a.unit, entry);
     term.write('\x1b[H\x1b[2J');
-    term.write(CaptureCache.decodeAnsi(entry));
+    // Crop from the write CALLBACK: xterm parses off a queue, so the ink is only
+    // where this frame put it once the write has been applied. _fit has already
+    // sized the region to the whole capture, so nothing is mis-scaled in between.
+    term.write(CaptureCache.decodeAnsi(entry), () => this._zoom(a, entry));
+  }
+
+  // Scale the held region up to the part of the capture that has content in it,
+  // once the frame is in the buffer.
+  //
+  // Why this is worth doing on a full-size region and not just on thumbnails: a
+  // capture wider or taller than the region is shrunk by _fit to fit, and a window
+  // that draws a nine-row panel in a sixty-row grid gets shrunk on account of
+  // fifty-one blank rows. Cropping first means the same panel is usually shown at
+  // its NATIVE size instead. The scale stays capped at 1 (see _fit): a region is a
+  // full-size view of a window, and text larger than the region's own would read as
+  // a different window rather than a preview of that one.
+  _zoom(a, entry) {
+    if (this._active !== a) return;              // moved on mid-write
+    const unit = a.unit;
+    const held = this._held;
+    const term = unit.terminal;
+    const host = unit.terminalEl;
+    if (!term || !held || !host || held.unit !== unit) return;
+    if (!held.cellW || !held.cellH || !held.cols || !held.rows) return;
+    const gc = entry.cols | 0;
+    const gr = entry.rows | 0;
+    if (!gc || !gr || term.cols !== gc || term.rows !== gr) return;
+    const box = a.cropTracker.update(cropBox(terminalContentBox(term), gc, gr), gc, gr);
+    // Same grid-ratio reasoning as _fit, on the crop instead of the whole capture:
+    // the cell size doesn't change, so held.cols/box.cols IS the pixel ratio.
+    const k = Math.min(1, held.cols / box.cols, held.rows / box.rows);
+    const tx = -box.col * held.cellW;
+    const ty = -box.row * held.cellH;
+    host.style.transformOrigin = 'top left';
+    host.style.transform = (k < 1 || tx || ty) ? `scale(${k}) translate(${tx}px, ${ty}px)` : '';
   }
 
   // Take a region for previewing: buffer its own output (replayed on release) and
@@ -319,6 +359,11 @@ export class HoverPreview {
       unit,
       cols: unit.terminal?.cols || 0,
       rows: unit.terminal?.rows || 0,
+      // Cell size, measured NOW — before _fit resizes the terminal to the capture's
+      // geometry. A crop offset is cells×cell-size in pixels, and the font is fixed,
+      // so measuring once here is both cheaper and safer than measuring after a
+      // resize that may not have reached the DOM yet.
+      ...cellSize(unit.terminal),
       // What this region was really on — remembered on the HOLD, not just on _active,
       // so releasing it always knows what to put back even if the target has moved on.
       realWindowId: this._active?.realWindowId || null,
@@ -434,4 +479,15 @@ export class HoverPreview {
   _notify() {
     try { this.manager.onHoverPreviewChange?.(); } catch (e) { /* cosmetic only */ }
   }
+}
+
+// One cell's size in CSS pixels, read off the terminal's own screen element.
+// xterm exposes no cell metric, but `.xterm-screen` is laid out to exactly
+// cols×rows cells, so dividing is exact — and offsetWidth is a LAYOUT size, so a
+// CSS transform already sitting on an ancestor can't skew it. Zeroes when the
+// terminal isn't in the DOM yet, which callers read as "don't crop".
+function cellSize(term) {
+  const el = term?.element?.querySelector('.xterm-screen');
+  if (!el || !term.cols || !term.rows) return { cellW: 0, cellH: 0 };
+  return { cellW: el.offsetWidth / term.cols, cellH: el.offsetHeight / term.rows };
 }
