@@ -75,6 +75,92 @@ export function resolveRestoreView({
   return candidates.sort((a, b) => recency(b.id) - recency(a.id))[0];
 }
 
+// planReconnectLanding — the same question as planRestoreLanding, asked for the OTHER
+// way a pane loses its view: a websocket drop (close the laptop lid, sleep the machine,
+// a tty loss) rather than a page reload. Nothing here is read from storage; the unit
+// still holds the view it was on in memory (desiredSession/desiredWindowId), and the
+// reconnect just has to put it back.
+//
+// THE BUG THIS PINS. A fresh attach always lands on the SHARED BASE session, on
+// whatever window that session currently shows. A pane that had switched to another
+// session therefore came back somewhere it had never been — typically the base
+// session's last-created window, since creating a window makes it current and nobody
+// has moved that session since. Reopening the laptop showed that window instead of the
+// one you were working in. Only the extra (grouped) regions were restored; the primary
+// was left parked, on the reasoning that forcing its window would drag the ssh console
+// that shares the base session's attach.
+//
+// That reasoning is right about `select-window` and wrong about `switch-client`:
+//   • select-window in the BASE session moves the session itself, console and all. So
+//     within the base session the primary still follows tmux rather than yanking it —
+//     if the base session's current window changed while we were away, somebody else
+//     moved it, and their view is the shared one (this is the behavior verified when
+//     the reconnect restore was first written).
+//   • switch-client moves only THIS connection's own tmux client (the backend targets
+//     it by tty, and re-groups a split region onto the target). A pane that hops back
+//     to the session it was in leaves the base session — and the console on it —
+//     exactly where they are. There is no reason for the primary to sit this out, and
+//     the reload path (resolveRestoreView above) already hops the primary this way.
+// Hence: the cross-session restore is for every region; the same-session window
+// restore stays an extra-regions-only affair.
+//
+// input:
+//   primary        bool                    is this the console-sharing primary region?
+//   base           string                  the LOGICAL session the fresh attach landed in
+//   activeWindowId string                  the window that attach parked us on
+//   desiredSession string|null             the session we were viewing before the drop
+//   desiredWindowId    string|null         ...and the window
+//   desiredWindowIndex number|null         ...and its index, for a same-session id miss
+//   windows        {id, index}[]           the pane's own (post-attach) window list
+//   placements     {id, session}[]         server-wide (session, window) directory
+//   sessions       string[]                session names that still exist
+// -> { markSeen, park, hop, select }
+//    markSeen — window id whose arrival must NOT count as a visit (the parked window)
+//    park     — the parked window id while a restore is in flight, else null
+//    hop      — session to switch-client to, or null
+//    select   — window id to select-window, or null
+export function planReconnectLanding({
+  primary = false,
+  base = '',
+  activeWindowId = null,
+  desiredSession = null,
+  desiredWindowId = null,
+  desiredWindowIndex = null,
+  windows = [],
+  placements = [],
+  sessions = [],
+} = {}) {
+  const stay = { markSeen: activeWindowId, park: null, hop: null, select: null };
+
+  // 1. We were in another session: hop back. Guarded on the session still existing —
+  //    switching to a killed session is an error, and the pane is better off staying
+  //    where the attach put it than chasing a name that is gone. An empty list means
+  //    the layout didn't say, which is not evidence of absence.
+  if (desiredSession && base && desiredSession !== base) {
+    const alive = !sessions.length || sessions.includes(desiredSession);
+    if (alive) {
+      // Select the window only if that exact PLACEMENT survived. A window closed
+      // while we slept (or unlinked from this session) leaves the hop standing on its
+      // own: land in the right session, on whatever it is showing, rather than firing
+      // a select-window at an id tmux no longer has there.
+      const placed = !placements.length
+        || placements.some((p) => p.id === desiredWindowId && (p.session || '') === desiredSession);
+      const select = desiredWindowId && placed ? desiredWindowId : null;
+      return { markSeen: activeWindowId, park: activeWindowId, hop: desiredSession, select };
+    }
+  }
+
+  // 2. Same session. The primary shares this session's attach with the ssh console, so
+  //    a select-window here would move the console too — it follows tmux instead (see
+  //    the header). Extra regions have their own grouped session and restore freely.
+  if (primary) return stay;
+  const want = (windows.find((w) => w.id === desiredWindowId)
+    || (desiredWindowIndex != null ? windows.find((w) => w.index === desiredWindowIndex) : null)
+    || null);
+  if (!want || want.id === activeWindowId) return stay;
+  return { markSeen: activeWindowId, park: activeWindowId, hop: null, select: want.id };
+}
+
 // planRestoreLanding — given the resolved view, what should the pane DO, and which
 // window must be marked already-seen so the boot layout is not mistaken for a visit?
 //

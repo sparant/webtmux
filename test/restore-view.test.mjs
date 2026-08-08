@@ -13,7 +13,7 @@
 // base session puts you. The first two tests are the before/after of exactly that.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveRestoreView, planRestoreLanding } from '../resources/js/restore-view.js';
+import { resolveRestoreView, planRestoreLanding, planReconnectLanding } from '../resources/js/restore-view.js';
 
 // A pane freshly re-attached to the shared base session, with a server holding windows
 // in three sessions. `windows` is deliberately only the base session's list — that
@@ -216,4 +216,125 @@ test('no server directory: fall back to the pane\'s own session list', () => {
     }),
     null,
   );
+});
+
+// --- planReconnectLanding ----------------------------------------------------------
+// THE BUG THESE PIN. Close the laptop, open it again: the websocket had dropped, and
+// the fresh attach put every region back on the SHARED BASE session, on whatever
+// window that session currently shows — in practice its most recently CREATED window,
+// because creating one makes it current and nobody has moved that session since. You
+// came back to a window you had never opened (the stoplight-bridge window, last in the
+// last session) instead of the one you were working in, and because the parked window
+// is correctly marked seen it wasn't even in the recents strip to explain itself.
+// The primary region was excluded from the reconnect restore entirely, to protect the
+// ssh console that shares the base session's attach — but that protection is only
+// needed for select-window IN that session. Hopping back to another session moves this
+// connection's own tmux client and leaves the console alone.
+
+const RECON = {
+  base: 'services',
+  activeWindowId: '@9',                       // where the fresh attach parked us
+  windows: [                                  // ...and the base session's list
+    { id: '@1', index: 0 },
+    { id: '@9', index: 3 },
+  ],
+  placements: [
+    { id: '@1', session: 'services' },
+    { id: '@9', session: 'services' },
+    { id: '@7', session: 'editors' },
+  ],
+  sessions: ['services', 'editors'],
+};
+
+test('the PRIMARY hops back to the session it was in', () => {
+  const plan = planReconnectLanding({
+    ...RECON, primary: true, desiredSession: 'editors', desiredWindowId: '@7',
+  });
+  assert.deepEqual(plan, { markSeen: '@9', park: '@9', hop: 'editors', select: '@7' },
+    'switch-client moves only this connection\'s client — the console never follows');
+});
+
+test('an extra region hops back the same way', () => {
+  const plan = planReconnectLanding({
+    ...RECON, primary: false, desiredSession: 'editors', desiredWindowId: '@7',
+  });
+  assert.deepEqual(plan, { markSeen: '@9', park: '@9', hop: 'editors', select: '@7' });
+});
+
+test('the PRIMARY does NOT pick its own window inside the base session', () => {
+  // select-window here moves the shared session, dragging the ssh console with it. A
+  // base session showing a different window than we left means somebody else moved
+  // it, and the primary follows tmux rather than yanking it back.
+  const plan = planReconnectLanding({
+    ...RECON, primary: true, desiredSession: 'services', desiredWindowId: '@1',
+  });
+  assert.deepEqual(plan, { markSeen: '@9', park: null, hop: null, select: null });
+});
+
+test('an extra region DOES restore its window inside the same session', () => {
+  const plan = planReconnectLanding({
+    ...RECON, primary: false, desiredSession: 'services', desiredWindowId: '@1',
+  });
+  assert.deepEqual(plan, { markSeen: '@9', park: '@9', hop: null, select: '@1' },
+    'its grouped session is its own — nothing else is watching it');
+});
+
+test('a same-session id that is gone falls back to the window INDEX', () => {
+  const plan = planReconnectLanding({
+    ...RECON, primary: false, desiredSession: 'services',
+    desiredWindowId: '@404', desiredWindowIndex: 0,
+  });
+  assert.deepEqual(plan, { markSeen: '@9', park: '@9', hop: null, select: '@1' });
+});
+
+test('already on the window we wanted: stay, and still mark it seen', () => {
+  const plan = planReconnectLanding({
+    ...RECON, primary: false, desiredSession: 'services', desiredWindowId: '@9',
+  });
+  assert.deepEqual(plan, { markSeen: '@9', park: null, hop: null, select: null },
+    'the attach parked us here, so this layout is still not a visit');
+});
+
+test('a hop whose session was killed while we slept stays put', () => {
+  const plan = planReconnectLanding({
+    ...RECON, primary: true, desiredSession: 'gone', desiredWindowId: '@77',
+  });
+  assert.deepEqual(plan, { markSeen: '@9', park: null, hop: null, select: null },
+    'switching to a session that no longer exists is an error, not a restore');
+});
+
+test('a hop whose WINDOW is gone still lands in the right session', () => {
+  // Closed (or unlinked from there) while we were away. The session is where we were;
+  // firing select-window at an id tmux no longer has there is not.
+  const plan = planReconnectLanding({
+    ...RECON, primary: true, desiredSession: 'editors', desiredWindowId: '@404',
+  });
+  assert.deepEqual(plan, { markSeen: '@9', park: '@9', hop: 'editors', select: null });
+});
+
+test('no server directory: a cross-session hop is still honored', () => {
+  // An older server sends no allWindows. The pane's own list can never confirm a
+  // window in another session, so refusing on "unverified" would disable the restore
+  // outright — the pre-directory behavior (hop and select blind) is the right degrade.
+  const plan = planReconnectLanding({
+    ...RECON, placements: [], primary: true, desiredSession: 'editors', desiredWindowId: '@7',
+  });
+  assert.deepEqual(plan, { markSeen: '@9', park: '@9', hop: 'editors', select: '@7' });
+});
+
+test('no session list: a hop is not blocked by the absence of evidence', () => {
+  const plan = planReconnectLanding({
+    ...RECON, sessions: [], primary: true, desiredSession: 'editors', desiredWindowId: '@7',
+  });
+  assert.deepEqual(plan.hop, 'editors');
+});
+
+test('nothing remembered (a drop before the first layout) never moves the pane', () => {
+  const plan = planReconnectLanding({ ...RECON, primary: false });
+  assert.deepEqual(plan, { markSeen: '@9', park: null, hop: null, select: null });
+});
+
+test('planReconnectLanding is total for no input at all', () => {
+  assert.deepEqual(planReconnectLanding(),
+    { markSeen: null, park: null, hop: null, select: null });
 });

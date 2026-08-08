@@ -27,7 +27,11 @@ WRITE_FLAG="-w"
 start_server() {
   export WEBTMUX_SOCKET=/tmp/wt.sock WEBTMUX_SESSION=dev
   # shellcheck disable=SC2086 # WRITE_FLAG is deliberately unquoted: empty = absent
-  /src/webtmux-test $WRITE_FLAG -p 8090 -a 0.0.0.0 --reconnect -c wt:wt /src/screenshots/harness/attach.sh \
+  # WT_RECONNECT_TIME shortens the client's reconnect delay from the 10s default:
+  # a driver that drops the socket on purpose would otherwise spend most of its run
+  # waiting for the timer (see verify-reconnect-restore.js).
+  /src/webtmux-test $WRITE_FLAG -p 8090 -a 0.0.0.0 --reconnect \
+    --reconnect-time "${WT_RECONNECT_TIME:-10}" -c wt:wt /src/screenshots/harness/attach.sh \
     > /tmp/webtmux.log 2>&1 &
   SVPID=$!
 }

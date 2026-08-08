@@ -19,6 +19,7 @@ import { stateStore } from './state-store.js';
 import { arrowSequence } from './arrow-keys.js';
 import { IS_MAC } from './os.js';
 import { renameSessionPayload } from './tmux-payloads.js';
+import { planReconnectLanding } from './restore-view.js';
 import {
   normalizeMouseMode, resolvePress, needsForcedSelection, forceSelectionModifier,
   movedEnough, leaveCopyModeFirst, PressArbiter,
@@ -1679,12 +1680,27 @@ export class TerminalUnit {
   // window — instead re-select what we remembered: hop back to the session we
   // were on first (the fresh grouped attach is always on the base), then the
   // window (by id, falling back to index — index only valid same-session).
+  //
+  // WHICH of those two moves each region is allowed to make — and why the primary
+  // may hop sessions but not pick its own window — is planReconnectLanding's job
+  // (restore-view.js), where the rules are pinned by tests.
   _rememberOrRestore() {
     const active = this.layout.activeWindowId;
     const activeWin = (this.layout.windows || []).find(w => w.id === active);
     const base = this.layout.sessionBase || this.layout.sessionName;
     if (this.restorePending) {
       this.restorePending = false;
+      const plan = planReconnectLanding({
+        primary: this.primary,
+        base,
+        activeWindowId: active,
+        desiredSession: this.desiredSession,
+        desiredWindowId: this.desiredWindowId,
+        desiredWindowIndex: this.desiredWindowIndex,
+        windows: this.layout.windows || [],
+        placements: (this.layout.allWindows || []).map(w => ({ id: w.id, session: w.session || '' })),
+        sessions: (this.layout.sessions || []).map(s => s.name),
+      });
       // The window this first post-reconnect layout shows is where the fresh attach
       // PARKED us — the base session's current window — not somewhere the user went.
       // SplitManager's access-note (which sees this layout right after us) treats
@@ -1692,33 +1708,28 @@ export class TerminalUnit {
       // the base session's parked window (typically its window 0) into the recents
       // strip. Marking it seen suppresses only this layout; the hop back below
       // lands on the desired window, whose OWN layout records the view as before.
-      this._accessSeenId = active;
-      // Only restore INDEPENDENT (grouped) split regions. The primary region is
-      // shared with the ssh console; forcing its window would move the console too,
-      // so let it simply re-sync to whatever the console is viewing.
-      if (!this.primary) {
-        if (this.desiredSession && base && this.desiredSession !== base) {
-          // We were viewing another session — hop there, then re-select the
-          // window. Both sends ride the same serialized ws (see goToWindow).
-          // Same transient guard as goToWindow: the hop can emit an intermediate
-          // layout showing the target window while still naming the base session,
-          // which must not be recorded as a visit in a session it never had.
-          if (this.desiredWindowId) this._navSuppress = { id: this.desiredWindowId, session: base };
-          // Same reasoning one level up, for attention flashes rather than recents:
-          // this layout is dispatched to SplitManager before the hop below lands, so
-          // for one poll the region "shows" the parked window. Left unmarked, that
-          // counts as having looked at it and cancels its flash.
-          this._parkedWindowId = active;
-          this.switchSession(this.desiredSession);
-          if (this.desiredWindowId) this.selectWindow(this.desiredWindowId);
-          return;   // the resulting layout re-remembers the restored view
-        }
-        const want = this._findWindow(this.desiredWindowId, this.desiredWindowIndex);
-        if (want && want.id !== active) {
-          this._parkedWindowId = active;   // as above: parked, not visited
-          this.selectWindow(want.id);   // restore; the resulting layout re-remembers it
-          return;
-        }
+      this._accessSeenId = plan.markSeen;
+      if (plan.hop || plan.select) {
+        // Same transient guard as goToWindow: the hop can emit an intermediate
+        // layout showing the target window while still naming the base session,
+        // which must not be recorded as a visit in a session it never had.
+        if (plan.hop && plan.select) this._navSuppress = { id: plan.select, session: base };
+        // Same reasoning one level up, for attention flashes rather than recents:
+        // this layout is dispatched to SplitManager before the restore below lands,
+        // so for one poll the region "shows" the parked window. Left unmarked, that
+        // counts as having looked at it and cancels its flash.
+        this._parkedWindowId = plan.park;
+        // Claim the view we are on our way to, the same way a live switch does.
+        // SplitManager saves a region's view from these when they are set, so a
+        // persist triggered by this parked layout (the session half of the view
+        // just changed, which is itself a trigger) records where we are GOING
+        // rather than overwriting the saved view with the parking spot.
+        if (plan.select) this._targetWindowId = plan.select;
+        if (plan.hop) this._targetSession = plan.hop;
+        // Both sends ride the same serialized ws (see goToWindow).
+        if (plan.hop) this.switchSession(plan.hop);
+        if (plan.select) this.selectWindow(plan.select);
+        return;   // the resulting layout re-remembers the restored view
       }
     }
     // Reached on every layout that is NOT an in-flight restore hop — including the
@@ -1731,13 +1742,6 @@ export class TerminalUnit {
     // Access recency is recorded centrally by SplitManager (focus + layout
     // transition, with arrow-browse suppression) — the single write path shared
     // by the toolbar strip and the Exposé sort. Nothing to mark here.
-  }
-
-  _findWindow(id, index) {
-    const ws = this.layout.windows || [];
-    return ws.find(w => w.id === id)
-      || (index != null ? ws.find(w => w.index === index) : null)
-      || null;
   }
 
   // Give this unit keyboard focus. In the split, SplitManager overrides/augments
