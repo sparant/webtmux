@@ -15,7 +15,11 @@
 
   <style>
     :root {
-      --wt-toolbar-h: 44px; --wt-sidebar-w: 0px;
+      /* Width each right-edge panel occupies (0 when closed): the windows sidebar
+         and the copy-buffer sidebar. Each publishes its own; the floating copy
+         panel offsets by the windows one so the two stack, and the PiP box clears
+         them both. */
+      --wt-toolbar-h: 44px; --wt-sidebar-w: 0px; --wt-copy-sidebar-w: 0px;
       /* Space reserved by a docked preview BAR on each edge (0 unless the multi-
          window preview bar is docked there). #app pads by these so its regions
          shrink and the bar sits beside the terminal rather than over it. */

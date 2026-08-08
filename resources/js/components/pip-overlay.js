@@ -82,11 +82,15 @@ class WebtmuxPip extends LitElement {
     /* The corner box no longer balloons to 3× on hover: hovering it now previews the
        window in a real terminal region, which is bigger and doesn't cover whatever
        was underneath the box. The transition stays for the mini↔normal change below. */
+    /* The right-corner offsets clear BOTH right-edge panels — the windows sidebar
+       and the copy-buffer one, each publishing the width it occupies (0 when
+       closed). Adding them is right whether the panels are floating or mounted:
+       either way that many pixels of the right edge are spoken for. */
     :host([mode='single']) { transition: width 0.2s ease; }
     :host([mode='single'][corner='tl']) { top: calc(var(--wt-toolbar-h, 44px) + 12px); left: 16px; }
-    :host([mode='single'][corner='tr']) { top: calc(var(--wt-toolbar-h, 44px) + 12px); right: calc(var(--wt-sidebar-w, 0px) + 16px); }
+    :host([mode='single'][corner='tr']) { top: calc(var(--wt-toolbar-h, 44px) + 12px); right: calc(var(--wt-sidebar-w, 0px) + var(--wt-copy-sidebar-w, 0px) + 16px); }
     :host([mode='single'][corner='bl']) { bottom: 16px; left: 16px; }
-    :host([mode='single'][corner='br']) { bottom: 16px; right: calc(var(--wt-sidebar-w, 0px) + 16px); }
+    :host([mode='single'][corner='br']) { bottom: 16px; right: calc(var(--wt-sidebar-w, 0px) + var(--wt-copy-sidebar-w, 0px) + 16px); }
 
     /* Self-preview HINT: when the single-window PiP holds the very window the FOCUSED
        pane is already showing, we no longer blank it (that made toggling it on feel

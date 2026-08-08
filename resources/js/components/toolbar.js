@@ -32,6 +32,7 @@ import {
 } from '../scrollback.js';
 import { READ_ONLY_NOTICE } from '../write-guard.js';
 import { copyText } from '../clipboard.js';
+import { copyBuffers } from '../copy-buffer-store.js';
 import { SCROLL_MODES as SCROLL_ORDER, normalizeScrollMode as normalizeScroll } from '../terminal-unit.js';
 import { MOUSE_MODES as MOUSE_ORDER, normalizeMouseMode as normalizeMouse } from '../mouse-mode.js';
 import { clampRecentsMax, RECENTS_MIN, RECENTS_MAX } from '../recents-strip.js';
@@ -249,6 +250,10 @@ class WebtmuxToolbar extends LitElement {
     // True when the focused split region's active pane is in tmux copy/view mode.
     // Reflected to the `copymode` attribute so :host() can recolor the whole bar.
     copyMode: { type: Boolean, reflect: true, attribute: 'copymode' },
+    // How many copy buffers actually hold something. Shown on the mode pill (which
+    // now opens the copy-buffer panel) so a list you have been filling up says so
+    // from the toolbar, without the panel having to be open.
+    bufferCount: { type: Number },
     // Preview state (SplitManager sets): how many windows are in the preview,
     // whether it's hidden, and whether the focused pane's window is one of them.
     previewCount: { type: Number },
@@ -864,8 +869,11 @@ class WebtmuxToolbar extends LitElement {
       color: #fff;
     }
 
-    /* Copy-mode status pill (second from the right). Shows the focused pane's mode
-       and toggles it on click. Green-ish = NORMAL, amber = COPY. */
+    /* Copy pill (second from the right). Shows the focused pane's mode — green-ish
+       = NORMAL, amber = COPY — and OPENS THE COPY-BUFFER PANEL, which holds the
+       button that flips the mode. Mode and buffers are one subject (you enter copy
+       mode in order to fill the buffers), so the pill leads to both rather than
+       being a one-trick switch; ⌃⌥[ still flips the mode with no panel at all. */
     .mode {
       flex: 0 0 auto;
       display: inline-flex;
@@ -902,6 +910,22 @@ class WebtmuxToolbar extends LitElement {
     .mode.copy .mdot {
       background: #2a1902;
       box-shadow: none;
+    }
+    /* How many buffers are being held, shown only once there is more than one —
+       i.e. once the pill leads somewhere with a choice in it. */
+    .mode .bufn {
+      padding: 1px 5px;
+      border-radius: 8px;
+      background: rgba(74, 158, 255, 0.22);
+      border: 1px solid rgba(74, 158, 255, 0.55);
+      color: #cfe3ff;
+      font-size: 10.5px;
+      line-height: 1.3;
+    }
+    .mode.copy .bufn {
+      background: rgba(42, 25, 2, 0.18);
+      border-color: rgba(42, 25, 2, 0.5);
+      color: #2a1902;
     }
 
     /* One dot per visible pane (only when >1). Green = the focused pane, red = the
@@ -1071,6 +1095,11 @@ class WebtmuxToolbar extends LitElement {
     this.scrollMode = normalizeScroll(stateStore.section('renderer').scrollMode || '');
     this.mouseMode = normalizeMouse(stateStore.section('renderer').mouseMode || '');
     this.copyMode = false; // focused pane in tmux copy/view mode (SplitManager sets)
+    // Read straight from the ring singleton rather than being pushed by the
+    // SplitManager: the clipboard is global, so the count is the same number for
+    // every region and there is nothing for the manager to decide.
+    this.bufferCount = copyBuffers.filled;
+    this._unsubCopy = copyBuffers.subscribe(() => { this.bufferCount = copyBuffers.filled; });
     this.previewCount = 0;        // windows currently in the preview (SplitManager sets)
     this.previewHidden = false;   // preview tucked away (SplitManager sets)
     this.previewHasFocused = false; // focused window is in the preview (SplitManager sets)
@@ -1667,6 +1696,7 @@ class WebtmuxToolbar extends LitElement {
     super.disconnectedCallback();
     clearTimeout(this._buildTipTimer);
     this._tip.dispose();
+    this._unsubCopy?.();
     this.manager?.hover?.cancel();
   }
 
@@ -2044,11 +2074,15 @@ class WebtmuxToolbar extends LitElement {
       ` : ''}
       <button
         class="mode ${this.copyMode ? 'copy' : ''}"
-        aria-label="Copy mode"
-        @mouseenter=${(e) => this._tipEnter(e, `Focused pane is in ${this.copyMode ? 'COPY (scrollback)' : 'NORMAL (input)'} mode — click to ${this.copyMode ? 'exit' : 'enter'} copy mode. Shortcut: ${chord('[')} (tmux ⌃b [)`)}
+        aria-label="Copy buffers and copy mode"
+        @mouseenter=${(e) => this._tipEnter(e, `Copy — the focused pane is in ${this.copyMode ? 'COPY (scrollback)' : 'NORMAL (input)'} mode.\n`
+          + `Click to open the copy-buffer panel (${chord('=')}, tmux ⌃b =): the buffers you have copied, one of them on the clipboard, and the button that flips this mode.\n`
+          + `${this.bufferCount > 1 ? `${this.bufferCount} buffers held — click a row to choose which one ⌘V pastes.\n` : ''}`
+          + `To flip the mode without opening anything: ${chord('[')} (tmux ⌃b [).`)}
         @mouseleave=${() => this._tipLeave()}
-        @click=${() => { this._tipLeave(); this.manager?.toggleCopyMode(); }}
-      ><span class="mdot"></span>${this.copyMode ? 'COPY' : 'NORMAL'}</button>
+        @click=${() => { this._tipLeave(); this.manager?.copySidebar?.toggleCollapsed(); }}
+      ><span class="mdot"></span>${this.copyMode ? 'COPY' : 'NORMAL'}${
+        this.bufferCount > 1 ? html`<span class="bufn">${this.bufferCount}</span>` : ''}</button>
       <button
         class="pip-toggle ${this.previewHasFocused ? 'on' : ''}"
         aria-label="Add focused window to preview"

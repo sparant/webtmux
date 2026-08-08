@@ -6,6 +6,7 @@ import { SplitManager } from './split-manager.js';
 
 // Register the custom elements (side-effect imports).
 import './components/sidebar.js';
+import './components/copy-sidebar.js';
 import './components/mobile-controls.js';
 import './components/expose-overlay.js';
 import './components/pip-overlay.js';

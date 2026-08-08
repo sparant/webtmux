@@ -29,6 +29,7 @@ const GROUPS = [
       { keys: [...M, '⏎'], desc: 'Split view — add another terminal region' },
       { keys: [...M, 'X'], desc: 'Close the focused region (⌫ works too) — tmux ⌃b x' },
       { keys: [...M, '['], desc: 'Toggle copy / normal (scrollback) mode — tmux ⌃b [' },
+      { keys: [...M, '='], desc: 'Toggle the copy-buffer panel — the things you have copied, and which one the clipboard holds — tmux ⌃b =' },
       { keys: [...M, 'P'], desc: 'Recents — previous window (left) — tmux ⌃b p' },
       { keys: [...M, 'N'], desc: 'Recents — next window (right) — tmux ⌃b n' },
       { keys: [...M, '⇧', 'P'], desc: 'This session’s window list — previous window, in tmux index order (also ⌘⌥⇧P on a Mac)' },
@@ -55,6 +56,16 @@ const GROUPS = [
     ],
   },
   {
+    title: 'Copy buffers (while the panel is focused)',
+    rows: [
+      { keys: ['↑'], desc: 'Focus the previous buffer — it goes on the clipboard as you land on it' },
+      { keys: ['↓'], desc: 'Focus the next buffer' },
+      { keys: ['⌫'], desc: 'Remove the focused buffer (Del too); the list always keeps at least one' },
+      { keys: ['⏎'], desc: 'Close the panel and return to the terminal (Esc does the same)' },
+      { keys: ['click'], desc: 'Put a buffer on the clipboard; its × removes it, "+" adds an empty one, Clear keeps only the focused one' },
+    ],
+  },
+  {
     title: 'Exposé (while open)',
     rows: [
       { keys: ['←', '→', '↑', '↓'], desc: 'Move the tile cursor' },
@@ -68,8 +79,8 @@ const GROUPS = [
     rows: [
       { keys: ['Drag'], desc: 'Click and drag over the pane to select text — no need to enter copy mode by hand, even over a program holding the mouse (Claude/vim/htop). Starting the selection enters copy mode for you, so dragging to the edge scrolls for more. The toolbar\'s "sel" button decides who gets a press: app / buf / auto / auto+ (the default: clicks reach the program, drags select — and clicking away leaves copy mode again)' },
       { keys: [IS_MAC ? '⌥' : '⇧', 'Drag'], desc: 'Force a selection whatever the mode says — xterm\'s own escape hatch, still there' },
-      { keys: ['⌘/⌃', 'C'], desc: 'Copy the selection; stays in copy mode so you can copy several regions in a row. With nothing selected, ⌃C passes through as an interrupt' },
-      { keys: ['⌘/⌃', 'V'], desc: 'Paste (auto-exits copy mode first so the text lands at the prompt)' },
+      { keys: ['⌘/⌃', 'C'], desc: 'Copy the selection; stays in copy mode so you can copy several regions in a row. Copying AGAIN before you paste keeps both — the second one becomes a new copy buffer (⌃⌥=). With nothing selected, ⌃C passes through as an interrupt' },
+      { keys: ['⌘/⌃', 'V'], desc: 'Paste the focused copy buffer, i.e. the clipboard (auto-exits copy mode first so the text lands at the prompt)' },
       { keys: ['a–z'], desc: 'Typing at a pane that is scrolled up in copy mode leaves copy mode and goes to the prompt — copy-mode motions (hjkl, g/G, q, arrows, ␣, y, /) still work' },
     ],
   },

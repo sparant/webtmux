@@ -69,6 +69,16 @@ export class SplitManager {
     this.sidebar = document.createElement('webtmux-sidebar');
     this.container.appendChild(this.sidebar);
 
+    // The COPY BUFFER panel — the same furniture on the same edge, listing the
+    // copy buffers instead of the windows (components/copy-sidebar.js). Inserted
+    // AFTER the windows sidebar so that, mounted, it is the outermost column, and
+    // floating, it stacks outside-in from the right edge. Its ring is a module
+    // singleton (the machine has one clipboard), so unlike the windows sidebar it
+    // is not re-pointed at the focused unit; only the mode it displays is.
+    this.copySidebar = document.createElement('webtmux-copy-sidebar');
+    this.copySidebar.manager = this;
+    this.container.appendChild(this.copySidebar);
+
     // The Exposé overlay (hidden until opened via Ctrl+Alt+E or the sidebar).
     this.expose = document.createElement('webtmux-expose');
     this.expose.cache = this.captureCache;
@@ -173,11 +183,14 @@ export class SplitManager {
     const ro = permit === false;
     if (this._readOnly === ro) return;
     this._readOnly = ro;
-    for (const el of [this.toolbar, this.sidebar, this.expose, this.pip]) {
+    for (const el of [this.toolbar, this.sidebar, this.copySidebar, this.expose, this.pip]) {
       el?.toggleAttribute?.('readonly', ro);
     }
     if (this.toolbar) this.toolbar.readOnly = ro;
     if (this.sidebar) this.sidebar.readOnly = ro;
+    // Only the copy panel's MODE toggle is a tmux write; the buffer list is
+    // entirely client-side and keeps working on a read-only server.
+    if (this.copySidebar) this.copySidebar.readOnly = ro;
     stateStore.setReadOnly(ro);
     if (ro) this.showNotice(READ_ONLY_NOTICE);
   }
@@ -262,10 +275,11 @@ export class SplitManager {
     unit.onScrollbackData = (payload) => this.onScrollbackData(payload);
     // Scrollback SIZES (as opposed to contents) -> the ⛁ dropdown.
     unit.onHistoryInfo = (res) => this.onHistoryInfo(res);
-    // Clicking the terminal collapses the shared sidebar out of the way (unless pinned).
+    // Clicking the terminal collapses either panel out of the way (unless pinned).
     unit.onTerminalMousedown = () => {
-      const sb = this.sidebar;
-      if (sb && !sb.collapsed && !sb.pinned) sb.collapsed = true;
+      for (const sb of [this.sidebar, this.copySidebar]) {
+        if (sb && !sb.collapsed && !sb.pinned) sb.collapsed = true;
+      }
     };
     // Clicking anywhere in the region (even outside the terminal) focuses it.
     region.addEventListener('mousedown', () => this.focus(unit), true);
@@ -965,7 +979,11 @@ export class SplitManager {
     this.toolbar.panes = this.units.length > 1
       ? this.units.map(u => u === this.focusedUnit)
       : [];
-    this.toolbar.copyMode = !!this.focusedUnit?.layout?.activePaneInMode;
+    const inMode = !!this.focusedUnit?.layout?.activePaneInMode;
+    this.toolbar.copyMode = inMode;
+    // The copy panel's mode button is the same pill; both are driven from the one
+    // ground truth so they can never disagree about which mode the pane is in.
+    if (this.copySidebar) this.copySidebar.copyMode = inMode;
   }
 
   // Toolbar copy-mode pill: toggle copy mode on the FOCUSED region's active pane.
@@ -978,6 +996,8 @@ export class SplitManager {
     if (inMode) u.exitCopyMode();
     else u.enterCopyMode();
     if (this.toolbar) this.toolbar.copyMode = !inMode;
+    // The copy panel shows the same pill and owns the button that flipped it.
+    if (this.copySidebar) this.copySidebar.copyMode = !inMode;
   }
 
   // Download the FOCUSED pane's buffer to the browser as a .txt.
@@ -1897,6 +1917,7 @@ export class SplitManager {
     //   P  previous-window / N  next-window   -> step the SESSION's window list
     //   x  kill-pane                          -> close the focused region
     //   [  copy-mode                          -> toggle copy/normal on the focused pane
+    //   =  choose-buffer                      -> toggle the copy-buffer panel
     //   ?  list-keys                          -> the shortcuts overlay (physical '/')
     // Split-add has no unmodified tmux letter (tmux uses % / ", both need Shift), so
     // it keeps the intuitive Enter. Exposé ('e'), Picture-in-Picture add ('i' = pIp),
@@ -1914,7 +1935,7 @@ export class SplitManager {
       // target, and this one was registered first — so the refusal lives here:
       // while a confirm question, the shortcuts overlay, or Exposé is up, the only
       // chord that still acts is the one that toggles that layer itself.
-      if (this.sidebar?._confirm?.open) return;
+      if (this.sidebar?._confirm?.open || this.copySidebar?._confirm?.open) return;
       if (this.shortcuts?.open && ev.code !== 'Slash') return;
       if (this.expose?.open && ev.code !== 'KeyE') return;
       // New window in the focused pane's session: Command+Option+C (Mac) OR
@@ -1983,6 +2004,9 @@ export class SplitManager {
           break;
         case 'BracketLeft':                            // tmux '[' (copy-mode): toggle copy/normal
           this.toggleCopyMode();
+          break;
+        case 'Equal':                                  // tmux '=' (choose-buffer): copy-buffer panel
+          this.copySidebar?.toggleCollapsed();
           break;
         case 'KeyB':                                   // show/hide the build-id chip
           this.toolbar?.toggleBuild();
