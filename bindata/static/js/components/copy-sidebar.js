@@ -33,6 +33,12 @@ import { ConfirmPopup, CONFIRM_CSS } from '../confirm-popup.js';
 // screen is not a hint.
 const HINT_CHARS = 600;
 
+// How long the panel stays up after a copy has auto-shown it (see peek()). Long
+// enough to read which row the copy landed in and whether the list grew; short
+// enough that ignoring it costs nothing. The countdown pauses while the pointer
+// is on the panel, so this is a floor on how long you get, not a ceiling.
+const PEEK_MS = 3200;
+
 class WebtmuxCopySidebar extends LitElement {
   static properties = {
     collapsed: { type: Boolean },
@@ -161,11 +167,29 @@ class WebtmuxCopySidebar extends LitElement {
     .panel:focus, .panel:focus-visible { outline: none; }
 
     h3 {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
       color: #e94560;
       font-size: 16px;
       text-transform: uppercase;
       letter-spacing: 1px;
       margin: 0 0 12px 0;
+    }
+
+    /* Shown only while the panel is here BECAUSE of a copy (see peek()). Without
+       it a panel that appeared on its own is a panel that appeared for no reason —
+       and the reader has no way to tell it from one they opened and forgot. */
+    .peek-tag {
+      color: #9fe3bd;
+      background: rgba(55, 209, 122, 0.12);
+      border: 1px solid rgba(55, 209, 122, 0.5);
+      border-radius: 10px;
+      padding: 1px 8px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: none;
     }
 
     .buffers {
@@ -297,8 +321,18 @@ class WebtmuxCopySidebar extends LitElement {
     this.readOnly = false;
     this.rev = 0;
     this.manager = null;   // set by the SplitManager
+    // --- auto-peek state (see peek() below) -----------------------------------
+    this._peeking = false;      // on screen only because a copy just happened
+    this._peekTimer = null;     // the countdown to closing it again
+    this._onOutside = null;     // the "anything else you do ends it" listener
+    this._overlayOverride = null;  // the float/mount pref a peek is standing on
     stateStore.subscribe(() => this._applySharedState());
-    this._unsubscribe = copyBuffers.subscribe(() => { this.rev++; });
+    this._unsubscribe = copyBuffers.subscribe((reason) => {
+      this.rev++;
+      // A copy is the one change that happens somewhere else — in a pane, with
+      // this panel shut — so it is the one worth showing you.
+      if (reason === 'copy') this.peek();
+    });
   }
 
   disconnectedCallback() {
@@ -306,11 +340,17 @@ class WebtmuxCopySidebar extends LitElement {
     this._tip.dispose();
     this._confirm.dispose();
     this._unsubscribe?.();
+    this._clearPeekTimer();
+    this._unwatchOutside();
   }
 
   _applySharedState() {
     const cs = stateStore.section('copySidebar');
-    this.overlay = cs.overlay !== false;
+    // A peek is standing ON the float/mount pref rather than changing it, so a
+    // remote blob arriving mid-peek must not yank the panel back into the flow
+    // and resize every terminal underneath it. The pref is re-read when the peek
+    // ends and puts it back itself.
+    if (!this._overlayOverride) this.overlay = cs.overlay !== false;
     this.pinned = cs.pinned === true;
     this.requestUpdate();
   }
@@ -322,12 +362,28 @@ class WebtmuxCopySidebar extends LitElement {
         // An unanswered Clear question lives INSIDE this panel; hiding it mid-
         // question would leave it holding the keyboard somewhere off screen.
         this._confirm.close();
-      } else {
+        // A peek is over the moment the panel is shut, HOWEVER that happened —
+        // the countdown, an outside click, the chord, or the SplitManager's
+        // click-into-the-terminal rule, which sets `collapsed` directly and knows
+        // nothing about peeks. Tearing down here rather than in each of those
+        // paths is what stops a stale countdown or a borrowed float pref
+        // outliving the panel that borrowed them.
+        this._peeking = false;
+        this._clearPeekTimer();
+        this._unwatchOutside();
+        this._restoreOverlay();
+      } else if (!this._peeking) {
+        // A peek deliberately does NOT take the keyboard: you are mid-copy in a
+        // pane, and a panel that grabs focus to tell you the copy worked has
+        // interrupted the very thing it was reporting on.
         this.focusPanel();
       }
-      clientStore.patchSection('copySidebar', { collapsed: this.collapsed });
+      // …and it does not persist "open" either. The panel was never opened; a
+      // reload that restored it would turn a two-second glance into a panel you
+      // now have to close.
+      if (!this._peeking) clientStore.patchSection('copySidebar', { collapsed: this.collapsed });
       this.dispatchEvent(new CustomEvent('webtmux-copy-sidebar-collapsed', {
-        bubbles: true, composed: true, detail: { collapsed: this.collapsed },
+        bubbles: true, composed: true, detail: { collapsed: this.collapsed, peek: this._peeking },
       }));
     }
     if (changed.has('overlay')) {
@@ -340,9 +396,119 @@ class WebtmuxCopySidebar extends LitElement {
       // Publish the width this panel occupies on the right edge, so the
       // Picture-in-Picture box treats BOTH open sidebars as its boundary rather
       // than sliding under this one. Again after the width transition settles.
+      //
+      // A PEEK publishes nothing. It is a transient notice, like a tooltip, and
+      // having the PiP box scoot sideways and back on every single copy is worse
+      // than letting a two-second overlay pass in front of it.
       this._publishWidth();
       setTimeout(() => this._publishWidth(), 240);
     }
+  }
+
+  // ---- auto-peek ---------------------------------------------------------------
+  //
+  // A copy happens in a PANE, and until now it happened silently: the buffer list
+  // grew (or didn't) behind a closed panel, and the one rule worth knowing — this
+  // copy was KEPT alongside the last one, or REPLACED it — was invisible until you
+  // went looking. So a copy shows you the list for a moment.
+  //
+  // Four things make it a notice rather than an interruption:
+  //
+  //   IT ONLY EVER APPEARS WHEN IT WASN'T THERE. If the panel is already open —
+  //   because you opened it, or pinned it — a copy changes nothing about it. It
+  //   is never auto-collapsed, because it was never auto-shown; closing a panel
+  //   the user deliberately opened is the rudest thing this could do.
+  //
+  //   IT ALWAYS FLOATS. Never mounted, whatever the pref says: mounting shrinks
+  //   every terminal and reflows the tmux windows underneath, which is a real
+  //   disturbance to charge for a glance. The pref is restored on the way out.
+  //
+  //   IT NEVER TAKES THE KEYBOARD. You are typing in a pane; keep typing.
+  //
+  //   ANYTHING ELSE YOU DO ENDS IT EARLY. A keystroke, a click, a scroll, a
+  //   touch — anywhere but in the panel — and it goes immediately, rather than
+  //   sitting there for the rest of its countdown over work you have moved on to.
+  peek() {
+    if (!this.collapsed && !this._peeking) return;   // already on screen for real
+    if (this._peeking) { this._armPeekTimer(); return; }   // a second copy re-arms it
+    this._peeking = true;
+    this._overlayOverride = { overlay: this.overlay };
+    this.overlay = true;
+    this.collapsed = false;
+    this._armPeekTimer();
+    this._watchOutside();
+  }
+
+  // Engagement: you reached for the panel while it was peeking, so it stops being
+  // a two-second notice and becomes an open panel — countdown cancelled, and now
+  // it persists as open, because from here on you did open it. The float override
+  // stays until it closes: snapping back into the flow under a pointer that is
+  // already moving toward a row would move the row out from under it.
+  _promotePeek() {
+    if (!this._peeking) return;
+    this._peeking = false;
+    this._clearPeekTimer();
+    this._unwatchOutside();
+    clientStore.patchSection('copySidebar', { collapsed: false });
+    this.requestUpdate();   // drop the "a copy just landed" tag — this is a real panel now
+  }
+
+  // Close a peek. The teardown itself lives in updated()'s collapse branch, which
+  // every other way of shutting the panel also goes through — so this is just
+  // "shut it", and there is exactly one place that undoes what a peek borrowed.
+  _endPeek() {
+    if (!this._peeking) return;
+    this.collapsed = true;
+  }
+
+  // Put the float/mount pref back. Also called when a PROMOTED peek is closed
+  // normally, which is why it does not live inside _endPeek.
+  _restoreOverlay() {
+    if (!this._overlayOverride) return;
+    const { overlay } = this._overlayOverride;
+    this._overlayOverride = null;
+    this.overlay = overlay;
+  }
+
+  _armPeekTimer() {
+    this._clearPeekTimer();
+    this._peekTimer = setTimeout(() => { this._peekTimer = null; this._endPeek(); }, PEEK_MS);
+  }
+
+  _clearPeekTimer() {
+    if (this._peekTimer) { clearTimeout(this._peekTimer); this._peekTimer = null; }
+  }
+
+  // Capture-phase and PASSIVE: this only ever watches. A peek must not swallow
+  // the keystroke or the click that dismissed it — you pressed Escape at the
+  // shell, or clicked into another pane, and that has to still happen.
+  _watchOutside() {
+    if (this._onOutside) return;
+    this._onOutside = (e) => {
+      const inside = typeof e.composedPath === 'function' && e.composedPath().includes(this);
+      if (inside) this._promotePeek();
+      else this._endPeek();
+    };
+    for (const type of ['keydown', 'mousedown', 'wheel', 'touchstart']) {
+      window.addEventListener(type, this._onOutside, { capture: true, passive: true });
+    }
+  }
+
+  _unwatchOutside() {
+    if (!this._onOutside) return;
+    for (const type of ['keydown', 'mousedown', 'wheel', 'touchstart']) {
+      window.removeEventListener(type, this._onOutside, { capture: true });
+    }
+    this._onOutside = null;
+  }
+
+  // Pointing at a peeking panel holds it open — you are reading it, and having it
+  // vanish as the pointer arrives is the one way a notice this short becomes a
+  // thing you have to fight. Leaving restarts the countdown.
+  _peekHover(over) {
+    if (!this._peeking) return;
+    if (over) this._clearPeekTimer();
+    else this._armPeekTimer();
   }
 
   firstUpdated() {
@@ -350,11 +516,18 @@ class WebtmuxCopySidebar extends LitElement {
   }
 
   _publishWidth() {
-    const w = this.collapsed ? 0 : Math.round(this.getBoundingClientRect().width);
+    const w = (this.collapsed || this._peeking) ? 0 : Math.round(this.getBoundingClientRect().width);
     try { document.documentElement.style.setProperty('--wt-copy-sidebar-w', w + 'px'); } catch (e) {}
   }
 
-  toggleCollapsed() { this.collapsed = !this.collapsed; }
+  // ⌃⌥= and the toolbar pill. During a peek this reads as "get rid of it" — the
+  // panel is on screen, so a toggle can only sensibly mean close — rather than as
+  // "open the thing that is already open", which is what a naive flip would do
+  // once the peek's own dismissal had shut it in the same event.
+  toggleCollapsed() {
+    if (this._peeking) { this._endPeek(); return; }
+    this.collapsed = !this.collapsed;
+  }
 
   toggleOverlay() {
     this.overlay = !this.overlay;
@@ -444,9 +617,15 @@ class WebtmuxCopySidebar extends LitElement {
   render() {
     const entries = copyBuffers.entries;
     return html`
-      <div class="panel" tabindex="0" @keydown=${this.onKeyDown}>
+      <div
+        class="panel"
+        tabindex="0"
+        @keydown=${this.onKeyDown}
+        @mouseenter=${() => this._peekHover(true)}
+        @mouseleave=${() => this._peekHover(false)}
+      >
         ${this.modeRow()}
-        <h3>Copy buffers</h3>
+        <h3>Copy buffers${this._peeking ? html`<span class="peek-tag">a copy just landed</span>` : ''}</h3>
         <div class="buffers">
           ${entries.map((e) => this.renderBuffer(e))}
         </div>
@@ -583,6 +762,9 @@ class WebtmuxCopySidebar extends LitElement {
         The focused buffer is the clipboard. Copy again before pasting and the new
         text becomes a buffer of its own; copy after pasting and it replaces the one
         you just used — so gathering grows the list and ordinary copy-paste doesn’t.
+        Copying while this panel is shut floats it here for a moment so you can see
+        where the copy landed; it takes no focus, and anything else you do sends it
+        away again.
         ${this.readOnly ? html`<span class="ro-note">Read-only server (started without -w) — copying still works, but
           the mode toggle and pasting into a pane do not.</span>` : ''}
       </div>

@@ -79,7 +79,7 @@ const GROUPS = [
     rows: [
       { keys: ['Drag'], desc: 'Click and drag over the pane to select text — no need to enter copy mode by hand, even over a program holding the mouse (Claude/vim/htop). Starting the selection enters copy mode for you, so dragging to the edge scrolls for more. The toolbar\'s "sel" button decides who gets a press: app / buf / auto / auto+ (the default: clicks reach the program, drags select — and clicking away leaves copy mode again)' },
       { keys: [IS_MAC ? '⌥' : '⇧', 'Drag'], desc: 'Force a selection whatever the mode says — xterm\'s own escape hatch, still there' },
-      { keys: ['⌘/⌃', 'C'], desc: 'Copy the selection; stays in copy mode so you can copy several regions in a row. Copying AGAIN before you paste keeps both — the second one becomes a new copy buffer (⌃⌥=). With nothing selected, ⌃C passes through as an interrupt' },
+      { keys: ['⌘/⌃', 'C'], desc: 'Copy the selection; stays in copy mode so you can copy several regions in a row. Copying AGAIN before you paste keeps both — the second one becomes a new copy buffer (⌃⌥=). If that panel is shut, the copy floats it in for a couple of seconds without taking the keyboard; carry on typing and it goes away. With nothing selected, ⌃C passes through as an interrupt' },
       { keys: ['⌘/⌃', 'V'], desc: 'Paste the focused copy buffer, i.e. the clipboard (auto-exits copy mode first so the text lands at the prompt)' },
       { keys: ['a–z'], desc: 'Typing at a pane that is scrolled up in copy mode leaves copy mode and goes to the prompt — copy-mode motions (hjkl, g/G, q, arrows, ␣, y, /) still work' },
     ],

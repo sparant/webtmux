@@ -31,7 +31,11 @@ class CopyBufferStore {
     this._subs = new Set();
   }
 
-  // fn() on every change. Returns an unsubscribe, like writeAuthority.subscribe.
+  // fn(reason) on every change, where `reason` names WHAT happened — 'copy',
+  // 'paste', 'focus', 'add', 'remove', 'clear'. Most subscribers just redraw and
+  // ignore it; the panel needs it because a COPY is the one change that happened
+  // somewhere else entirely (a pane, with the panel closed) and is therefore the
+  // one worth announcing. Returns an unsubscribe, like writeAuthority.subscribe.
   subscribe(fn) {
     if (typeof fn !== 'function') return () => {};
     this._subs.add(fn);
@@ -57,7 +61,7 @@ class CopyBufferStore {
     const entry = this.ring.copy(text);
     if (!entry) return null;
     copyText(entry.text);
-    this._changed();
+    this._changed('copy');
     return entry;
   }
 
@@ -78,7 +82,7 @@ class CopyBufferStore {
     const s = String(text ?? '');
     if (s && s !== this.ring.text) this.ring.copy(s);
     this.ring.notePaste();
-    this._changed();
+    this._changed('paste');
   }
 
   // Focus an entry — and put it on the system clipboard, which is what makes
@@ -87,7 +91,7 @@ class CopyBufferStore {
     const entry = this.ring.focus(id);
     if (!entry) return null;
     if (entry.text) copyText(entry.text);
-    this._changed();
+    this._changed('focus');
     return entry;
   }
 
@@ -100,13 +104,13 @@ class CopyBufferStore {
     const entry = this.ring.step(delta);
     if (!entry) return null;
     if (entry.text) copyText(entry.text);
-    this._changed();
+    this._changed('step');
     return entry;
   }
 
   add() {
     const entry = this.ring.add();
-    this._changed();
+    this._changed('add');
     return entry;
   }
 
@@ -114,22 +118,22 @@ class CopyBufferStore {
     const entry = this.ring.remove(id);
     // Removing the focused row moves the focus, and the focus is the clipboard.
     if (entry?.text) copyText(entry.text);
-    this._changed();
+    this._changed('remove');
     return entry;
   }
 
   clear() {
     const entry = this.ring.clear();
-    this._changed();
+    this._changed('clear');
     return entry;
   }
 
-  _changed() {
+  _changed(reason = '') {
     // Best-effort persistence: a ring too big for the tab store simply loses its
     // largest entries on the next reload (ClientStore swallows a quota failure),
     // which is why toJSON drops whole entries rather than trimming them.
     try { clientStore.patchSection(SECTION, this.ring.toJSON()); } catch (e) { /* best-effort */ }
-    for (const fn of this._subs) { try { fn(); } catch (e) { /* a bad subscriber is not the ring's problem */ } }
+    for (const fn of this._subs) { try { fn(reason); } catch (e) { /* a bad subscriber is not the ring's problem */ } }
   }
 }
 

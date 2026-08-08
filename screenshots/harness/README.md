@@ -52,6 +52,11 @@ Pieces:
   decides what ⌘V types into the pane, "+"/×/Clear, the toolbar pill opening the panel
   with its count, both right-edge panels open without overlapping, and the buffers
   surviving a reload — needs `permissions: ['clipboard-read','clipboard-write']`),
+  `verify-copypeek.js` (the auto-peek: a copy floats the panel in without taking focus
+  or resizing the terminal even when the pref says mount, it closes itself and is not
+  persisted as open, an already-open panel is left alone, typing/Escape/click/scroll
+  elsewhere dismisses it early WITHOUT swallowing the keystroke, reaching for it
+  promotes it, and a second copy re-arms rather than stacking),
   `verify-scrollback-save.js` (the ⤓ dropdown saves the WHOLE buffer, asserted against
   the downloaded file),
   `verify-scrollback-buffer.js` (the ⛁ dropdown: reported sizes match `tmux display -p`,
