@@ -6,6 +6,7 @@ A web-based terminal with tmux-specific features. Access your tmux sessions from
 - [Get notified with visuals](#stoplights-and-work-alerts) when your tmux windows are done working, are prompting for input or are idle waiting for more work.
   - Perfect for working with AI coding agents - know exactly when they are done/need input
   - **setup required for feature to work**
+- [Copy several things and paste them one at a time](#copy-buffers) - a list of copy buffers, one of which is the clipboard, that only grows when you are actually gathering.
 - Take advantage of modern UI - Use Drag and Drop, Previews on hover etc to manage your tmux state.
 - Controls mimic familiar tmux shortcuts - just with control+Option instead of the usual prefix.
 - Discoverability of all features - no more searching for shortcuts or remembering commands
@@ -124,14 +125,38 @@ Keep an eye on specific windows, even while you focus on others.
 - Shared UI state lives in the tmux server itself (global option `@wt_state`), surviving reloads, reconnects, and webtmux restarts, and shared by every browser: sidebar prefs, session order, renderer choice, Exposé/preview/toolbar prefs, split window assignments, the recents strip, access recency, the chosen save directory, and the primary region's window.
 - Per-tab state (focused view, split widths) stays in the browser tab so two browsers don't fight over focus. A reload returns every region to the exact session+window it was on.
 
+### Copy Buffers
+
+Copy several things, then paste them one at a time. A system clipboard holds exactly one thing, so gathering three snippets out of a scrollback normally means three round trips — and every intermediate copy silently destroys the last one.
+
+![Copy buffers replayed: two selections copied without a paste in between become two buffers, the panel floats itself in on each copy, then picking a row decides which one Ctrl+V types into the pane](screenshots/copy-buffers.gif)
+
+**The focused buffer is the clipboard.** Focusing a row writes it to the system clipboard, so this is not a second clipboard fighting the real one — it is a way to choose what the real one holds. Cmd/Ctrl+V keeps working everywhere, including in other apps.
+
+**The list only grows when you are actually gathering.** Whether a copy adds a buffer or reuses one is decided by a single question — has the focused buffer been pasted yet?
+
+- Copy again **before** pasting and the new text becomes a buffer of its own; nothing you collected is lost.
+- Copy again **after** pasting and it replaces the buffer you just used — so ordinary copy-paste-copy-paste never grows the list, and the panel stays one row if you never want this feature.
+- The focused row says which of the two will happen next, so it is never a surprise.
+
+**A copy shows you where it landed.** With the panel shut, copying floats it in for a couple of seconds: always floating (never mounted, so no terminal is resized), never taking the keyboard, and dismissed early by anything else you do — a keystroke, Escape, a click, a scroll. A panel you opened yourself is left alone entirely: it is never auto-collapsed, because it was never auto-shown. Point at a peeking panel to hold it open, or click into it and it becomes a normal open panel.
+
+- Toggle with Ctrl+Alt+= from anywhere (tmux's `Prefix+=`, choose-buffer), or click the toolbar's NORMAL/COPY pill — which also carries a count once you are holding more than one buffer.
+- The same panel furniture as the windows sidebar: float or mount, pin or auto-hide, ↑/↓ to walk the rows.
+- Each row shows enough of its text to identify it, with the line and character count for anything longer; hover for a bigger excerpt.
+- "+" adds an empty buffer, a hover × removes one, and **Clear** keeps the focused buffer — so clearing the list never changes what Cmd/Ctrl+V will paste.
+- Every way of copying feeds it: Cmd/Ctrl+C over a selection, and tmux's own copy (a mouse drag in copy mode, or `y`). Text copied in another app is adopted on paste, so the panel can never point at a buffer that is not what you just pasted.
+- The copy/normal mode toggle lives in this panel too — you enter copy mode in order to fill these buffers, so they are one subject. Ctrl+Alt+[ still flips the mode directly.
+- Buffers are per browser tab and survive a reload. They are deliberately **not** shared through the tmux server: text you copied is not UI arrangement, and sharing it with every other browser on the server is not this feature's decision to make.
+
 ### Copy, scroll & clipboard
 
 ![Copy mode replayed: scrolling up enters copy mode, drag selects in the scrollback, Ctrl+C copies and stays in copy mode, then ordinary typing drops straight back to the prompt](screenshots/copy-scroll.gif)
 
 - Smart copy-mode typing: in a scrolled-up pane, copy-mode motions keep working but ordinary typing drops back to the prompt — no keystrokes silently swallowed.
-- Cmd/Ctrl+C copies and stays in copy mode (grab several regions); Cmd/Ctrl+V exits copy mode first so the paste lands at the prompt; dragging to the pane edge auto-scrolls the buffer; selection highlight clears after copy.
+- Cmd/Ctrl+C copies and stays in copy mode (grab several regions — each one is kept, see [copy buffers](#copy-buffers)); Cmd/Ctrl+V exits copy mode first so the paste lands at the prompt; dragging to the pane edge auto-scrolls the buffer; selection highlight clears after copy.
 - Clipboard copy works on plain-HTTP LAN access (falls back when the secure clipboard API is missing); large pastes no longer drop the connection.
-- Scroll-mode choices including an "auto+" default and adaptive wheel modes; Ctrl+Alt+[ toggles copy/scrollback mode.
+- Scroll-mode choices including an "auto+" default and adaptive wheel modes; Ctrl+Alt+[ toggles copy/scrollback mode, and Ctrl+Alt+= opens the [copy buffers](#copy-buffers).
 - **Click-and-drag selects text even over a program holding the mouse** (Claude Code, vim, htop) — no entering copy mode by hand first. The toolbar's mouse-capture dropdown sets who gets a press under `click+drag:`, in the same four steps as the wheel under `copymode on scroll:`: `app` (all to the program) / `buf` (all to the buffer) / `auto` (a program that asked for the mouse gets it) / `auto+` (the default: clicks reach the program, drags select). Shift-drag (⌥-drag on a Mac) still forces a selection in any mode.
 - Starting a selection puts the pane in copy mode for you, so the indicator is honest and dragging to the pane edge scrolls for more. In `auto+`, clicking away drops back out of copy mode — the click after that reaches the program as usual.
 - **Shift-click moves the end of the selection you already have** instead of starting a new one — the end you dragged from stays put, so an overshoot is one click to fix rather than a whole drag to repeat. Shift-drag keeps moving that end while held, and clicking past the anchor turns the selection around. Works over a mouse-grabbing program too, where it neither reaches the program nor drops the pane out of copy mode. With nothing selected, shift-drag still means "force a selection" as before.
@@ -175,7 +200,7 @@ Keep an eye on specific windows, even while you focus on others.
 ![The shortcuts overlay (Ctrl+Alt+/): every global chord with modifier labels matching your OS](screenshots/keyboard-shortcuts.jpg)
 
 - A shortcuts overlay (Ctrl+Alt+/) lists every hotkey with modifier labels matching your OS (⌃⌥ on Mac).
-- Global Ctrl+Alt chords mirror tmux letters: W sidebar, P/N recents prev/next, ⇧P/⇧N walk the session's window list in index order, L alt-tab-style MRU cycle with deferred commit, comma rename, X close region, [ copy mode, C new window (also ⌘⌥C on Mac), D drop current window from recents, Enter add split, E Exposé, I/H preview.
+- Global Ctrl+Alt chords mirror tmux letters: W sidebar, P/N recents prev/next, ⇧P/⇧N walk the session's window list in index order, L alt-tab-style MRU cycle with deferred commit, comma rename, X close region, [ copy mode, = copy buffers, C new window (also ⌘⌥C on Mac), D drop current window from recents, Enter add split, E Exposé, I/H preview.
 - Consistent custom tooltips everywhere; confirmations appear as a small popup next to the control you clicked, and only an explicit "Yes" acts.
 
 ### Terminal rendering & session plumbing

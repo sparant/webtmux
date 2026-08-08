@@ -20,7 +20,19 @@ docker run --rm -v "$PWD":/src mcr.microsoft.com/playwright:v1.48.0-jammy \
 # 3. Animated gifs (also needs ffmpeg, installed on first run)
 docker run --rm -v "$PWD":/src mcr.microsoft.com/playwright:v1.48.0-jammy \
   bash /src/screenshots/harness/run-gifs.sh
+
+# ...or just the scenes you changed. Re-encoding all nine for a one-feature
+# change rewrites binaries nobody looked at and makes the diff unreviewable.
+docker run --rm -v "$PWD":/src -e SCENES=copy-buffers \
+  mcr.microsoft.com/playwright:v1.48.0-jammy bash /src/screenshots/harness/run-gifs.sh
 ```
+
+Check what a re-recorded gif actually shows before committing it — pull frames out
+with `ffmpeg -i screenshots/<name>.gif -vf "select=not(mod(n\,12))" -vsync 0 f%02d.png`
+and look at them. Two takes of the copy-buffers scene were wrong in ways no
+assertion would have caught: a row's hover hint covered the very list the frame
+existed to show, and every Ctrl+V was a silent no-op because the recording context
+had no clipboard permission (the paste path only `console.warn`s).
 
 Pieces:
 

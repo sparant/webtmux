@@ -18,6 +18,11 @@ const tmux = (args) => execSync(`tmux -u -S ${SOCK} ${args}`, { encoding: 'utf8'
 let page; // current scene's page
 const failures = [];
 
+// SCENES=copy-buffers,expose records ONLY those scenes. Regenerating every gif
+// for a one-feature change rewrites nine binaries that nobody looked at, and a
+// diff full of unrelated re-encodes is a diff nobody can review.
+const ONLY = (process.env.SCENES || '').split(',').map((s) => s.trim()).filter(Boolean);
+
 const chord = (key) => page.keyboard.press(`Control+Alt+${key}`);
 
 async function exposeState() {
@@ -54,6 +59,32 @@ async function goTo(name) {
 
 const tabOf = (n) => page.locator('webtmux-toolbar').getByText(n, { exact: true }).first();
 
+// Where one text CELL is on screen. A drag that is meant to grab particular
+// words has to be aimed at them; guessed pixels select whatever happens to be
+// under them, which makes a gif that demonstrates nothing in particular.
+async function cellGeom() {
+  return page.evaluate(() => {
+    const t = window.splitManager.focusedUnit.terminal;
+    const r = document.querySelector('.xterm-screen').getBoundingClientRect();
+    return { left: r.left, top: r.top, cw: r.width / t.cols, ch: r.height / t.rows };
+  });
+}
+
+// Drag across columns [from, to) of one row, as a person would, and report what
+// was actually caught so a mis-aimed take is visible in the log rather than in
+// the gif.
+async function dragSelect(row, from, to) {
+  const g = await cellGeom();
+  const y = g.top + (row + 0.5) * g.ch;
+  await page.mouse.move(g.left + from * g.cw + 1, y, { steps: 8 });
+  await page.mouse.down();
+  await page.mouse.move(g.left + to * g.cw, y, { steps: 25 });
+  await page.mouse.up();
+  const sel = await page.evaluate(() => window.splitManager.focusedUnit.terminal.getSelection());
+  console.log(`   selected row ${row}: ${JSON.stringify(sel)}`);
+  return sel;
+}
+
 // A visible fake cursor: playwright videos don't render the pointer, and hover
 // demos are meaningless without one. Tracks the synthetic mousemove events.
 const CURSOR = () => {
@@ -89,11 +120,16 @@ async function offCamera(browser, fn) {
 }
 
 async function scene(browser, name, fn, cleanup) {
+  if (ONLY.length && !ONLY.includes(name)) { console.log(`--- ${name} (skipped)`); return; }
   console.log(`--- ${name}`);
   const ctx = await browser.newContext({
     viewport: { width: W, height: H },
     httpCredentials: { username: 'wt', password: 'wt' },
     recordVideo: { dir: VIDEO_DIR, size: { width: W, height: H } },
+    // Without this, navigator.clipboard.readText() rejects and Ctrl+V does
+    // NOTHING — silently, since the paste path only console.warns. A scene that
+    // demonstrates pasting then records a prompt that never changes.
+    permissions: ['clipboard-read', 'clipboard-write'],
   });
   try {
     const p = await ctx.newPage();
@@ -243,6 +279,65 @@ const clearLights = () => {
     await sleep(2200);
   }, async () => {
     await page.keyboard.press('Backspace'); await page.keyboard.press('Backspace');
+    await goTo('editor');
+  });
+
+  // ---- copy-buffers.gif: copy twice WITHOUT pasting -> two buffers, not one
+  // ---- overwritten; each copy floats the panel in by itself; then pick a row
+  // ---- and that is what ⌘V pastes — twice, from two different buffers.
+  await scene(browser, 'copy-buffers', async () => {
+    await goTo('shell');
+    // A clean screen with two known lines, so the drags below grab exactly these
+    // and the gif shows two DIFFERENT things being carried, not two selections.
+    tmux(`send-keys -t scratch:shell 'clear' Enter`);
+    await sleep(800);
+    tmux(`send-keys -t scratch:shell 'echo deploy --target prod' Enter`);
+    await sleep(500);
+    tmux(`send-keys -t scratch:shell 'echo rollback --to v1.4.2' Enter`);
+    await sleep(1600);
+
+    await dragSelect(1, 0, 20);                 // "deploy --target prod"
+    await sleep(600);
+    await page.keyboard.press('Control+c');     // the panel floats itself in
+    await sleep(2200);
+
+    await dragSelect(3, 0, 20);                 // "rollback --to v1.4.2"
+    await sleep(600);                           // (the drag also dismisses the peek early)
+    await page.keyboard.press('Control+c');     // a SECOND buffer — the first is kept
+    await sleep(1800);
+
+    const rows = page.locator('webtmux-copy-sidebar .buf');
+    // Hold the peek open by pointing at the HEADING. Resting on a row instead
+    // pops that row's hover hint, which is a panel-wide box that covers the list
+    // — exactly the two rows this beat exists to show.
+    await page.locator('webtmux-copy-sidebar h3').hover();
+    await sleep(1600);
+    await page.locator('webtmux-copy-sidebar .mode-pair .mode-btn').nth(1).click();  // pin
+    await sleep(1200);
+
+    await rows.nth(0).click();                  // buffer 1 -> the clipboard
+    await sleep(1300);
+    await page.mouse.click(500, 500);           // back to the pane
+    await sleep(600);
+    await page.keyboard.press('Control+v');     // …pastes buffer 1
+    await sleep(1600);
+    await page.keyboard.type(' ');              // …so the second paste reads as a SECOND thing
+    await sleep(500);
+
+    await rows.nth(1).click();                  // buffer 2 -> the clipboard
+    await sleep(1300);
+    await page.mouse.click(500, 500);
+    await sleep(600);
+    await page.keyboard.press('Control+v');     // …pastes buffer 2, after the first
+    await sleep(2600);
+  }, async () => {
+    try { tmux(`send-keys -t scratch:shell C-u`); } catch {}
+    await page.evaluate(() => {
+      const cs = document.querySelector('webtmux-copy-sidebar');
+      if (cs.pinned) cs.togglePin();            // pinned is SHARED state — don't leak it
+      cs.collapsed = true;
+    });
+    await sleep(600);
     await goTo('editor');
   });
 

@@ -43,6 +43,8 @@ if ! wait_up; then
 fi
 echo "webtmux up on :8090"
 
+# Only the scenes actually recorded this run land in /tmp/videos, so the
+# conversion loop below is self-limiting when SCENES=<names> is set.
 rm -rf /tmp/videos && mkdir -p /tmp/videos
 rc=0
 NODE_PATH=/tmp/pw/node_modules node /src/screenshots/harness/driver-gifs.js || rc=$?
@@ -59,7 +61,7 @@ togif() { # in.webm out.gif trim-seconds [extra-filter]
 }
 
 cd /tmp/videos
-for f in expose split-view sidebar hover-preview preview-pip copy-scroll save-file state-persistence stoplights; do
+for f in expose split-view sidebar hover-preview preview-pip copy-scroll copy-buffers save-file state-persistence stoplights; do
   [ -f "$f.webm" ] && togif "$f.webm" "/src/screenshots/$f.gif" 3.4
 done
 # flashing tabs + attention arrow, cropped to the toolbar strip
