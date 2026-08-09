@@ -4,6 +4,11 @@
 // handles clicks via `manager.pickRecentWindow(id)` /
 // `manager.sidebar.toggleCollapsed()`.
 //
+// `recent` is the strip MINUS whatever the preview is showing: a window sitting in
+// the PiP or the preview bar is on screen and one click away, so it does not also
+// spend a tab (see recents-strip.js). Those entries are not gone — `recentHeld`
+// counts them, and they come back, in place, when the preview lets them go.
+//
 // The strip ends in an OVERFLOW ARROW (`overflowAlerts`, also from the SplitManager):
 // the windows that need attention and have no tab here, because a bounded strip
 // cannot promise to hold every window that stops. Without it, "nothing in the strip is
@@ -306,6 +311,11 @@ class WebtmuxToolbar extends LitElement {
     // How many tabs the strip holds. Mirrors the shared toolbar.recentMax pref; the
     // SplitManager is what actually enforces it (see setRecentsMax).
     recentMax: { type: Number },
+    // How many recent windows are currently standing down because the preview is
+    // showing them (see recents-strip.js). Not tabs — these draw nothing. It is here
+    // so the "Recent ▾" menu survives previewing every recent window at once, and so
+    // the strip can explain the tab that disappeared when a window was previewed.
+    recentHeld: { type: Number },
     // Recents drag-reorder: the tab being dragged, and the insertion GAP the drop
     // would land in (0..n, -1 = not over the strip).
     dragKey: { type: String },
@@ -1089,6 +1099,7 @@ class WebtmuxToolbar extends LitElement {
   constructor() {
     super();
     this.recent = [];
+    this.recentHeld = 0;
     this.collapsed = false;
     // Scroll-wheel mode mirror (moved here from the sidebar). Seeded from the same
     // shared 'renderer' pref the terminal reads, so the label is right on first paint.
@@ -1920,12 +1931,15 @@ class WebtmuxToolbar extends LitElement {
         @mouseleave=${() => this._tipLeave()}
         @click=${() => { this._tipLeave(); this.manager?.shortcuts?.toggle(); }}
       >⌨</button>
-      ${this.recent.length ? html`
+      ${this.recent.length || this.recentHeld ? html`
         <span class="label-wrap">
           <button
             class="label"
             aria-label="Recent tab options"
-            @mouseenter=${(e) => this._tipEnter(e, `Recent windows — click for options: how many tabs to keep (now ${this.recentMax}), and their labels (show the session, trim the window name). Drag tabs to reorder them.`)}
+            @mouseenter=${(e) => this._tipEnter(e, `Recent windows — click for options: how many tabs to keep (now ${this.recentMax}), and their labels (show the session, trim the window name). Drag tabs to reorder them.`
+              + (this.recentHeld
+                ? `\n${this.recentHeld} recent ${this.recentHeld === 1 ? 'window is' : 'windows are'} in the preview right now, so ${this.recentHeld === 1 ? 'its tab is' : 'their tabs are'} hidden — already on screen there. Close the preview and ${this.recentHeld === 1 ? 'it comes' : 'they come'} back.`
+                : ''))}
             @mouseleave=${() => this._tipLeave()}
             @click=${() => { this._tipLeave(); this.labelMenuOpen = !this.labelMenuOpen; }}
           >Recent ▾</button>

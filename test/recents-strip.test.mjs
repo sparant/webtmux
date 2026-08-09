@@ -19,6 +19,7 @@ import assert from 'node:assert/strict';
 import {
   MAX_RECENTS, RECENTS_MIN, RECENTS_MAX, clampRecentsMax,
   sanitizeRecents, recentsSignature, RecentsPersistence,
+  visibleRecents, recentsInsertSlot, trimRecentsToCap, reorderVisibleRecents,
 } from '../resources/js/recents-strip.js';
 import { StateStore } from '../resources/js/state-store.js';
 
@@ -327,4 +328,95 @@ test('a prune during an adopt converges in one round trip', async () => {
   // …and the echo of it does not resurrect the dead tab.
   store.load(wire);
   assert.equal(p.adopt(), null, 'nothing left to adopt — the two agree');
+});
+
+// ---- preview suppression --------------------------------------------------------
+//
+// A window in the PiP / preview bar is already on screen, so it stands down from the
+// strip rather than spending one of a handful of tabs on a duplicate. Everything here
+// is about the two ways that could go wrong: a suppressed entry being treated as GONE
+// (it must come back, in place, when the preview lets go), or as PRESENT (it must not
+// hold a slot against the cap, absorb an eviction, or shift a drag by one).
+
+// Rank by an explicit map so the recency the eviction rules read is visible in the test
+// rather than hidden in a shared cache.
+const byRecency = (seqs) => (e) => seqs[e.id] ?? 0;
+
+test('visibleRecents hides exactly the previewed windows, in strip order', () => {
+  const list = [entry('@1'), entry('@2'), entry('@3')];
+  assert.deepEqual(visibleRecents(list, ['@2']).map((e) => e.id), ['@1', '@3']);
+  assert.deepEqual(visibleRecents(list, new Set()).map((e) => e.id), ['@1', '@2', '@3'],
+    'nothing previewed (a tucked-away preview reports no windows) — every tab is back');
+  assert.deepEqual(visibleRecents(list, ['@1', '@2', '@3']), [],
+    'previewing every recent window empties the strip rather than half-hiding it');
+});
+
+test('visibleRecents suppresses BOTH tabs of a linked window', () => {
+  // One window, reached through two sessions: two legitimate tabs, but one screen —
+  // and that screen is the one in the preview.
+  const list = [entry('@1', { session: 'services' }), entry('@1', { session: 'editors' }), entry('@2')];
+  assert.deepEqual(visibleRecents(list, ['@1']).map((e) => e.session), ['services']);
+});
+
+test('the cap counts tabs, not entries: a previewed entry holds no slot', () => {
+  const list = [entry('@1'), entry('@2'), entry('@3')];
+  // Cap 3, one previewed -> only 2 tabs are drawn, so there is room for a third.
+  assert.equal(recentsInsertSlot(list, { previewed: ['@2'], max: 3 }), -1);
+  // Nothing previewed -> full, and the least-recently-accessed tab gives up its slot.
+  assert.equal(
+    recentsInsertSlot(list, { previewed: [], max: 3, recency: byRecency({ '@1': 9, '@2': 2, '@3': 5 }) }),
+    1,
+  );
+});
+
+test('eviction never takes a previewed entry, however stale it looks', () => {
+  // @2 is in the preview and has not been ACCESSED in ages — the LRU rule would pick
+  // it first, and picking it would free no space and destroy the tab that is waiting
+  // to come back when the preview closes.
+  const list = [entry('@1'), entry('@2'), entry('@3')];
+  const opts = { previewed: ['@2'], max: 2, recency: byRecency({ '@1': 9, '@2': 0, '@3': 5 }) };
+  assert.equal(recentsInsertSlot(list, opts), 2, 'the oldest VISIBLE tab goes instead');
+});
+
+test('trimRecentsToCap settles the overflow the preview hands back', () => {
+  const list = [entry('@1'), entry('@2'), entry('@3'), entry('@4')];
+  const recency = byRecency({ '@1': 1, '@2': 4, '@3': 2, '@4': 3 });
+  // Two of the four are previewed: only two tabs draw, so nothing is over the cap.
+  assert.equal(trimRecentsToCap(list, { previewed: ['@2', '@3'], max: 3, recency }), list,
+    'the list is returned untouched — no copy, no churn on the 500ms path');
+  // The preview lets go and the strip is suddenly four tabs deep against a cap of 3.
+  const trimmed = trimRecentsToCap(list, { previewed: [], max: 3, recency });
+  assert.deepEqual(trimmed.map((e) => e.id), ['@2', '@3', '@4'],
+    'the least-recently-accessed tab goes, and the survivors keep their arranged order');
+});
+
+test('trimRecentsToCap keeps previewed entries even when the cap is shrunk under them', () => {
+  const list = [entry('@1'), entry('@2'), entry('@3')];
+  const trimmed = trimRecentsToCap(list, {
+    previewed: ['@3'], max: 1, recency: byRecency({ '@1': 5, '@2': 1, '@3': 0 }),
+  });
+  assert.deepEqual(trimmed.map((e) => e.id), ['@1', '@3'],
+    'one tab (the cap) plus the entry the preview is holding for later');
+});
+
+test('a drag reorders in the coordinates the user actually sees', () => {
+  // Strip: @1 [@2 previewed] @3 @4 -> tabs are @1 @3 @4. Dragging @4 to the front is
+  // gap 0 in TAB coordinates; read as durable coordinates it would land after @1.
+  const list = [entry('@1'), entry('@2'), entry('@3'), entry('@4')];
+  const next = reorderVisibleRecents(list, { previewed: ['@2'], entry: entry('@4'), toIndex: 0 });
+  assert.deepEqual(visibleRecents(next, ['@2']).map((e) => e.id), ['@4', '@1', '@3']);
+  assert.deepEqual(next.map((e) => e.id), ['@4', '@2', '@1', '@3'],
+    'the previewed entry keeps its durable slot — the tab it comes back to is unmoved');
+});
+
+test('a drag past the end, and a drag that changes nothing', () => {
+  const list = [entry('@1'), entry('@2'), entry('@3')];
+  const next = reorderVisibleRecents(list, { previewed: ['@1'], entry: entry('@2'), toIndex: 2 });
+  assert.deepEqual(next.map((e) => e.id), ['@1', '@3', '@2'], 'the end gap is the last slot');
+  assert.equal(reorderVisibleRecents(list, { previewed: [], entry: entry('@2'), toIndex: 1 }), null,
+    'dropping a tab back where it started is not a change');
+  assert.equal(reorderVisibleRecents(list, { previewed: [], entry: entry('@9'), toIndex: 0 }), null,
+    'a tab that is not in the strip cannot be moved');
+  assert.equal(reorderVisibleRecents(list, { previewed: [], entry: entry('@2'), toIndex: undefined }), null,
+    'a drop with no gap (a dragend outside the strip) is not a change');
 });

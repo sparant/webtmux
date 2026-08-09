@@ -20,6 +20,10 @@
 //   5. Cross-session navigation is safe for any pane: the backend switches only
 //      the pane's own tmux client (-c <its tty>) and re-groups split panes onto
 //      the target session, so panes never couple with the console or each other.
+//   6. A window the preview is SHOWING does not also hold a recents tab — it is on
+//      screen already, and the strip's few slots are for windows that are not. The
+//      ENTRY stays (the tab comes back, in place, when the preview lets go); only
+//      the tab stands down. See recents-strip.js.
 //
 // One-sidebar illusion: there is a SINGLE <webtmux-sidebar> element, always in the
 // same spot, bound to whichever region is FOCUSED. Clicking a region's terminal
@@ -28,7 +32,10 @@ import { TerminalUnit, MSG } from './terminal-unit.js';
 import { CaptureCache } from './capture-cache.js';
 import { HoverPreview } from './hover-preview.js';
 import { WorkAlerts, AlertsPersistence, hiddenAlerts, alertOf } from './work-alerts.js';
-import { clampRecentsMax, RecentsPersistence } from './recents-strip.js';
+import {
+  clampRecentsMax, RecentsPersistence,
+  visibleRecents, recentsInsertSlot, trimRecentsToCap, reorderVisibleRecents,
+} from './recents-strip.js';
 import { buildMruOrder } from './mru-order.js';
 import { SplitPersistence } from './split-state.js';
 import { resolveRestoreView, planRestoreLanding } from './restore-view.js';
@@ -788,7 +795,6 @@ export class SplitManager {
     if (!id) return;
     // Bump recency in the ONE shared store (also drives the Exposé sort + persists).
     this.captureCache.markAccessed(id);
-    const recencyOf = (wid) => this.captureCache.accessed.get(wid) ?? 0;
     const session = meta.session || '';
     const existing = this.recentWindows.find(e => e.id === id && e.session === session);
     if (existing) {
@@ -797,17 +803,46 @@ export class SplitManager {
     } else {
       const entry = { id, index: meta.index, name: meta.name || 'bash', session };
       const list = [...this.recentWindows];
-      if (list.length < this.recentsMax) {
-        list.push(entry);
-      } else {
-        // Evict the least-recently-accessed slot (recency from the shared store).
-        let lru = 0, lruSeq = Infinity;
-        list.forEach((e, i) => { const s = recencyOf(e.id); if (s < lruSeq) { lruSeq = s; lru = i; } });
-        list[lru] = entry;
-      }
+      // The cap counts the tabs that RENDER, so a window the preview has taken over
+      // neither holds a slot nor gets evicted for one (recents-strip.js). An access
+      // to a window that is itself in the preview still records its entry — it draws
+      // nothing now, and it is there waiting when the preview lets go.
+      const slot = recentsInsertSlot(list, this._recentsCapOpts());
+      if (slot === -1) list.push(entry);
+      else list[slot] = entry;
       this.recentWindows = list;
+      // Settle any overflow the preview left behind when it handed windows back.
+      // The entry just accessed is the most recent one, so it always survives.
+      this.recentWindows = trimRecentsToCap(this.recentWindows, this._recentsCapOpts());
     }
     this._refreshToolbar();
+  }
+
+  // The windows the preview (corner PiP or docked bar) is SHOWING right now — the
+  // tabs the strip stands down for. Empty while the preview is tucked away, so
+  // hiding it brings every tab straight back. One source, shared by the render, the
+  // cap, the keyboard walk and the drag-reorder, so they can never disagree about
+  // which tabs exist.
+  previewedWindowIds() {
+    return new Set(this.pip?.windowIds?.() || []);
+  }
+
+  // The strip as the user sees it. Everything that talks about "the tabs" — the
+  // toolbar render, ⌃⌥P/N — goes through here; everything that talks about the
+  // durable strip (persistence, the MRU walk's extra candidates, removeRecent)
+  // keeps using this.recentWindows.
+  visibleRecents() {
+    return visibleRecents(this.recentWindows, this.previewedWindowIds());
+  }
+
+  // Shared argument bundle for the cap helpers: what is suppressed, how many tabs
+  // fit, and how to rank entries by access recency.
+  _recentsCapOpts() {
+    return {
+      previewed: this.previewedWindowIds(),
+      max: this.recentsMax,
+      recency: (e) => this.captureCache.accessed.get(e.id) ?? 0,
+    };
   }
 
   // Change how many tabs the strip holds (the "Recent ▾" menu, or another browser
@@ -822,15 +857,9 @@ export class SplitManager {
     if (next === this.recentsMax) return;
     this.recentsMax = next;
     this._recents.setMax(next);
-    if (this.recentWindows.length > next) {
-      const recencyOf = (e) => this.captureCache.accessed.get(e.id) ?? 0;
-      const keep = new Set(
-        [...this.recentWindows]
-          .sort((a, b) => recencyOf(b) - recencyOf(a))
-          .slice(0, next),
-      );
-      this.recentWindows = this.recentWindows.filter((e) => keep.has(e));
-    }
+    // Counting only the tabs that render, so shrinking the strip while something is
+    // previewed doesn't spend the new, smaller budget on entries that draw nothing.
+    this.recentWindows = trimRecentsToCap(this.recentWindows, this._recentsCapOpts());
     this._refreshToolbar();
   }
 
@@ -1330,15 +1359,24 @@ export class SplitManager {
     // Windows shown by OTHER panes are not selectable here (they'd put two panes on
     // one window) — greyed out, like the sidebar. One shared source: occupiedWindowIds.
     const occupied = this.occupiedWindowIds(focused);
-    this.toolbar.recent = this.recentWindows.map(e => {
+    // Tabs the preview is standing in for. Walked over the WHOLE strip rather than
+    // the visible half so a suppressed entry still picks up tmux renames while its
+    // window sits in the preview — otherwise the tab would come back wearing a stale
+    // name (and persist it).
+    const previewed = this.previewedWindowIds();
+    let held = 0;
+    this.toolbar.recent = this.recentWindows.flatMap(e => {
       const live = liveByKey.get(e.session + '\x00' + e.id) || liveById.get(e.id);
       // Keep the access-time snapshot fresh from the live layout so the name/index
       // stay correct even after the window later leaves every region's window list
       // (recents outlive the session they were accessed in).
       if (live?.name) e.name = live.name;
       if (live?.index != null) e.index = live.index;
+      // On screen in the preview: no tab. It is already visible and one click away,
+      // and a duplicate of it is the one thing the strip's few slots can't afford.
+      if (previewed.has(e.id)) { held++; return []; }
       const c = cache?.get(e.id);
-      return {
+      return [{
         id: e.id,
         index: live?.index ?? c?.index ?? e.index ?? '?',
         name: live?.name || c?.name || e.name || 'bash',
@@ -1357,8 +1395,13 @@ export class SplitManager {
         // evicted and later returns shows the same alert the sidebar and the preview
         // have been showing for it all along.
         alert: alertOf(alerts, e.session, e.id),
-      };
+      }];
     });
+    // How many tabs are standing down for the preview. The toolbar needs the count
+    // for two reasons: the "Recent ▾" menu only renders when the strip has something
+    // in it (previewing every recent window would otherwise take the cap control off
+    // screen), and a strip that quietly loses a tab should be able to say why.
+    this.toolbar.recentHeld = held;
     // Persist AFTER the loop above refreshed each entry's name/index from the live
     // layouts, so a tmux rename is durable too (and after the prune, so a deleted
     // window doesn't come back on the next reload). Signature-guarded — see
@@ -1561,7 +1604,11 @@ export class SplitManager {
   // Selection reuses goToWindow so it inherits all the pane-targeting logic.
   // Mirrors tmux's Ctrl-b p / Ctrl-b n over the toolbar's bounded window set.
   navigateRecents(dir) {
-    const list = this.recentWindows;
+    // The TABS, not the durable strip: this walk is "the next tab along", and a stop
+    // on a window that has no tab would read as a dropped keypress. The windows it
+    // skips are the previewed ones, which are on screen already — and ⌃⌥L still walks
+    // every window on the server, previewed or not.
+    const list = this.visibleRecents();
     if (!list || !list.length) return;
     const focused = this.focusedUnit;
     const activeId = focused?.layout?.activeWindowId;
@@ -1707,18 +1754,17 @@ export class SplitManager {
   // Move a recents tab to a new slot (drag-and-drop reorder). The strip's order is
   // otherwise deliberately STABLE — re-accessing a window never moves its tab — so
   // dragging is the only way to arrange it, and the arrangement survives everything
-  // except the tab being evicted. `toIndex` is the target GAP (0..length).
+  // except the tab being evicted.
+  //
+  // `toIndex` is the target GAP (0..length) in the TABS the toolbar drew — the strip
+  // minus whatever the preview is showing — so the move is computed in those
+  // coordinates and written back through the durable list (reorderVisibleRecents).
   reorderRecent(entry, toIndex) {
-    const list = [...this.recentWindows];
-    const from = list.findIndex(e => e.id === entry?.id && e.session === entry?.session);
-    if (from === -1) return;
-    // Translate the insertion gap into a final slot: removing the dragged tab first
-    // shifts everything after it down one, so a gap past the source maps one lower.
-    let to = toIndex > from ? toIndex - 1 : toIndex;
-    to = Math.max(0, Math.min(list.length - 1, to));
-    if (to === from) return;
-    list.splice(to, 0, list.splice(from, 1)[0]);
-    this.recentWindows = list;
+    const next = reorderVisibleRecents(this.recentWindows, {
+      previewed: this.previewedWindowIds(), entry, toIndex,
+    });
+    if (!next) return;
+    this.recentWindows = next;
     this._refreshToolbar();
   }
 

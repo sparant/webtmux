@@ -1,5 +1,6 @@
-// Recents-strip persistence helpers — the pure, testable half of keeping the
-// toolbar's recent-window tabs in the shared @wt_state blob.
+// Recents-strip helpers — the pure, testable half of the toolbar's recent-window
+// tabs: which entries actually render (see "preview suppression" below), how the tab
+// cap is spent, and keeping the strip in the shared @wt_state blob.
 //
 // The strip lives in tmux server state, which means two things this module exists
 // to handle:
@@ -98,6 +99,123 @@ export function recentsSignature(list) {
   return JSON.stringify(
     list.map((e) => [e.id, e.index, e.name, e.session]),
   );
+}
+
+// ---- preview suppression ------------------------------------------------------
+//
+// A window sitting in the preview — the corner PiP or the docked preview bar — is
+// already on screen and one click from being switched to, so a recents TAB for it
+// is a second copy of an affordance the user is looking at. The strip's scarce
+// resource is horizontal space in the toolbar, and spending a slot on the one set
+// of windows that needs no shortcut is the worst possible trade. So the strip
+// renders every entry EXCEPT the ones the preview is currently showing.
+//
+// SUPPRESSION IS A VIEW, NEVER AN EDIT. The entry keeps its slot, its hand-arranged
+// position, its name/index refresh and its place in the persisted blob for as long
+// as the preview holds the window; the tab comes back — in the same position — the
+// moment the preview lets go. That is why the source of truth is the preview's
+// "what am I showing right now" (pip.windowIds(), which is empty while the preview
+// is tucked away) rather than "what is in its set": a hidden preview shows nothing,
+// so it suppresses nothing.
+//
+// Suppression is keyed by window ID ALONE, even though strip entries are keyed by
+// (session, id). The preview shows a window's SCREEN, and a window linked into two
+// sessions has one screen — both of its tabs are routes to the thing already on
+// display, so both stand down.
+//
+// The MRU chord (⌃⌥L / ⌘⌥L) is deliberately NOT filtered by any of this: it walks
+// the whole window directory (see mru-order.js) and a previewed window is a
+// perfectly good place to walk to. Only the strip's tabs stand down.
+
+// Normalize whatever the caller has (a Set, an array of ids, nothing) into a Set.
+function suppressedSet(previewed) {
+  if (previewed instanceof Set) return previewed;
+  return new Set(Array.isArray(previewed) ? previewed : []);
+}
+
+// The entries that actually render as tabs, in strip order.
+export function visibleRecents(list, previewed) {
+  const hidden = suppressedSet(previewed);
+  return (Array.isArray(list) ? list : []).filter((e) => e && !hidden.has(e.id));
+}
+
+// Where a NEW entry goes when the strip is full. Returns -1 for "there is room,
+// append"; otherwise the index of the entry it replaces IN PLACE (which is what
+// keeps the strip's order stable — a new tab inherits the evicted tab's slot).
+//
+// The cap counts TABS, not entries: an entry whose window is in the preview draws
+// nothing, so letting it hold a slot against the cap would shrink the visible strip
+// every time the user previews something — the same wasted space, just relocated.
+// For the same reason the eviction scan skips suppressed entries: replacing one
+// frees no space, and it would quietly destroy the tab that is waiting to come back
+// when the preview lets go.
+//
+// `recency` maps an entry to its access sequence (higher = more recent); the caller
+// owns that store (captureCache.accessed), this module only ranks with it.
+export function recentsInsertSlot(list, { previewed, max = MAX_RECENTS, recency = () => 0 } = {}) {
+  const hidden = suppressedSet(previewed);
+  const arr = Array.isArray(list) ? list : [];
+  const visible = arr.filter((e) => e && !hidden.has(e.id));
+  if (visible.length < max) return -1;
+  // visible.length >= max >= 1, so there is always a visible entry to evict here.
+  let slot = -1;
+  let lru = Infinity;
+  arr.forEach((e, i) => {
+    if (!e || hidden.has(e.id)) return;
+    const seq = recency(e);
+    if (seq < lru) { lru = seq; slot = i; }
+  });
+  return slot;
+}
+
+// Bring the strip back within its cap, counting only the entries that render.
+//
+// The overflow this exists for is the preview HANDING WINDOWS BACK: while three
+// tabs were suppressed the strip refilled to its cap with useful windows, and
+// closing the preview returns three more. Trimming is deliberately NOT done at that
+// moment — tabs vanishing as a side effect of closing a preview is exactly the kind
+// of behind-your-back destruction the strip's stable order exists to avoid. It
+// happens on the next ACCESS instead, where losing the least-recently-used tab is
+// the rule the strip has always followed and the user is already causing churn.
+//
+// Suppressed entries are never trimmed: they cost no space and are not the user's
+// to lose yet.
+export function trimRecentsToCap(list, { previewed, max = MAX_RECENTS, recency = () => 0 } = {}) {
+  const hidden = suppressedSet(previewed);
+  const arr = Array.isArray(list) ? list : [];
+  const visible = arr.filter((e) => e && !hidden.has(e.id));
+  if (visible.length <= max) return arr;
+  const keep = new Set(
+    [...visible].sort((a, b) => recency(b) - recency(a)).slice(0, max),
+  );
+  // Filter, don't re-sort: survivors keep the order the user arranged by hand.
+  return arr.filter((e) => e && (hidden.has(e.id) || keep.has(e)));
+}
+
+// Drag-reorder in VISIBLE coordinates. The toolbar hands back an insertion gap into
+// the tabs it drew, which is the strip with the suppressed entries taken out, so the
+// move is computed there and then written back through the durable list.
+//
+// Suppressed entries hold their durable slots while the visible ones shuffle around
+// them: their position is the position their tab will reappear in, and a drag the
+// user made among the tabs they can see must not silently re-file the tabs they
+// can't. Returns a new list, or null when the drag is a no-op.
+export function reorderVisibleRecents(list, { previewed, entry, toIndex } = {}) {
+  if (!Number.isFinite(toIndex)) return null;
+  const hidden = suppressedSet(previewed);
+  const arr = Array.isArray(list) ? list : [];
+  const visible = arr.filter((e) => e && !hidden.has(e.id));
+  const from = visible.findIndex((e) => e.id === entry?.id && e.session === entry?.session);
+  if (from === -1) return null;
+  // Translate the insertion GAP into a final slot: removing the dragged tab first
+  // shifts everything after it down one, so a gap past the source maps one lower.
+  let to = toIndex > from ? toIndex - 1 : toIndex;
+  to = Math.max(0, Math.min(visible.length - 1, to));
+  if (to === from) return null;
+  const moved = [...visible];
+  moved.splice(to, 0, moved.splice(from, 1)[0]);
+  let k = 0;
+  return arr.map((e) => (e && !hidden.has(e.id) ? moved[k++] : e));
 }
 
 // Owns the strip's half of the shared blob: the write guard, the change

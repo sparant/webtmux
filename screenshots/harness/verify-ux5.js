@@ -109,7 +109,12 @@ async function main() {
   // The cap must ride the SHARED tmux blob, not this browser only.
   const persisted = await page.evaluate(async () => {
     const r = await fetch('/', { method: 'HEAD' }); // keep the auth cookie warm
-    return window.localStorage.getItem('webtmux-state');
+    // The offline cache is keyed PER TMUX SERVER ('webtmux-state:<id>'), falling back
+    // to the bare key for servers that report no identity — so find the one that is
+    // actually there rather than assuming either shape.
+    const key = Object.keys(window.localStorage)
+      .find((k) => k === 'webtmux-state' || k.startsWith('webtmux-state:'));
+    return key ? window.localStorage.getItem(key) : null;
   });
   check('the cap is written to the shared state blob',
     !!persisted && JSON.parse(persisted)?.toolbar?.recentMax === 8,

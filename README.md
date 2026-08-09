@@ -47,6 +47,7 @@ A tab flashes amber when its window has stopped working, and an arrow flashes wh
   - control+Option+N/P - used to navigate to the next/previous window in your most-recent list.
   - Remove a window from your most recents with the hover-revealed close button ×
   - Most recents persist across reloads
+  - A window you put in the [preview](#preview-and-picture-in-picture) gives up its tab while it is there — it is already on screen, and the slot is better spent on a window that isn't. Close (or hide) the preview and the tab comes back where it was. Control+Option+L still cycles every window, previewed or not.
 - Attention arrow (→) at the end of the strip counts and flashes for windows that need you but are visible nowhere; clicking it opens the most recent one for preview.
 - App wide toggles:
   - Copy-mode indicator/toggle
@@ -79,6 +80,7 @@ Keep an eye on specific windows, even while you focus on others.
 - Ctrl+Alt+I adds/removes the focused window.
 - Ctrl+Alt+H hides/shows the preview while keeping the windows in it.
 - Provides another way to quickly switch to high priority windows.
+- A previewed window drops out of the [recent tabs](#toolbar-and-recent-tabs) while it is in here: two ways to reach the same window, one of them showing you its screen, is one too many. Hiding the preview or taking the window out of it puts the tab back in its old slot.
 
 ### Hover Previews
 

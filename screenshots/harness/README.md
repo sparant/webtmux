@@ -49,6 +49,10 @@ Pieces:
   spinner), `verify-mousemode.js` (who gets a click/drag over a mouse-grabbing program),
   `verify-ux6.js` (MRU chord with an empty capture cache, Exposé's status filter, the
   mouse-capture dropdown, the paired sidebar toggles, paste-trim on rename),
+  `verify-recents-preview.js` (a window in the preview gives up its recents tab and
+  gets it back — in its old slot — when the preview hides it or lets it go, the cap
+  counting drawn tabs rather than held entries, ⌃⌥N/P skipping what has no tab while
+  ⌃⌥L still walks to it, and the "Recent ▾" menu surviving an all-previewed strip),
   `verify-shift-extend.js` (shift-click adjusts the end of an existing selection from
   its original anchor — in a plain shell and over a mouse-grabbing program, where it
   must reach neither the program nor the copy-mode exit),
