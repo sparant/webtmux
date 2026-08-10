@@ -53,6 +53,10 @@ Pieces:
   gets it back — in its old slot — when the preview hides it or lets it go, the cap
   counting drawn tabs rather than held entries, ⌃⌥N/P skipping what has no tab while
   ⌃⌥L still walks to it, and the "Recent ▾" menu surviving an all-previewed strip),
+  `verify-recents-queue.js` (a window pushed past the last tab is queued, not closed:
+  the head of that queue takes the next slot × frees, a dismissed window never returns,
+  visiting a queued one gives it a tab back, the tab-count control is reversible, and
+  the queue survives a reload),
   `verify-shift-extend.js` (shift-click adjusts the end of an existing selection from
   its original anchor — in a plain shell and over a mouse-grabbing program, where it
   must reach neither the program nor the copy-mode exit),

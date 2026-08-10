@@ -4,10 +4,12 @@
 // handles clicks via `manager.pickRecentWindow(id)` /
 // `manager.sidebar.toggleCollapsed()`.
 //
-// `recent` is the strip MINUS whatever the preview is showing: a window sitting in
-// the PiP or the preview bar is on screen and one click away, so it does not also
-// spend a tab (see recents-strip.js). Those entries are not gone — `recentHeld`
-// counts them, and they come back, in place, when the preview lets them go.
+// `recent` is only the TABS: the first `recentMax` remembered windows that the preview
+// isn't already showing. Two kinds of entry are missing from it and neither is gone —
+// a window sitting in the PiP or the preview bar is on screen and one click away, so it
+// does not also spend a tab (`recentHeld` counts those), and a window pushed past the
+// last slot keeps its place in line (`recentQueued` counts those). Both come back, in
+// place, when a slot frees. See recents-strip.js.
 //
 // The strip ends in an OVERFLOW ARROW (`overflowAlerts`, also from the SplitManager):
 // the windows that need attention and have no tab here, because a bounded strip
@@ -316,6 +318,11 @@ class WebtmuxToolbar extends LitElement {
     // so the "Recent ▾" menu survives previewing every recent window at once, and so
     // the strip can explain the tab that disappeared when a window was previewed.
     recentHeld: { type: Number },
+    // How many remembered windows are queued behind the last tab because the cap ran
+    // out (see recents-strip.js). They are not lost — the head of that queue takes the
+    // next slot that frees — so the "Recent ▾" menu says how many are waiting, right
+    // beside the number that decides it.
+    recentQueued: { type: Number },
     // Recents drag-reorder: the tab being dragged, and the insertion GAP the drop
     // would land in (0..n, -1 = not over the strip).
     dragKey: { type: String },
@@ -1100,6 +1107,7 @@ class WebtmuxToolbar extends LitElement {
     super();
     this.recent = [];
     this.recentHeld = 0;
+    this.recentQueued = 0;
     this.collapsed = false;
     // Scroll-wheel mode mirror (moved here from the sidebar). Seeded from the same
     // shared 'renderer' pref the terminal reads, so the label is right on first paint.
@@ -1817,8 +1825,11 @@ class WebtmuxToolbar extends LitElement {
         </div>
         <div class="mprev">
           ${this.recentMax === 1
-            ? 'one tab; every other window lives in the overflow arrow and Exposé'
-            : `${this.recentMax} tabs, then the least recently used one is replaced`}
+            ? 'one tab; every other window waits in line behind it'
+            : `${this.recentMax} tabs, then the least recently used one waits in line`}${
+              this.recentQueued
+                ? ` — ${this.recentQueued} waiting; +1 brings the next one back`
+                : ''}
         </div>
         <div class="mtitle">Labels</div>
         <button class="mitem" @click=${() => this._setLabelPref('showSession', !this.showSession)}>
@@ -1939,6 +1950,9 @@ class WebtmuxToolbar extends LitElement {
             @mouseenter=${(e) => this._tipEnter(e, `Recent windows — click for options: how many tabs to keep (now ${this.recentMax}), and their labels (show the session, trim the window name). Drag tabs to reorder them.`
               + (this.recentHeld
                 ? `\n${this.recentHeld} recent ${this.recentHeld === 1 ? 'window is' : 'windows are'} in the preview right now, so ${this.recentHeld === 1 ? 'its tab is' : 'their tabs are'} hidden — already on screen there. Close the preview and ${this.recentHeld === 1 ? 'it comes' : 'they come'} back.`
+                : '')
+              + (this.recentQueued
+                ? `\n${this.recentQueued} more ${this.recentQueued === 1 ? 'window is' : 'windows are'} waiting behind the last tab. Close a tab (×) or keep more tabs and ${this.recentQueued === 1 ? 'it slides' : 'they slide'} back in.`
                 : ''))}
             @mouseleave=${() => this._tipLeave()}
             @click=${() => { this._tipLeave(); this.labelMenuOpen = !this.labelMenuOpen; }}

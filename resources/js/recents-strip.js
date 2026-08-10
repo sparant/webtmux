@@ -20,16 +20,18 @@
 // Kept import-free (like work-alerts.js) so `node --test` can load it directly;
 // split-manager.js pulls in lit and could never run under the test harness.
 
-// Tab slots in the strip, by DEFAULT. The strip is a glance-able switcher, not a
+// Tab slots the strip DRAWS, by default. The strip is a glance-able switcher, not a
 // history: past ~5 the tabs stop being distinguishable at a glance and the Exposé is
-// the better tool. noteAccess evicts the least-recently-accessed slot to stay within
-// whatever the current cap is.
+// the better tool.
 //
 // It is only a default because "how many windows do I flip between" is a property of
 // the user's workspace, not of the widget: on a wide monitor with a dozen live agents
 // five tabs is an overflow arrow that never goes away. The cap is settable from the
 // "Recent ▾" menu and rides the shared blob (toolbar.recentMax) like the other strip
 // prefs, so every browser on this tmux server keeps the same strip.
+//
+// THE CAP BOUNDS THE TABS, NOT THE LIST. See "the off-strip queue" below: a window
+// pushed out of the last slot keeps its entry and comes back when a slot frees.
 export const MAX_RECENTS = 5;
 
 // Bounds for the settable cap. The floor is 1 rather than 0 because a strip with no
@@ -39,6 +41,41 @@ export const MAX_RECENTS = 5;
 // unambiguously the better tool.
 export const RECENTS_MIN = 1;
 export const RECENTS_MAX = 20;
+
+// ---- the off-strip queue ------------------------------------------------------
+//
+// The strip is the first `max` entries of a LONGER list. Everything past that point
+// is off-strip: no tab, but a remembered position, waiting for a slot.
+//
+// This is the difference between "pushed off" and "closed", and the strip used to
+// have no way to tell them apart. A sixth window arriving DESTROYED the least-recently
+// used entry — so closing a tab afterwards left a gap that stayed a gap, even though
+// the user had a perfectly good sixth window they had just been in. Meanwhile × on a
+// tab, which is the user saying "I'm done with this one", did the same thing. One of
+// those two is a statement of intent and the other is a side effect of running out of
+// room, and only the first should be permanent.
+//
+// So: an access that doesn't fit DEMOTES the least-recently-used tab to the head of
+// the off-strip queue, and a slot freeing up (× on a tab, a window dying, the cap
+// being raised, a window moving into the preview) lets the head slide back in. The
+// only thing that ERASES an entry is the user removing it, or its window ceasing to
+// exist.
+//
+// WHY POSITION, RATHER THAN A SEPARATE SHELF WITH ITS OWN RANKING. The strip's order
+// is hand-arrangeable (drag) and deliberately stable, so it is already a list whose
+// index means something. Making the off-strip queue the TAIL of that same list means
+// "what comes back next" needs no extra state, no second blob section, and no rule
+// that could disagree with the tabs: it is simply the next entry along. Demotion
+// inserts at the head of the tail (the slot just past the last tab), which keeps the
+// queue in most-recently-used order without sorting it — the entry being demoted was
+// the least-recently-used TAB, and every tab is at least as recent as anything already
+// off-strip, so it belongs exactly there.
+//
+// The list is still bounded, just far above the cap: it holds live windows only
+// (_pruneDeletedRecents drops the dead on the next layout push), and it rides a tmux
+// user option that every client parses, so it gets a ceiling rather than being allowed
+// to grow with every window the user has ever touched.
+export const RECENTS_HISTORY_MAX = 50;
 
 // Coerce a stored/typed cap into the allowed range. Total, like sanitizeRecents: the
 // value comes from the same user-writable tmux blob, and a junk cap must degrade to
@@ -66,7 +103,12 @@ export function clampRecentsMax(raw) {
 // `index` is deliberately passed through unvalidated-but-typed: tmux window indexes
 // are numbers, but the strip renders `?` for a missing one (see _refreshToolbar),
 // and forcing a 0 here would render a confident, wrong window number.
-export function sanitizeRecents(raw, max = MAX_RECENTS) {
+//
+// The bound is the HISTORY ceiling, not the tab cap: what is stored is the strip plus
+// its off-strip queue, and truncating a restore to the visible cap would throw away
+// every entry waiting to come back — the reload would silently do what closing each
+// of those tabs by hand does.
+export function sanitizeRecents(raw, max = RECENTS_HISTORY_MAX) {
   if (!Array.isArray(raw)) return [];
   const out = [];
   const seen = new Set();
@@ -133,89 +175,140 @@ function suppressedSet(previewed) {
   return new Set(Array.isArray(previewed) ? previewed : []);
 }
 
-// The entries that actually render as tabs, in strip order.
-export function visibleRecents(list, previewed) {
-  const hidden = suppressedSet(previewed);
-  return (Array.isArray(list) ? list : []).filter((e) => e && !hidden.has(e.id));
+// An entry's identity: (session, window). A window linked into two sessions is two
+// tabs, so the id alone would collapse them (see sanitizeRecents).
+function keyOf(e) {
+  return (e && typeof e.session === 'string' ? e.session : '') + '\x00' + (e?.id || '');
 }
 
-// Where a NEW entry goes when the strip is full. Returns -1 for "there is room,
-// append"; otherwise the index of the entry it replaces IN PLACE (which is what
-// keeps the strip's order stable — a new tab inherits the evicted tab's slot).
+// The POSITIONS in the durable list of the entries that draw a tab — the first `max`
+// that the preview isn't already showing. This is the one place the two rules that
+// decide what the user sees (suppression, then the cap) are applied, so the render,
+// the drag and the eviction can't drift apart about which entries are "the tabs".
+function visibleIndices(arr, hidden, max) {
+  const out = [];
+  for (let i = 0; i < arr.length && out.length < max; i++) {
+    const e = arr[i];
+    if (e && !hidden.has(e.id)) out.push(i);
+  }
+  return out;
+}
+
+// The entries that actually render as tabs, in strip order.
+export function visibleRecents(list, previewed, max = MAX_RECENTS) {
+  const arr = Array.isArray(list) ? list : [];
+  return visibleIndices(arr, suppressedSet(previewed), max).map((i) => arr[i]);
+}
+
+// The entries queued behind the last tab, nearest first. Everything here is one freed
+// slot away from being a tab again. Callers use it for counts and for explaining the
+// strip; nothing needs it to render.
+//
+// Suppressed entries are NOT in this queue even though they draw no tab: they are held
+// by the preview, not by the cap, and they come back on their own when it lets go.
+// Counting them here would double-count them against recentHeld and would tell the
+// user that raising the cap gets them back, which it wouldn't.
+export function offStripRecents(list, previewed, max = MAX_RECENTS) {
+  const arr = Array.isArray(list) ? list : [];
+  const hidden = suppressedSet(previewed);
+  const shown = new Set(visibleIndices(arr, hidden, max));
+  return arr.filter((e, i) => e && !shown.has(i) && !hidden.has(e.id));
+}
+
+// Give `entry` a tab, and return the list it should be stored as.
+//
+// Called on every access to a window that isn't already a tab — whether it has never
+// been in the strip or was pushed off it — because "the window I just moved to has no
+// tab" is the same wrong answer in both cases.
+//
+// Three outcomes:
+//
+//   • it is ALREADY a tab (or is suppressed and already in the list) — the list is
+//     returned unchanged, by reference. Re-accessing a window must never move its
+//     tab: the order is the user's, arranged by drag, and re-sorting it on every
+//     visit is what makes a strip you can't aim at.
+//   • there is ROOM — it takes the slot just past the last tab.
+//   • the tabs are FULL — the least-recently-used one gives up its slot, in place, and
+//     is re-filed at the head of the off-strip queue. Nothing is destroyed; the
+//     demoted entry is first in line to come back.
 //
 // The cap counts TABS, not entries: an entry whose window is in the preview draws
-// nothing, so letting it hold a slot against the cap would shrink the visible strip
-// every time the user previews something — the same wasted space, just relocated.
-// For the same reason the eviction scan skips suppressed entries: replacing one
-// frees no space, and it would quietly destroy the tab that is waiting to come back
-// when the preview lets go.
+// nothing, so it neither holds a slot nor gets demoted for one — demoting it would
+// free no space and would re-file the tab that is waiting for the preview to let go.
 //
 // `recency` maps an entry to its access sequence (higher = more recent); the caller
 // owns that store (captureCache.accessed), this module only ranks with it.
-export function recentsInsertSlot(list, { previewed, max = MAX_RECENTS, recency = () => 0 } = {}) {
+export function admitRecent(list, entry, { previewed, max = MAX_RECENTS, recency = () => 0 } = {}) {
+  if (!entry || !entry.id) return Array.isArray(list) ? list : [];
   const hidden = suppressedSet(previewed);
   const arr = Array.isArray(list) ? list : [];
-  const visible = arr.filter((e) => e && !hidden.has(e.id));
-  if (visible.length < max) return -1;
-  // visible.length >= max >= 1, so there is always a visible entry to evict here.
-  let slot = -1;
+  const key = keyOf(entry);
+  // A suppressed window's entry is placed the moment it exists and then left alone:
+  // it draws nothing either way, and moving it would rearrange the strip the user
+  // gets back when the preview closes.
+  const alreadyPlaced = hidden.has(entry.id)
+    ? arr.some((e) => e && keyOf(e) === key)
+    : visibleIndices(arr, hidden, max).some((i) => keyOf(arr[i]) === key);
+  if (alreadyPlaced) return arr;
+
+  // Off-strip and being visited again: it is coming back as a tab, so drop the stale
+  // placement first and let the rules below decide where it lands.
+  const next = arr.filter((e) => e && keyOf(e) !== key);
+  const vis = visibleIndices(next, hidden, max);
+  const after = vis.length ? vis[vis.length - 1] + 1 : 0;
+  if (vis.length < max) {
+    next.splice(after, 0, entry);
+    return next;
+  }
+  // Full. vis.length === max >= 1, so there is always a tab to demote.
+  let slot = vis[0];
   let lru = Infinity;
-  arr.forEach((e, i) => {
-    if (!e || hidden.has(e.id)) return;
-    const seq = recency(e);
+  for (const i of vis) {
+    const seq = recency(next[i]);
     if (seq < lru) { lru = seq; slot = i; }
-  });
-  return slot;
+  }
+  const demoted = next[slot];
+  next[slot] = entry;
+  // Head of the off-strip queue — the slot immediately past the last tab. `after` is
+  // still that boundary: the swap above changed what is in a slot, not how many.
+  next.splice(after, 0, demoted);
+  return next;
 }
 
-// Bring the strip back within its cap, counting only the entries that render.
-//
-// The overflow this exists for is the preview HANDING WINDOWS BACK: while three
-// tabs were suppressed the strip refilled to its cap with useful windows, and
-// closing the preview returns three more. Trimming is deliberately NOT done at that
-// moment — tabs vanishing as a side effect of closing a preview is exactly the kind
-// of behind-your-back destruction the strip's stable order exists to avoid. It
-// happens on the next ACCESS instead, where losing the least-recently-used tab is
-// the rule the strip has always followed and the user is already causing churn.
-//
-// Suppressed entries are never trimmed: they cost no space and are not the user's
-// to lose yet.
-export function trimRecentsToCap(list, { previewed, max = MAX_RECENTS, recency = () => 0 } = {}) {
-  const hidden = suppressedSet(previewed);
+// Hold the stored list to its ceiling. The tail is the least-recently-used end of the
+// off-strip queue (see "the off-strip queue"), so dropping from there loses the
+// entries the user is least likely to ever come back to — and never a tab, since tabs
+// live in the first `max` slots and the ceiling is far above the cap.
+export function trimRecentsHistory(list, max = RECENTS_HISTORY_MAX) {
   const arr = Array.isArray(list) ? list : [];
-  const visible = arr.filter((e) => e && !hidden.has(e.id));
-  if (visible.length <= max) return arr;
-  const keep = new Set(
-    [...visible].sort((a, b) => recency(b) - recency(a)).slice(0, max),
-  );
-  // Filter, don't re-sort: survivors keep the order the user arranged by hand.
-  return arr.filter((e) => e && (hidden.has(e.id) || keep.has(e)));
+  return arr.length <= max ? arr : arr.slice(0, max);
 }
 
 // Drag-reorder in VISIBLE coordinates. The toolbar hands back an insertion gap into
-// the tabs it drew, which is the strip with the suppressed entries taken out, so the
-// move is computed there and then written back through the durable list.
+// the tabs it drew — the strip minus the suppressed entries, cut off at the cap — so
+// the move is computed there and then written back through the durable list.
 //
-// Suppressed entries hold their durable slots while the visible ones shuffle around
-// them: their position is the position their tab will reappear in, and a drag the
-// user made among the tabs they can see must not silently re-file the tabs they
-// can't. Returns a new list, or null when the drag is a no-op.
-export function reorderVisibleRecents(list, { previewed, entry, toIndex } = {}) {
+// Entries with no tab (suppressed, or off-strip) hold their durable slots while the
+// visible ones shuffle around them: their position is the position their tab will
+// reappear in, and a drag the user made among the tabs they can see must not silently
+// re-file the ones they can't. Returns a new list, or null when the drag is a no-op.
+export function reorderVisibleRecents(list, { previewed, entry, toIndex, max = MAX_RECENTS } = {}) {
   if (!Number.isFinite(toIndex)) return null;
   const hidden = suppressedSet(previewed);
   const arr = Array.isArray(list) ? list : [];
-  const visible = arr.filter((e) => e && !hidden.has(e.id));
-  const from = visible.findIndex((e) => e.id === entry?.id && e.session === entry?.session);
+  const slots = visibleIndices(arr, hidden, max);
+  const from = slots.findIndex((i) => arr[i].id === entry?.id && arr[i].session === entry?.session);
   if (from === -1) return null;
   // Translate the insertion GAP into a final slot: removing the dragged tab first
   // shifts everything after it down one, so a gap past the source maps one lower.
   let to = toIndex > from ? toIndex - 1 : toIndex;
-  to = Math.max(0, Math.min(visible.length - 1, to));
+  to = Math.max(0, Math.min(slots.length - 1, to));
   if (to === from) return null;
-  const moved = [...visible];
+  const moved = slots.map((i) => arr[i]);
   moved.splice(to, 0, moved.splice(from, 1)[0]);
-  let k = 0;
-  return arr.map((e) => (e && !hidden.has(e.id) ? moved[k++] : e));
+  const out = [...arr];
+  slots.forEach((slot, k) => { out[slot] = moved[k]; });
+  return out;
 }
 
 // Owns the strip's half of the shared blob: the write guard, the change
@@ -239,19 +332,15 @@ export function reorderVisibleRecents(list, { previewed, entry, toIndex } = {}) 
 export class RecentsPersistence {
   // `store` is the StateStore singleton (only .section()/.patchSection() are used,
   // so a plain stub works in tests).
-  constructor(store, section = 'recentTabs', max = MAX_RECENTS) {
+  // The bound is the HISTORY ceiling, not the tab cap — what is stored is the strip
+  // AND its off-strip queue, and the cap is a property of the rendering client (it can
+  // even differ mid-write between two browsers) rather than of the stored data.
+  constructor(store, section = 'recentTabs', max = RECENTS_HISTORY_MAX) {
     this.store = store;
     this.sectionName = section;
-    this.max = clampRecentsMax(max);
+    this.max = Math.max(1, Math.floor(Number(max) || RECENTS_HISTORY_MAX));
     this._sig = null;
     this._restored = false;
-  }
-
-  // Change the cap future reads are truncated to. Does NOT touch what the caller is
-  // already holding — SplitManager owns the live list and trims it by recency, which
-  // is information this module doesn't have.
-  setMax(max) {
-    this.max = clampRecentsMax(max);
   }
 
   // Read the persisted strip. Until this has run, persist() is inert.

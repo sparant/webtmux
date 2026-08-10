@@ -128,8 +128,10 @@ async function main() {
 
   await walk(6);
   const full = await strip();
+  // The strip DRAWS five; what it remembers is longer — every window walked to keeps
+  // its entry, the surplus queued behind the last tab (see verify-recents-queue.js).
   check('setup: the strip is full at the default cap of 5',
-    full.tabs.length === 5 && full.entries.length === 5, JSON.stringify(full));
+    full.tabs.length === 5 && full.entries.length >= 5, JSON.stringify(full));
 
   // ---- 1. ⌃⌥I: the tab stands down, the entry stays --------------------------
   const pinned = await current();
@@ -140,10 +142,15 @@ async function main() {
   check('previewing the focused window takes its tab out of the strip',
     !one.tabs.includes(pinned) && one.previewed.includes(pinned),
     `tabs=${one.tabs.length} previewed=${JSON.stringify(one.previewed)}`);
-  check('and the DOM agrees — four tabs drawn, not five',
-    domOne === 4 && one.tabs.length === 4, `${domOne} .rtab drawn`);
+  // The freed slot is not left empty: the cap counts DRAWN tabs, so if a window is
+  // queued behind the strip it slides in for as long as the preview holds this one.
+  // With nothing queued, the strip simply draws one fewer.
+  const expectDrawn = Math.min(5, one.entries.length - one.held);
+  check('and the DOM agrees — the drawing slot is spent on a window with no tab',
+    domOne === expectDrawn && one.tabs.length === expectDrawn,
+    `${domOne} .rtab drawn, expected ${expectDrawn}`);
   check('the entry itself is untouched: held, not evicted',
-    one.entries.includes(pinned) && one.entries.length === 5 && one.held === 1,
+    one.entries.includes(pinned) && one.entries.length === full.entries.length && one.held === 1,
     `entries=${one.entries.length} held=${one.held}`);
 
   // ---- 2. tucking the preview away hands the tabs back -----------------------
@@ -168,8 +175,8 @@ async function main() {
     !!fresh && refilled.tabs.includes(fresh) && refilled.tabs.length === 5 && domRefilled === 5,
     `${domRefilled} drawn, new=${fresh}`);
   check('…by growing the strip, not by evicting the held entry',
-    refilled.entries.includes(pinned) && refilled.entries.length === 6,
-    `entries=${refilled.entries.length}`);
+    refilled.entries.includes(pinned) && refilled.entries.length === shown.entries.length + 1,
+    `entries=${refilled.entries.length}, was ${shown.entries.length}`);
 
   // ---- 5. ⌃⌥L still reaches a previewed window -------------------------------
   // Walk a whole held run and record every landing: the previewed window has to be

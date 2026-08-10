@@ -46,6 +46,7 @@ A tab flashes amber when its window has stopped working, and an arrow flashes wh
 - The toolbar has up to 5 (configurable) most-recently-used window tabs for quick access.
   - control+Option+N/P - used to navigate to the next/previous window in your most-recent list.
   - Remove a window from your most recents with the hover-revealed close button ×
+  - Past the tab count, windows queue up rather than being forgotten: the strip shows the first 5 and the rest wait in line. Close a tab (or raise the count) and the next one in line slides straight back in. Only × — you saying you are done with a window — removes one for good.
   - Most recents persist across reloads
   - A window you put in the [preview](#preview-and-picture-in-picture) gives up its tab while it is there — it is already on screen, and the slot is better spent on a window that isn't. Close (or hide) the preview and the tab comes back where it was. Control+Option+L still cycles every window, previewed or not.
 - Attention arrow (→) at the end of the strip counts and flashes for windows that need you but are visible nowhere; clicking it opens the most recent one for preview.
