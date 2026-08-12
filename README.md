@@ -97,7 +97,7 @@ Keep an eye on specific windows, even while you focus on others.
 
 ![Stoplights replayed: windows report green, one drops to amber and its tab flashes, another drops to red with no tab so the attention arrow flashes — until the window is actually viewed](screenshots/stoplights.gif)
 
-- Webtmux renders a stoplight dot everywhere the window appears (recents tabs, sidebar rows, preview tiles, Exposé tiles): green = working, amber = prompting you, red = waiting for work, unfilled = not reporting.
+- Webtmux renders a stoplight dot everywhere the window appears (recents tabs, sidebar rows, preview tiles, Exposé tiles): green = working, green ring = working in the background but free to take input, amber = prompting you, red = waiting for work, unfilled = not reporting.
 - Windows self-report status via the tmux option `@wt_working`.
 - When a window drops out of green while you're looking elsewhere, everything showing it flashes in the new color until you actually view it.
   - Alerts cover every window on the server, not just visible tabs.
@@ -224,11 +224,20 @@ Discover which build you are running.
 The stoplight contract is one tmux option, set on the window by whatever runs inside it:
 
 ```sh
-tmux set -w -t "$TMUX_PANE" @wt_working 1     # green  — working
-tmux set -w -t "$TMUX_PANE" @wt_working 2     # amber  — prompting: blocked until you answer
-tmux set -w -t "$TMUX_PANE" @wt_working 0     # red    — waiting for work to do
-tmux set -w -t "$TMUX_PANE" -u @wt_working    # unset  — unfilled dot, "not reporting"
+tmux set -w -t "$TMUX_PANE" @wt_working 1     # green      — working
+tmux set -w -t "$TMUX_PANE" @wt_working 3     # green ring — waiting on background work it started
+tmux set -w -t "$TMUX_PANE" @wt_working 2     # amber      — prompting: blocked until you answer
+tmux set -w -t "$TMUX_PANE" @wt_working 0     # red        — waiting for work to do
+tmux set -w -t "$TMUX_PANE" -u @wt_working    # unset      — unfilled dot, "not reporting"
 ```
+
+**Why there are two greens.** An agent that starts a build, a test run or a background job and then
+stops talking has not finished — it is waiting for itself, and it will carry on unprompted. Red
+there says "give this window some work" about the one window that needs none, and a strip of false
+reds is how the real ones stop being noticed. But it is not plain green either: the window is
+sitting at a prompt, so unlike a live turn you can interrupt it for free. `3` says both — same hue,
+so a glance still reads "does not need me", with an open centre for when the follow-up question is
+"which of these can I talk to". A drop out of *either* green is what raises the attention flash.
 
 **Always name the pane.** A bare `tmux set -w @wt_working …` is not "my window": with no `-t`,
 tmux resolves the target from the CURRENT window of the session it picks — the window you are

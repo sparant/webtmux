@@ -12,37 +12,59 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  workClass, workLabel, workTip, WORK_LEGEND,
+  workClass, workLabel, workTip, WORK_LEGEND, isBusy,
   STATUS_FILTERS, normalizeStatusFilter, matchesStatus,
 } from '../resources/js/stoplight.js';
 
-test('the three reported states each get their own fill', () => {
+test('the four reported states each get their own fill', () => {
   assert.equal(workClass('1'), 'on');
   assert.equal(workClass('0'), 'off');
   assert.equal(workClass('2'), 'wait');
+  assert.equal(workClass('3'), 'bg');
 });
 
 test('anything else is the unfilled dot, not a stuck colour', () => {
   // '' is @wt_working unset; undefined is a window missing from the map entirely;
-  // '3'/'yes' stand in for a client that sets something we never defined.
-  for (const v of ['', undefined, null, '3', 'yes', 1]) {
+  // '4'/'yes' stand in for a client that sets something we never defined.
+  for (const v of ['', undefined, null, '4', 'yes', 1]) {
     assert.equal(workClass(v), '', `expected no class for ${JSON.stringify(v)}`);
     assert.equal(workLabel(v), 'Not reporting a status');
   }
 });
 
 test('every state hovers with the full colour key, not just its own line', () => {
-  for (const v of ['1', '0', '2', '']) {
+  for (const v of ['1', '0', '2', '3', '']) {
     const tip = workTip(v);
     assert.ok(tip.startsWith(workLabel(v)), 'the tip leads with where THIS window is');
-    assert.ok(tip.includes(WORK_LEGEND), 'and then explains all four fills');
+    assert.ok(tip.includes(WORK_LEGEND), 'and then explains every fill');
   }
 });
 
 test('the key names every colour it can paint', () => {
-  for (const colour of ['Green', 'Amber', 'Red', 'Unfilled']) {
+  for (const colour of ['Green', 'Green ring', 'Amber', 'Red', 'Unfilled']) {
     assert.ok(WORK_LEGEND.includes(colour), `legend is missing ${colour}`);
   }
+});
+
+// --- busy ---------------------------------------------------------------------
+// The one distinction WorkAlerts asks about. Both greens are busy; nothing else is.
+// Tested here rather than only through the flash rules because it is the predicate
+// that keeps the flash and the dot telling the same story.
+
+test('both greens are busy, and only they are', () => {
+  assert.equal(isBusy('1'), true, 'a live turn is busy');
+  assert.equal(isBusy('3'), true, 'so is a window parked on work it started');
+  for (const v of ['0', '2', '', undefined, null, '4']) {
+    assert.equal(isBusy(v), false, `${JSON.stringify(v)} is not busy`);
+  }
+});
+
+test('the two busy states are still told apart everywhere it matters', () => {
+  // The whole point of the fourth value: it must not collapse back into green.
+  assert.notEqual(workClass('3'), workClass('1'));
+  assert.notEqual(workLabel('3'), workLabel('1'));
+  assert.ok(/background/i.test(workLabel('3')), 'the label says what it is waiting on');
+  assert.ok(/input/i.test(workLabel('3')), 'and that you can still talk to it');
 });
 
 // --- the Exposé status filter -------------------------------------------------
@@ -53,19 +75,28 @@ test('the key names every colour it can paint', () => {
 test('each filter admits exactly its own colour', () => {
   const cases = {
     working: '1',
+    background: '3',
     attention: '2',
     idle: '0',
   };
   for (const [filter, pass] of Object.entries(cases)) {
-    for (const v of ['1', '0', '2', '']) {
+    for (const v of ['1', '0', '2', '3', '']) {
       assert.equal(matchesStatus(v, filter), v === pass,
         `${filter} vs ${JSON.stringify(v)}`);
     }
   }
 });
 
+test('"Working" does not quietly include the background windows', () => {
+  // They are both busy, but the filter answers "who is running a turn right now",
+  // and the reason 'background' is its own button is that those are the windows you
+  // can interrupt for free. Folding them in would delete the only useful answer.
+  assert.equal(matchesStatus('3', 'working'), false);
+  assert.equal(matchesStatus('1', 'background'), false);
+});
+
 test('"all" admits every value, including ones we never defined', () => {
-  for (const v of ['1', '0', '2', '', undefined, '3']) {
+  for (const v of ['1', '0', '2', '3', '', undefined, '4']) {
     assert.ok(matchesStatus(v, 'all'), `all should admit ${JSON.stringify(v)}`);
   }
 });

@@ -97,8 +97,16 @@ type Window struct {
 	// tmux user option: "1" = working (green dot), "0" = stopped (red dot),
 	// "2" = waiting for user input (amber dot — an agent asked a question or needs a
 	// permission decision, so the window is blocked on a human, which is distinct
-	// from simply being idle), "" = unset (unfilled dot). Clients set it with
-	// `tmux set -w @wt_working 1|0|2`.
+	// from simply being idle), "3" = working in the background (green ring — it is
+	// waiting on something it started and will carry on by itself, but it is sitting
+	// at a prompt meanwhile, so it can take input; distinct from "1" because you can
+	// interrupt it for free, and from "0" because it is not out of work),
+	// "" = unset (unfilled dot). Clients set it with `tmux set -w @wt_working 1|3|2|0`.
+	//
+	// Deliberately carried as an opaque string, not an enum: the server's job is to
+	// relay whatever the window claimed, and stoplight.js decides what it means. A
+	// value this end has never heard of degrades to an unfilled dot in the UI, which
+	// is how a new state can be rolled out to the hooks before the server knows it.
 	Working string `json:"working"`
 	Panes   []Pane `json:"panes"`
 	// SessionCount is how many DISTINCT logical sessions this window is linked into

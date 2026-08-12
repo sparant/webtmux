@@ -80,6 +80,13 @@ class WebtmuxExpose extends LitElement {
       gap: 16px;
       align-items: center;
       flex: 0 0 auto;
+      /* Wraps rather than crushing its contents. The status segment grew a fifth
+         button with the background state, and this row already carries a title, a
+         count, a filter hint and a key legend — on a narrow window the overflow
+         would land on the shortcut hints, which are the part someone reading this
+         header for the first time needs most. */
+      flex-wrap: wrap;
+      row-gap: 8px;
     }
     .head .title {
       font-size: 15px;
@@ -281,6 +288,9 @@ class WebtmuxExpose extends LitElement {
     }
     .tile-work.on   { background: #2ecc71; border-color: #2ecc71; box-shadow: 0 0 5px #2ecc71; }
     .tile-work.off  { background: #e74c3c; border-color: #e74c3c; }
+    /* Waiting on background work it started: green hue (it does not need you) with an
+       open centre (it is at a prompt, so you can talk to it). */
+    .tile-work.bg   { background: transparent; border-color: #2ecc71; border-width: 2px; box-shadow: 0 0 5px rgba(46, 204, 113, 0.75); }
     .tile-work.wait { background: #f5c542; border-color: #f5c542; box-shadow: 0 0 6px #f5c542; animation: wt-wait 1.4s ease-in-out infinite; }
     @keyframes wt-wait { 50% { opacity: 0.35; } }
 

@@ -408,17 +408,24 @@ class WebtmuxToolbar extends LitElement {
     .rtab.drop-before::before { left: -4px; }
     .rtab.drop-end::after { right: -4px; }
 
-    /* Working-status dot: green = working, amber = prompting (blocked on your
-       answer), red = waiting for work to do, unfilled = not reporting. Clients drive
-       it with: tmux set -w @wt_working 1|0|2 (set -u to clear). The words live in
-       stoplight.js — every surface that shows this dot says them the same way, and
-       hovering it prints the whole key. */
+    /* Working-status dot: green = working, green ring = working in the background,
+       amber = prompting (blocked on your answer), red = waiting for work to do,
+       unfilled = not reporting. Clients drive it with: tmux set -w @wt_working
+       1|3|2|0 (set -u to clear). The words live in stoplight.js — every surface that
+       shows this dot says them the same way, and hovering it prints the whole key. */
     .work {
       flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%;
       border: 1px solid #5a6a8a; background: transparent; box-sizing: border-box;
     }
     .work.on   { background: #2ecc71; border-color: #2ecc71; box-shadow: 0 0 4px #2ecc71; }
     .work.off  { background: #e74c3c; border-color: #e74c3c; }
+    /* Waiting on background work it started. Green, because across a screenful of
+       windows the only question you are asking is "does this one need me", and the
+       answer is the same as green's. HOLLOW, because the follow-up question — can I
+       talk to it — has a different answer here: it is sitting at a prompt. Same hue,
+       so it never reads as a fourth kind of trouble; open centre, so it is still
+       findable when you are looking for the one you can interrupt. */
+    .work.bg   { background: transparent; border-color: #2ecc71; border-width: 2px; box-shadow: 0 0 4px rgba(46, 204, 113, 0.75); }
     /* Waiting for user input — pulses, because unlike the other two states it is a
        request: something is blocked until you go and answer it. */
     .work.wait { background: #f5c542; border-color: #f5c542; box-shadow: 0 0 5px #f5c542; animation: wt-wait 1.4s ease-in-out infinite; }

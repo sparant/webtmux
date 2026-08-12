@@ -8,7 +8,7 @@
 // imports them.
 //
 // The values are set by whatever runs IN the window (agent hooks, a shell prompt
-// hook, a script) with:  tmux set -w -t "$TMUX_PANE" @wt_working 1|0|2  (-u to clear).
+// hook, a script) with:  tmux set -w -t "$TMUX_PANE" @wt_working 1|0|2|3 (-u to clear).
 // The pane target is part of the contract, not a flourish: a bare `set -w` writes to
 // whatever window is CURRENT, i.e. the one being watched, so an unaddressed write is
 // right only while nobody needs it and lands on the wrong window the moment they do.
@@ -19,7 +19,11 @@
 // Raw @wt_working value -> the CSS class the dot carries. '' (no class) is the
 // unfilled "not reporting" dot.
 export function workClass(working) {
-  return working === '1' ? 'on' : working === '0' ? 'off' : working === '2' ? 'wait' : '';
+  return working === '1' ? 'on'
+    : working === '0' ? 'off'
+    : working === '2' ? 'wait'
+    : working === '3' ? 'bg'
+    : '';
 }
 
 // The one-line "what is this window doing right now" answer.
@@ -27,16 +31,32 @@ export function workLabel(working) {
   return working === '1' ? 'Working'
     : working === '0' ? 'Waiting for work to do'
     : working === '2' ? 'Prompting — it needs an answer from you'
+    : working === '3' ? 'Working in the background — it can take input meanwhile'
     : 'Not reporting a status';
+}
+
+// Is this window BUSY — i.e. does it have work of its own that it expects to carry
+// on with, whether or not it happens to be executing something this instant?
+//
+// The two busy values are one state to everything that asks "does this window need
+// me": a live turn (1) and a window parked on work it launched (3) both mean "it is
+// not out of work, and it is not blocked on you". They differ only in whether you
+// can usefully TALK to it right now, which is a property of the dot, not of the
+// alerting — so WorkAlerts asks this rather than comparing against '1', and the
+// drop out of busy (either kind) is what raises a flash.
+export function isBusy(working) {
+  return working === '1' || working === '3';
 }
 
 // The full colour key, appended to every stoplight's hover text. A dot is only
 // worth having if you can find out what it means from the dot itself, and hover
 // is the only place there's room to say it. Colour NAMES lead each line: the tooltip
-// has to be readable by someone who can't tell the three fills apart.
+// has to be readable by someone who can't tell the fills apart.
 export const WORK_LEGEND = [
   'Work status — set by the window itself (tmux set -w @wt_working):',
   '  ● Green — working',
+  '  ◉ Green ring — working in the background: it is waiting on something it started,',
+  '                 and can take input while it waits',
   '  ● Amber — prompting: something is blocked until you answer',
   '  ● Red — waiting for work to do',
   '  ○ Unfilled — not reporting a status',
@@ -56,14 +76,20 @@ export function workTip(working) {
 // extracted to prevent.
 //
 // `working` is deliberately the ONLY narrowing axis. A window is either doing work,
-// blocked on you, out of work, or silent; there is nothing else the stoplight knows,
-// and a filter that combined statuses ("anything but green") would need a name that
-// says which combination it means.
+// waiting on work it started, blocked on you, out of work, or silent; there is
+// nothing else the stoplight knows, and a filter that combined statuses ("anything
+// but green") would need a name that says which combination it means.
+//
+// 'background' gets its own button rather than folding into 'working' for the reason
+// the state exists at all: those are the windows you can interrupt cheaply. "Show me
+// everything that is busy" and "show me the busy ones I can talk to" are different
+// questions, and only the second one has an answer worth acting on.
 export const STATUS_FILTERS = [
-  { id: 'all',       label: 'All',       hint: 'every window, whatever it is doing' },
-  { id: 'working',   label: 'Working',   hint: 'green — busy right now' },
-  { id: 'attention', label: 'Needs you', hint: 'amber — prompting: blocked until you answer' },
-  { id: 'idle',      label: 'Idle',      hint: 'red — reported that it has run out of work to do' },
+  { id: 'all',        label: 'All',        hint: 'every window, whatever it is doing' },
+  { id: 'working',    label: 'Working',    hint: 'green — running a turn right now' },
+  { id: 'background', label: 'Background', hint: 'green ring — waiting on work it started; free to take input' },
+  { id: 'attention',  label: 'Needs you',  hint: 'amber — prompting: blocked until you answer' },
+  { id: 'idle',       label: 'Idle',       hint: 'red — reported that it has run out of work to do' },
 ];
 
 // Coerce a stored/typed filter id into a real one. Total, like the other readers of
@@ -83,9 +109,10 @@ export function normalizeStatusFilter(raw) {
 // bury the handful of windows that genuinely said they had run out of work.
 export function matchesStatus(working, filter) {
   switch (normalizeStatusFilter(filter)) {
-    case 'working':   return working === '1';
-    case 'attention': return working === '2';
-    case 'idle':      return working === '0';
-    default:          return true;
+    case 'working':    return working === '1';
+    case 'background': return working === '3';
+    case 'attention':  return working === '2';
+    case 'idle':       return working === '0';
+    default:           return true;
   }
 }

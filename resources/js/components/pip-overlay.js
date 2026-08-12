@@ -269,6 +269,9 @@ class WebtmuxPip extends LitElement {
     }
     .pwork.on   { background: #2ecc71; border-color: #2ecc71; box-shadow: 0 0 5px #2ecc71; }
     .pwork.off  { background: #e74c3c; border-color: #e74c3c; }
+    /* Waiting on background work it started: green hue (it does not need you) with an
+       open centre (it is at a prompt, so you can talk to it). */
+    .pwork.bg   { background: transparent; border-color: #2ecc71; border-width: 2px; box-shadow: 0 0 5px rgba(46, 204, 113, 0.75); }
     .pwork.wait { background: #f5c542; border-color: #f5c542; box-shadow: 0 0 6px #f5c542; animation: wt-wait 1.4s ease-in-out infinite; }
     @keyframes wt-wait { 50% { opacity: 0.35; } }
 

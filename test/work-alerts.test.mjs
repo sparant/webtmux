@@ -4,7 +4,8 @@
 //
 //     node --test test/
 //
-// work-alerts.js has no imports at all, so it loads cleanly under node.
+// work-alerts.js imports only stoplight.js, which imports nothing, so it loads
+// cleanly under node.
 //
 // This is worth testing because every rule in it is about a SEQUENCE of polls, not
 // about one snapshot: the same red dot means "flash" or "stay quiet" depending
@@ -35,6 +36,51 @@ test('green -> red raises a red alert; green -> amber raises an amber one', () =
   );
   assert.equal(out[0].alert, '0', 'stopped window flashes red');
   assert.equal(out[1].alert, '2', 'waiting window flashes amber');
+});
+
+// --- the background green ------------------------------------------------------
+// An agent that ends its turn with a build still running goes 1 -> 3: it did not
+// stop, it is waiting on itself. Everything here is about that transition not being
+// mistaken for the one the flash exists to catch.
+
+test('going to wait on background work is not "stopping" — no flash', () => {
+  const a = new WorkAlerts();
+  const out = run(a, [tab('@1', '1')], [tab('@1', '3')], [tab('@1', '3')]);
+  assert.equal(out[0].alert, '', 'the agent is still busy, just parked');
+});
+
+test('but dropping out of background work DOES flash', () => {
+  // The background job finished, the agent woke, wrapped up and ran out of work.
+  // You never saw a green in between, and this is the moment worth catching.
+  const a = new WorkAlerts();
+  const out = run(a, [tab('@1', '3')], [tab('@1', '0')]);
+  assert.equal(out[0].alert, '0');
+});
+
+test('a background window blocked on you flashes amber like any other', () => {
+  const a = new WorkAlerts();
+  const out = run(a, [tab('@1', '3')], [tab('@1', '2')]);
+  assert.equal(out[0].alert, '2');
+});
+
+test('picking up background work acknowledges a standing flash', () => {
+  // Same rule as a return to plain green: it un-stopped by itself, so there is
+  // nothing left for you to go and look at.
+  const a = new WorkAlerts();
+  run(a, [tab('@1', '1')], [tab('@1', '0')]);
+  const out = run(a, [tab('@1', '3')]);
+  assert.equal(out[0].alert, '', 'back to busy clears it');
+});
+
+test('a background window acknowledges its own linked tabs', () => {
+  // The acknowledgement pass keys by window id, so both doors onto one screen agree.
+  const a = new WorkAlerts();
+  run(a,
+    [tab('@1', '1'), tab('@1', '1', { session: 'other' })],
+    [tab('@1', '0'), tab('@1', '0', { session: 'other' })],
+  );
+  const out = run(a, [tab('@1', '3'), tab('@1', '3', { session: 'other' })]);
+  assert.deepEqual(out.map((w) => w.alert), ['', '']);
 });
 
 test('a window already red on the first poll does NOT flash', () => {

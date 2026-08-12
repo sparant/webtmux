@@ -1,10 +1,10 @@
 // WorkAlerts — decides which windows should be FLASHING for attention.
 //
-// The stoplight dot (@wt_working: 1 green working / 0 red waiting for work to do /
-// 2 amber prompting you — see stoplight.js for the words) answers "what is that
-// window doing", but only if you happen to be looking at an 8px dot at the moment it
-// changes. This turns the moment of change into something you cannot miss: the
-// surfaces showing that window flash.
+// The stoplight dot (@wt_working: 1 green working / 3 green-ring working in the
+// background / 0 red waiting for work to do / 2 amber prompting you — see
+// stoplight.js for the words) answers "what is that window doing", but only if you
+// happen to be looking at an 8px dot at the moment it changes. This turns the moment
+// of change into something you cannot miss: the surfaces showing that window flash.
 //
 // SCOPE. This runs over EVERY (session, window) placement on the tmux server, not
 // just the ≤5 in the recents strip. It used to be fed the strip alone, which meant a
@@ -16,10 +16,18 @@
 //
 // The rules, and why each one is the way it is:
 //
-//   RAISE on the TRANSITION out of green, never on the state itself. A window that
+//   RAISE on the TRANSITION out of BUSY, never on the state itself. A window that
 //   has been sitting red for an hour is not news; one that stopped while you were
 //   reading another window is the entire point. So we compare against the value we
 //   last showed, not against a threshold.
+//
+//   "Busy" is both green states (see isBusy): a live turn, and a window parked on
+//   background work it started. Moving between them is not news — an agent that
+//   finishes a turn with a build still running has not stopped, it is waiting on
+//   itself — so 1 -> 3 raises nothing, and the flash comes when it drops out of
+//   both. Comparing against '1' alone would flash every agent the moment it went to
+//   wait on its own background job, which is the loudest possible way to say
+//   "nothing happened".
 //
 //   CLEAR when the window is on screen (`active`) ANYWHERE — see the keying note
 //   below for why "anywhere" and not "in this session". That is the literal thing the
@@ -29,8 +37,9 @@
 //   you miss when you step away for coffee. (The caller decides what "on screen"
 //   means; SplitManager passes "some terminal region is displaying this placement".)
 //
-//   CLEAR on a return to green. The window un-stopped by itself, so there is nothing
-//   left for you to go and look at, and a flash that outlived its cause is noise.
+//   CLEAR on a return to busy (either green). The window un-stopped by itself, so
+//   there is nothing left for you to go and look at, and a flash that outlived its
+//   cause is noise.
 //
 //   IGNORE blank ('' — @wt_working unset or never set). It means "this window stopped
 //   reporting", which is not an answer either way, so it neither raises nor clears.
@@ -55,6 +64,14 @@
 // among several flashing windows, and taking you to the latest one is the overflow
 // arrow's whole job. A re-colour (red -> amber, "and now it wants you") bumps it too:
 // that is fresh news, not a continuation.
+//
+// The one import is stoplight.js, which is itself import-free — so this module still
+// loads under `node --test` (split-manager.js, its only other caller, cannot: it pulls
+// in xterm). What the values MEAN is the stoplight's business, and a second copy of
+// "which of them count as busy" living here is how the flash and the dot beside it
+// would eventually come to disagree.
+import { isBusy } from './stoplight.js';
+
 export class WorkAlerts {
   constructor() {
     this._prev = new Map();     // key -> the @wt_working value we last showed
@@ -79,7 +96,7 @@ export class WorkAlerts {
     // cleared.
     const acked = new Set();
     for (const w of entries) {
-      if (w.active || w.working === '1') acked.add(w.id);
+      if (w.active || isBusy(w.working)) acked.add(w.id);
     }
     const seen = new Set();
     for (const w of entries) {
@@ -90,14 +107,14 @@ export class WorkAlerts {
       const stopped = w.working === '0' || w.working === '2';
       const cur = this._alerts.get(key);
       if (acked.has(w.id)) this._alerts.delete(key);
-      // Raise on the drop out of green — or, if it is ALREADY flashing, re-colour to
+      // Raise on the drop out of busy — or, if it is ALREADY flashing, re-colour to
       // wherever it has got to since (red -> amber = "and now it wants you"). The
       // flash must never disagree with the dot right next to it.
       //
       // Re-stamping an unchanged alert on every poll would make "most recent" mean
       // "whichever window the 500ms loop happened to touch last", so the sequence
       // only moves when the value actually changed.
-      else if (stopped && (prev === '1' || cur) && (!cur || cur.value !== w.working)) {
+      else if (stopped && (isBusy(prev) || cur) && (!cur || cur.value !== w.working)) {
         this._alerts.set(key, { value: w.working, seq: ++this._seq });
       }
       const a = this._alerts.get(key);

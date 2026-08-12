@@ -242,10 +242,11 @@ class WebtmuxSidebar extends LitElement {
     .wrow > .window-edit { flex: 1 1 auto; min-width: 0; }
 
     /* Working-status dot — the same stoplight the recents tabs, the preview tiles and
-       Exposé show, read from the same @wt_working value: green = working, amber =
-       prompting (blocked on your answer), red = waiting for work to do, unfilled =
-       not reporting. Clients drive it with: tmux set -w @wt_working 1|0|2 (set -u to
-       clear). The words come from stoplight.js and hovering the dot prints the key. */
+       Exposé show, read from the same @wt_working value: green = working, green ring
+       = working in the background, amber = prompting (blocked on your answer), red =
+       waiting for work to do, unfilled = not reporting. Clients drive it with:
+       tmux set -w @wt_working 1|3|2|0 (set -u to clear). The words come from
+       stoplight.js and hovering the dot prints the key. */
     .work, .work-gap {
       flex: 0 0 auto; width: 8px; height: 8px; box-sizing: border-box;
     }
@@ -256,6 +257,9 @@ class WebtmuxSidebar extends LitElement {
     }
     .work.on   { background: #2ecc71; border-color: #2ecc71; box-shadow: 0 0 4px #2ecc71; }
     .work.off  { background: #e74c3c; border-color: #e74c3c; }
+    /* Waiting on background work it started: green hue (it does not need you) with an
+       open centre (it is at a prompt, so you can talk to it). */
+    .work.bg   { background: transparent; border-color: #2ecc71; border-width: 2px; box-shadow: 0 0 4px rgba(46, 204, 113, 0.75); }
     /* Waiting for user input — pulses, because unlike the other two states it is a
        request: something is blocked until you go and answer it. */
     .work.wait { background: #f5c542; border-color: #f5c542; box-shadow: 0 0 5px #f5c542; animation: wt-wait 1.4s ease-in-out infinite; }
