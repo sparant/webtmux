@@ -95,7 +95,16 @@ Pieces:
   own full-screen fixture, because nothing `boot-tmux.sh` starts actually fills its
   grid. `SHOTS=1` also writes a before/after pair of the preview bar to
   `/src/.zoomshots` — worth looking at, since "the numbers say it zoomed" and "you
-  can read it now" are different claims).
+  can read it now" are different claims),
+  `verify-stoplight-bg.js` (the background green, `@wt_working 3`: a value the server
+  had never heard of before reaches the strip as a dot with a rule behind it — asserted
+  from `getComputedStyle`, since a class nobody styled looks fine in the DOM — the ring
+  is the SAME green as a working window but hollow, an agent parking on its own work
+  (1 → 3) raises no attention flash while 3 → 0 still does (with a 1 → 0 control first,
+  so "no flash" can't be a driver that never sees one), and Exposé's Background button
+  selects exactly those windows without Working swallowing them. Writes the strip to
+  `screenshots/verify/` — whether a 2px ring is distinguishable at 8px is not something
+  an assertion can tell you).
 - `driver-gifs.js` — records one video per animated feature, each scene
   replaying its README section's bullets in order (split → drag divider →
   close; hover → preview → restore; lights change → tabs flash until viewed;
