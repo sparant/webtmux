@@ -80,6 +80,13 @@ class WebtmuxExpose extends LitElement {
       gap: 16px;
       align-items: center;
       flex: 0 0 auto;
+      /* Wraps rather than crushing its contents. The status segment grew a fifth
+         button with the background state, and this row already carries a title, a
+         count, a filter hint and a key legend — on a narrow window the overflow
+         would land on the shortcut hints, which are the part someone reading this
+         header for the first time needs most. */
+      flex-wrap: wrap;
+      row-gap: 8px;
     }
     .head .title {
       font-size: 15px;
