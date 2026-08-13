@@ -498,6 +498,10 @@ export class TerminalUnit {
     // it back before the pane repaints under the anchor. See _guardSelection.
     this.terminal.onSelectionChange(() => this._onSelectionChange());
 
+    // Resizing repaints the LAST selection rectangle even when there is no longer a
+    // selection to repaint — see _clearGhostSelection for what that leaves on screen.
+    this.terminal.onResize(() => this._clearGhostSelection());
+
     this.terminal.onData((data) => {
       // While a hover preview borrows this terminal, the screen shows ANOTHER
       // window but keyboard focus (and this handler) still belong to the region's
@@ -1311,6 +1315,31 @@ export class TerminalUnit {
     this.terminal?.clearSelection();
   }
 
+  // Wipe the highlight xterm draws for a selection that no longer exists.
+  //
+  // A resize repaints the last selection rectangle whether or not anything is still
+  // selected: the models are all empty afterwards (getSelection() is '', hasSelection()
+  // is false, so are the selection service's own start/end), and yet .xterm-selection
+  // is refilled with divs at the old coordinates. What is left is a grey box over
+  // text nobody chose, invisible to everything that asks the terminal what is
+  // selected — and unclearable by hand, because over a mouse-grabbing program a press
+  // never reaches xterm's selection service. The one thing that does clear it is the
+  // mouse-protocol change of entering and leaving tmux copy mode, which is exactly
+  // the dance people were doing to get rid of it.
+  //
+  // The preview is the path that made this common (it resizes a borrowed region to
+  // the captured grid and back, so a glance at a thumbnail conjured the ghost of a
+  // selection made minutes earlier), but the divider drag and a browser window
+  // resize reach it just as well — hence the fix at the terminal's own resize event
+  // rather than in the preview.
+  //
+  // Only when nothing is selected: a resize with a LIVE selection must repaint it,
+  // which is the same code doing its job.
+  _clearGhostSelection() {
+    const t = this.terminal;
+    if (t && !t.hasSelection?.()) t.clearSelection();
+  }
+
   // Record which window this pane is now showing, and say whether that is a change.
   // Read from the LAYOUT rather than from our own selectWindow calls, so switches we
   // did not make are caught too: tmux's own `prefix n` typed into the pane, another
@@ -1609,6 +1638,26 @@ export class TerminalUnit {
   // without bound — past the cap the oldest chunks are dropped, and the repaint on
   // release fixes up the visible screen anyway.
   beginPreviewHold() {
+    // A preview is another window's screen painted into this pane, so it ends any
+    // highlight in this one for exactly the reason a window SWITCH does (see
+    // viewLeftItsWindow): the highlight names text, xterm holds it as buffer
+    // coordinates, and the blit puts different characters under every one of them.
+    //
+    // Left alone it is not merely stale-looking. While the preview is up the
+    // rectangle sits over the PREVIEWED window's text and ⌘C copies that — text the
+    // user never selected, out of a window they were only glancing at. And the
+    // release puts this region's own screen back with the rectangle still on it,
+    // where nothing in the UI can clear it: over a mouse-grabbing program a press
+    // never reaches xterm's selection service, so it takes a trip through copy mode
+    // by hand. Dropping it here — the moment the screen is actually replaced, not
+    // when a target is merely pointed at — is what a hover costs, and it costs
+    // nothing when the preview never draws.
+    //
+    // Not restored on release, deliberately. The text it named is gone: the region
+    // is resized to the capture and back, and whatever the pane printed while held
+    // is replayed underneath. Putting the rectangle back at the same coordinates
+    // would recreate the very thing this drops.
+    this._dropSelection();
     this._previewHold = true;
     this._previewBuf = [];
   }

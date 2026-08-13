@@ -104,7 +104,15 @@ Pieces:
   so "no flash" can't be a driver that never sees one), and Exposé's Background button
   selects exactly those windows without Working swallowing them. Writes the strip to
   `screenshots/verify/` — whether a 2px ring is distinguishable at 8px is not something
-  an assertion can tell you).
+  an assertion can tell you),
+  `verify-preview-selection.js` (a preview does not leave a highlight on the region it
+  borrowed: the highlight ends when the previewed screen is blitted in — so ⌘C can't
+  copy the previewed window's text out from under it — nothing is left painted when
+  the region comes back, a hover with NOTHING selected paints nothing (the ghost
+  rectangle a resize used to repaint from a selection long gone), a resize with no
+  selection paints nothing either, and pointing at the window the region already shows
+  leaves its highlight alone. `diag-resize-ghost.js` is the same claim stripped to the
+  xterm behaviour underneath it, with no preview involved).
 - `driver-gifs.js` — records one video per animated feature, each scene
   replaying its README section's bullets in order (split → drag divider →
   close; hover → preview → restore; lights change → tabs flash until viewed;
