@@ -32,7 +32,22 @@
       height: 100%;
       overflow: hidden;
       background: #1a1a2e;
+      /* Every scrollbar, form control and default UA colour in here is a DARK-theme
+         one. Without this the browser assumes light and paints its own widgets to
+         match — which is where the white bar down the side of the terminal came from:
+         a light scrollbar track, drawn by Chrome, on a black terminal. */
+      color-scheme: dark;
     }
+    /* …and the terminal's scrollbar is hidden outright, because it can never scroll.
+       xterm's stylesheet sets `overflow-y: scroll` on the viewport, so the track is
+       permanently there — but webtmux keeps the terminal sized to the tmux pane and
+       sends the wheel to tmux (copy-mode) or to the program, so the browser-side
+       viewport holds no scrollback for that bar to move through. It was 15px of
+       reserved width that did nothing; hidden, those columns go back to the terminal. */
+    .xterm .xterm-viewport {
+      scrollbar-width: none;              /* Firefox */
+    }
+    .xterm .xterm-viewport::-webkit-scrollbar { display: none; }   /* Chrome, Safari */
     /* Column layout: the toolbar sits at the top, #app (the regions) fills the rest. */
     body {
       display: flex;

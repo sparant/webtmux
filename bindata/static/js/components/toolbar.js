@@ -42,7 +42,7 @@ import { copyText } from '../clipboard.js';
 import { copyBuffers } from '../copy-buffer-store.js';
 import { SCROLL_MODES as SCROLL_ORDER, normalizeScrollMode as normalizeScroll } from '../terminal-unit.js';
 import { MOUSE_MODES as MOUSE_ORDER, normalizeMouseMode as normalizeMouse } from '../mouse-mode.js';
-import { clampRecentsMax, RECENTS_MIN, RECENTS_MAX } from '../recents-strip.js';
+import { clampRecentsMax, fitTabCount, RECENTS_MIN, RECENTS_MAX } from '../recents-strip.js';
 
 // Recent-tab label shape. Two INDEPENDENT toggles rather than one four-way cycle,
 // because they answer unrelated questions: "which session is this in" and "how much
@@ -323,6 +323,11 @@ class WebtmuxToolbar extends LitElement {
     // next slot that frees — so the "Recent ▾" menu says how many are waiting, right
     // beside the number that decides it.
     recentQueued: { type: Number },
+    // The head of that queue, handed over so its tab can be MEASURED without being
+    // shown (see .rtab.spare and _fitStrip). Null when the queue is empty, or when the
+    // user's cap rather than the width is what is holding it back — then there is
+    // nothing a wider window would let in, so there is nothing to measure.
+    recentNext: { type: Object },
     // Recents drag-reorder: the tab being dragged, and the insertion GAP the drop
     // would land in (0..n, -1 = not over the strip).
     dragKey: { type: String },
@@ -361,17 +366,31 @@ class WebtmuxToolbar extends LitElement {
       background: #7a4a12;
       border-bottom-color: #f0a742;
     }
+    /* The strip is FITTED, not scrolled: the manager draws only as many tabs as there
+       is room for and queues the rest (see recents-strip.js "the width cap"). So this
+       box never has anything to scroll — overflow:hidden is the backstop for the one
+       frame between a resize and the re-measure, not the mechanism.
+       position:relative makes it the containing block for the width probe below. */
     .tabs {
       display: flex;
       align-items: center;
       gap: 6px;
-      overflow-x: auto;
-      overflow-y: hidden;
+      overflow: hidden;
+      position: relative;
       flex: 1 1 auto;
-      scrollbar-width: thin;
+      min-width: 0;
     }
-    .tabs::-webkit-scrollbar { height: 6px; }
-    .tabs::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 3px; }
+    /* The width probe: the next window in line, rendered for its WIDTH alone. Taken out
+       of the flow (absolute) so it costs no space, hidden so it is never seen, and inert
+       so it can't be hovered, dragged or clicked — but still laid out, which is the
+       whole point: _fitStrip measures a real tab instead of guessing at one. */
+    .rtab.spare {
+      position: absolute;
+      left: 0;
+      top: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
     .label {
       color: #666; font-size: 12px; margin-right: 2px; white-space: nowrap; flex: 0 0 auto;
       background: none; border: none; padding: 2px 4px; border-radius: 4px;
@@ -1115,6 +1134,7 @@ class WebtmuxToolbar extends LitElement {
     this.recent = [];
     this.recentHeld = 0;
     this.recentQueued = 0;
+    this.recentNext = null;
     this.collapsed = false;
     // Scroll-wheel mode mirror (moved here from the sidebar). Seeded from the same
     // shared 'renderer' pref the terminal reads, so the label is right on first paint.
@@ -1723,6 +1743,8 @@ class WebtmuxToolbar extends LitElement {
     clearTimeout(this._buildTipTimer);
     this._tip.dispose();
     this._unsubCopy?.();
+    this._stripObserver?.disconnect();
+    this._stripObserver = null;
     this.manager?.hover?.cancel();
   }
 
@@ -1838,6 +1860,12 @@ class WebtmuxToolbar extends LitElement {
                 ? ` — ${this.recentQueued} waiting; +1 brings the next one back`
                 : ''}
         </div>
+        ${this._widthBound() ? html`
+          <div class="mprev">
+            only ${this.recent.length} fit in this window right now, so raising the number
+            here changes nothing until it is wider — the rest are waiting, not closed
+          </div>
+        ` : ''}
         <div class="mtitle">Labels</div>
         <button class="mitem" @click=${() => this._setLabelPref('showSession', !this.showSession)}>
           <span class="mark">${this.showSession ? '✓' : ''}</span>Show session
@@ -1853,6 +1881,137 @@ class WebtmuxToolbar extends LitElement {
   // The overflow arrow at the end of the strip: N windows need you and none of them
   // has a tab here. Clicking it opens the window list and points the browse at the
   // most recent one — see SplitManager.revealOverflowAlert.
+  // Is the browser window, rather than the user's own cap, what is holding tabs back?
+  // The strip is drawing fewer tabs than the cap allows AND there are windows queued
+  // for a slot: the only thing that can mean is that they don't fit. Worth saying out
+  // loud in the menu, because the number in there stops responding when it's true.
+  _widthBound() {
+    return this.recentQueued > 0 && this.recent.length < this.recentMax;
+  }
+
+  // One recents tab. Also renders the width probe (`spare`), and that is the reason
+  // this is a function rather than inline markup: the probe has to be the SAME BOX as
+  // a real tab or it measures a lie, and two copies of this template would drift apart
+  // the first time a tab grew a badge. The handlers come along for the ride — a spare
+  // is `visibility: hidden; pointer-events: none`, so none of them can fire.
+  _recentTab(w, i, spare = false) {
+    const key = this._key(w);
+    const full = `${w.session} — window ${w.index}: ${w.name}`;
+    // A window shown in ANOTHER region can't be moved here (two regions on one
+    // window would just mirror each other) — but it can be JUMPED to, which is
+    // what clicking now does. Hovering it shows nothing new for the same reason:
+    // it's already on screen.
+    const tip = (w.disabled
+      ? `${full}\nAlready open in another region — click to jump there · drag to reorder`
+      : `${full}\nHover to preview it in a terminal region · click to switch there · drag to reorder`)
+      + alertTip(w.alert);
+    const last = !spare && i === this.recent.length - 1;
+    return html`
+          <span
+            class="rtab ${spare ? 'spare' : ''} ${!spare && this.dragKey === key ? 'dragging' : ''} ${!spare && this.dragKey && this.dropIndex === i ? 'drop-before' : ''} ${!spare && this.dragKey && last && this.dropIndex === this.recent.length ? 'drop-end' : ''}"
+            aria-hidden=${spare ? 'true' : 'false'}
+            draggable=${spare ? 'false' : 'true'}
+            @dragstart=${(e) => this._onTabDragStart(e, w)}
+            @dragend=${() => this._onTabDragEnd()}
+            @mouseenter=${(e) => { this._tipEnter(e, tip); this.manager?.hover?.enter(w.id, w.session); }}
+            @mouseleave=${() => { this._tipLeave(); this.manager?.hover?.leave(); }}
+          ><span
+            class="work ${workClass(w.working)}"
+            role="img"
+            aria-label=${workLabel(w.working)}
+            @mouseenter=${(e) => { e.stopPropagation(); this._tipEnter(e, workTip(w.working)); }}
+            @mouseleave=${(e) => { e.stopPropagation(); this._tipEnter({ currentTarget: e.currentTarget.closest('.rtab') }, tip); }}
+          ></span><button
+            class="tab ${w.active ? 'active' : ''} ${w.disabled ? 'disabled' : ''} ${!w.active && this.previewWindow === w.id ? 'previewing' : ''} ${alertClass(w.alert)}"
+            aria-label=${full}
+            @click=${() => { this._tipLeave(); this.manager?.pickRecentWindow(w); }}
+          ><span class="sess">${w.index}</span><span class="wname">${this._tabLabel(w)}</span><span
+              class="close"
+              aria-label="Remove from Recent (does not close the window)"
+              @mouseenter=${(e) => { e.stopPropagation(); this._tipEnter(e, 'Remove this tab from Recent — the window keeps running (this does not close or kill it)'); }}
+              @mouseleave=${(e) => { e.stopPropagation(); this._tipEnter({ currentTarget: e.currentTarget.closest('.tab') }, tip); }}
+              @click=${(e) => { e.stopPropagation(); this._tipLeave(); this.manager?.removeRecent(w); }}
+            >×</span></button></span>
+    `;
+  }
+
+  // ---- fitting the strip to the toolbar ----------------------------------------
+  //
+  // The tabs used to overflow into a horizontal scrollbar. A switcher you have to
+  // scroll to see isn't glance-able, and the scrolled-away tabs were invisible to the
+  // alert machinery as well — they HAD tabs, so the overflow arrow didn't speak for
+  // them, and a window flashing for attention could sit off the left edge unseen.
+  //
+  // So the strip is measured against the space it has and the surplus is queued (see
+  // recents-strip.js "the width cap"). The manager owns the resulting cap; this is the
+  // measurement it can't make, reported after every render and on every resize.
+  //
+  // Three widths go into the answer, most trustworthy first:
+  //   • the drawn tabs — measured;
+  //   • the next window in line — measured too, via the invisible spare, which is what
+  //     makes GROWING exact rather than a guess that oscillates;
+  //   • the slots beyond that — assumed to look like the widest tab on screen. Only
+  //     this last one is an estimate, and it only decides how much room the strip
+  //     claims to have SPARE, which is what a newly-visited window is placed against.
+  _fitStrip() {
+    const tabs = this.renderRoot?.querySelector('.tabs');
+    if (!tabs || !this.manager) return;
+    // Not while the pointer is on the strip. A hovered tab reveals its × and so grows
+    // by ~18px, and re-fitting against that would drop the last tab the moment you
+    // reached for one — then put it back when you left. The measurement resumes on the
+    // way out; nothing else in here changes while a mouse sits still.
+    if (tabs.matches(':hover')) return;
+    const gap = this._stripGap(tabs);
+    const widths = [];
+    let spare = 0;
+    for (const el of tabs.querySelectorAll('.rtab')) {
+      const w = el.getBoundingClientRect().width;
+      if (el.classList.contains('spare')) spare = w;
+      else widths.push(w);
+    }
+    // Nothing drawn yet: no measurement to report. Say nothing rather than "1 fits" —
+    // the strip is empty because there are no recents, not because it is out of room.
+    if (!widths.length) return;
+    const widest = Math.max(...widths, spare);
+    const candidates = [...widths];
+    if (spare) candidates.push(spare);
+    while (candidates.length < RECENTS_MAX) candidates.push(widest);
+    this.manager.setRecentsFit(fitTabCount(candidates, tabs.clientWidth, gap));
+  }
+
+  // The flex gap between tabs, read from the stylesheet rather than repeated here so
+  // the arithmetic can't disagree with the layout. Cached: _fitStrip runs on every
+  // toolbar update (twice a second, with the layout push) and the gap never changes.
+  _stripGap(tabs) {
+    if (this._gapPx == null) {
+      const raw = parseFloat(getComputedStyle(tabs).columnGap);
+      this._gapPx = Number.isFinite(raw) ? raw : 6;
+    }
+    return this._gapPx;
+  }
+
+  // A window resize changes the strip's width without changing a single property, so
+  // updated() alone would leave the fit stale until the next layout push happened to
+  // re-render. Observing the box itself also catches the toolbar's OWN reflows — a
+  // long notice, the read-only badge, the overflow arrow appearing — which take room
+  // from the tabs just as surely as dragging the window narrower does.
+  //
+  // Idempotent and driven from updated() rather than firstUpdated() so a detach/attach
+  // (or a first render with no strip to observe yet) re-arms it instead of silently
+  // leaving the strip unfitted for the rest of the session.
+  _observeStrip() {
+    if (this._stripObserver || typeof ResizeObserver === 'undefined') return;
+    const tabs = this.renderRoot?.querySelector('.tabs');
+    if (!tabs) return;
+    this._stripObserver = new ResizeObserver(() => this._fitStrip());
+    this._stripObserver.observe(tabs);
+  }
+
+  updated() {
+    this._observeStrip();
+    this._fitStrip();
+  }
+
   _overflowArrow() {
     const list = this.overflowAlerts || [];
     if (!list.length) return '';
@@ -1973,44 +2132,8 @@ class WebtmuxToolbar extends LitElement {
         @dragleave=${(e) => this._onStripDragLeave(e)}
         @drop=${(e) => this._onStripDrop(e)}
       >
-        ${this.recent.map((w, i) => {
-          const key = this._key(w);
-          const full = `${w.session} — window ${w.index}: ${w.name}`;
-          // A window shown in ANOTHER region can't be moved here (two regions on one
-          // window would just mirror each other) — but it can be JUMPED to, which is
-          // what clicking now does. Hovering it shows nothing new for the same reason:
-          // it's already on screen.
-          const tip = (w.disabled
-            ? `${full}\nAlready open in another region — click to jump there · drag to reorder`
-            : `${full}\nHover to preview it in a terminal region · click to switch there · drag to reorder`)
-            + alertTip(w.alert);
-          const last = i === this.recent.length - 1;
-          return html`
-          <span
-            class="rtab ${this.dragKey === key ? 'dragging' : ''} ${this.dragKey && this.dropIndex === i ? 'drop-before' : ''} ${this.dragKey && last && this.dropIndex === this.recent.length ? 'drop-end' : ''}"
-            draggable="true"
-            @dragstart=${(e) => this._onTabDragStart(e, w)}
-            @dragend=${() => this._onTabDragEnd()}
-            @mouseenter=${(e) => { this._tipEnter(e, tip); this.manager?.hover?.enter(w.id, w.session); }}
-            @mouseleave=${() => { this._tipLeave(); this.manager?.hover?.leave(); }}
-          ><span
-            class="work ${workClass(w.working)}"
-            role="img"
-            aria-label=${workLabel(w.working)}
-            @mouseenter=${(e) => { e.stopPropagation(); this._tipEnter(e, workTip(w.working)); }}
-            @mouseleave=${(e) => { e.stopPropagation(); this._tipEnter({ currentTarget: e.currentTarget.closest('.rtab') }, tip); }}
-          ></span><button
-            class="tab ${w.active ? 'active' : ''} ${w.disabled ? 'disabled' : ''} ${!w.active && this.previewWindow === w.id ? 'previewing' : ''} ${alertClass(w.alert)}"
-            aria-label=${full}
-            @click=${() => { this._tipLeave(); this.manager?.pickRecentWindow(w); }}
-          ><span class="sess">${w.index}</span><span class="wname">${this._tabLabel(w)}</span><span
-              class="close"
-              aria-label="Remove from Recent (does not close the window)"
-              @mouseenter=${(e) => { e.stopPropagation(); this._tipEnter(e, 'Remove this tab from Recent — the window keeps running (this does not close or kill it)'); }}
-              @mouseleave=${(e) => { e.stopPropagation(); this._tipEnter({ currentTarget: e.currentTarget.closest('.tab') }, tip); }}
-              @click=${(e) => { e.stopPropagation(); this._tipLeave(); this.manager?.removeRecent(w); }}
-            >×</span></button></span>
-        `;})}
+        ${this.recent.map((w, i) => this._recentTab(w, i))}
+        ${this.recentNext ? this._recentTab(this.recentNext, -1, true) : ''}
       </div>
       ${this._overflowArrow()}
       <div class="wt-tip"></div>

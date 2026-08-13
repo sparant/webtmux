@@ -92,6 +92,46 @@ export function clampRecentsMax(raw) {
   return Math.min(RECENTS_MAX, Math.max(RECENTS_MIN, Math.floor(n)));
 }
 
+// ---- the width cap -------------------------------------------------------------
+//
+// The cap above is a PREFERENCE ("how many windows do I flip between"). This one is a
+// FACT about the browser window: how many of those tabs there is actually room to draw.
+//
+// The strip used to scroll when the tabs outgrew the toolbar, and a scrollbar is the
+// wrong answer twice over. A glance-able switcher whose tabs are off screen isn't one,
+// and the tabs that scrolled away were invisible to the alert machinery too — they had
+// tabs, so the overflow arrow didn't count them, but you couldn't see them flash.
+// Fitting the strip instead makes the two agree: what doesn't fit is off-strip, which
+// is a state the rest of this module already knows how to explain and to undo.
+//
+// So the drawn count is min(the user's cap, what fits), and the surplus goes to the
+// head of the off-strip queue — exactly where lowering the cap by hand would put it,
+// and it slides back the moment the window is widened again.
+//
+// Widths come from the DOM (the toolbar measures its own tabs), which is why the
+// arithmetic lives here and the measuring lives there: this half is testable.
+//
+// `slack` absorbs sub-pixel layout: clientWidth is an integer and the tab boxes are
+// not, so a set that fits exactly can measure a hair over and drop a tab for nothing.
+export function fitTabCount(widths, avail, gap = 0, { min = RECENTS_MIN, slack = 1 } = {}) {
+  const list = Array.isArray(widths) ? widths : [];
+  if (!list.length) return 0;
+  // No width to measure against (never rendered, display:none, a zero-width toolbar):
+  // say `min` rather than 0. A measurement that hasn't happened yet must not read as
+  // "nothing fits" — that would empty the strip on first paint and take the "Recent ▾"
+  // menu (the only way back) with it.
+  if (!Number.isFinite(avail) || avail <= 0) return Math.min(list.length, min);
+  let used = 0;
+  let n = 0;
+  for (const w of list) {
+    used += (n ? gap : 0) + (Number.isFinite(w) && w > 0 ? w : 0);
+    if (used > avail + slack) break;
+    n++;
+  }
+  // Same floor as the cap control: one tab that overflows beats no strip at all.
+  return Math.max(Math.min(list.length, min), n);
+}
+
 // Coerce arbitrary blob content into well-formed strip entries.
 //
 // `id` is the only field with no sensible default — an entry without one can't be

@@ -57,6 +57,10 @@ Pieces:
   the head of that queue takes the next slot × frees, a dismissed window never returns,
   visiting a queued one gives it a tab back, the tab-count control is reversible, and
   the queue survives a reload),
+  `verify-recents-fit.js` (the strip is fitted to the toolbar rather than scrolled:
+  nothing overflows at any viewport width, narrowing the window queues the tabs that
+  no longer fit and widening brings them back in order, the user's cap is never
+  rewritten by the width, and the terminal's dead scrollbar reserves no space),
   `verify-shift-extend.js` (shift-click adjusts the end of an existing selection from
   its original anchor — in a plain shell and over a mouse-grabbing program, where it
   must reach neither the program nor the copy-mode exit),

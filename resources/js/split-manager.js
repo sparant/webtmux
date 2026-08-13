@@ -33,7 +33,7 @@ import { CaptureCache } from './capture-cache.js';
 import { HoverPreview } from './hover-preview.js';
 import { WorkAlerts, AlertsPersistence, hiddenAlerts, alertOf } from './work-alerts.js';
 import {
-  clampRecentsMax, RecentsPersistence,
+  clampRecentsMax, RECENTS_MIN, RECENTS_MAX, RecentsPersistence,
   visibleRecents, offStripRecents, admitRecent, trimRecentsHistory, reorderVisibleRecents,
 } from './recents-strip.js';
 import { buildMruOrder } from './mru-order.js';
@@ -121,10 +121,17 @@ export class SplitManager {
     // are the off-strip queue, waiting for a slot (see recents-strip.js). Only the user
     // (× on a tab) and a window dying take an entry out of it.
     this.recentWindows = [];         // {id,index,name,session}, stable order
-    // How many tabs the strip DRAWS. A shared pref (toolbar.recentMax) rather than a
-    // constant — see recents-strip.js. Read BEFORE addUnit(): that path can already
+    // How many tabs the strip may draw. A shared pref (toolbar.recentMax) rather than
+    // a constant — see recents-strip.js. Read BEFORE addUnit(): that path can already
     // reach noteAccess, which places entries against this cap.
     this.recentsMax = clampRecentsMax(stateStore.section('toolbar').recentMax);
+    // …and how many there is ROOM to draw, measured by the toolbar against its own
+    // width (setRecentsFit). Deliberately NOT shared: the pref is a property of the
+    // workspace and belongs in the blob every client reads, but this is a property of
+    // THIS browser window, and letting a narrow phone publish it would shrink the
+    // strip on the wide monitor next to it. Starts at the ceiling so the strip renders
+    // at full size on the first paint and is trimmed by the first measurement.
+    this.recentsFit = RECENTS_MAX;
     // Must exist before addUnit() below: that path reaches _refreshToolbar (and so
     // _persistRecents) while the strip is still empty and unrestored. Bounded by the
     // history ceiling, not the tab cap: the queue is stored too, or a reload would
@@ -836,13 +843,20 @@ export class SplitManager {
   // durable list (persistence, the MRU walk's extra candidates, removeRecent) keeps
   // using this.recentWindows, which is longer.
   visibleRecents() {
-    return visibleRecents(this.recentWindows, this.previewedWindowIds(), this.recentsMax);
+    return visibleRecents(this.recentWindows, this.previewedWindowIds(), this.recentsCap());
   }
 
   // The entries queued behind the tabs, nearest first. Only the toolbar's explanatory
   // text needs these; nothing renders them.
   offStripRecents() {
-    return offStripRecents(this.recentWindows, this.previewedWindowIds(), this.recentsMax);
+    return offStripRecents(this.recentWindows, this.previewedWindowIds(), this.recentsCap());
+  }
+
+  // How many tabs the strip actually draws: the user's cap, or what fits, whichever
+  // is smaller. Every rule that says "the tabs" (render, drag, eviction, the queue)
+  // asks here, so the two constraints can never disagree about where the strip ends.
+  recentsCap() {
+    return Math.max(RECENTS_MIN, Math.min(this.recentsMax, this.recentsFit));
   }
 
   // Shared argument bundle for the placement helpers: what is suppressed, how many
@@ -850,7 +864,7 @@ export class SplitManager {
   _recentsCapOpts() {
     return {
       previewed: this.previewedWindowIds(),
-      max: this.recentsMax,
+      max: this.recentsCap(),
       recency: (e) => this.captureCache.accessed.get(e.id) ?? 0,
     };
   }
@@ -865,6 +879,17 @@ export class SplitManager {
     const next = clampRecentsMax(max);
     if (next === this.recentsMax) return;
     this.recentsMax = next;
+    this._refreshToolbar();
+  }
+
+  // How many tabs there is ROOM for, reported by the toolbar after it measures its own
+  // strip (see _fitStrip). Same eviction rule as setRecentsMax and for the same reason:
+  // a window that no longer fits is queued, never closed, so widening the browser puts
+  // it back. Called on every toolbar update, so the no-change case must stay free.
+  setRecentsFit(n) {
+    const next = Math.max(RECENTS_MIN, Math.min(RECENTS_MAX, Math.floor(n)));
+    if (!Number.isFinite(next) || next === this.recentsFit) return;
+    this.recentsFit = next;
     this._refreshToolbar();
   }
 
@@ -1388,9 +1413,9 @@ export class SplitManager {
       // and a duplicate of it is the one thing the strip's few slots can't afford.
       if (previewed.has(e.id)) held++;
     }
-    // The tabs themselves: the first `recentsMax` entries the preview isn't showing.
+    // The tabs themselves: the first `recentsCap()` entries the preview isn't showing.
     // Everything past that is the off-strip queue — no tab, but a kept place in line.
-    this.toolbar.recent = this.visibleRecents().map(e => {
+    const tabView = (e) => {
       const live = liveByKey.get(e.session + '\x00' + e.id) || liveById.get(e.id);
       const c = cache?.get(e.id);
       return {
@@ -1413,7 +1438,9 @@ export class SplitManager {
         // have been showing for it all along.
         alert: alertOf(alerts, e.session, e.id),
       };
-    });
+    };
+    const tabs = this.visibleRecents();
+    this.toolbar.recent = tabs.map(tabView);
     // How many tabs are standing down for the preview. The toolbar needs the count
     // for two reasons: the "Recent ▾" menu only renders when the strip has something
     // in it (previewing every recent window would otherwise take the cap control off
@@ -1422,7 +1449,19 @@ export class SplitManager {
     // …and how many windows are queued behind the last tab. Same reason: a cap that
     // is currently costing the user tabs should be able to say so, in the menu where
     // the number that decides it lives.
-    this.toolbar.recentQueued = this.offStripRecents().length;
+    const queued = this.offStripRecents();
+    this.toolbar.recentQueued = queued.length;
+    // The width probe. The toolbar can measure the tabs it drew, but not the width of
+    // one it hasn't — and guessing is what makes a fitted strip flap between N and N+1
+    // forever. So the next entry in line is handed over and rendered as an invisible
+    // spare: real markup, real width, no space taken and nothing on screen. The strip
+    // then grows by one whenever that measured width genuinely fits.
+    //
+    // Only while the FIT is the binding constraint. If the user's own cap is what is
+    // holding the queue back, more room changes nothing and there is nothing to probe.
+    this.toolbar.recentNext = (queued.length && tabs.length < this.recentsMax)
+      ? tabView(queued[0])
+      : null;
     // Persist AFTER the loop above refreshed each entry's name/index from the live
     // layouts, so a tmux rename is durable too (and after the prune, so a deleted
     // window doesn't come back on the next reload). Signature-guarded — see

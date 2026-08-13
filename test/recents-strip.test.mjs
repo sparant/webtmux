@@ -20,6 +20,7 @@ import {
   MAX_RECENTS, RECENTS_MIN, RECENTS_MAX, RECENTS_HISTORY_MAX, clampRecentsMax,
   sanitizeRecents, recentsSignature, RecentsPersistence,
   visibleRecents, offStripRecents, admitRecent, trimRecentsHistory, reorderVisibleRecents,
+  fitTabCount,
 } from '../resources/js/recents-strip.js';
 import { StateStore } from '../resources/js/state-store.js';
 
@@ -507,4 +508,50 @@ test('a drag past the end, and a drag that changes nothing', () => {
     'a tab that is not in the strip cannot be moved');
   assert.equal(reorderVisibleRecents(list, { previewed: [], entry: entry('@2'), toIndex: undefined }), null,
     'a drop with no gap (a dragend outside the strip) is not a change');
+});
+
+// ---- the width cap ------------------------------------------------------------
+//
+// fitTabCount is the arithmetic behind "don't scroll the strip, shorten it". Worth
+// its own tests for the same reason the rest of this file is: every way it can be
+// wrong is quiet. Over-count and a tab is clipped by the toolbar; under-count and a
+// window silently loses its tab on a screen with room to spare; return 0 and the
+// strip — including the "Recent ▾" menu that is the only way to get it back — is
+// gone. The measuring itself (toolbar._fitStrip) is DOM work and is not tested here;
+// what it hands over is a list of widths, which is exactly what this takes.
+
+test('the strip stops at the last tab that fits', () => {
+  assert.equal(fitTabCount([100, 100, 100], 1000, 6), 3, 'room for all of them');
+  assert.equal(fitTabCount([100, 100, 100], 212, 6), 2, '100 + 6 + 100 = 206 fits, a third does not');
+  assert.equal(fitTabCount([100, 100, 100], 204, 6), 1, 'past the slack, two no longer fit');
+});
+
+test('the gap between tabs is charged between them, not after the last one', () => {
+  // 3 tabs of 100 with a 6px gap need 312, not 318: two gaps, not three. A strip that
+  // charged the trailing gap would drop a tab that fits exactly.
+  assert.equal(fitTabCount([100, 100, 100], 312, 6), 3);
+  assert.equal(fitTabCount([100, 100, 100], 310, 6), 2, 'a third gap would have made this fit');
+});
+
+test('sub-pixel layout does not cost a tab', () => {
+  // clientWidth is an integer and the tab boxes are not: a set that fits can measure
+  // a fraction over. Anything inside the slack still fits.
+  assert.equal(fitTabCount([100.4, 100.4], 206, 6), 2, '206.8 vs 206 is rounding, not overflow');
+  assert.equal(fitTabCount([100, 100], 200, 6, { slack: 0 }), 1, 'without the slack it is a genuine overflow');
+});
+
+test('the strip never fits down to nothing', () => {
+  // A tab too wide for the toolbar is still drawn — clipped. The alternative is an
+  // empty strip, which takes the "Recent ▾" menu (and so the way back) off screen.
+  assert.equal(fitTabCount([500, 100], 50, 6), 1);
+  assert.equal(fitTabCount([500], 0, 6), 1, 'unmeasured (zero-width, never rendered) is not "nothing fits"');
+  assert.equal(fitTabCount([500], NaN, 6), 1, 'nor is an unmeasurable width');
+  assert.equal(fitTabCount([], 1000, 6), 0, 'but no tabs means no tabs');
+});
+
+test('junk widths are charged as nothing rather than poisoning the sum', () => {
+  // An element that has not been laid out measures 0 or undefined. Counting it as NaN
+  // would make every comparison false and return the whole list.
+  assert.equal(fitTabCount([100, undefined, 100], 212, 6), 3, 'a zero-width tab still takes a slot');
+  assert.equal(fitTabCount([100, -50, 100], 212, 6), 3);
 });
