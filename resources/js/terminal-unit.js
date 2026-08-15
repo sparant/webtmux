@@ -29,6 +29,7 @@ import {
   isExtendPress, extendAnchor, selectionSpan, cellOffset, viewLeftItsWindow,
 } from './mouse-mode.js';
 import { writeAuthority, READ_ONLY_NOTICE } from './write-guard.js';
+import { LinkHealth, LIVE, LOST } from './link-health.js';
 
 // Protocol message types (must match Go constants)
 export const MSG = {
@@ -133,10 +134,21 @@ const TMUX_MSG_TYPES = new Set([
 // LAYOUT PUSHES CANNOT BE USED FOR THIS. The server only sends a layout when it
 // CHANGES (handlers.go: `if currentLayout != lastLayout`), so silence from an idle
 // tmux is entirely normal and "no push for N seconds" would fire constantly.
-const HEARTBEAT_MS = 3000;
-// Two missed beats, so one dropped/slow Pong is not a warning. ~8s is also comfortably
-// longer than any tmux command round trip on a loaded box.
-const STALL_MS = 8000;
+//
+// WHEN to ask, and what the answer (or its absence) means, is LinkHealth's business —
+// see link-health.js, which owns the whole judgement as a pure state machine. This
+// file owns the socket, the timer and the Ping frame, and nothing else about liveness.
+//
+// There is no fixed interval any more: the unit re-arms a single timer for whenever
+// LinkHealth says something could next happen, so an idle hidden tab schedules nothing
+// at all and a link with an unanswered keystroke wakes at the exact millisecond its
+// colour changes.
+//
+// A gap this much larger than the shortest thing we ever schedule means OUR clock
+// stopped — a suspended laptop, or a background tab throttled to a beat a minute — not
+// that the server went quiet. See LinkHealth.resumed() for what we do about it, which
+// is emphatically not "assume everything is fine".
+const CLOCK_GAP_MS = 7500;
 
 // Map any stored/legacy value onto a valid mode. The old two-state setting used
 // 'passthrough' for what is now 'app'.
@@ -174,13 +186,15 @@ export class TerminalUnit {
     // reads identically to a drop, and the toolbar would flash a connection warning on
     // every single page load.
     this._wasClosed = false;
-    // Liveness heartbeat state (see HEARTBEAT_MS): when the last Pong came back, when
-    // the last tick ran (to tell a real stall from a throttled/suspended tab), and
-    // whether we are currently calling this connection stalled.
-    this._lastPongAt = 0;
+    // Liveness: LinkHealth holds the judgement (live / slow / lost — see
+    // link-health.js), this holds the machinery. `_lastTickAt` is how we notice our own
+    // clock stopping, `_liveTimer` is the single self-re-arming timer that probes and
+    // re-judges, and `_linkState` is the last verdict we told the owner about — kept so
+    // the callback fires on CHANGES rather than on every re-judgement.
+    this.link = new LinkHealth();
     this._lastTickAt = 0;
-    this._heartbeat = null;
-    this._stalled = false;
+    this._liveTimer = null;
+    this._linkState = LIVE;
     // Called on every open/close/stall change so the owner (SplitManager) can surface it.
     this.onConnectionChange = null;
     this.bufferSize = 1024 * 1024;
@@ -1423,21 +1437,27 @@ export class TerminalUnit {
       // long ago — so the reconnect is the trigger. Only the PRIMARY unit owns the
       // store's transport, so only it re-arms.
       if (this.primary) stateStore.resync();
-      this._startHeartbeat();
+      this.link.opened(Date.now());
+      this._startLiveness();
       if (this.onConnectionChange) this.onConnectionChange(this);
     };
 
     this.ws.onmessage = (event) => {
+      // Any frame proves SOMETHING is coming down the wire, which is enough to let an
+      // otherwise silent link off the idle probe. It is not enough to discharge an ask —
+      // see link-health.js on why only a Pong answers.
+      this.link.inbound(Date.now());
       this.handleMessage(event.data);
     };
 
     this.ws.onclose = () => {
       if (this.destroyed) return;
       this._wasClosed = true;
-      // A closed socket is reported as closed, not as stalled — and there is nothing
-      // left to ping.
-      this._stopHeartbeat();
-      this._stalled = false;
+      // A closed socket is reported as closed, not as mute — and there is nothing left
+      // to ping, so the liveness timer stands down until a retry opens.
+      this._stopLiveness();
+      this.link.closed();
+      this._linkState = LOST;
       if (this.onConnectionChange) this.onConnectionChange(this);
 
       // Reconnect to the SAME session (a grouped region's session is recreated by
@@ -1478,8 +1498,11 @@ export class TerminalUnit {
         break;
 
       case MSG.Pong:
-        // Proof the server's input loop is still turning — see the heartbeat above.
-        this._notePong();
+        // Proof the server's input loop is still turning — see the liveness block
+        // above. This is the ONLY frame that discharges an outstanding ask, and the
+        // only one that measures the link's round trip.
+        this.link.pong(Date.now());
+        this._judge();
         break;
 
       case MSG.SetWindowTitle:
@@ -1615,6 +1638,15 @@ export class TerminalUnit {
       // callback debounces, so a burst is one increment).
       if (TMUX_MSG_TYPES.has(type) && this.onTmuxActivity) this.onTmuxActivity();
       this.ws.send(type + payload);
+      // Anything the USER did is also a liveness probe we got for free, and the one
+      // that matters most: the moment you type into a wedged link is the moment you
+      // deserve to be told. Ping is excluded — the prober books that itself — and so is
+      // everything the client sends on its own behalf (resizes, encoding, state
+      // flushes), which nobody is sitting there waiting on.
+      if (type === MSG.Input || TMUX_MSG_TYPES.has(type)) {
+        this.link.asked(Date.now());
+        this._judge();
+      }
       return true;
     }
     console.warn('WebSocket not ready, state:', this.ws?.readyState);
@@ -1821,7 +1853,7 @@ export class TerminalUnit {
   // observers. Used by the split manager when a region is closed.
   destroy() {
     this.destroyed = true;
-    this._stopHeartbeat();   // else a closed region keeps pinging a dead socket forever
+    this._stopLiveness();    // else a closed region keeps pinging a dead socket forever
     if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
     if (this._unsubState) { try { this._unsubState(); } catch (e) {} this._unsubState = null; }
     // A gesture in flight holds document-level listeners; the container going away
@@ -1946,51 +1978,97 @@ export class TerminalUnit {
   }
 
   // ----- liveness ---------------------------------------------------------------
+  // The judgement lives in link-health.js; what follows is the machinery that feeds it
+  // a clock, a Ping and the page's own events.
 
-  _startHeartbeat() {
-    this._stopHeartbeat();
-    const now = Date.now();
-    this._lastPongAt = now;      // a fresh socket is alive until it proves otherwise
-    this._lastTickAt = now;
-    this._heartbeat = setInterval(() => this._heartbeatTick(), HEARTBEAT_MS);
+  _startLiveness() {
+    this._lastTickAt = Date.now();
+    this._judge();
   }
 
-  _stopHeartbeat() {
-    if (this._heartbeat) { clearInterval(this._heartbeat); this._heartbeat = null; }
+  _stopLiveness() {
+    if (this._liveTimer) { clearTimeout(this._liveTimer); this._liveTimer = null; }
   }
 
-  _heartbeatTick() {
+  // Probe if a probe is due, re-read the verdict, tell the owner if it changed, and
+  // re-arm for whenever the next thing could happen. Called from every event that could
+  // move the answer (a frame arriving, a keystroke going out, the tab coming back) and
+  // from its own timer in between — so there is no fixed interval anywhere, and a link
+  // with nothing outstanding in a hidden tab schedules nothing at all.
+  _judge() {
+    this._stopLiveness();
+    if (this.destroyed) return;
     const now = Date.now();
-    const gap = now - this._lastTickAt;
+
+    // A gap much larger than anything we scheduled is OUR clock having stopped — a
+    // suspended laptop, or this tab throttled in the background. Hand it to LinkHealth,
+    // which forgives the silence without concluding anything from it, and probes.
+    if (this._lastTickAt && now - this._lastTickAt > CLOCK_GAP_MS) this.link.resumed(now);
     this._lastTickAt = now;
-    // OUR clock stopped, not theirs. Browsers throttle timers in background tabs to
-    // once a minute or so, and a suspended laptop stops them outright — either way we
-    // wake with a huge apparent silence that we caused. Reporting that as a lost
-    // connection would mean every tab you come back to greets you with a false alarm.
-    if (gap > HEARTBEAT_MS * 2.5) {
-      this._lastPongAt = now;
-      this._setStalled(false);
-      return;                    // let the next beat judge, with an honest clock
+
+    if (this.link.dueProbe(now) && this.isConnected()) {
+      this.link.probeSent(now);
+      // Straight down the socket rather than through sendMessage: a Ping is not an ask
+      // (the prober books it as one itself), and it must not tick the activity spinner —
+      // a spinner that advanced on its own heartbeat would say "webtmux is driving tmux"
+      // when nobody is.
+      try { this.ws.send(MSG.Ping); } catch (e) { /* the close handler will deal with it */ }
     }
-    if (!this.isConnected()) return;
-    this.sendMessage(MSG.Ping);
-    this._setStalled(now - this._lastPongAt > STALL_MS);
+
+    const state = this.link.state(now);
+    if (state !== this._linkState) {
+      this._linkState = state;
+      if (this.onConnectionChange) this.onConnectionChange(this);
+    }
+
+    const at = this.link.nextEventAt(now);
+    if (at) this._liveTimer = setTimeout(() => this._judge(), Math.max(16, at - now));
   }
 
-  _notePong() {
-    this._lastPongAt = Date.now();
-    this._setStalled(false);
+  // The page-level events that tell us our knowledge is stale — the tab becoming
+  // visible, the window regaining focus, the OS reporting the network back. Wired once
+  // by SplitManager (see _watchPageLiveness) and fanned out to every region: this is
+  // what makes coming back to the app produce an answer in about a second instead of
+  // whenever the next beat happened to land.
+  noteWake() {
+    this.link.setActive(true);
+    this.link.resumed(Date.now());
+    this._judge();
   }
 
-  _setStalled(v) {
-    if (this._stalled === v) return;
-    this._stalled = v;
-    if (this.onConnectionChange) this.onConnectionChange(this);
+  noteHidden() {
+    this.link.setActive(false);
+    this._judge();
   }
 
-  // Open, but not answering — see the heartbeat block above.
-  isStalled() {
-    return this._stalled;
+  noteOnline(v) {
+    this.link.setOnline(v);
+    if (v) this.link.resumed(Date.now());
+    this._judge();
+  }
+
+  // live / slow / lost for THIS region — what the toolbar spinner is a picture of.
+  // The closed-socket latch is applied here rather than inside LinkHealth's own
+  // `_everOpen` because it is this unit that knows the difference between a first
+  // connect and a retry: the socket spends its first moments in CONNECTING, which is
+  // indistinguishable from a reconnect attempt by readyState alone, and warning on
+  // every page load would be worse than the bug this fixes.
+  linkState() {
+    if (this._wasClosed && !this.isConnected()) return LOST;
+    return this.link.state(Date.now());
+  }
+
+  // Open, but not answering. Kept separate from the closed case because the two need
+  // different words: a closed socket is already being retried and "wait" is honest
+  // advice, a mute one is not being retried by anybody.
+  isMute() {
+    return this.isConnected() && this.link.isMute(Date.now());
+  }
+
+  // How long the oldest thing we are waiting on has gone unanswered — the number the
+  // spinner's tooltip counts out loud. Read at hover time, so it is always current.
+  waitedMs() {
+    return this.link.waitedMs(Date.now());
   }
 
   // Have we LOST the connection to tmux (as opposed to never having had it yet)?
@@ -1998,7 +2076,7 @@ export class TerminalUnit {
   // Two different failures, one answer. The socket may be CLOSED: the server runs this
   // region's tmux client on the far end of it, so tmux dying, the server dying and the
   // network dropping all arrive as a close. Or the socket may be OPEN AND MUTE, which
-  // is the one that actually strands you — see the heartbeat block above.
+  // is the one that actually strands you — see the liveness block above.
   //
   // What the closed half must not report is the ordinary boot: the socket spends its
   // first moments in CONNECTING, which is indistinguishable from a reconnect attempt by
@@ -2006,7 +2084,7 @@ export class TerminalUnit {
   // be "lost", and it stays lost across the CONNECTING gaps of the retry loop (which
   // would otherwise strobe the warning once per retry) until a retry actually opens.
   connectionLost() {
-    return (this._wasClosed && !this.isConnected()) || this._stalled;
+    return this.linkState() === LOST;
   }
 
   // Request server-global capture buffers over THIS unit's ws. The reply (a

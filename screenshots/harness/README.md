@@ -116,7 +116,15 @@ Pieces:
   rectangle a resize used to repaint from a selection long gone), a resize with no
   selection paints nothing either, and pointing at the window the region already shows
   leaves its highlight alone. `diag-resize-ghost.js` is the same claim stripped to the
-  xterm behaviour underneath it, with no preview involved).
+  xterm behaviour underneath it, with no preview involved),
+  `verify-link-health.js` (the connection spinner's three states: a healthy link is
+  never coloured by typing or by coming back to the tab, an INTERACTION with a mute
+  link goes amber in ~2s and red at the stall deadline, amber is a state it climbs back
+  out of, a red link heals itself when the server answers again — no reload — a hidden
+  tab is not probed on spec, and returning to a tab whose link died while you were away
+  is coloured in ~1s rather than the ~11s the old heartbeat took. Writes live/slow/lost
+  spinner crops for `check-link-ink.sh`, which asserts the three are told apart ON THE
+  PIXELS — a third state is worth nothing if it renders like one of the other two).
 - `driver-gifs.js` — records one video per animated feature, each scene
   replaying its README section's bullets in order (split → drag divider →
   close; hover → preview → restore; lights change → tabs flash until viewed;

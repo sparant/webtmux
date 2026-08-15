@@ -334,12 +334,16 @@ class WebtmuxToolbar extends LitElement {
     dropIndex: { type: Number },
     // tmux-activity spinner position, in increments (rendered as rotation).
     activity: { type: Number },
-    // The spinner's OTHER job: red when a region has lost tmux, with how many regions
-    // are down each way — closed socket vs open-but-mute (see
-    // SplitManager._refreshConnection and TerminalUnit's heartbeat).
+    // The spinner's OTHER job: the health of the link to tmux — 'live', 'slow' (asked,
+    // not answered yet) or 'lost' — with how many regions are in each failing state:
+    // closed socket vs open-but-mute vs merely late (see SplitManager._refreshConnection
+    // and link-health.js). `disconnected` is the old boolean, kept because the red
+    // state's aria-label and pulse are the same thing they always were.
+    linkState: { type: String },
     disconnected: { type: Boolean },
     lostRegions: { type: Number },
     stalledRegions: { type: Number },
+    slowRegions: { type: Number },
     // Flashing windows with no tab of their own — see the overflow arrow below.
     // [{id, session, index, name, alert}], most recently raised first.
     overflowAlerts: { type: Array },
@@ -1030,6 +1034,20 @@ class WebtmuxToolbar extends LitElement {
        invisible, which is a worse tell than not pulsing at all. */
     @keyframes wt-lost { 50% { opacity: 0.5; } }
 
+    /* …and amber for the state in between, which the spinner used to have to round to
+       one side or the other: we have asked tmux something and it has not answered YET.
+       Amber matches the stoplight vocabulary's "something is pending on you looking at
+       it" without claiming the link is gone — a slow box lands here and goes back to
+       blue by itself the moment the answer arrives.
+
+       It does NOT pulse. Amber is a "hang on", not a "go and look", and a second
+       pulsing control competing with a flashing tab for the same corner of your eye
+       would make both of them mean less. The glow is enough to catch a glance. */
+    .spin.slow {
+      color: #ffb454;
+      filter: drop-shadow(0 0 4px rgba(255, 180, 84, 0.7));
+    }
+
     /* Build id on the far left — read it aloud, or click it to copy (revealing it
        copies it too; see toggleBuild). A button, not a label, because it does
        something. */
@@ -1190,6 +1208,8 @@ class WebtmuxToolbar extends LitElement {
     this.disconnected = false;
     this.lostRegions = 0;
     this.stalledRegions = 0;
+    this.slowRegions = 0;
+    this.linkState = 'live';
     this.overflowAlerts = [];
   }
 
@@ -2069,15 +2089,42 @@ class WebtmuxToolbar extends LitElement {
       + ` webtmux keeps retrying in the background and this clears the moment one gets through.${tail}`;
   }
 
+  // What the AMBER spinner says. The distinction it is drawing is the one that took a
+  // dead link ten seconds to admit to: we asked, and the answer is late — which is what
+  // a loaded box looks like, and also what a dead one looks like for its first second.
+  // So it says how long, and says plainly that it does not know yet which of the two
+  // this is. The seconds are read live from the manager at hover time, so the number is
+  // the number now and not whenever the toolbar last re-rendered.
+  _slowTip() {
+    const waited = this.manager?.linkWaitedMs?.() || 0;
+    const secs = Math.max(1, Math.round(waited / 1000));
+    const n = this.slowRegions || 0;
+    const which = n > 1 ? `${n} terminal regions have` : 'The terminal has';
+    return `tmux is answering slowly. ${which} been waiting about ${secs}s for a reply`
+      + ` to something already sent.\n\nThis is normally a busy machine or a slow link and`
+      + ` clears itself — what is on screen is still current, and anything you type is`
+      + ` queued, not lost. If it goes red, the link is gone rather than late.`;
+  }
+
+  // Which of the three the spinner is showing. Derived from linkState so there is one
+  // answer, and defaulted from the old boolean so a caller that only sets `disconnected`
+  // still gets red rather than silently nothing.
+  _linkClass() {
+    if (this.linkState === 'lost' || this.disconnected) return 'lost';
+    return this.linkState === 'slow' ? 'slow' : '';
+  }
+
   render() {
     return html`
       <span
-        class="spin ${this.disconnected ? 'lost' : ''}"
+        class="spin ${this._linkClass()}"
         style="transform: rotate(${this.activity * SPIN_STEP_DEG}deg)"
-        role=${this.disconnected ? 'img' : 'presentation'}
-        aria-hidden=${this.disconnected ? 'false' : 'true'}
-        aria-label=${this.disconnected ? 'Connection to tmux lost' : ''}
-        @mouseenter=${(e) => this._tipEnter(e, this.disconnected ? this._lostTip()
+        role=${this._linkClass() ? 'img' : 'presentation'}
+        aria-hidden=${this._linkClass() ? 'false' : 'true'}
+        aria-label=${this._linkClass() === 'lost' ? 'Connection to tmux lost'
+          : this._linkClass() === 'slow' ? 'tmux is answering slowly' : ''}
+        @mouseenter=${(e) => this._tipEnter(e, this._linkClass() === 'lost' ? this._lostTip()
+          : this._linkClass() === 'slow' ? this._slowTip()
           : 'tmux activity — advances one notch each time webtmux sends tmux a command (window switches, renames, captures, saved state).')}
         @mouseleave=${() => this._tipLeave()}
       >${spinIcon()}</span>

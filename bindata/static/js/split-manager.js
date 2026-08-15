@@ -174,6 +174,7 @@ export class SplitManager {
     });
 
     this._installControls();
+    this._watchPageLiveness();
 
     // The primary/shared region (session '' => base 'services').
     this.addUnit({ sessionName: '', primary: true });
@@ -274,6 +275,11 @@ export class SplitManager {
     unit.onTmuxActivity = () => this.pulseTmuxActivity();
     // …and losing/regaining the socket recolors it — see _refreshConnection.
     unit.onConnectionChange = () => this._refreshConnection();
+    // A region born into a hidden tab or an offline browser starts from what is true
+    // now, not from the defaults: _watchPageLiveness only reports CHANGES, and a split
+    // restored on load would otherwise idle-probe from a tab nobody is looking at.
+    if (document.visibilityState !== 'visible') unit.noteHidden();
+    if (navigator.onLine === false) unit.noteOnline(false);
     // The server's write authority, learned from the preferences frame at connect
     // (webtty/authority.go). Every region's connection carries the same answer;
     // applying it from whichever arrives first is idempotent.
@@ -1856,17 +1862,59 @@ export class SplitManager {
   //
   // The two failures are counted separately because they need different words. A
   // CLOSED socket is self-healing: the retry loop is already running and the tooltip
-  // can honestly say to wait. A STALLED one — open, mute, see TerminalUnit's heartbeat
+  // can honestly say to wait. A MUTE one — open but not answering, see link-health.js
   // — is not: nothing is retrying, because as far as the browser is concerned nothing
   // is wrong. Telling someone to sit tight in that case is telling them to keep typing
   // into a socket that will never answer.
+  //
+  // And there is now a third colour between them. A link that has been asked something
+  // and has not answered YET is not gone, it is late — a loaded box, a slow network,
+  // tmux busy repainting — so it goes amber and climbs back to green by itself when the
+  // answer lands. Amber is the state the old boolean had to round to one side or the
+  // other, and it rounded to green, which is how a dead link kept its healthy colour
+  // for ten seconds after you came back to it.
   _refreshConnection() {
     if (!this.toolbar) return;
     const closed = this.units.filter((u) => u._wasClosed && !u.isConnected()).length;
-    const stalled = this.units.filter((u) => u.isStalled?.()).length;
+    const mute = this.units.filter((u) => u.isMute?.()).length;
+    const slow = this.units.filter((u) => u.linkState?.() === 'slow').length;
     this.toolbar.lostRegions = closed;
-    this.toolbar.stalledRegions = stalled;
-    this.toolbar.disconnected = closed + stalled > 0;
+    this.toolbar.stalledRegions = mute;
+    this.toolbar.slowRegions = slow;
+    // Worst case wins: one region holding a photograph is worth the whole toolbar
+    // saying so, and the tooltip names the count.
+    this.toolbar.linkState = closed + mute > 0 ? 'lost' : slow > 0 ? 'slow' : 'live';
+    this.toolbar.disconnected = closed + mute > 0;
+  }
+
+  // How long the region that has been waiting LONGEST has gone unanswered. Read by the
+  // spinner's tooltip at hover time (never stored on the component) so the number it
+  // shows is the number right now, and no re-render is needed to keep it true.
+  linkWaitedMs() {
+    return this.units.reduce((max, u) => Math.max(max, u.waitedMs?.() || 0), 0);
+  }
+
+  // Wire the page-level events that mean "what you believe about the connection may be
+  // out of date": this tab becoming visible again, the window regaining focus, and the
+  // OS reporting the network up or down.
+  //
+  // These live HERE, once, rather than in each TerminalUnit — a split with four regions
+  // would otherwise install four copies of each listener — and they are the whole reason
+  // the spinner can be honest about a laptop that has been shut. Coming back to the app
+  // is an EVENT; without listening for it the only thing that could notice was the next
+  // scheduled beat, which is exactly the delay you saw.
+  _watchPageLiveness() {
+    const wake = () => { for (const u of this.units) u.noteWake?.(); };
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') wake();
+      else for (const u of this.units) u.noteHidden?.();
+    });
+    // focus as well as visibilitychange: an unfocused-but-visible window (another app
+    // on top, a second monitor) never fires visibilitychange, and coming back to it is
+    // the same "I have been away" signal.
+    window.addEventListener('focus', wake);
+    window.addEventListener('online', () => { for (const u of this.units) u.noteOnline?.(true); });
+    window.addEventListener('offline', () => { for (const u of this.units) u.noteOnline?.(false); });
   }
 
   // A hover preview appeared/moved/ended: repaint the switchers' "being previewed"

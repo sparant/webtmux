@@ -263,7 +263,10 @@ async function main() {
       u.ws.onmessage = () => {};                  // and nothing comes back
     }
   });
-  await sleep(14000);   // STALL_MS is 8s, judged on a 3s heartbeat
+  // Nobody interacts here, so this is the PASSIVE path: the idle probe goes out after
+  // IDLE_PROBE_MS of silence and the stall deadline runs from there (see link-health.js
+  // — an interaction gets an answer far sooner, which verify-link-health.js covers).
+  await sleep(17000);
   const stall = await toolbar((el, rr) => ({
     lost: rr.querySelector('.spin').classList.contains('lost'),
     disconnected: el.disconnected,
