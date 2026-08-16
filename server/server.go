@@ -307,6 +307,13 @@ func (server *Server) setupHandlers(ctx context.Context, cancel context.CancelFu
 	siteMux.HandleFunc(pathPrefix+"auth_token.js", server.handleAuthToken)
 	siteMux.HandleFunc(pathPrefix+"config.js", server.handleConfig)
 
+	// File transfer between the browser's machine and the machine tmux runs on
+	// (see server/handler_transfer.go). Registered HERE, on siteMux, so they
+	// inherit the Basic auth wrapped around it below — the websocket mux does its
+	// own token check and would leave these two open.
+	siteMux.HandleFunc(pathPrefix+"transfer/download", server.handleTransferDownload)
+	siteMux.HandleFunc(pathPrefix+"transfer/upload", server.handleTransferUpload)
+
 	siteHandler := http.Handler(siteMux)
 
 	if server.options.EnableBasicAuth {

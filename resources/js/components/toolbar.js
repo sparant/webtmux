@@ -37,6 +37,11 @@ import {
   HISTORY_PRESETS, parseLimit, formatLines, formatBytes, windowUsage, resizePlan,
   configFileHint, workName,
 } from '../scrollback.js';
+import {
+  THERE, TRANSFER_BLURB, UPLOAD_TITLE, DOWNLOAD_TITLE,
+  uploadPlan, transferSummary, uploadLabel, transferHint,
+  defaultTransferDir, transferPlaceholder,
+} from '../file-transfer.js';
 import { READ_ONLY_NOTICE } from '../write-guard.js';
 import { copyText } from '../clipboard.js';
 import { copyBuffers } from '../copy-buffer-store.js';
@@ -299,6 +304,17 @@ class WebtmuxToolbar extends LitElement {
     // re-set to the default every time the menu opens: "entire buffer" is the
     // answer that should never depend on what someone picked an hour ago.
     saveScope: { type: String },
+    // What the user has picked to upload — an uploadPlan (see file-transfer.js),
+    // or null when nothing is chosen. Held here rather than read out of the file
+    // input at send time because a <input type=file> cannot be re-filled
+    // programmatically, so the pick has to survive the re-renders that the
+    // progress banner causes.
+    uploadPick: { type: Object },
+    // Whether an upload may replace files that are already there. Defaults to
+    // false and resets with every pick: "replace" is a decision about ONE
+    // transfer, and a sticky tick is how a folder upload silently overwrites work
+    // somebody else did on that machine in between.
+    uploadOverwrite: { type: Boolean },
     // The window the shared HoverPreview is currently showing ('' = none). Marks
     // which tab the preview on screen belongs to. Set by the SplitManager.
     previewWindow: { type: String },
@@ -617,9 +633,28 @@ class WebtmuxToolbar extends LitElement {
     .save-menu {
       position: absolute;
       top: calc(100% + 6px);
-      left: 0;
+      /* Right-aligned, not left. Both buttons that open this menu sit near the
+         right end of the toolbar, so a left-anchored panel grows toward — and
+         past — the window's right edge; the scrollback menu was already spilling
+         a little before the wider transfer sections made it obvious. Same rule
+         popup-place.js calls align:'right', in CSS because this menu is
+         positioned by the stylesheet rather than measured in JS. */
+      right: 0;
       z-index: 95;
-      min-width: 290px;
+      min-width: 330px;
+      /* The dropdown now holds four sections (scope, download, save, transfer),
+         which on a short window is taller than the viewport. Capping it and
+         scrolling INSIDE keeps the last section reachable; without this the
+         transfer controls simply fall off the bottom of the screen with nothing
+         to indicate they are there. */
+      max-width: min(620px, 94vw);
+      max-height: min(78vh, 660px);
+      /* An explicit width is required, not merely nice: this menu is positioned
+         against .save-wrap, which is the width of the ⤓ button, so shrink-to-fit
+         has ~28px of "available space" to work with and collapses the panel to
+         its min-width no matter what max-width says. Without .wide below, the
+         two transfer columns silently stack back into one. */
+      overflow-y: auto;
       box-sizing: border-box;
       padding: 8px;
       display: flex;
@@ -631,6 +666,10 @@ class WebtmuxToolbar extends LitElement {
       box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
       font-family: Menlo, Monaco, "Courier New", monospace;
     }
+    /* Wide enough for the transfer pair to sit in two columns. Applied only when
+       those sections are actually rendered — a read-only server shows a sentence
+       in their place, and a 600px panel around one sentence is just a big hole. */
+    .save-menu.wide { width: min(600px, 94vw); }
     .save-item {
       display: flex;
       align-items: center;
@@ -743,6 +782,20 @@ class WebtmuxToolbar extends LitElement {
     /* "The file is already there" is the one save error the user can answer in
        place, so it gets a button rather than just a sentence. */
     .save-status.confirm { background: #33260f; color: #f2c774; border: 1px solid #7a5a24; }
+    /* An upload that mostly worked. Looks like 'confirm' because it is the same
+       kind of news — something needs your attention, nothing is lost — but it is
+       deliberately a DIFFERENT state name, because the dropdown renders the
+       Overwrite button from the state alone and this banner has nothing left to
+       overwrite. Its text runs to several lines (one per file that didn't land),
+       hence the pre-line. */
+    .save-status.partial {
+      background: #33260f;
+      color: #f2c774;
+      border: 1px solid #7a5a24;
+      white-space: pre-line;
+      max-height: 140px;
+      overflow-y: auto;
+    }
     .save-confirm { display: flex; gap: 6px; margin-top: 6px; }
     .save-confirm button {
       background: #7a2438;
@@ -754,6 +807,74 @@ class WebtmuxToolbar extends LitElement {
       cursor: pointer;
     }
     .save-confirm button.cancel { background: #2a2f3f; color: #ccc; border-color: #0f3460; }
+
+    /* ---- file transfer -----------------------------------------------------
+       Two sections that move whole FILES between the machine this browser runs
+       on and the machine tmux runs on (see file-transfer.js).
+
+       They deliberately reuse the save chrome (.save-row/.save-path/.save-go)
+       rather than growing a second look, with one addition that is not
+       decoration: .xfer-dir, the line naming BOTH machines in the direction the
+       bytes travel. It is styled as the loudest thing in its section because it
+       is the only defence against the one mistake this feature can make — an
+       upload the user reads as a download, which on a shared machine means
+       overwriting the good copy with the stale one. */
+    /* Upload and download sit SIDE BY SIDE. Stacked, they pushed the download
+       section below the fold of a 720px-tall window — a feature you have to
+       scroll a dropdown to discover is one most people never find. Two columns
+       also state the thing the headings are working to say: these are one pair of
+       opposite directions, not two unrelated tools.
+
+       They wrap back to one column when there is no room (a phone, a narrow
+       window), which is the case the scrolling cap above still covers. */
+    .xfer-pair { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+    .xfer-pair > .xfer { flex: 1 1 250px; min-width: 0; }
+    .xfer { display: flex; flex-direction: column; gap: 6px; }
+    .xfer-dir {
+      color: #9fc4ff;
+      font-size: 11.5px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      overflow-wrap: anywhere;
+    }
+    .xfer-lbl { color: #6b7690; font-size: 10.5px; }
+    .xfer-pick { display: flex; gap: 6px; flex-wrap: wrap; }
+    /* The file inputs themselves are hidden and driven by their labels: a bare
+       <input type=file> renders as an OS-styled button that cannot be made to
+       match anything around it, and its text ("No file chosen") contradicts the
+       summary line below. */
+    .xfer-btn {
+      flex: 1 1 auto;
+      text-align: center;
+      background: #1a1a2e;
+      color: #e8eefc;
+      border: 1px solid #0f3460;
+      border-radius: 5px;
+      padding: 5px 8px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .xfer-btn:hover { border-color: #4a9eff; }
+    .xfer-btn input { display: none; }
+    .xfer-sum {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      color: #6ee7a8;
+      font-size: 11px;
+      overflow-wrap: anywhere;
+    }
+    .xfer-ow {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: #9fc4ff;
+      font-size: 10.5px;
+      cursor: pointer;
+    }
+    .xfer-ow input { accent-color: #4a9eff; cursor: pointer; }
+    /* Full width: it is the button that acts, and it restates the destination. */
+    .xfer-go { width: 100%; }
 
     /* ---- read-only mode (server started without -w) ------------------------
        Two visible effects. The badge SAYS so, once, next to the build chip; the
@@ -1201,6 +1322,10 @@ class WebtmuxToolbar extends LitElement {
     this.saveInfo = null;    // server's "where would this land?" answer
     this.saveScope = DEFAULT_SAVE_SCOPE; // which buffer a save means (see save-scope.js)
     this._editingDir = false; // save-directory row open for editing (see _saveDirRow)
+    this.uploadPick = null;      // files chosen to upload (see file-transfer.js)
+    this.uploadOverwrite = false; // may an upload replace what is already there?
+    this._xferDest = null;       // typed upload destination; null = use the prefill
+    this._xferSrc = null;        // typed download source; null = untouched
     this.historyOpen = false;    // scrollback-buffer dropdown open?
     this.historyInfo = null;     // last report from the server
     this.historyStatus = null;   // transient result banner
@@ -1404,6 +1529,13 @@ class WebtmuxToolbar extends LitElement {
     // save, not a preference: someone who once grabbed a screenshot of a screen
     // should not silently get 24 rows the next time they reach for a build log.
     this.saveScope = DEFAULT_SAVE_SCOPE;
+    // Same rule as the scope above, and for a stronger reason: a transfer acts on
+    // another machine's filesystem, so a selection left over from the last time
+    // this menu was open — possibly against a different window, in a different
+    // session, on a different host — must not be one click from being sent.
+    this.clearUploadPick();
+    this._xferDest = null;
+    this._xferSrc = null;
     this.manager?.requestSaveInfo?.();
     const def = this.manager?.suggestedSaveName?.() || 'pane.txt';
     this.updateComplete.then(() => {
@@ -1519,6 +1651,152 @@ class WebtmuxToolbar extends LitElement {
   // edited or scrolled away from since.
   _confirmOverwrite() {
     this.manager?.confirmOverwriteSave();
+  }
+
+  // ---- file transfer -------------------------------------------------------
+  //
+  // Two sections below the save half, moving whole FILES between the machine this
+  // browser runs on and the machine tmux runs on. The wording rules — and why
+  // every label names both machines rather than saying "upload" and trusting the
+  // reader — are in file-transfer.js. The paths resolve through exactly the same
+  // machinery as a save, so the directory question above answers both.
+
+  // The two path boxes are backed by fields rather than read straight out of the
+  // DOM on every render, the same pattern the scrollback panel's inputs use: an
+  // upload posts a progress banner several times a second, and each one is a
+  // re-render that would otherwise clobber whatever is half-typed beside it.
+  // `null` means untouched, which is what lets the server's answer prefill them
+  // the moment it lands rather than only on the next open.
+  _uploadDest() {
+    return this._xferDest ?? defaultTransferDir(this.saveInfo);
+  }
+
+  _downloadSrc() {
+    return this._xferSrc ?? '';
+  }
+
+  // A pick happened. The plan (see uploadPlan) is kept whole rather than reduced
+  // to a count, because the relative paths inside it are what make a folder
+  // arrive as a folder.
+  _pickUpload(e) {
+    const plan = uploadPlan(e.target?.files);
+    this.uploadPick = plan.files ? plan : null;
+    this.uploadOverwrite = false;
+    this.saveStatus = null;
+  }
+
+  // Forget the pick. Public because the SplitManager calls it after a clean
+  // upload — a selection that has already been sent should not sit there looking
+  // like it is about to be sent again.
+  //
+  // Clearing the INPUTS matters as much as clearing the field: a file input whose
+  // value is unchanged fires no `change` event, so without this, picking the same
+  // folder a second time (after fixing something in it) would appear to do
+  // nothing at all.
+  clearUploadPick() {
+    this.uploadPick = null;
+    this.uploadOverwrite = false;
+    this.renderRoot?.querySelectorAll('.xfer-file').forEach((el) => { el.value = ''; });
+  }
+
+  _doUpload() {
+    this.manager?.uploadToTmuxMachine(this.uploadPick, this._uploadDest(), this.uploadOverwrite);
+  }
+
+  _doDownload() {
+    this.manager?.downloadFromTmuxMachine(this._downloadSrc());
+  }
+
+  // The two transfer sections. Read-only servers get a sentence instead — see
+  // transferAllowed in server/handler_transfer.go for why a DOWNLOAD is gated on
+  // the write flag too.
+  _transferSections() {
+    if (this.readOnly) {
+      return html`
+        <div class="save-sep"></div>
+        <div class="save-label">Transfer files</div>
+        <div class="save-ro">Not available — this server is read-only (started without -w).
+          Reading a file is not a write, but ${'-w'} is what separates watching these terminals
+          from acting on the machine behind them. Downloading the pane's buffer above still
+          works: it only hands back what is already on your screen.</div>
+      `;
+    }
+    // The save half is still asking which directory it may use, and that one
+    // answer governs transfers too. Pointing at the question already on screen
+    // beats asking it again here in different words.
+    const asking = this._askingForDir();
+    const plan = this.uploadPick;
+    const hint = transferHint(this.saveInfo);
+    return html`
+      <div class="save-sep"></div>
+      <div class="save-label">Transfer files</div>
+      <div class="save-hint">${TRANSFER_BLURB}</div>
+
+      <div class="xfer-pair">
+      <div class="xfer">
+        <div class="xfer-dir">${UPLOAD_TITLE}</div>
+        <label class="xfer-lbl">Folder on ${THERE} to put them in</label>
+        <input
+          class="save-path xfer-dest"
+          type="text"
+          spellcheck="false"
+          autocomplete="off"
+          ?disabled=${asking}
+          placeholder=${transferPlaceholder(this.saveInfo, 'upload')}
+          .value=${this._uploadDest()}
+          @input=${(e) => { this._xferDest = e.target.value; }}
+          @keydown=${(e) => e.stopPropagation()}
+        >
+        <div class="xfer-pick">
+          <label class="xfer-btn">Choose files…
+            <input class="xfer-file" type="file" multiple ?disabled=${asking} @change=${(e) => this._pickUpload(e)}>
+          </label>
+          <label class="xfer-btn">Choose a folder…
+            <input class="xfer-file" type="file" webkitdirectory ?disabled=${asking} @change=${(e) => this._pickUpload(e)}>
+          </label>
+        </div>
+        ${plan ? html`
+          <div class="xfer-sum">
+            <span>${transferSummary(plan)}</span>
+            <button class="save-dir-change" @click=${() => this.clearUploadPick()}>clear</button>
+          </div>
+          <label class="xfer-ow">
+            <input
+              type="checkbox"
+              .checked=${this.uploadOverwrite}
+              @change=${(e) => { this.uploadOverwrite = e.target.checked; }}
+            >
+            replace files that already exist
+          </label>
+        ` : ''}
+        <button
+          class="save-go xfer-go"
+          ?disabled=${asking || !plan}
+          @click=${() => this._doUpload()}
+        >${uploadLabel(plan)}</button>
+      </div>
+
+      <div class="xfer">
+        <div class="xfer-dir">${DOWNLOAD_TITLE}</div>
+        <label class="xfer-lbl">File or folder on ${THERE}</label>
+        <div class="save-row">
+          <input
+            class="save-path xfer-src"
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            ?disabled=${asking}
+            placeholder=${transferPlaceholder(this.saveInfo, 'download')}
+            .value=${this._downloadSrc()}
+            @input=${(e) => { this._xferSrc = e.target.value; }}
+            @keydown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); this._doDownload(); } e.stopPropagation(); }}
+          >
+          <button class="save-go" ?disabled=${asking} @click=${() => this._doDownload()}>Download</button>
+        </div>
+      </div>
+      </div>
+      <div class="save-hint ${hint.level}">${hint.text}</div>
+    `;
   }
 
   // ---- scrollback buffer ---------------------------------------------------
@@ -2305,14 +2583,15 @@ class WebtmuxToolbar extends LitElement {
       <div class="save-wrap">
         <button
           class="tbtn ${this.saveOpen ? 'on' : ''}"
-          aria-label="Save pane buffer"
-          @mouseenter=${(e) => this._tipEnter(e, `Save the focused pane's buffer — the whole scrollback (default) or just the visible screen; download it to your browser, or write it to a file on the machine tmux runs on.`)}
+          aria-label="Save pane buffer and transfer files"
+          @mouseenter=${(e) => this._tipEnter(e, `Save the focused pane's buffer — the whole scrollback (default) or just the visible screen; download it to your browser, or write it to a file on the machine tmux runs on.\n`
+            + `Also transfers whole files and folders between this browser's machine and the machine tmux runs on — the thing you would otherwise open a second terminal and type scp for.`)}
           @mouseleave=${() => this._tipLeave()}
           @click=${() => { this._tipLeave(); this._toggleSaveMenu(); }}
         >⤓</button>
         ${this.saveOpen ? html`
           <div class="save-backdrop" @click=${() => { this.saveOpen = false; this.saveStatus = null; }}></div>
-          <div class="save-menu" @click=${(e) => e.stopPropagation()}>
+          <div class="save-menu ${this.readOnly ? '' : 'wide'}" @click=${(e) => e.stopPropagation()}>
             ${this._saveScopeRow()}
             <div class="save-sep"></div>
             <button class="save-item" @click=${() => this._saveToBrowser()}>⤓&nbsp; ${downloadLabel(this.saveScope)}</button>
@@ -2338,6 +2617,7 @@ class WebtmuxToolbar extends LitElement {
               </div>
               ${this._saveHint()}
             `}
+            ${this._transferSections()}
             ${this.saveStatus ? html`
               <div class="save-status ${this.saveStatus.state}">${this.saveStatus.text}</div>
               ${this.saveStatus.state === 'confirm' ? html`

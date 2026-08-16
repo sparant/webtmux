@@ -454,26 +454,20 @@ func outsideMessage(resolved string, roots []string) string {
 		resolved, strings.Join(roots, ", "))
 }
 
-// resolveSavePath turns a user-typed path into an absolute one on THIS machine,
-// and refuses it unless it lands inside a directory somebody named as a save
-// destination (see saveRoots).
+// expandPath turns a user-typed path into an absolute path on THIS machine,
+// WITHOUT ruling on whether it may be used. It is the half of resolution that is
+// pure arithmetic on names — `~`, relative-to-BaseDir, prefix mapping — split out
+// from the half that makes decisions (does it exist? is it a directory? is it
+// inside the allowlist?), because those decisions differ per caller: a save
+// refuses a directory and tolerates a name that isn't there yet, while a file
+// transfer wants exactly the opposite (see transfer.go).
 //
-// `~`/`~/…` expand to the server's home; a relative path resolves against
-// env.BaseDir; an absolute path is honored as typed — but every result goes
-// through the same prefix mapping, so typing the host path you can see in your
-// own shell lands in its mapped equivalent here rather than failing, and then
-// through the same containment check, so neither `~` nor an absolute path is a
-// way around it.
-//
-// The parent directory is checked up front so the failure is described in the
-// vocabulary of the two filesystems ("that directory doesn't exist HERE, and
-// here's why") rather than as a raw open(2) error about a path the user may
-// never have typed.
-func resolveSavePath(env SaveEnv, path string) (string, error) {
+// Splitting it here rather than letting each caller do its own `~` handling is
+// the point. Two implementations of "what does this path mean" would eventually
+// disagree, and the one that drifted would be a way to reach a path the other
+// refuses — which is the whole containment story undone by a second opinion.
+func expandPath(env SaveEnv, path string) (string, error) {
 	path = strings.TrimSpace(path)
-	if path == "" {
-		return "", fmt.Errorf("enter a file name")
-	}
 	// Nowhere shared to write: no path of any shape has an honest destination.
 	// Absolute paths used to be waved through here on the theory that someone who
 	// mounted a directory knows something webtmux can't infer — but the save
@@ -499,6 +493,32 @@ func resolveSavePath(env SaveEnv, path string) (string, error) {
 		path = filepath.Join(env.BaseDir, path)
 	}
 	resolved, _ := applyPathMap(configuredPathMap(), filepath.Clean(path))
+	return resolved, nil
+}
+
+// resolveSavePath turns a user-typed path into an absolute one on THIS machine,
+// and refuses it unless it lands inside a directory somebody named as a save
+// destination (see saveRoots).
+//
+// `~`/`~/…` expand to the server's home; a relative path resolves against
+// env.BaseDir; an absolute path is honored as typed — but every result goes
+// through the same prefix mapping, so typing the host path you can see in your
+// own shell lands in its mapped equivalent here rather than failing, and then
+// through the same containment check, so neither `~` nor an absolute path is a
+// way around it.
+//
+// The parent directory is checked up front so the failure is described in the
+// vocabulary of the two filesystems ("that directory doesn't exist HERE, and
+// here's why") rather than as a raw open(2) error about a path the user may
+// never have typed.
+func resolveSavePath(env SaveEnv, path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("enter a file name")
+	}
+	resolved, err := expandPath(env, path)
+	if err != nil {
+		return "", err
+	}
 	if strings.HasSuffix(resolved, string(filepath.Separator)) || dirExists(resolved) {
 		return "", fmt.Errorf("%s is a directory — add a file name", resolved)
 	}

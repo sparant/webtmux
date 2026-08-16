@@ -44,6 +44,9 @@ import { DEFAULT_SAVE_SCOPE, normalizeScope, isScrollback, fetchingText } from '
 import {
   ACTION_DEFAULT, ACTION_PERSIST, ACTION_RESIZE, ACTION_CLEAR, actionBanner, formatBytes,
 } from './scrollback.js';
+import {
+  transferUrl, probeBanner, uploadBanner, uploadProgressText,
+} from './file-transfer.js';
 import { IS_MAC } from './os.js';
 import { stateStore } from './state-store.js';
 import { clientStore } from './client-store.js';
@@ -1275,6 +1278,124 @@ export class SplitManager {
         this.toolbar.saveStatus = null;
       }
     }, 1800);
+  }
+
+  // ---- file transfer (the ⤓ dropdown's other two sections) ----------------
+  //
+  // Moving whole files between the machine this browser runs on and the machine
+  // tmux runs on. See file-transfer.js for the wording rules and
+  // webtty/transfer.go for what a path is allowed to mean.
+  //
+  // Unlike everything else in this class these go over HTTP rather than the
+  // websocket, for one reason: size. A websocket frame is JSON, so its payload
+  // has to be base64, which means the whole object exists in memory three times
+  // over before anyone sees it. That is a fair price for a scrollback and an
+  // absurd one for the tarball someone wants off a build machine.
+
+  // The URL prefix the transfer routes hang off — the page's own path, so they
+  // inherit the page's Basic auth and whatever ssh tunnel got the browser here.
+  _transferBase() {
+    return window.location.pathname;
+  }
+
+  // The two query parameters every transfer carries: which window's pane
+  // directory to resolve relative paths against, and the shared save directory in
+  // force. Both are exactly what the save half sends, so a path that works in one
+  // section works in the other.
+  _transferContext() {
+    const u = this.focusedUnit;
+    return { win: u?.layout?.activeWindowId || '', dir: this.saveDir() };
+  }
+
+  // Download a file or folder FROM the machine tmux runs on TO this browser.
+  //
+  // Two steps, and the first one is the point. The download itself is a real
+  // navigation — that is what gets the browser's own progress bar, a Cancel
+  // button, and a stream straight to disk instead of the whole file held in a JS
+  // blob first. But a failed navigation renders its error wherever the browser
+  // likes, and the useful place for "no such file" is this dropdown, beside the
+  // path that was mistyped. So the server is asked first (?probe=1), any refusal
+  // is shown in place, and the navigation only happens once the answer is yes.
+  async downloadFromTmuxMachine(path) {
+    const p = String(path || '').trim();
+    if (!p) {
+      this._setSaveStatus({ state: 'err', text: 'Enter the path of a file or folder to download.' });
+      return;
+    }
+    const ctx = this._transferContext();
+    this._setSaveStatus({ state: 'saving', text: 'Looking for it…' });
+    let probe;
+    try {
+      const res = await fetch(transferUrl(this._transferBase(), 'download', { ...ctx, path: p, probe: true }),
+        { credentials: 'same-origin' });
+      probe = await res.json();
+    } catch (err) {
+      this._setSaveStatus({ state: 'err', text: `Could not reach webtmux: ${err}` });
+      return;
+    }
+    const banner = probeBanner(probe);
+    this._setSaveStatus(banner);
+    if (!probe?.ok) return;
+
+    // A hidden anchor rather than assigning location: navigating the page away
+    // would tear down every terminal in it, and a browser that decides to render
+    // rather than save would do exactly that. `download` forces the save.
+    const a = document.createElement('a');
+    a.href = transferUrl(this._transferBase(), 'download', { ...ctx, path: p });
+    a.download = probe.name || '';
+    a.rel = 'noopener';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  // Upload files or a folder FROM this browser TO the machine tmux runs on.
+  //
+  // XMLHttpRequest, not fetch: fetch cannot report upload progress, and the whole
+  // reason someone reaches for this is that the thing they are sending is big
+  // enough to wonder about. The plan's entries carry their path relative to the
+  // chosen folder, sent as the FIELD name — a part's filename is only the
+  // basename in some browsers, which would flatten a folder without saying so.
+  uploadToTmuxMachine(plan, dest, overwrite = false) {
+    if (!plan?.files) {
+      this._setSaveStatus({ state: 'err', text: 'Choose files or a folder to upload first.' });
+      return;
+    }
+    const d = String(dest || '').trim();
+    if (!d) {
+      this._setSaveStatus({ state: 'err', text: 'Enter the folder on the machine tmux runs on to upload into.' });
+      return;
+    }
+    const body = new FormData();
+    for (const e of plan.entries) body.append(`path:${e.rel}`, e.file, e.file.name);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', transferUrl(this._transferBase(), 'upload',
+      { ...this._transferContext(), dest: d, overwrite }));
+    xhr.withCredentials = true;
+    this._setSaveStatus({ state: 'saving', text: uploadProgressText(0, plan.bytes) });
+    xhr.upload.onprogress = (e) => {
+      this._setSaveStatus({ state: 'saving', text: uploadProgressText(e.loaded, e.total || plan.bytes) });
+    };
+    xhr.onload = () => {
+      let out = null;
+      try { out = JSON.parse(xhr.responseText); } catch { /* handled below */ }
+      if (!out) {
+        this._setSaveStatus({ state: 'err', text: xhr.responseText || `Upload failed (HTTP ${xhr.status})` });
+        return;
+      }
+      const banner = uploadBanner(out);
+      this._setSaveStatus(banner);
+      // Only a clean upload clears the pick. A partial one leaves it in place so
+      // the same selection can be re-sent with "replace existing" ticked, which
+      // is the whole reason that checkbox is beside it.
+      if (banner.state === 'ok' && this.toolbar) this.toolbar.clearUploadPick();
+    };
+    xhr.onerror = () => {
+      this._setSaveStatus({ state: 'err', text: 'The upload could not reach webtmux.' });
+    };
+    xhr.send(body);
   }
 
   // ---- scrollback buffer (the ⛁ dropdown) ---------------------------------
