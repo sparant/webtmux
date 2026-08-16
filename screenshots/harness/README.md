@@ -57,6 +57,10 @@ Pieces:
   the head of that queue takes the next slot × frees, a dismissed window never returns,
   visiting a queued one gives it a tab back, the tab-count control is reversible, and
   the queue survives a reload),
+  `verify-hover-retarget.js` (a recents tab is a slot, not a window: with the pointer
+  held still, × on the hovered tab, and a removal that shifts the strip sideways, both
+  re-point the preview at whatever window landed under the pointer — and a strip that
+  shrinks past the pointer drops the preview instead of leaving it up),
   `verify-recents-fit.js` (the strip is fitted to the toolbar rather than scrolled:
   nothing overflows at any viewport width, narrowing the window queues the tabs that
   no longer fit and widening brings them back in order, the user's cap is never

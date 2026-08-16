@@ -243,6 +243,13 @@ function spinIcon() {
 const EXPOSE_TIP = `Exposé — a thumbnail of every window across all sessions. Shortcut: ${chord('E')}`
   + (IS_MAC ? '\nTrackpad: spread two fingers to open it, pinch them together to close it.' : '');
 
+// The per-tab × hint. A constant rather than an inline string because _syncTabHover
+// has to be able to say it too: after a × click the pointer is left sitting on the
+// NEXT tab's ×, and re-hinting it with the tab's own text would describe a control
+// the pointer isn't on.
+const CLOSE_TAB_TIP =
+  'Remove this tab from Recent — the window keeps running (this does not close or kill it)';
+
 class WebtmuxToolbar extends LitElement {
   static properties = {
     recent: { type: Array },
@@ -1201,6 +1208,12 @@ class WebtmuxToolbar extends LitElement {
     this.readOnly = false;   // set from the connect handshake (see write-guard.js)
     this.notice = '';        // transient explanation line
     this.previewWindow = ''; // window the shared hover preview is showing
+    // Which recents tab the pointer is on, as this component last told the hover
+    // controller — '' for none. Not derivable from `previewWindow` (that is what the
+    // preview is SHOWING, which lags the pointer by the enter delay and stays empty
+    // for a window already on screen), and it is what _syncTabHover compares the
+    // strip against after a re-render. See "hovering a tab that changed underneath".
+    this._hoverKey = '';
     this.labelMenuOpen = false;
     this.dragKey = '';
     this.dropIndex = -1;
@@ -1775,6 +1788,96 @@ class WebtmuxToolbar extends LitElement {
   _tipEnter(ev, text) { this._tip.enter(ev, text); }
   _tipLeave() { this._tip.leave(); }
 
+  // ---- hovering a tab that changed underneath -----------------------------------
+  //
+  // A recents tab is a SLOT, not a window. The strip re-renders on every layout push
+  // and lit reuses the tab elements positionally, so the window a tab stands for can
+  // change while the same DOM node sits under a motionless pointer — × on a tab is
+  // the everyday case, because the entry at the head of the off-strip queue slides
+  // straight into the slot the pointer is already on.
+  //
+  // No mouse event reports that. mouseenter/mouseleave fire when the POINTER crosses
+  // an element boundary, and here nothing crossed anything: the node kept its
+  // identity and only its data changed. So the hover state the strip had told
+  // HoverPreview about was the old window's — and the user had to move the pointer
+  // off the tab and back to see the preview of the tab they were already pointing at.
+  //
+  // The fix is to re-derive the hover from the DOM after every render instead of
+  // trusting the events alone. `:hover` is the browser's own answer to "what is the
+  // pointer on", it needs no pointer-position bookkeeping of our own, and — unlike
+  // the events — it is a state, so it is still true for a node whose contents were
+  // swapped. Everything below funnels through _tabEnter/_tabLeave so the event path
+  // and the re-render path can't develop different ideas of what is hovered.
+
+  // Point at a tab: hint it, and start the shared preview. Idempotent — the entry
+  // path and the post-render sync can both call it for the same tab.
+  _tabEnter(el, w) {
+    if (!el || !w) return;
+    this._hoverKey = this._key(w);
+    this._tipEnter({ currentTarget: el }, this._tabTip(w));
+    this.manager?.hover?.enter(w.id, w.session);
+  }
+
+  // Stop pointing at a tab. The preview controller applies its own leave grace, so
+  // sweeping from one tab to the next doesn't tear anything down.
+  _tabLeave() {
+    this._hoverKey = '';
+    this._tipLeave();
+    this.manager?.hover?.leave();
+  }
+
+  // What a tab says when you point at it. Recomputed (rather than captured in the
+  // render closure) so the sync below can re-hint a slot whose window changed.
+  //
+  // A window shown in ANOTHER region can't be moved here (two regions on one window
+  // would just mirror each other) — but it can be JUMPED to, which is what clicking
+  // now does. Hovering it shows nothing new for the same reason: it's already on
+  // screen.
+  _tabTip(w) {
+    const full = `${w.session} — window ${w.index}: ${w.name}`;
+    return (w.disabled
+      ? `${full}\nAlready open in another region — click to jump there · drag to reorder`
+      : `${full}\nHover to preview it in a terminal region · click to switch there · drag to reorder`)
+      + alertTip(w.alert);
+  }
+
+  // Re-read what the pointer is on after a render, and re-point the preview when the
+  // answer changed without a mouse event to announce it. Runs from updated(), so it
+  // catches the slot swap in the same frame that draws it — and, because the strip
+  // re-renders with every layout push, it also self-corrects within one poll for any
+  // rearrangement the browser reports late (a tab APPEARING under a still pointer
+  // updates `:hover` only after the next layout).
+  //
+  // The "nothing is hovered any more" branch matters just as much: when the last tab
+  // is removed and no queued entry replaces it, the node under the pointer is deleted
+  // outright and there is no element left to fire a mouseleave — without this the
+  // preview would sit there held open by a hover that has ceased to exist.
+  _syncTabHover() {
+    // Not mid-drag. A drag is a rearrangement, not a browse (_onTabDragStart cancels
+    // the preview on purpose), and the hover state under a dragged tab is the
+    // browser's to interpret — re-opening a preview from it would undo that cancel
+    // on every drop-indicator re-render.
+    if (this.dragKey) return;
+    const tabs = this.renderRoot?.querySelector('.tabs');
+    if (!tabs) return;
+    // The invisible width probe is excluded: it is `pointer-events: none`, so it can
+    // never be what the pointer is on, and it is not in `this.recent` either.
+    const els = [...tabs.querySelectorAll('.rtab:not(.spare)')];
+    const i = els.findIndex((el) => el.matches(':hover'));
+    const w = i >= 0 ? this.recent[i] : null;
+    const key = w ? this._key(w) : '';
+    if (key === this._hoverKey) return;
+    if (!w) { this._tabLeave(); return; }
+    this._tabEnter(els[i], w);
+    // …and hint whichever control inside the tab the pointer actually ended up on.
+    // After a × click that is the new tab's ×, sitting in the same place the old
+    // one was.
+    const inner = els[i].querySelector('.close');
+    if (inner?.matches(':hover')) this._tipEnter({ currentTarget: inner }, CLOSE_TAB_TIP);
+    const dot = els[i].querySelector('.work');
+    if (dot?.matches(':hover')) this._tipEnter({ currentTarget: dot }, workTip(w.working));
+  }
+
   // ---- recents drag-reorder ----------------------------------------------------
   // The strip's order is deliberately stable (re-accessing a window never moves its
   // tab), which is what makes it a place you can build muscle memory — so it should
@@ -1790,6 +1893,10 @@ class WebtmuxToolbar extends LitElement {
     this.dragKey = this._key(w);
     this._tipLeave();
     this.manager?.hover?.cancel();     // a drag is a rearrangement, not a browse
+    // We just told the controller "nothing is hovered", so say so here too — else the
+    // post-drop sync would compare against a tab it thinks is still previewing and
+    // leave the dropped tab, now under the pointer, without one.
+    this._hoverKey = '';
     try {
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', this.dragKey);
@@ -1917,14 +2024,7 @@ class WebtmuxToolbar extends LitElement {
   _recentTab(w, i, spare = false) {
     const key = this._key(w);
     const full = `${w.session} — window ${w.index}: ${w.name}`;
-    // A window shown in ANOTHER region can't be moved here (two regions on one
-    // window would just mirror each other) — but it can be JUMPED to, which is
-    // what clicking now does. Hovering it shows nothing new for the same reason:
-    // it's already on screen.
-    const tip = (w.disabled
-      ? `${full}\nAlready open in another region — click to jump there · drag to reorder`
-      : `${full}\nHover to preview it in a terminal region · click to switch there · drag to reorder`)
-      + alertTip(w.alert);
+    const tip = this._tabTip(w);
     const last = !spare && i === this.recent.length - 1;
     return html`
           <span
@@ -1933,8 +2033,8 @@ class WebtmuxToolbar extends LitElement {
             draggable=${spare ? 'false' : 'true'}
             @dragstart=${(e) => this._onTabDragStart(e, w)}
             @dragend=${() => this._onTabDragEnd()}
-            @mouseenter=${(e) => { this._tipEnter(e, tip); this.manager?.hover?.enter(w.id, w.session); }}
-            @mouseleave=${() => { this._tipLeave(); this.manager?.hover?.leave(); }}
+            @mouseenter=${(e) => this._tabEnter(e.currentTarget, w)}
+            @mouseleave=${() => this._tabLeave()}
           ><span
             class="work ${workClass(w.working)}"
             role="img"
@@ -1948,7 +2048,7 @@ class WebtmuxToolbar extends LitElement {
           ><span class="sess">${w.index}</span><span class="wname">${this._tabLabel(w)}</span><span
               class="close"
               aria-label="Remove from Recent (does not close the window)"
-              @mouseenter=${(e) => { e.stopPropagation(); this._tipEnter(e, 'Remove this tab from Recent — the window keeps running (this does not close or kill it)'); }}
+              @mouseenter=${(e) => { e.stopPropagation(); this._tipEnter(e, CLOSE_TAB_TIP); }}
               @mouseleave=${(e) => { e.stopPropagation(); this._tipEnter({ currentTarget: e.currentTarget.closest('.tab') }, tip); }}
               @click=${(e) => { e.stopPropagation(); this._tipLeave(); this.manager?.removeRecent(w); }}
             >×</span></button></span>
@@ -2030,6 +2130,9 @@ class WebtmuxToolbar extends LitElement {
   updated() {
     this._observeStrip();
     this._fitStrip();
+    // After the strip is drawn, not before: the answer to "which window is the
+    // pointer on" is read off the tabs this render just produced.
+    this._syncTabHover();
   }
 
   _overflowArrow() {
