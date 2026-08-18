@@ -18,6 +18,7 @@ import { Terminal } from '@xterm/xterm';
 import { CaptureCache, placementKey } from '../capture-cache.js';
 import { matchesWords, appendChar, backspace, phraseText } from '../search.js';
 import { stateStore } from '../state-store.js';
+import { CLOSED, growExpose, shrinkExpose, cycleExpose } from '../expose-density.js';
 import {
   workClass, workLabel, workTip, WORK_LEGEND,
   STATUS_FILTERS, normalizeStatusFilter, matchesStatus,
@@ -481,12 +482,36 @@ class WebtmuxExpose extends LitElement {
     this._cursor = -1;
   }
 
+  // Where the overlay sits on the size ladder: 0 when closed, else the density.
+  // The ladder itself (which rung follows which) is expose-density.js.
+  get level() {
+    return this.open ? (this.density || 2) : CLOSED;
+  }
+
+  // Move to a rung. Opening and resizing are different operations here — a resize
+  // must NOT tear the tiles down — so the ladder's three outcomes map onto the
+  // three lifecycle calls rather than onto one setter.
+  _setLevel(level) {
+    if (level === CLOSED) this.closeOverlay();
+    else if (!this.open) this.openOverlay(level);
+    else this.setDensity(level);
+  }
+
   // Cycle the overlay: closed → 2×2 → 3×3 → closed. Each toggle (Ctrl-Alt-E)
   // steps to the next state, growing how many tiles are visible before dismissing.
   toggle() {
-    if (!this.open) this.openOverlay(2);
-    else if (this.density < 3) this.setDensity(3);
-    else this.closeOverlay();
+    this._setLevel(cycleExpose(this.level));
+  }
+
+  // The directional half of the same ladder, for the trackpad pinch: a spread
+  // grows the grid (and opens it from closed), a pinch shrinks it (and closes it
+  // from 2×2). Both clamp rather than wrap — see expose-density.js.
+  expand() {
+    this._setLevel(growExpose(this.level));
+  }
+
+  contract() {
+    this._setLevel(shrinkExpose(this.level));
   }
 
   // Change how many tiles fill the screen without a teardown. The tile DOM is

@@ -246,7 +246,8 @@ function spinIcon() {
 // who already knew to open it. Mac-only, matching the gesture's own gating in
 // SplitManager (a ctrl+wheel on other platforms is still page zoom).
 const EXPOSE_TIP = `Exposé — a thumbnail of every window across all sessions. Shortcut: ${chord('E')}`
-  + (IS_MAC ? '\nTrackpad: spread two fingers to open it, pinch them together to close it.' : '');
+  + (IS_MAC ? '\nTrackpad: spread two fingers to open it, spread again for 9 smaller tiles;'
+            + '\npinch back to 4, and pinch once more to close.' : '');
 
 // The per-tab × hint. A constant rather than an inline string because _syncTabHover
 // has to be able to say it too: after a × click the pointer is left sitting on the

@@ -49,6 +49,11 @@ Pieces:
   spinner), `verify-mousemode.js` (who gets a click/drag over a mouse-grabbing program),
   `verify-ux6.js` (MRU chord with an empty capture cache, Exposé's status filter, the
   mouse-capture dropdown, the paired sidebar toggles, paste-trim on rename),
+  `verify-expose-tiers.js` (the Exposé size ladder from both inputs: ⌃⌥E cycles
+  closed → 2×2 → 3×3 → closed, while a trackpad spread walks UP it — opening at 2×2,
+  then growing to 3×3, then staying there — and a pinch walks back down one rung at a
+  time before closing. Forges a Mac platform in an init script, since the gesture is
+  Mac-gated and Chromium answers `userAgentData.platform` from the real OS),
   `verify-recents-preview.js` (a window in the preview gives up its recents tab and
   gets it back — in its old slot — when the preview hides it or lets it go, the cap
   counting drawn tabs rather than held entries, ⌃⌥N/P skipping what has no tab while

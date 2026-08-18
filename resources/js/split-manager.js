@@ -2306,8 +2306,11 @@ export class SplitManager {
     // Mac trackpad 2-finger PINCH → Exposé. Browsers report a trackpad pinch as a
     // `wheel` event with ctrlKey set (the same signal used for pinch-zoom): deltaY
     // < 0 = spread (fingers apart / zoom-in), > 0 = pinch (fingers together). We
-    // accumulate that signal and, on a decisive SPREAD, open Exposé; a decisive
-    // pinch closes it. Each such wheel is swallowed so the page never zooms. This
+    // accumulate that signal and, on a decisive SPREAD, step Exposé UP the size
+    // ladder (closed → 4 tiles → 9); a decisive pinch steps it back DOWN (9 → 4 →
+    // closed). One step per gesture (see _pinchFired), so the second spread is a
+    // second gesture — the same rhythm as tapping ⌃⌥E twice, just with a direction
+    // to it. Each such wheel is swallowed so the page never zooms. This
     // ctrlKey-wheel path is the one signal every engine emits for a trackpad pinch
     // (Chrome/Edge/Firefox/Safari), so there's enough info on the Mac to do this.
     // Gated to Mac so a Ctrl+scroll on a Windows/Linux mouse still zooms as usual.
@@ -2342,10 +2345,10 @@ export class SplitManager {
         this._pinchAccum += -ev.deltaY;        // spread accumulates positive, pinch negative
         if (this._pinchAccum >= PINCH_THRESH) {
           this._pinchFired = true;
-          if (!this.expose?.open) this.expose?.openOverlay(2);
+          this.expose?.expand();
         } else if (this._pinchAccum <= -PINCH_THRESH) {
           this._pinchFired = true;
-          if (this.expose?.open) this.expose?.closeOverlay();
+          this.expose?.contract();
         }
       }, { passive: false, capture: true });
     }

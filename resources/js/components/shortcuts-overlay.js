@@ -94,7 +94,8 @@ const GROUPS = [
   ...(IS_MAC ? [{
     title: 'Trackpad (Mac)',
     rows: [
-      { keys: ['pinch'], desc: 'Spread two fingers apart to open Exposé; pinch them together to close it' },
+      { keys: ['spread'], desc: 'Spread two fingers apart to open Exposé at 2×2; spread again for 3×3' },
+      { keys: ['pinch'], desc: 'Pinch together to go back to 2×2; pinch again to close Exposé' },
     ],
   }] : []),
 ];

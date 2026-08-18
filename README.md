@@ -64,7 +64,7 @@ Bring up a Mac-style Exposé view to see 4 or 9 windows at once. Syllable substr
 ![Exposé replayed: Ctrl+Alt+E opens the mosaic, pressing again densifies 2×2 to 3×3, typing filters by name, Enter switches the focused region](screenshots/expose.gif)
 
 - Ctrl+Alt+E cycles a full-screen mosaic of every window across every session: 2×2 → 3×3 → closed
-- On a Mac a trackpad pinch opens/closes it
+- On a Mac the same three states are a trackpad gesture: spread two fingers to open it at 2×2, spread again for 3×3; pinch back to 2×2, and pinch once more to close
 - Live thumbnails and left click or arrow+Enter to start working on it
 - Type to filter by name, with an optional toggle to search captured window content too
 - Linked windows appear once; sort by session or recency
