@@ -18,6 +18,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MAX_RECENTS, RECENTS_MIN, RECENTS_MAX, RECENTS_HISTORY_MAX, clampRecentsMax,
+  RECENT_DRAG_TYPE, recentDragPayload, parseRecentDrag, carriesRecentDrag,
   sanitizeRecents, recentsSignature, RecentsPersistence,
   visibleRecents, offStripRecents, admitRecent, trimRecentsHistory, reorderVisibleRecents,
   fitTabCount,
@@ -554,4 +555,42 @@ test('junk widths are charged as nothing rather than poisoning the sum', () => {
   // would make every comparison false and return the whole list.
   assert.equal(fitTabCount([100, undefined, 100], 212, 6), 3, 'a zero-width tab still takes a slot');
   assert.equal(fitTabCount([100, -50, 100], 212, 6), 3);
+});
+
+// ---- dragging a tab out of the strip -----------------------------------------
+
+test('a drag payload round-trips the (session, window) pair a tab stands for', () => {
+  const back = parseRecentDrag(recentDragPayload({ id: '@9', session: 'services' }));
+  assert.deepEqual(back, { id: '@9', session: 'services' });
+});
+
+test('a session name with spaces survives — which the space-joined tab key would not', () => {
+  const back = parseRecentDrag(recentDragPayload({ id: '@9', session: 'my build box' }));
+  assert.deepEqual(back, { id: '@9', session: 'my build box' });
+});
+
+test('a sessionless entry is still a legal drag', () => {
+  assert.deepEqual(parseRecentDrag(recentDragPayload({ id: '@9' })), { id: '@9', session: '' });
+});
+
+test('anything that is not one of our payloads is not a drag', () => {
+  // A drop handler reads whatever the browser hands it. A payload with no window in
+  // it must degrade to "not a recents drag", never to a move of window undefined.
+  assert.equal(parseRecentDrag('https://example.com/'), null, 'no separator');
+  assert.equal(parseRecentDrag('services\n'), null, 'a separator but no window');
+  assert.equal(parseRecentDrag(''), null);
+  assert.equal(parseRecentDrag(null), null);
+  assert.equal(parseRecentDrag(undefined), null);
+  assert.equal(parseRecentDrag({ id: '@9' }), null, 'the object, not the payload');
+});
+
+test('regions accept only our own drags, and can tell from `types` alone', () => {
+  // dragover is the only moment a region can claim a drop, and `types` is all that is
+  // readable there — so a dragged link or text selection must not light the panes up.
+  assert.equal(carriesRecentDrag({ types: [RECENT_DRAG_TYPE] }), true);
+  assert.equal(carriesRecentDrag({ types: ['text/plain', RECENT_DRAG_TYPE] }), true);
+  assert.equal(carriesRecentDrag({ types: ['text/plain', 'text/uri-list'] }), false);
+  assert.equal(carriesRecentDrag({ types: ['Files'] }), false);
+  assert.equal(carriesRecentDrag({}), false);
+  assert.equal(carriesRecentDrag(null), false);
 });

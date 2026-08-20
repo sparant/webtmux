@@ -431,3 +431,44 @@ export class RecentsPersistence {
     return list;
   }
 }
+
+// ---- dragging a tab out of the strip ------------------------------------------
+//
+// A recents tab has always been draggable WITHIN the strip (reorder). Dropping one
+// onto a terminal region is the other half of the same gesture — "put that window
+// THERE" — and it is the only way to name a region other than the focused one with
+// the pointer alone (see SplitManager.moveWindowTo).
+//
+// It rides a private MIME type rather than text/plain for two reasons. The regions
+// have to decide in `dragover` whether they accept the drop, and `types` is the only
+// thing readable that early — a text/plain drag from anywhere else (a link, a
+// selection) would otherwise light every region up as a target. And a payload the
+// browser considers plain text is one some other drop handler may decide to paste;
+// a type nobody else claims can only ever be read by the code that wrote it.
+export const RECENT_DRAG_TYPE = 'application/x-webtmux-recent';
+
+// (session, window) is the pair a tab stands for — a window linked into two sessions
+// earns a tab per session, and dropping one of them must land in the session it was
+// dragged from. Newline-separated because a tmux session name may contain spaces (so
+// the old space-joined key is ambiguous to split) but never a newline.
+export function recentDragPayload(entry) {
+  return `${(entry && entry.session) || ''}\n${(entry && entry.id) || ''}`;
+}
+
+// Total, like everything else that reads from outside: a payload that isn't one
+// degrades to "not a recents drag" rather than to a move of window `undefined`.
+export function parseRecentDrag(raw) {
+  if (typeof raw !== 'string') return null;
+  const nl = raw.indexOf('\n');
+  if (nl < 0) return null;
+  const id = raw.slice(nl + 1);
+  return id ? { session: raw.slice(0, nl), id } : null;
+}
+
+// Is this drag one of ours? Asked by every region on every dragover, from `types`
+// alone — see RECENT_DRAG_TYPE.
+export function carriesRecentDrag(dt) {
+  const types = dt && dt.types;
+  if (!types) return false;
+  return Array.prototype.includes.call(types, RECENT_DRAG_TYPE);
+}

@@ -110,6 +110,34 @@
       font: 11px Menlo, Monaco, "Courier New", monospace;
       pointer-events: none;
     }
+    /* A recents tab is in flight. Every region shows a faint edge from the moment the
+       tab lifts — a drop target the pointer has to FIND first is one nobody discovers,
+       and the region under the pointer can only speak for itself (dragover). */
+    #app.recent-drag .region {
+      outline: 1px dashed #2c5a94;
+      outline-offset: -2px;
+    }
+    /* …and the one under the pointer says so properly. Declared after .previewing so
+       that, on the same specificity, the drop label wins the ::after — a drag cancels
+       any browse, but the class can still be on the element for a frame. */
+    #app.recent-drag .region.drop-target {
+      outline: 2px solid #4a9eff;
+      outline-offset: -2px;
+    }
+    #app.recent-drag .region.drop-target::after {
+      content: 'drop to move the window here';
+      position: absolute;
+      right: 8px;
+      bottom: 6px;
+      z-index: 20;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: rgba(9, 13, 28, 0.9);
+      border: 1px solid #4a9eff;
+      color: #cfe0ff;
+      font: 11px Menlo, Monaco, "Courier New", monospace;
+      pointer-events: none;
+    }
     .xterm {
       height: 100%;
       padding: 8px;

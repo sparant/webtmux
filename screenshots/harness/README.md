@@ -133,7 +133,14 @@ Pieces:
   tab is not probed on spec, and returning to a tab whose link died while you were away
   is coloured in ~1s rather than the ~11s the old heartbeat took. Writes live/slow/lost
   spinner crops for `check-link-ink.sh`, which asserts the three are told apart ON THE
-  PIXELS — a third state is worth nothing if it renders like one of the other two).
+  PIXELS — a third state is worth nothing if it renders like one of the other two),
+  `verify-recents-target.js` (WHICH pane a recents tab goes to: a hovered tab grows a
+  region picker only when the view is split, hovering a chip previews the window in
+  THAT pane, clicking one lands it there, and asking for a window the other pane is
+  already showing trades the two views rather than following it — twice over, since the
+  gesture is its own inverse. Also drives the drag: the panes light up as targets for
+  the length of it, the payload rides a private MIME type, and a drop moves the window
+  exactly as its chip does).
 - `driver-gifs.js` — records one video per animated feature, each scene
   replaying its README section's bullets in order (split → drag divider →
   close; hover → preview → restore; lights change → tabs flash until viewed;
