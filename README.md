@@ -48,6 +48,7 @@ A tab flashes amber when its window has stopped working, and an arrow flashes wh
   - Remove a window from your most recents with the hover-revealed close button ×
   - Past the tab count, windows queue up rather than being forgotten: the strip shows the first 5 and the rest wait in line. Close a tab (or raise the count) and the next one in line slides straight back in. Only × — you saying you are done with a window — removes one for good.
   - Most recents persist across reloads
+  - With the view [split](#split-view-and-regions), hovering a tab offers a chip per region: click one (or drag the tab onto a region) to say which region the window opens in, instead of always the focused one. See [Split View And Regions](#split-view-and-regions).
   - A window you put in the [preview](#preview-and-picture-in-picture) gives up its tab while it is there — it is already on screen, and the slot is better spent on a window that isn't. Close (or hide) the preview and the tab comes back where it was. Control+Option+L still cycles every window, previewed or not.
 - Attention arrow (→) at the end of the strip counts and flashes for windows that need you but are visible nowhere; clicking it opens the most recent one for preview.
 - App wide toggles:
@@ -111,6 +112,7 @@ Keep an eye on specific windows, even while you focus on others.
 - One shared sidebar bound to whichever region is focused
 - A draggable divider resizes regions.
 - A new region auto-picks the most-recently-used window not already on screen; two regions never show the same window (occupied windows are greyed out in every switcher).
+- **Choose which region a window opens in.** Hovering a recents tab while the view is split shows a small picture of the split — one chip per region, drawn in the regions' own proportions. Point at a chip to preview the window in that region; click it to send it there. Or just drag the tab onto the region you mean. Sending over a window the other region is already showing makes the two regions **trade** windows, so nothing is left blank and the same gesture puts them back.
 - Secondary regions switch sessions freely without dragging the primary or the console along; a split that gets synced onto a shared session self-heals.
 - Close the focused region with Ctrl+Alt+X (the primary region can't be closed).
 

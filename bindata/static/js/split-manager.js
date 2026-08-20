@@ -9,9 +9,15 @@
 //      tabs, sidebar session tabs, sidebar arrow keys, toolbar recents, Exposé —
 //      changes what the FOCUSED pane shows, even when that means the pane hops
 //      to another session. Nothing ever navigates a non-focused pane.
+//      …unless the user AIMED at one. A recents tab's region picker and a tab
+//      dropped on a pane both name their destination outright, which is the only
+//      way to say "that pane, not this one"; moveWindowTo is that path and it is
+//      the only thing in the app that navigates a pane you are not in.
 //   2. A window is VISIBLE in at most one pane. Windows shown (or in-flight
 //      via _targetWindowId) by other panes are disabled in every switcher; the
-//      single source of that set is occupiedWindowIds().
+//      single source of that set is occupiedWindowIds(). Aiming a window that
+//      another pane already has does not break this: the two panes TRADE views
+//      (see region-move.js), so the count of panes-per-window never changes.
 //   3. A pane's LOGICAL session is layout.sessionBase (the server resolves a
 //      split's ephemeral web-* grouped session to the group's base). All display
 //      and comparison uses it; the web-* shadow names never surface.
@@ -35,7 +41,9 @@ import { WorkAlerts, AlertsPersistence, hiddenAlerts, alertOf } from './work-ale
 import {
   clampRecentsMax, RECENTS_MIN, RECENTS_MAX, RecentsPersistence,
   visibleRecents, offStripRecents, admitRecent, trimRecentsHistory, reorderVisibleRecents,
+  RECENT_DRAG_TYPE, parseRecentDrag, carriesRecentDrag,
 } from './recents-strip.js';
+import { planRegionMove } from './region-move.js';
 import { buildMruOrder } from './mru-order.js';
 import { SplitPersistence } from './split-state.js';
 import { resolveRestoreView, planRestoreLanding } from './restore-view.js';
@@ -312,6 +320,7 @@ export class SplitManager {
     };
     // Clicking anywhere in the region (even outside the terminal) focuses it.
     region.addEventListener('mousedown', () => this.focus(unit), true);
+    this._acceptRecentDrops(region, unit);
 
     this.units.push(unit);
     this._syncSplitClass();
@@ -323,6 +332,145 @@ export class SplitManager {
       this._persistSplitState();           // region count changed → shared 'split'
     }
     return unit;
+  }
+
+  // ---- a recents tab dropped on a region ---------------------------------------
+  //
+  // The strip's tabs have always been draggable among THEMSELVES (reorder). Dragging
+  // one onto a terminal region is the direct-manipulation half of the region picker:
+  // point at the pane you mean and let go. It is the same instruction the picker's
+  // chips give (moveWindowTo), so the two can never drift apart.
+  //
+  // Listeners go on the region rather than on #app because the answer to "which pane
+  // is under the pointer" should be the browser's, not arithmetic over pane rects
+  // that the divider drag could put out of date.
+  _acceptRecentDrops(region, unit) {
+    region.addEventListener('dragover', (e) => {
+      // `types` is the only part of a drag readable this early — which is exactly why
+      // the payload rides a private MIME type (see RECENT_DRAG_TYPE). Without the
+      // check every region would light up for a dragged link or text selection, and
+      // preventDefault here is what claims the drop from the terminal underneath.
+      if (!carriesRecentDrag(e.dataTransfer)) return;
+      e.preventDefault();
+      try { e.dataTransfer.dropEffect = 'move'; } catch (_) {}
+      region.classList.add('drop-target');
+    });
+    region.addEventListener('dragleave', (e) => {
+      // dragleave also fires crossing between the region's own children (the xterm
+      // rows), where the pointer never left the region at all.
+      if (!region.contains(e.relatedTarget)) region.classList.remove('drop-target');
+    });
+    region.addEventListener('drop', (e) => {
+      region.classList.remove('drop-target');
+      let raw = '';
+      try { raw = e.dataTransfer.getData(RECENT_DRAG_TYPE); } catch (_) {}
+      const drag = parseRecentDrag(raw);
+      if (!drag) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.noteRecentDrag(false);
+      this.moveWindowTo(unit, drag.id, drag.session);
+    });
+  }
+
+  // A recents drag started/ended. Regions can only style themselves as targets once
+  // the pointer is over them (`dragover`), which is too late to tell the user the
+  // gesture EXISTS — so #app carries the flag for the length of the drag and every
+  // region shows a faint "you can drop here" edge from the moment the tab lifts.
+  noteRecentDrag(on) {
+    this.container.classList.toggle('recent-drag', !!on);
+    if (!on) {
+      for (const r of this.container.querySelectorAll('.region.drop-target')) {
+        r.classList.remove('drop-target');
+      }
+    }
+  }
+
+  // ---- sending a window to a NAMED region --------------------------------------
+  //
+  // goToWindow's rule — "navigation changes the FOCUSED region" — is what every
+  // switcher the user drives blind relies on. This is the other case: the user has
+  // pointed at a specific pane (a picker chip, a tab dropped on a region), so that
+  // pane is the destination even when the window is already on screen elsewhere.
+  //
+  // Which is the case that had no answer at all before: goToWindowIn resolves "show
+  // me this window" to the region that already has it, so a window in the other split
+  // could only be jumped TO, never brought over. The exchange that fixes it lives in
+  // region-move.js — including why the other region takes this one's view rather than
+  // being sent somewhere of its own.
+  moveWindowTo(unit, id, session = '') {
+    const u = unit || this.focusedUnit;
+    if (!u || !id) return;
+    const target = this.units.indexOf(u);
+    if (target < 0) return;
+    const plan = planRegionMove({
+      views: this.units.map((x) => this._viewOf(x)),
+      target,
+      windowId: id,
+      session,
+    });
+    if (!plan) return;
+    // A move is a real navigation, so it ends any browse — including the one that is
+    // very likely showing this window in this very region right now.
+    this.hover.cancel();
+    const landing = this.units[plan.focus] || u;
+    // Focus BEFORE switching, exactly as goToWindowIn does: focus() notes an access
+    // for the window the pane is leaving, and doing it afterwards would credit the
+    // arriving window with an access it is about to get on its own.
+    if (landing !== this.focusedUnit) this.focus(landing);
+    for (const m of plan.moves) this._placeWindowIn(this.units[m.index], m.windowId, m.session);
+    // The displaced region had no view to take in exchange — hand it the same
+    // most-recently-used auto-pick a freshly split region gets, on its next layout.
+    if (plan.vacate != null && this.units[plan.vacate]) {
+      this.units[plan.vacate]._autoPickPending = true;
+    }
+    landing.terminal?.focus();
+  }
+
+  // What each region is showing, for the toolbar's region picker: one entry per
+  // region in left-to-right order. `grow` is the divider-drag ratio (read off the
+  // inline style rather than measured, so this costs no layout flush on the 500ms
+  // refresh) — the picker draws its chips in the panes' real proportions, so the
+  // thing you click looks like the thing you are aiming at.
+  regionViews() {
+    return this.units.map((u, i) => {
+      const view = this._viewOf(u);
+      const live = (u.layout?.windows || []).find((w) => w.id === view.windowId);
+      const cached = view.windowId ? this.captureCache?.get(view.windowId) : null;
+      const grow = parseFloat(u.region?.style.flexGrow);
+      return {
+        index: i,
+        windowId: view.windowId || '',
+        session: view.session || '',
+        name: live?.name || cached?.name || '',
+        windowIndex: live?.index ?? cached?.index ?? null,
+        grow: Number.isFinite(grow) && grow > 0 ? grow : 1,
+        focused: u === this.focusedUnit,
+        primary: !!u.primary,
+      };
+    });
+  }
+
+  // Point a preview at a NAMED region — the picker's chips. Same browse as hovering
+  // the tab itself, aimed: what the window would look like in that pane, committed
+  // only if you click.
+  previewWindowIn(entry, index) {
+    const u = this.units[index];
+    if (!u) return;
+    const id = typeof entry === 'string' ? entry : entry?.id;
+    const session = (typeof entry === 'object' && entry?.session) || '';
+    if (id) this.hover.enter(id, session, u);
+  }
+
+  // …and commit that browse — the picker's chip click. Routed through the hover
+  // controller (rather than straight to moveWindowTo) so the borrowed region is
+  // handed back without a repaint it is about to overwrite anyway.
+  sendWindowTo(entry, index) {
+    const u = this.units[index];
+    if (!u) return;
+    const id = typeof entry === 'string' ? entry : entry?.id;
+    const session = (typeof entry === 'object' && entry?.session) || '';
+    if (id) this.hover.commit(id, session, u);
   }
 
   // Return every region to equal `flex: 1 1 0` by clearing the inline flex-grow a
@@ -1594,6 +1742,10 @@ export class SplitManager {
     // window doesn't come back on the next reload). Signature-guarded — see
     // _persistRecents; the common no-change case costs one JSON.stringify.
     this._persistRecents();
+    // What the strip's region picker offers: one chip per region, in pane order. Fed
+    // unconditionally (the toolbar decides when a picker is worth showing) so the
+    // chips can never describe a split that has since been closed.
+    this.toolbar.regions = this.regionViews();
     this.toolbar.collapsed = !!this.sidebar?.collapsed;
     // Keep the toolbar's mode labels reflecting the focused pane's settings.
     if (focused?.scrollMode) this.toolbar.scrollMode = focused.scrollMode;
@@ -1751,13 +1903,27 @@ export class SplitManager {
     const holder = this._unitShowing(id, u);
     if (holder) { this.focus(holder); return; }   // focus() focuses its terminal too
     if (u !== this.focusedUnit) this.focus(u);
+    this._placeWindowIn(u, id, session);
+    u.terminal?.focus();
+  }
+
+  // Put a window on screen in ONE region: the hop-if-needed, claim, select sequence,
+  // with no opinion about focus and no "somebody else has it" guard.
+  //
+  // Split out of goToWindowIn because moveWindowTo drives it for TWO regions in a row
+  // (the exchange — see region-move.js), where both of those opinions are wrong: the
+  // second region is the one giving a window up, so it must not steal focus, and the
+  // window it is being handed is by definition one another region was just showing.
+  // Returns false when the region is already on that view and nothing was sent.
+  _placeWindowIn(u, id, session = '') {
+    if (!u || !id) return false;
     const curSession = this.logicalSession(u);
     // A target session that differs from the pane's current one means HOP there —
     // even if the pane is already on this window id (a window linked into two
     // sessions: switching from its session-A view to its session-B view is a real
     // navigation, not a no-op).
     const needHop = !!session && session !== curSession;
-    if (u.layout?.activeWindowId === id && !needHop) { u.terminal?.focus(); return; }  // already showing it here
+    if (u.layout?.activeWindowId === id && !needHop) return false;   // already showing it here
     const inList = (u.layout?.windows || []).some(w => w.id === id);
     if (needHop) {
       // Guard the hop's intermediate layout: it may flash this window in the session
@@ -1766,7 +1932,7 @@ export class SplitManager {
       u._navSuppress = { id, session: curSession };
       u.switchSession(session);
     } else if (!inList) {
-      if (!session || !u.layout || session === curSession) return; // unreachable
+      if (!session || !u.layout || session === curSession) return false; // unreachable
       u.switchSession(session);
     }
     // A deliberate navigation: from here the shared blob stops re-applying itself
@@ -1778,7 +1944,7 @@ export class SplitManager {
     u._targetSession = session || curSession;
     u._targetWindowId = id;
     u.selectWindow(id);
-    u.terminal?.focus();
+    return true;
   }
 
   // Keyboard nav across the recents strip: move to the VISUALLY adjacent entry
