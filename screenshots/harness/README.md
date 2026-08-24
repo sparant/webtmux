@@ -140,7 +140,15 @@ Pieces:
   already showing trades the two views rather than following it — twice over, since the
   gesture is its own inverse. Also drives the drag: the panes light up as targets for
   the length of it, the payload rides a private MIME type, and a drop moves the window
-  exactly as its chip does).
+  exactly as its chip does).,
+  `verify-link-menu.js` (the dropdown the spinner opens: attaching hides tmux's own
+  status line and remembers what it hid WITHOUT recording it as the user's choice, the
+  menu's connection row agrees with the spinner's state, the settings row is drawn from
+  what tmux actually reports rather than from a default, clicking it puts the bar back
+  and takes a row off the tmux window, and clicking again restores the SAVED value.
+  Every claim about tmux is asked of tmux over its socket, never of the UI's opinion of
+  it — and note that `xterm.rows` is NOT the assertion to make: the browser's row count
+  is set by the viewport and does not move, so it passes identically in both states).
 - `driver-gifs.js` — records one video per animated feature, each scene
   replaying its README section's bullets in order (split → drag divider →
   close; hover → preview → restore; lights change → tabs flash until viewed;

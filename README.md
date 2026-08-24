@@ -200,6 +200,29 @@ Copy several things, then paste them one at a time. A system clipboard holds exa
 - Reading the sizes works on a read-only server (`-w` absent); changing them
   does not.
 
+### Connection health & tmux settings
+
+- The toolbar spinner on the far left is a **link light**: it advances a notch
+  every time webtmux drives tmux, turns **amber** when something has been asked
+  and not yet answered, and **red** — pulsing — when the link is gone. Amber is
+  the state a boolean had to round to one side or the other, and it rounded to
+  green; a wedged socket now colours in about two seconds instead of eleven.
+- **Click it** for the same report in longhand, plus the settings that belong to
+  **tmux** rather than to webtmux — the one place on the bar where a control
+  changes the tmux server every other client is attached to, so each row says who
+  else it affects.
+- **tmux status line.** webtmux **hides tmux's own green status bar when it
+  attaches** (`set -g status off`) and offers it back in that menu. Its toolbar
+  and sidebar already name the session, list the windows and show what each one
+  is doing, in a form you can click — and in a split view the bar costs a row per
+  region. Turning it on from the menu is remembered for as long as that tmux
+  server runs, so a reload or a second region never undoes the choice, and a
+  multi-row status line (`status 2`..`5`) comes back at the height it had.
+  **Note the scope:** tmux has no per-client status option, so this applies to
+  every client on the server — a terminal attached to the same session included.
+  Seeing the setting works on a read-only server (`-w` absent); changing it does
+  not.
+
 ### Keyboard navigation & discoverability
 
 ![The shortcuts overlay (Ctrl+Alt+/): every global chord with modifier labels matching your OS](screenshots/keyboard-shortcuts.jpg)
@@ -860,6 +883,9 @@ WebTmux extends the gotty protocol with tmux-specific message types:
 - `T` TmuxHistoryInfoRequest - Read a window's scrollback SIZE and usage
 - `U` TmuxHistoryAction - Set the default (for this tmux server, or persisted to
   tmux.conf) / resize / clear a scrollback buffer
+- `V` TmuxSettingsRequest - Read the tmux settings the link menu shows
+- `W` TmuxSettingsAction - Change one of them (currently: draw or hide tmux's own
+  status line, and record that the user chose it)
 
 **Server -> Client:**
 
@@ -867,6 +893,7 @@ WebTmux extends the gotty protocol with tmux-specific message types:
 - `9` TmuxModeUpdate - Copy mode state
 - `E` TmuxScrollbackData - A window's entire pane buffer, base64
 - `F` TmuxHistoryInfo - Scrollback sizes/usage + the outcome of an action
+- `G` TmuxSettings - The tmux settings, answering both of the two above
 
 ## Development
 

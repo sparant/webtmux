@@ -41,7 +41,7 @@ const (
 // authorityOf classifies one client->server message type.
 //
 // Both message-type spaces are covered: the base protocol ('1'..'4') and the
-// tmux extension ('5'..'R'). They are disjoint by construction, so one switch
+// tmux extension ('5'..'W'). They are disjoint by construction, so one switch
 // can speak for both.
 func authorityOf(msgType byte) msgAuthority {
 	switch msgType {
@@ -71,6 +71,11 @@ func authorityOf(msgType byte) msgAuthority {
 		// Reads one window's scrollback accounting (`list-panes -F` +
 		// `show-options -v`). Nothing is written, and a viewer who can see the
 		// buffer's contents should certainly be allowed to see how big it is.
+		return authView
+	case TmuxSettingsRequest:
+		// Reads the tmux settings the link menu shows (`show-options -g -v`).
+		// Telling a viewer whether the status line is drawn changes nothing; the
+		// ACTION that draws or hides it is a write, below.
 		return authView
 	case TmuxRefresh:
 		// `refresh-client` on this pane's OWN client: it repaints a screen that the
@@ -103,6 +108,12 @@ func authorityOf(msgType byte) msgAuthority {
 		return authWrite
 	case TmuxSetState:
 		// Rewrites @wt_state, which every other client adopts.
+		return authWrite
+	case TmuxSettingsAction:
+		// Rewrites a server-GLOBAL tmux option. tmux has no per-client `status`,
+		// so hiding the status line hides it for every client on the server —
+		// including a terminal nobody in this browser can see. That makes it one
+		// of the more far-reaching writes here, not one of the smaller ones.
 		return authWrite
 	case TmuxHistoryAction:
 		// The loudest write in the protocol: a resize REBUILDS panes, which kills

@@ -312,6 +312,9 @@ export class SplitManager {
     unit.onScrollbackData = (payload) => this.onScrollbackData(payload);
     // Scrollback SIZES (as opposed to contents) -> the ⛁ dropdown.
     unit.onHistoryInfo = (res) => this.onHistoryInfo(res);
+    // tmux's OWN settings (currently: is it drawing a status line?) -> the link
+    // menu hung off the toolbar spinner.
+    unit.onTmuxSettings = (res) => this.onTmuxSettings(res);
     // Clicking the terminal collapses either panel out of the way (unless pinned).
     unit.onTerminalMousedown = () => {
       for (const sb of [this.sidebar, this.copySidebar]) {
@@ -1610,6 +1613,45 @@ export class SplitManager {
 
   clearWindowHistory() {
     this._historyAction(ACTION_CLEAR, 0, false);
+  }
+
+  // ---- tmux settings (the link menu) ---------------------------------------
+  //
+  // These speak about the tmux SERVER, not about a window or a region — `status`
+  // is a session option with no per-client form, so there is exactly one answer
+  // for the whole server and any region may ask for it. The focused region is
+  // used simply because it is the one whose socket we know is the user's.
+
+  // Ask what tmux's settings are. Sent when the link menu opens, so the checkbox
+  // is drawn from tmux rather than from what this browser last asked for — a
+  // status line turned on from a terminal shows as on here.
+  requestTmuxSettings() {
+    const u = this.focusedUnit;
+    if (!u) return false;
+    return u.sendSettingsRequest();
+  }
+
+  // The server's answer, to the question OR to the toggle. One frame for both,
+  // like the scrollback panel's.
+  onTmuxSettings(res) {
+    if (!this.toolbar) return;
+    this.toolbar.tmuxSettingsBusy = false;
+    this.toolbar.tmuxSettings = res || null;
+  }
+
+  // Draw or hide tmux's own status line. The checkbox is NOT moved here — it is
+  // moved when the reply lands — so a refused or failed change leaves the menu
+  // showing what tmux actually did rather than what was clicked.
+  setTmuxStatusBar(on) {
+    const u = this.focusedUnit;
+    if (!u || !this.toolbar) return;
+    this.toolbar.tmuxSettingsBusy = true;
+    if (!u.sendStatusBar(!!on)) {
+      // A refused send (read-only, or a closed socket) explains itself in the
+      // notice line; drop the pending marker rather than spin on a reply that was
+      // never asked for.
+      this.toolbar.tmuxSettingsBusy = false;
+    }
   }
 
   _historyAction(action, limit, force, rerun = false) {

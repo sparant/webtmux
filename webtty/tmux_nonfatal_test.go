@@ -91,6 +91,19 @@ func (c *failCtrl) ResizeWindowHistory(string, int, bool, bool) (tmux.HistoryRes
 	return tmux.HistoryResize{}, c.note("resize-history")
 }
 
+// The tmux-settings pair. ReadSettings is view-only — like RefreshClient it must
+// NOT be counted as a mutation, or the write-authority test would see a read-only
+// client "running a tmux command" for merely opening the link menu. SetStatusBar
+// rewrites a server-global option and is counted.
+func (c *failCtrl) ReadSettings() (tmux.Settings, error) {
+	c.repainted++ // reuse the view-only counter: "something read-only happened"
+	return tmux.Settings{}, errNope
+}
+
+func (c *failCtrl) SetStatusBar(bool) (tmux.Settings, error) {
+	return tmux.Settings{}, c.note("set-option status")
+}
+
 // countingCapture is a CaptureProvider that records every call and can be made to
 // block inside one, so a test can observe a SECOND request arriving while the
 // first is still in flight (see capture_cap_test.go).
