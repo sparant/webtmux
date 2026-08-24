@@ -253,6 +253,11 @@ const EXPOSE_TIP = `Exposé — a thumbnail of every window across all sessions.
   + (IS_MAC ? '\nTrackpad: spread two fingers to open it, spread again for 9 smaller tiles;'
             + '\npinch back to 4, and pinch once more to close.' : '');
 
+// The spinner's hover hint ends with what clicking it does. It is a separate
+// constant because the sentences ABOVE it are the link's own report, shared
+// verbatim with the menu (see _linkDetail) — only this tail belongs to the hint.
+const LINK_MENU_HINT = '\n\nClick for the connection in full, and for tmux\'s own settings.';
+
 // The per-tab × hint. A constant rather than an inline string because _syncTabHover
 // has to be able to say it too: after a × click the pointer is left sitting on the
 // NEXT tab's ×, and re-hinting it with the tab's own text would describe a control
@@ -390,6 +395,14 @@ class WebtmuxToolbar extends LitElement {
     lostRegions: { type: Number },
     stalledRegions: { type: Number },
     slowRegions: { type: Number },
+    // The spinner's THIRD job: it is the button that opens the link menu — the
+    // connection in longhand, and the tmux settings that have nowhere else to live.
+    // tmuxSettings is the server's last TmuxSettings report (see pkg/tmux/settings.go),
+    // null until one arrives; tmuxSettingsBusy covers the round trip after a toggle,
+    // so the checkbox stays on what tmux says rather than jumping to what was clicked.
+    linkMenuOpen: { type: Boolean },
+    tmuxSettings: { type: Object },
+    tmuxSettingsBusy: { type: Boolean },
     // Flashing windows with no tab of their own — see the overflow arrow below.
     // [{id, session, index, name, alert}], most recently raised first.
     overflowAlerts: { type: Array },
@@ -1207,20 +1220,30 @@ class WebtmuxToolbar extends LitElement {
        full-size, full-opacity and a brighter blue now — the whole point of this
        control is to be caught out of the corner of your eye, and one that has to be
        hunted for is telling you nothing. */
+    /* The spinner is a BUTTON (see the link menu below), so it carries the
+       button reset the other .tbtn-shaped controls get from .tbtn: no UA chrome,
+       no inherited font metrics, and a pointer cursor — it does something now. */
     .spin {
       flex: 0 0 auto;
       width: 22px;
       height: 22px;
       margin-right: 3px;
+      padding: 0;
       display: flex;
       align-items: center;
       justify-content: center;
+      background: none;
+      border: 0;
       color: #6cb6ff;
       line-height: 1;
-      cursor: default;
+      cursor: pointer;
       transition: transform 0.18s ease-out;
     }
     .spin svg { display: block; }
+    /* Open state. The spinner cannot take .tbtn's filled "on" look — it is
+       rotating, and a box that rotates with it reads as broken — so being open is
+       said with the icon's own colour instead. */
+    .spin.open { color: #fff; }
     /* …and the same spinner in red when the socket to tmux is gone. It PULSES rather
        than sitting still: a stopped spinner is exactly what an idle one looks like,
        and this state is a request (go and look), not a report. Red matches the
@@ -1347,6 +1370,44 @@ class WebtmuxToolbar extends LitElement {
       color: #8b96b4; font-size: 11px; line-height: 1.35;
       white-space: normal;                /* the hints are sentences, so let them wrap */
     }
+
+    /* The link menu, hung off the spinner at the FAR LEFT of the bar — so it
+       opens left-aligned, the mirror of .mouse-menu's right. Same .label-menu
+       chrome as the other two for the same reason: three settings menus that
+       looked like three different objects would read as three mechanisms.
+
+       It is wider than the mouse menu because its first row is not a choice at
+       all — it is the connection in longhand, the paragraphs the spinner's hover
+       hint has always carried, now in something you can read at your own pace
+       instead of racing a tooltip timeout. */
+    .spin-wrap { position: relative; flex: 0 0 auto; display: inline-flex; }
+    .link-menu { left: 0; right: auto; min-width: 340px; max-width: min(380px, 92vw); }
+    .link-menu .mitem { align-items: flex-start; }
+    .link-menu .mitem .mark { margin-top: 2px; }
+    .link-menu .mtext { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .link-menu .mtext b { font-weight: 600; color: #e8eefc; }
+    .link-menu .mhint { color: #8b96b4; font-size: 11px; line-height: 1.35; white-space: normal; }
+    /* The connection row. A DIV, not a button: it reports, it does not act, and a
+       row that looked clickable would be promising a reconnect nothing here can
+       deliver. Its dot repeats the spinner's colour so the menu and the control
+       that opened it can never disagree about what state we are in. */
+    .link-menu .mstat {
+      display: flex; align-items: flex-start; gap: 8px;
+      background: #1a1a2e; border: 1px solid #0f3460; border-radius: 6px;
+      padding: 7px 9px; font-size: 12.5px; color: #e8eefc;
+    }
+    .link-menu .mstat .sdot {
+      flex: 0 0 auto; width: 9px; height: 9px; margin-top: 5px;
+      border-radius: 50%; background: #6cb6ff;
+    }
+    .link-menu .mstat.slow .sdot { background: #ffb454; }
+    .link-menu .mstat.lost .sdot { background: #ff5470; }
+    /* pre-line, because the body is the SAME string the hover hint shows and its
+       paragraph breaks are real newlines. One text, two presentations. */
+    .link-menu .mstat .mhint { white-space: pre-line; }
+    .link-menu .mitem[disabled] { opacity: 0.45; cursor: default; }
+    .link-menu .mitem[disabled]:hover { border-color: #0f3460; }
+    .link-menu .merr { color: #ff8fa3; font-size: 11px; line-height: 1.35; padding: 0 2px; }
   `, ALERT_CSS, TIP_CSS];
 
   constructor() {
@@ -1430,6 +1491,9 @@ class WebtmuxToolbar extends LitElement {
     this.stalledRegions = 0;
     this.slowRegions = 0;
     this.linkState = 'live';
+    this.linkMenuOpen = false;   // link menu (connection + tmux settings) open?
+    this.tmuxSettings = null;    // last TmuxSettings report; null = never asked
+    this.tmuxSettingsBusy = false;
     this.overflowAlerts = [];
   }
 
@@ -2755,20 +2819,135 @@ class WebtmuxToolbar extends LitElement {
     return this.linkState === 'slow' ? 'slow' : '';
   }
 
+  // The link's state as a headline and a body, ONE string each, used by both the
+  // hover hint and the menu row. They used to be two texts saying the same thing
+  // in two places, which is how a tooltip ends up a version behind the panel it
+  // duplicates. The body keeps its paragraph breaks; the menu renders them with
+  // white-space: pre-line and the tooltip renders them as-is.
+  _linkDetail() {
+    const kind = this._linkClass();
+    if (kind === 'lost') return { kind, head: 'Connection to tmux lost', body: this._lostTip() };
+    if (kind === 'slow') return { kind, head: 'tmux is answering slowly', body: this._slowTip() };
+    return {
+      kind: 'live',
+      head: 'Connected to tmux',
+      body: 'The spinner advances one notch each time webtmux sends tmux a command'
+        + ' (window switches, renames, captures, saved state), so it flicks when'
+        + ' something is driving tmux and sits still when nothing is.'
+        + '\n\nIt turns amber when webtmux has asked tmux something and is still'
+        + ' waiting, and red when the link is gone.',
+    };
+  }
+
+  // ---- the link menu ------------------------------------------------------------
+  // The spinner was the only control on the bar that reported without doing
+  // anything, and its report was locked inside a hover hint: a paragraph you had
+  // to keep the pointer still to read, that vanished if you moved to reach for
+  // anything, and that could not hold a control. Giving it a menu costs nothing —
+  // the icon keeps spinning and keeps its colour — and buys the one thing the bar
+  // had no home for: SETTINGS THAT BELONG TO TMUX rather than to webtmux.
+  //
+  // That distinction is the whole reason this is not another .tbtn. Every other
+  // menu on this bar changes how webtmux behaves. The rows here change the tmux
+  // SERVER, which other clients are attached to — so they live behind the control
+  // that is already about the link to that server, and each says who else it
+  // affects.
+  _toggleLinkMenu() {
+    this.linkMenuOpen = !this.linkMenuOpen;
+    if (!this.linkMenuOpen) return;
+    // Clear any in-flight marker left by a toggle whose reply never landed (the
+    // socket dropped while it was out). Without this the row would stay disabled
+    // for the life of the page, which looks exactly like a setting that is not
+    // allowed rather than one whose answer went missing.
+    this.tmuxSettingsBusy = false;
+    // Ask tmux on every open rather than trusting the last answer. `status` can be
+    // changed from a terminal attached to the same server, from .tmux.conf, or by
+    // another browser — a checkbox drawn from what THIS page last set would be
+    // confidently wrong in all three cases.
+    this.manager?.requestTmuxSettings?.();
+  }
+
+  // Flip the tmux status line. Nothing is drawn optimistically: the reply carries
+  // the state tmux was actually left in (see webtty/settings.go), and a toggle that
+  // ticked itself before tmux agreed would show "on" against a server that had
+  // refused.
+  _toggleStatusBar() {
+    const on = !!this.tmuxSettings?.on;
+    this.manager?.setTmuxStatusBar?.(!on);
+  }
+
+  // The status-line row's second line: what the setting is, and — the part that is
+  // genuinely surprising — who else it moves. tmux has no per-client `status`, so
+  // there is no version of this that only affects the browser.
+  _statusBarHint(set) {
+    const scope = 'tmux has no per-client status line, so this applies to every'
+      + ' client on this tmux server — a terminal attached to the same session included.';
+    if (!set) return `The bar tmux draws across the bottom row (\`set -g status\`). ${scope}`;
+    if (set.on) {
+      return `tmux is drawing it (\`status ${set.status}\`). Turning it off gives the row`
+        + ` back to the terminal — webtmux's own toolbar and sidebar already name the`
+        + ` session, list the windows and show what each one is doing. ${scope}`;
+    }
+    return (set.chosen
+      ? 'Hidden. Turn it back on to get tmux\'s own bar again.'
+      : 'Hidden by webtmux when it attached, because this toolbar and the sidebar'
+        + ' already show what it shows — and in a split it costs a row per region.'
+        + ' Turning it on here is remembered for as long as this tmux server runs.')
+      + ` ${scope}`;
+  }
+
+  _linkMenu() {
+    const st = this._linkDetail();
+    const set = this.tmuxSettings;
+    const on = !!set?.on;
+    // Read-only servers watch; they do not rearrange the tmux server they are
+    // watching (see webtty/authority.go). The row still SHOWS the setting — the
+    // read behind it is allowed — it just cannot be clicked, and says why.
+    const locked = !!this.readOnly;
+    return html`
+      <div class="label-backdrop" @click=${() => { this.linkMenuOpen = false; }}></div>
+      <div class="label-menu link-menu" @click=${(e) => e.stopPropagation()}>
+        <div class="mtitle">connection:</div>
+        <div class="mstat ${st.kind}">
+          <span class="sdot"></span>
+          <span class="mtext"><b>${st.head}</b><span class="mhint">${st.body}</span></span>
+        </div>
+        <div class="mtitle">tmux settings:</div>
+        <button
+          class="mitem"
+          ?disabled=${locked || !set || this.tmuxSettingsBusy}
+          aria-pressed=${on ? 'true' : 'false'}
+          @click=${() => this._toggleStatusBar()}
+        >
+          <span class="mark">${on ? '✓' : ''}</span>
+          <span class="mtext">
+            <b>tmux status line</b>
+            <span class="mhint">${!set ? 'Asking tmux…'
+              : locked
+                ? 'This server is read-only, so the setting can be seen but not changed. '
+                  + this._statusBarHint(set)
+                : this._statusBarHint(set)}</span>
+          </span>
+        </button>
+        ${set?.error ? html`<div class="merr">${set.error}</div>` : ''}
+      </div>
+    `;
+  }
+
   render() {
     return html`
-      <span
-        class="spin ${this._linkClass()}"
-        style="transform: rotate(${this.activity * SPIN_STEP_DEG}deg)"
-        role=${this._linkClass() ? 'img' : 'presentation'}
-        aria-hidden=${this._linkClass() ? 'false' : 'true'}
-        aria-label=${this._linkClass() === 'lost' ? 'Connection to tmux lost'
-          : this._linkClass() === 'slow' ? 'tmux is answering slowly' : ''}
-        @mouseenter=${(e) => this._tipEnter(e, this._linkClass() === 'lost' ? this._lostTip()
-          : this._linkClass() === 'slow' ? this._slowTip()
-          : 'tmux activity — advances one notch each time webtmux sends tmux a command (window switches, renames, captures, saved state).')}
-        @mouseleave=${() => this._tipLeave()}
-      >${spinIcon()}</span>
+      <div class="spin-wrap">
+        <button
+          class="spin ${this._linkClass()} ${this.linkMenuOpen ? 'open' : ''}"
+          style="transform: rotate(${this.activity * SPIN_STEP_DEG}deg)"
+          aria-label=${this._linkDetail().head + ' — connection details and tmux settings'}
+          aria-expanded=${this.linkMenuOpen ? 'true' : 'false'}
+          @mouseenter=${(e) => this._tipEnter(e, this._linkDetail().body + LINK_MENU_HINT)}
+          @mouseleave=${() => this._tipLeave()}
+          @click=${() => { this._tipLeave(); this._toggleLinkMenu(); }}
+        >${spinIcon()}</button>
+        ${this.linkMenuOpen ? this._linkMenu() : ''}
+      </div>
       ${this.showBuild ? html`
         <button
           class="build"

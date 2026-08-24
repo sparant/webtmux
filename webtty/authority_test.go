@@ -60,6 +60,9 @@ func TestReadOnlyAllowsExactlyTheViewingMessages(t *testing.T) {
 		// read. The action that CHANGES it is in the write list below.
 		{"scrollback size probe", TmuxHistoryInfoRequest},
 		{"refresh (repaint our own pane)", TmuxRefresh},
+		// "Is the tmux status line drawn?" — a `show-options -g -v` read. The
+		// toggle that answers by CHANGING it is in the write list below.
+		{"tmux settings probe", TmuxSettingsRequest},
 	}
 	for _, tc := range view {
 		if requiresWrite(tc.msg) {
@@ -95,6 +98,9 @@ func TestReadOnlyAllowsExactlyTheViewingMessages(t *testing.T) {
 		{"save pane to a file on the server", TmuxSavePaneFile},
 		{"rewrite the shared @wt_state", TmuxSetState},
 		{"resize/clear a scrollback buffer", TmuxHistoryAction},
+		// A server-global tmux option: tmux has no per-client `status`, so this
+		// hides the status line for every client on the server, terminals included.
+		{"toggle the tmux status line", TmuxSettingsAction},
 	}
 	for _, tc := range write {
 		if !requiresWrite(tc.msg) {
@@ -139,6 +145,9 @@ func TestGateBlocksMutationsWithoutPermitWrite(t *testing.T) {
 		// The scrollback writes: a rebuild kills whatever runs in the panes it
 		// replaces, and a clear discards history nobody can get back.
 		[]byte(string(rune(TmuxHistoryAction)) + `{"windowId":"@3","action":"default","limit":50000}`),
+		// The status-line toggle: a server-global option, so it changes what every
+		// client on this tmux server sees — terminals included.
+		[]byte(string(rune(TmuxSettingsAction)) + `{"statusBar":true}`),
 	}
 
 	t.Run("read-only", func(t *testing.T) {
@@ -185,6 +194,8 @@ func TestGateLetsAReadOnlyClientWatch(t *testing.T) {
 		[]byte(string(rune(TmuxSaveInfoRequest)) + `{"windowId":"@0"}`),
 		// Seeing how big a buffer is, and how full, changes nothing.
 		[]byte(string(rune(TmuxHistoryInfoRequest)) + `{"windowId":"@0"}`),
+		// "Is tmux drawing its status line?" — a show-options read.
+		{TmuxSettingsRequest},
 		{TmuxRefresh},
 	} {
 		if err := wt.handleMasterReadEvent(f); err != nil {

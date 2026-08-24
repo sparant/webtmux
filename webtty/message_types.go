@@ -66,6 +66,12 @@ const (
 	// after the last thing that was done to them. Note the pairing: TmuxScrollback*
 	// above is the buffer's CONTENTS, this is its size and how full it is.
 	TmuxHistoryInfo = 'F'
+	// The tmux SETTINGS this UI can change (JSON: a tmux.Settings). Answers both
+	// TmuxSettingsRequest and TmuxSettingsAction, for the same reason
+	// TmuxHistoryInfo answers both of its messages: the outcome of a change and
+	// the state it left behind are one answer, and splitting them lets a menu
+	// report "turned on" beside a checkbox still drawn unticked.
+	TmuxSettings = 'G'
 )
 
 // Tmux input message types (client -> server)
@@ -151,4 +157,12 @@ const (
 	// carrying the outcome AND the fresh numbers. See pkg/tmux/history.go for why
 	// a resize has to rebuild panes rather than set an option.
 	TmuxHistoryAction = 'U'
+	// Ask for the tmux settings the link menu shows (no payload). Read-only —
+	// `show-options -g -v`. The reply is a TmuxSettings. Sent when the menu opens.
+	TmuxSettingsRequest = 'V'
+	// Change one tmux setting (payload JSON: {"statusBar":bool}). Today that is
+	// the status line and nothing else, but the payload is a named field rather
+	// than a bare "on"/"off" so the second setting does not need a second message
+	// type. The reply is a TmuxSettings carrying the state tmux was left in.
+	TmuxSettingsAction = 'W'
 )

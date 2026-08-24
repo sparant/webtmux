@@ -63,6 +63,8 @@ export const MSG = {
   TmuxScrollbackRequest: 'S',
   TmuxHistoryInfoRequest: 'T',
   TmuxHistoryAction: 'U',
+  TmuxSettingsRequest: 'V',
+  TmuxSettingsAction: 'W',
 
   // Output (server -> client)
   Output: '1',
@@ -90,6 +92,10 @@ export const MSG = {
   // question and the three actions, so the panel's numbers are always the ones
   // tmux held after the last thing that was done to them.
   TmuxHistoryInfo: 'F',
+  // The tmux settings the link menu shows and changes — currently just whether
+  // tmux draws its own status line. Answers both the question and the toggle, so
+  // the checkbox can never be drawn from a state older than the last change.
+  TmuxSettings: 'G',
 };
 
 // Scroll-wheel behavior. Cycled by the sidebar button through all four:
@@ -116,6 +122,7 @@ const TMUX_MSG_TYPES = new Set([
   MSG.TmuxKillSession, MSG.TmuxLinkWindow, MSG.TmuxUnlinkWindow,
   MSG.TmuxSavePaneFile, MSG.TmuxSaveInfoRequest, MSG.TmuxScrollbackRequest,
   MSG.TmuxHistoryInfoRequest, MSG.TmuxHistoryAction,
+  MSG.TmuxSettingsRequest, MSG.TmuxSettingsAction,
   MSG.TmuxSetState, MSG.TmuxRefresh,
 ]);
 
@@ -1613,6 +1620,16 @@ export class TerminalUnit {
         }
         break;
 
+      case MSG.TmuxSettings:
+        // What tmux's own settings look like now, and the outcome of whatever
+        // asked. Routed to the toolbar's link menu.
+        try {
+          this.onTmuxSettings?.(JSON.parse(payload));
+        } catch (e) {
+          console.warn('Bad tmux settings:', e);
+        }
+        break;
+
       default:
         console.warn('Unknown message type:', type);
     }
@@ -2158,6 +2175,24 @@ export class TerminalUnit {
     if (!this.isConnected()) return false;
     return this.sendMessage(MSG.TmuxHistoryAction,
       JSON.stringify({ windowId, action, limit, force, rerun }));
+  }
+
+  // Ask what tmux's own settings are. Read-only on the server (`show-options -g
+  // -v`), so it answers on a read-only webtmux too — the menu shows the state and
+  // the toggle below is the part that needs -w. The reply is a TmuxSettings ->
+  // onTmuxSettings.
+  sendSettingsRequest() {
+    if (!this.isConnected()) return false;
+    return this.sendMessage(MSG.TmuxSettingsRequest, '');
+  }
+
+  // Draw or hide tmux's own status line (`set-option -g status on|off`), and
+  // record the choice so webtmux stops hiding it by default. The reply is the same
+  // TmuxSettings frame carrying the state tmux was left in, so the checkbox is
+  // never drawn from what we ASKED for — only from what happened.
+  sendStatusBar(on) {
+    if (!this.isConnected()) return false;
+    return this.sendMessage(MSG.TmuxSettingsAction, JSON.stringify({ statusBar: !!on }));
   }
 
   enterCopyMode() {

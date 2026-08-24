@@ -255,6 +255,13 @@ func (server *Server) processWSConn(ctx context.Context, conn *websocket.Conn, h
 			log.Printf("Warning: failed to start tmux controller for %q: %v", sessionName, err)
 		} else {
 			defer ctrl.Stop()
+			// Hide tmux's own status line, unless the user has told webtmux they
+			// want it (see pkg/tmux/settings.go). Gated on -w for the same reason
+			// every other mutation is: a read-only server watches, it does not
+			// rearrange the tmux server it is watching.
+			if server.options.PermitWrite {
+				ctrl.ApplyStatusDefault()
+			}
 			tty.SetTmuxController(ctrl)
 			// Hand this connection the ONE server-global capture store (shared by
 			// pointer across all connections) so Exposé / optimistic paint read a

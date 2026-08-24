@@ -50,6 +50,13 @@ type TmuxController interface {
 	// tmux knows a launch command for come back running it rather than as shells.
 	ResizeWindowHistory(windowID string, limit int, force, rerun bool) (tmux.HistoryResize, error)
 	ClearWindowHistory(windowID string) error
+	// The tmux settings the toolbar's link menu shows and changes. ReadSettings is
+	// a pure read (so a read-only server can still answer the menu); SetStatusBar
+	// draws or hides tmux's own status line and records that the user chose it,
+	// which is what stops webtmux hiding it on the next attach. See
+	// pkg/tmux/settings.go.
+	ReadSettings() (tmux.Settings, error)
+	SetStatusBar(on bool) (tmux.Settings, error)
 	EnterCopyMode() error
 	ExitCopyMode() error
 	RefreshClient() error
@@ -369,6 +376,12 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 
 	case TmuxHistoryAction:
 		return wt.handleHistoryAction(payload)
+
+	case TmuxSettingsRequest:
+		return wt.handleSettingsRequest()
+
+	case TmuxSettingsAction:
+		return wt.handleSettingsAction(payload)
 
 	case TmuxRefresh:
 		// Put this region's REAL screen back after a hover preview blitted another
@@ -827,7 +840,7 @@ func isTmuxMessage(msgType byte) bool {
 		TmuxRenameSession, TmuxKillWindow, TmuxKillSession, TmuxLinkWindow,
 		TmuxUnlinkWindow, TmuxCaptureRequest, TmuxSavePaneFile, TmuxSaveInfoRequest,
 		TmuxScrollbackRequest, TmuxHistoryInfoRequest, TmuxHistoryAction,
-		TmuxSetState, TmuxRefresh:
+		TmuxSetState, TmuxRefresh, TmuxSettingsRequest, TmuxSettingsAction:
 		return true
 	default:
 		return false
