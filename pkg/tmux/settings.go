@@ -46,6 +46,73 @@ const statusSavedOption = "@wt_status_saved"
 // — "on", "2".."5" — draws something.
 const statusOff = "off"
 
+// ---------------------------------------------------------------------------
+// set-clipboard: whether a program running INSIDE tmux can reach the clipboard
+// of the machine running the BROWSER.
+//
+// THE PROBLEM. A terminal program that offers to copy something — an OAuth URL,
+// a token, a diff — has no access to your clipboard. It has a byte stream. The
+// one portable way to cross that gap is OSC 52: the program writes
+// `ESC ] 52 ; c ; <base64> BEL` and the terminal emulator at the far end puts the
+// decoded text on ITS clipboard. webtmux's browser side has read that sequence
+// since copy buffers shipped (terminal-unit.js, handleOSC52), so the far end is
+// ready. The sequence just never gets there.
+//
+// It never gets there because tmux is in the middle and, by DEFAULT, eats it.
+// `set-clipboard` has three values, and tmux ships with the middle one:
+//
+//	off       tmux never drives the outer terminal's clipboard.
+//	external  tmux may set the outer clipboard for ITS OWN copies (copy-mode `y`,
+//	          copy-pipe -w, load-buffer -w) but IGNORES the escape sequence when an
+//	          application inside a pane writes it.   <-- the default
+//	on        an application's OSC 52 is honoured: tmux stores it as a paste buffer
+//	          AND forwards it to the attached client's terminal — i.e. to webtmux,
+//	          i.e. to the browser.
+//
+// So on a stock tmux the app-driven half of the clipboard is off, and the failure
+// is silent in both directions: the program says "copied", tmux drops it, and
+// nothing anywhere reports that a copy did not happen. Verified against tmux 3.2a
+// and 3.3a — see screenshots/harness/diag-osc52.js, which emits all three channels
+// a real program uses and reports which arrive.
+//
+// WHY WEBTMUX TURNS IT ON. webtmux exists to be the terminal at the far end of
+// exactly this gap: the tmux server is on one machine, the person is on another,
+// and the clipboard they mean is the browser's. `external` is a sensible default
+// for a tmux whose client is a local terminal emulator the user already trusts;
+// for a tmux whose client is a browser tab it is the setting that breaks the one
+// thing the browser is better at than ssh. Hence the same shape as the status
+// line: applied once as a DEFAULT on attach, remembered the moment the user says
+// otherwise, and shown in the link menu with what it does.
+//
+// WHAT IT DOES NOT DO. Turning this on does not let a pane READ the clipboard —
+// OSC 52 queries (`ESC ] 52 ; c ; ? BEL`) are answered by nothing here, and
+// handleOSC52 drops a "?" payload on the floor rather than replying. The trust
+// being extended is one-directional: a program that can already draw anything on
+// your screen may also offer you text to paste.
+
+// clipboardChoiceOption records the user's DECISION: "1" = they want app copies
+// forwarded, "0" = they do not, unset = they have never said. Same role as
+// statusShowOption, and the same reason: a default that cannot be overruled is
+// not a default.
+const clipboardChoiceOption = "@wt_clipboard_choice"
+
+// clipboardSavedOption remembers what `set-clipboard` was before webtmux turned it
+// on, so turning it back off restores THAT rather than a guess. Unlike `status`
+// this one really is a small enum, but the distinction between `off` and
+// `external` is exactly the distinction between "tmux never touches my clipboard"
+// and "tmux's own copies do" — collapsing them would quietly enable copy-mode
+// clipboard writes for someone who had turned them off.
+const clipboardSavedOption = "@wt_clipboard_saved"
+
+// clipboardOn is the one value that forwards an APPLICATION's OSC 52. The others
+// (off, external) both drop it.
+const clipboardOn = "on"
+
+// clipboardDefault is tmux's own out-of-the-box value, used when webtmux is asked
+// to turn forwarding off and has nothing remembered to restore. Restoring "off"
+// instead would leave tmux quieter than it was found.
+const clipboardDefault = "external"
+
 // Settings is what the toolbar's link menu shows and changes. One struct for the
 // whole tmux-settings section rather than one per option: the menu asks for all of
 // it at once, and a reply that could answer about some settings and not others
@@ -60,6 +127,17 @@ type Settings struct {
 	// it is false the menu can honestly say the bar is hidden BY WEBTMUX, which is
 	// otherwise indistinguishable from a tmux.conf that turned it off.
 	Chosen bool `json:"chosen"`
+
+	// Clipboard is tmux's `set-clipboard` option verbatim ("off", "external",
+	// "on"), reported as what it is: the menu says which of the two "no" values is
+	// in force, because they differ in whether tmux's OWN copies reach the browser.
+	Clipboard string `json:"clipboard"`
+	// ClipboardOn is the boolean the checkbox draws: Clipboard == "on", the only
+	// value that forwards an application's OSC 52.
+	ClipboardOn bool `json:"clipboardOn"`
+	// ClipboardChosen is true once the user has decided, exactly as Chosen is.
+	ClipboardChosen bool `json:"clipboardChosen"`
+
 	// Error is why the answer is not trustworthy — an empty string means it is.
 	Error string `json:"error,omitempty"`
 }
@@ -96,10 +174,18 @@ func (c *Controller) ReadSettings() (Settings, error) {
 	// worst it costs is one sentence of explanation in the menu, so it is swallowed
 	// rather than allowed to sink an otherwise good answer.
 	chosen, _ := globalOption(c.run, statusShowOption)
+	// set-clipboard is read on the same best-effort footing as the decisions: a
+	// tmux too old to have the option (it has existed since 2.6) or one that will
+	// not answer costs the clipboard ROW its state, not the whole reply.
+	clip, _ := globalOption(c.run, "set-clipboard")
+	clipChosen, _ := globalOption(c.run, clipboardChoiceOption)
 	return Settings{
-		Status: strings.TrimSpace(status),
-		On:     statusIsOn(status),
-		Chosen: chosen == "1" || chosen == "0",
+		Status:          strings.TrimSpace(status),
+		On:              statusIsOn(status),
+		Chosen:          chosen == "1" || chosen == "0",
+		Clipboard:       strings.TrimSpace(clip),
+		ClipboardOn:     strings.TrimSpace(clip) == clipboardOn,
+		ClipboardChosen: clipChosen == "1" || clipChosen == "0",
 	}, nil
 }
 
@@ -178,6 +264,84 @@ func (c *Controller) ApplyStatusDefault() {
 	}
 	c.rememberStatus()
 	if _, err := c.runTmux("set-option", "-g", "status", statusOff); err != nil {
+		return
+	}
+}
+
+// SetClipboard turns application OSC 52 forwarding on or off and records that the
+// user chose it, so the on-attach default stops applying.
+//
+// Turning it ON saves the previous value first; turning it OFF restores that saved
+// value, falling back to tmux's own default rather than to "off" — see
+// clipboardDefault for why the difference matters.
+func (c *Controller) SetClipboard(on bool) (Settings, error) {
+	want := clipboardOn
+	if on {
+		c.rememberClipboard()
+	} else {
+		saved, _ := globalOption(c.run, clipboardSavedOption)
+		want = strings.TrimSpace(saved)
+		// A saved "on" is not a restore point — it would make "turn it off" a
+		// no-op, the one outcome a person clicking this can only read as broken.
+		if want == "" || want == clipboardOn {
+			want = clipboardDefault
+		}
+	}
+	if _, err := c.runTmux("set-option", "-g", "set-clipboard", want); err != nil {
+		return Settings{}, fmt.Errorf("failed to set tmux set-clipboard option: %w", err)
+	}
+	// Recorded AFTER the change lands, for the same reason SetStatusBar does it in
+	// that order: a recorded decision over an unchanged server is a default that
+	// has stopped applying to a setting it never fixed.
+	choice := "0"
+	if on {
+		choice = "1"
+	}
+	if err := c.SetGlobalOption(clipboardChoiceOption, choice); err != nil {
+		return Settings{}, fmt.Errorf("failed to record the clipboard choice: %w", err)
+	}
+	return c.ReadSettings()
+}
+
+// rememberClipboard stores the CURRENT set-clipboard value so it can be restored.
+// Saving "on" is refused: that is what webtmux is about to set, so recording it
+// would overwrite the memory with the thing the memory exists to undo — which is
+// what a SECOND region attaching would otherwise do.
+func (c *Controller) rememberClipboard() {
+	cur, err := globalOption(c.run, "set-clipboard")
+	cur = strings.TrimSpace(cur)
+	if err != nil || cur == "" || cur == clipboardOn {
+		return
+	}
+	// Best effort: failing to remember costs a restored "external" instead of a
+	// restored "off", never the forwarding itself.
+	_ = c.SetGlobalOption(clipboardSavedOption, cur)
+}
+
+// ApplyClipboardDefault is the forward-clipboard-on-attach default, run once per
+// connection beside ApplyStatusDefault.
+//
+// Same rules as that one, for the same reasons: it is a DEFAULT, so a user who has
+// decided either way is left alone, and every failure is swallowed because this is
+// on the attach path — a tmux that will not answer must cost the clipboard, not
+// the pane.
+func (c *Controller) ApplyClipboardDefault() {
+	chosen, err := globalOption(c.run, clipboardChoiceOption)
+	if err != nil {
+		return
+	}
+	if chosen == "1" || chosen == "0" {
+		return // the user has decided; leave tmux alone
+	}
+	cur, err := globalOption(c.run, "set-clipboard")
+	if err != nil {
+		return
+	}
+	if strings.TrimSpace(cur) == clipboardOn {
+		return // already forwarding (tmux.conf, or a region that got here first)
+	}
+	c.rememberClipboard()
+	if _, err := c.runTmux("set-option", "-g", "set-clipboard", clipboardOn); err != nil {
 		return
 	}
 }

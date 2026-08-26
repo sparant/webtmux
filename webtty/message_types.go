@@ -160,9 +160,11 @@ const (
 	// Ask for the tmux settings the link menu shows (no payload). Read-only —
 	// `show-options -g -v`. The reply is a TmuxSettings. Sent when the menu opens.
 	TmuxSettingsRequest = 'V'
-	// Change one tmux setting (payload JSON: {"statusBar":bool}). Today that is
-	// the status line and nothing else, but the payload is a named field rather
-	// than a bare "on"/"off" so the second setting does not need a second message
-	// type. The reply is a TmuxSettings carrying the state tmux was left in.
+	// Change one tmux setting (payload JSON: {"statusBar":bool} or
+	// {"clipboard":bool}). Named fields rather than a bare "on"/"off" so a second
+	// setting needs no second message type — which is why adding `clipboard` cost
+	// a field. Exactly ONE field per frame: the reply carries a single Error, so a
+	// frame that changed two things could not report a half-failure. The reply is a
+	// TmuxSettings carrying the state tmux was left in.
 	TmuxSettingsAction = 'W'
 )

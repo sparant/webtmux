@@ -7,6 +7,7 @@ A web-based terminal with tmux-specific features. Access your tmux sessions from
   - Perfect for working with AI coding agents - know exactly when they are done/need input
   - **setup required for feature to work**
 - [Copy several things and paste them one at a time](#copy-buffers) - a list of copy buffers, one of which is the clipboard, that only grows when you are actually gathering.
+- [A program's "press c to copy" reaches YOUR clipboard](#a-programs-press-c-to-copy-reaches-your-clipboard) - the login URL a CLI offers on the tmux machine lands on the clipboard of the machine you are sitting at, which stock tmux silently drops.
 - Take advantage of modern UI - Use Drag and Drop, Previews on hover etc to manage your tmux state.
 - Controls mimic familiar tmux shortcuts - just with control+Option instead of the usual prefix.
 - Discoverability of all features - no more searching for shortcuts or remembering commands
@@ -150,7 +151,20 @@ Copy several things, then paste them one at a time. A system clipboard holds exa
 - The same panel furniture as the windows sidebar: float or mount, pin or auto-hide, ↑/↓ to walk the rows.
 - Each row shows enough of its text to identify it, with the line and character count for anything longer; hover for a bigger excerpt.
 - "+" adds an empty buffer, a hover × removes one, and **Clear** keeps the focused buffer — so clearing the list never changes what Cmd/Ctrl+V will paste.
-- Every way of copying feeds it: Cmd/Ctrl+C over a selection, and tmux's own copy (a mouse drag in copy mode, or `y`). Text copied in another app is adopted on paste, so the panel can never point at a buffer that is not what you just pasted.
+- Every way of copying feeds it: Cmd/Ctrl+C over a selection, tmux's own copy (a mouse drag in copy mode, or `y`), and a **program offering to copy something for you** — see below. Text copied in another app is adopted on paste, so the panel can never point at a buffer that is not what you just pasted.
+- A row's dot goes amber when the browser refused to hand the text to the system clipboard — which browsers are entitled to do for a copy you did not initiate with a click. Nothing is lost; clicking the row hands it over.
+
+### A program's "press c to copy" reaches *your* clipboard
+
+A program running on the tmux machine — a CLI printing a login URL, a token, a diff — can offer to copy something by writing an OSC 52 escape. webtmux turns that into a copy on the clipboard of the machine running the **browser**, which is the one you can actually paste from. Without it, "copied!" means copied onto a machine you are not sitting at.
+
+**tmux drops those by default, and says nothing.** `set-clipboard` ships as `external`, which forwards tmux's *own* copies to its client but ignores an application's. So the program reports success, tmux discards the escape, and there is no error at either end — the copy just never happens. webtmux sets `set-clipboard on` when it attaches, remembering what it found.
+
+- It is a **default, not a policy**: the toolbar's link menu (the spinner) has a row for it, and the moment you switch it either way webtmux stops applying the default — so a reload, or opening another split region, cannot undo your choice. Switching it back off restores the value tmux had, distinguishing `external` from `off`.
+- The row says which of the two "off" values is in force, because they differ: `external` still lets tmux's own copy-mode yanks through, `off` lets nothing through.
+- A copy is one escape **sequence**, not one network frame: a login URL's payload runs to hundreds of bytes and a copied scrollback to megabytes, so a split part-way through is routine and is held and rejoined rather than lost.
+- Copies arriving this way land in the [copy buffers](#copy-buffers) too, so the next copy does not silently destroy the URL you were about to paste.
+- Reading is not granted in return — an OSC 52 *query* ("what is on the clipboard?") is answered by nothing. The trust is one-directional and it is worth naming: with this on, any program in any pane can *replace* your clipboard. It cannot do so quietly, though — every arriving copy floats the copy buffers panel in showing what it was, and the one it replaced is still a row above it.
 - The copy/normal mode toggle lives in this panel too — you enter copy mode in order to fill these buffers, so they are one subject. Ctrl+Alt+[ still flips the mode directly.
 - Buffers are per browser tab and survive a reload. They are deliberately **not** shared through the tmux server: text you copied is not UI arrangement, and sharing it with every other browser on the server is not this feature's decision to make.
 

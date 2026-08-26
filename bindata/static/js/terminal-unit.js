@@ -18,6 +18,7 @@ import { CopyModeArbiter, layoutModeWins } from './copy-mode.js';
 // ring writes it to the clipboard AND keeps what was there before, which is the
 // whole point of it (see copy-buffers.js).
 import { copyBuffers } from './copy-buffer-store.js';
+import { Osc52Stream } from './osc52.js';
 import { stateStore } from './state-store.js';
 import { arrowSequence } from './arrow-keys.js';
 import { IS_MAC } from './os.js';
@@ -266,7 +267,10 @@ export class TerminalUnit {
     // removed). SplitManager.goToWindow sets this to {id, session} = the exact
     // (window, old-session) pair to skip; the access path clears it on landing.
     this._navSuppress = null;
-    this.oscBuffer = ''; // Buffer for OSC sequence detection
+    // Watches the output stream for a program's OSC 52 clipboard writes and holds
+    // one back across frames when it is split. Per-unit, because each region has
+    // its own socket and its own half-finished sequence to remember.
+    this._osc52 = new Osc52Stream();
     this.resizeObserver = null;
     // Copy-mode keystroke arbitration: works out whether keys typed at a pane in
     // copy mode are motions or someone typing, holding them until it can tell.
@@ -1414,6 +1418,10 @@ export class TerminalUnit {
     // grouped web-* session and stream output into a disposed xterm.
     if (this.destroyed) return;
     this._reconnectTimer = null;
+    // Drop any half-arrived OSC 52 from the socket that just died. Its other half
+    // is never coming, and carrying it forward would paste the dead session's
+    // fragment onto the front of the new one's first chunk.
+    this._osc52 = new Osc52Stream();
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}${window.location.pathname}ws`;
 
@@ -2195,6 +2203,16 @@ export class TerminalUnit {
     return this.sendMessage(MSG.TmuxSettingsAction, JSON.stringify({ statusBar: !!on }));
   }
 
+  // Let a program inside a pane put text on THIS browser's clipboard, or stop it
+  // (`set-option -g set-clipboard on|external`). Stock tmux drops an application's
+  // OSC 52, which is why "(c to copy)" in a program on the far end appears to do
+  // nothing; webtmux turns it on when it attaches, and this is the switch that
+  // says otherwise. Same reply as the status line — one setting per frame.
+  sendClipboard(on) {
+    if (!this.isConnected()) return false;
+    return this.sendMessage(MSG.TmuxSettingsAction, JSON.stringify({ clipboard: !!on }));
+  }
+
   enterCopyMode() {
     this.sendMessage(MSG.TmuxCopyMode, '1');
     this.inCopyMode = true;
@@ -2228,68 +2246,27 @@ export class TerminalUnit {
     this._releaseGesture?.();
   }
 
-  // Handle OSC 52 clipboard sequences from tmux
-  // Format: ESC ] 52 ; Pc ; Pd BEL  or  ESC ] 52 ; Pc ; Pd ESC \
+  // Pull every OSC 52 clipboard write out of one chunk of terminal output and put
+  // what it carried into the copy ring. Returns the chunk with those sequences
+  // removed — and with any sequence that is only PART WAY here held back until the
+  // rest arrives (see osc52.js, which owns the parsing).
+  //
+  // Two quite different things arrive down this path, and both belong in the ring:
+  //
+  //   • tmux's OWN copy — a mouse drag in copy mode, `y`, copy-pipe -w — which tmux
+  //     forwards to its client as OSC 52. Without this, half the ways to copy in
+  //     this app would bypass the buffers.
+  //   • an APPLICATION's copy: the "(c to copy)" a program offers for a URL or a
+  //     token it wants you to have. That one reaches us only when tmux is set to
+  //     forward it (`set-clipboard on`) — stock tmux drops it, which is why webtmux
+  //     turns it on when it attaches. See pkg/tmux/settings.go.
+  //
+  // When the same copy reaches the ring twice (⌘C over an xterm selection, then
+  // tmux's own OSC 52 moments later), the ring's duplicate guard collapses it to
+  // one entry.
   handleOSC52(data) {
-    const ESC = String.fromCharCode(0x1b);
-    const oscStart = ESC + ']52;';
-    let result = data;
-    let startIdx = data.indexOf(oscStart);
-
-    while (startIdx !== -1) {
-      // Find the terminator (BEL \x07 or ST \x1b\\)
-      let endIdx = -1;
-      let termLen = 1;
-
-      for (let i = startIdx + oscStart.length; i < data.length; i++) {
-        if (data.charCodeAt(i) === 0x07) { // BEL
-          endIdx = i;
-          termLen = 1;
-          break;
-        }
-        if (data.charCodeAt(i) === 0x1b && i + 1 < data.length && data[i + 1] === '\\') { // ST
-          endIdx = i;
-          termLen = 2;
-          break;
-        }
-      }
-
-      if (endIdx === -1) break;
-
-      // Extract the content between start and terminator
-      const content = data.substring(startIdx + oscStart.length, endIdx);
-
-      // Content format: Pc;Pd where Pc is selection and Pd is base64 data
-      const semiIdx = content.indexOf(';');
-      if (semiIdx !== -1) {
-        const base64Data = content.substring(semiIdx + 1);
-
-        if (base64Data && base64Data !== '?') {
-          try {
-            // Decode base64 to bytes, then UTF-8 decode for proper emoji support
-            const binaryStr = atob(base64Data);
-            const bytes = Uint8Array.from(binaryStr, c => c.charCodeAt(0));
-            const text = new TextDecoder('utf-8').decode(bytes);
-            // tmux's OWN copy (a mouse drag in copy mode, `y`, copy-pipe) arrives
-            // here, so it fills the ring exactly as ⌘C does — otherwise half the
-            // ways to copy in this app would bypass the buffers. When the same
-            // copy reaches the ring twice (⌘C over an xterm selection, then this),
-            // the ring's duplicate guard collapses it to one entry.
-            copyBuffers.copy(text);
-          } catch (e) {
-            // Silently ignore decode errors
-          }
-        }
-      }
-
-      // Remove this OSC sequence from output
-      const fullSeq = data.substring(startIdx, endIdx + termLen);
-      result = result.replace(fullSeq, '');
-
-      // Look for more
-      startIdx = data.indexOf(oscStart, startIdx + 1);
-    }
-
-    return result;
+    const { text, copies } = this._osc52.feed(data);
+    for (const copied of copies) copyBuffers.copy(copied);
+    return text;
   }
 }
