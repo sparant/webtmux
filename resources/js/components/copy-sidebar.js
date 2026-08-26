@@ -223,6 +223,12 @@ class WebtmuxCopySidebar extends LitElement {
       background: transparent;
     }
     .clip.on { background: #37d17a; border-color: #37d17a; box-shadow: 0 0 4px #37d17a; }
+    /* The focused row, whose text the browser REFUSED to put on the system
+       clipboard. Amber rather than green because the difference is the whole
+       point: the buffer is here, ⌘V will not produce it, and one click fixes
+       that. Never silently green — a dot that claims the clipboard it does not
+       have is worse than no dot. */
+    .clip.blocked { background: #e0a33a; border-color: #e0a33a; box-shadow: 0 0 4px #e0a33a; }
 
     .buf {
       display: block;
@@ -578,7 +584,16 @@ class WebtmuxCopySidebar extends LitElement {
   }
 
   selectBuffer(id) {
-    copyBuffers.focus(id);
+    if (id === copyBuffers.focusId) {
+      // Clicking the row that is ALREADY focused used to do nothing at all. It now
+      // re-attempts the clipboard write — which is the recovery when the browser
+      // refused an unsolicited one, because THIS write is running inside a click
+      // and no longer is. Harmless when nothing was refused: it writes the same
+      // text that is already there.
+      copyBuffers.retryClipboard();
+    } else {
+      copyBuffers.focus(id);
+    }
     // The panel stays open (a row click has always meant "and now keep going" in
     // the windows sidebar), so the keyboard comes back here rather than falling to
     // <body>, where ↑/↓ would go dead after the first click.
@@ -697,15 +712,26 @@ class WebtmuxCopySidebar extends LitElement {
     const focused = entry.id === copyBuffers.focusId;
     const empty = isEmptyEntry(entry);
     const meta = entryMeta(entry.text);
+    // The focused row normally IS the system clipboard — but only if the browser
+    // accepted the write. It may not have: a copy that arrives from the terminal
+    // (tmux's yank, a program's "(c to copy)") happens with no user gesture behind
+    // it, and that is exactly the write browsers are allowed to refuse. Show the
+    // refusal on the row, where the fix — clicking it, which IS a gesture — is.
+    const blocked = focused && !empty && copyBuffers.clipboardOk === false;
     return html`
       <div class="brow">
         <span
-          class="clip ${focused ? 'on' : ''}"
+          class="clip ${blocked ? 'blocked' : (focused ? 'on' : '')}"
           role="img"
-          aria-label=${focused ? 'On the clipboard' : 'Not on the clipboard'}
-          @mouseenter=${(e) => this._tip.enter(e, focused
-            ? 'This buffer is on the system clipboard — it is what ⌘V/Ctrl+V pastes.'
-            : 'Click this row to put this buffer on the clipboard.')}
+          aria-label=${blocked ? 'Held here, but the browser would not put it on the clipboard'
+            : focused ? 'On the clipboard' : 'Not on the clipboard'}
+          @mouseenter=${(e) => this._tip.enter(e, blocked
+            ? 'This buffer is here, but the browser refused to put it on the system'
+              + ' clipboard — it only allows that when you have just clicked something.'
+              + ' Click this row to hand it over.'
+            : focused
+              ? 'This buffer is on the system clipboard — it is what ⌘V/Ctrl+V pastes.'
+              : 'Click this row to put this buffer on the clipboard.')}
           @mouseleave=${() => this._tip.leave()}
         ></span>
         <button

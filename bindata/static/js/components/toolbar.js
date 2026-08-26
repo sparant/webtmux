@@ -2876,6 +2876,42 @@ class WebtmuxToolbar extends LitElement {
     this.manager?.setTmuxStatusBar?.(!on);
   }
 
+  // Flip whether a program running in a pane can put text on THIS browser's
+  // clipboard. Nothing optimistic, same as above.
+  _toggleClipboard() {
+    const on = !!this.tmuxSettings?.clipboardOn;
+    this.manager?.setTmuxClipboard?.(!on);
+  }
+
+  // The clipboard row's second line. This one has to explain a mechanism, not just
+  // a preference, because the thing it fixes looks like a bug in the OTHER program:
+  // you press the key it offers, it says it copied, and nothing is on your
+  // clipboard — with no error anywhere, because tmux dropped the request silently.
+  _clipboardHint(set) {
+    const scope = 'set-clipboard is a tmux server option, so this applies to every'
+      + ' client on this tmux server.';
+    const what = 'A program in a pane can offer to copy something — a login URL, a'
+      + ' token — by writing an OSC 52 escape. webtmux turns that into a copy on the'
+      + ' clipboard of the machine running this browser, which is the one you can'
+      + ' paste from.';
+    if (!set) return `${what} ${scope}`;
+    if (set.clipboardOn) {
+      return `${what} tmux is forwarding those (\`set-clipboard on\`), so "press c to`
+        + ` copy" in a pane reaches you here. Any program in any pane can then replace`
+        + ` your clipboard — but not read it, and not quietly: every arriving copy`
+        + ` floats the copy buffers panel in showing what it was, and the one it`
+        + ` replaced is still a row above it. ${scope}`;
+    }
+    // The two "no" values are not the same and the difference is worth a sentence:
+    // one still lets tmux's OWN copies out, the other lets nothing out at all.
+    const state = set.clipboard === 'off'
+      ? 'tmux is dropping them, and its own copy-mode yanks too (`set-clipboard off`).'
+      : `tmux is dropping them (\`set-clipboard ${set.clipboard || 'external'}\`) — its own`
+        + ' copy-mode yanks still get through, but a program\'s do not. This is tmux\'s'
+        + ' default, and it is why "(c to copy)" in a remote program appears to do nothing.';
+    return `${what} ${state} ${scope}`;
+  }
+
   // The status-line row's second line: what the setting is, and — the part that is
   // genuinely surprising — who else it moves. tmux has no per-client `status`, so
   // there is no version of this that only affects the browser.
@@ -2900,6 +2936,7 @@ class WebtmuxToolbar extends LitElement {
     const st = this._linkDetail();
     const set = this.tmuxSettings;
     const on = !!set?.on;
+    const clip = !!set?.clipboardOn;
     // Read-only servers watch; they do not rearrange the tmux server they are
     // watching (see webtty/authority.go). The row still SHOWS the setting — the
     // read behind it is allowed — it just cannot be clicked, and says why.
@@ -2927,6 +2964,22 @@ class WebtmuxToolbar extends LitElement {
                 ? 'This server is read-only, so the setting can be seen but not changed. '
                   + this._statusBarHint(set)
                 : this._statusBarHint(set)}</span>
+          </span>
+        </button>
+        <button
+          class="mitem"
+          ?disabled=${locked || !set || this.tmuxSettingsBusy}
+          aria-pressed=${clip ? 'true' : 'false'}
+          @click=${() => this._toggleClipboard()}
+        >
+          <span class="mark">${clip ? '✓' : ''}</span>
+          <span class="mtext">
+            <b>copy from a program to this browser</b>
+            <span class="mhint">${!set ? 'Asking tmux…'
+              : locked
+                ? 'This server is read-only, so the setting can be seen but not changed. '
+                  + this._clipboardHint(set)
+                : this._clipboardHint(set)}</span>
           </span>
         </button>
         ${set?.error ? html`<div class="merr">${set.error}</div>` : ''}

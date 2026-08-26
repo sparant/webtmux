@@ -55,8 +55,11 @@ type TmuxController interface {
 	// draws or hides tmux's own status line and records that the user chose it,
 	// which is what stops webtmux hiding it on the next attach. See
 	// pkg/tmux/settings.go.
+	// SetClipboard turns `set-clipboard on` on or off — whether a program inside a
+	// pane can put text on the BROWSER's clipboard with OSC 52.
 	ReadSettings() (tmux.Settings, error)
 	SetStatusBar(on bool) (tmux.Settings, error)
+	SetClipboard(on bool) (tmux.Settings, error)
 	EnterCopyMode() error
 	ExitCopyMode() error
 	RefreshClient() error

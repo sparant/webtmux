@@ -18,12 +18,14 @@ import (
 // a failure needs, and an outcome envelope around it would give the client two
 // places to look for the same "is this answer trustworthy?".
 
-// settingsRequest is the TmuxSettingsAction payload. StatusBar is a *bool rather
+// settingsRequest is the TmuxSettingsAction payload. Each field is a *bool rather
 // than a bool so "the client said nothing about the status bar" is distinguishable
-// from "the client said off" — with a plain bool, an unrelated future setting would
-// silently hide the status line every time it was changed.
+// from "the client said off" — with plain bools, changing the clipboard setting
+// would silently hide the status line every time, which is precisely the bug the
+// pointer shape was chosen to prevent before there was a second field to prove it.
 type settingsRequest struct {
 	StatusBar *bool `json:"statusBar"`
+	Clipboard *bool `json:"clipboard"`
 }
 
 // handleSettingsRequest answers "what are the tmux settings right now?". Read-only
@@ -42,15 +44,28 @@ func (wt *WebTTY) handleSettingsAction(payload []byte) error {
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return wt.sendSettings(tmux.Settings{Error: "invalid settings request"})
 	}
-	if req.StatusBar == nil {
-		return wt.sendSettings(tmux.Settings{Error: "settings request changed nothing"})
+	// Exactly one setting per action. Two fields in one frame would need an answer
+	// for "the first applied and the second did not", and the reply carries one
+	// Error — so the protocol says what it can report rather than the other way up.
+	switch {
+	case req.StatusBar != nil && req.Clipboard != nil:
+		return wt.sendSettings(tmux.Settings{Error: "settings request changed two things at once"})
+	case req.StatusBar != nil:
+		set, err := wt.tmuxCtrl.SetStatusBar(*req.StatusBar)
+		if err != nil {
+			log.Printf("tmux status-bar toggle failed: %v", err)
+			return wt.sendSettings(wt.settingsReport(err))
+		}
+		return wt.sendSettings(set)
+	case req.Clipboard != nil:
+		set, err := wt.tmuxCtrl.SetClipboard(*req.Clipboard)
+		if err != nil {
+			log.Printf("tmux set-clipboard toggle failed: %v", err)
+			return wt.sendSettings(wt.settingsReport(err))
+		}
+		return wt.sendSettings(set)
 	}
-	set, err := wt.tmuxCtrl.SetStatusBar(*req.StatusBar)
-	if err != nil {
-		log.Printf("tmux status-bar toggle failed: %v", err)
-		return wt.sendSettings(wt.settingsReport(err))
-	}
-	return wt.sendSettings(set)
+	return wt.sendSettings(tmux.Settings{Error: "settings request changed nothing"})
 }
 
 // settingsReport re-reads the settings and folds an action's failure in. The

@@ -149,6 +149,21 @@ Pieces:
   Every claim about tmux is asked of tmux over its socket, never of the UI's opinion of
   it — and note that `xterm.rows` is NOT the assertion to make: the browser's row count
   is set by the viewport and does not move, so it passes identically in both states).
+  `verify-osc52.js` (a program's "(c to copy)" reaching the BROWSER's clipboard:
+  attaching turns tmux's `set-clipboard` on and remembers what it found, an application's
+  OSC 52 lands in both the copy ring and `navigator.clipboard`, a sequence deliberately
+  torn across websocket frames still copies exactly once and leaves nothing painted in
+  the terminal, and the link menu's row switches the forwarding off for real — after
+  which reconnecting does NOT switch it back on. Emits the escape from a staged script
+  rather than an inline `printf`, because `send-keys` types the command onto the pane and
+  a base64 body echoed there would defeat the "was it painted?" assertion).
+- `diag-osc52.js` — a DIAGNOSTIC rather than a gate, for when a copy from a pane does
+  not arrive. It emits all three channels a real program uses (raw OSC 52, the
+  `ESC Ptmux;` DCS passthrough, and `tmux load-buffer -w -`) under several `set-clipboard`
+  / `allow-passthrough` combinations and prints which arrive, plus whether each reached
+  the system clipboard. This is what established that stock tmux drops the raw sequence
+  (`set-clipboard external`) and that tmux ≥3.3 drops the DCS one too
+  (`allow-passthrough off`), leaving nothing for the browser to hear.
 - `driver-gifs.js` — records one video per animated feature, each scene
   replaying its README section's bullets in order (split → drag divider →
   close; hover → preview → restore; lights change → tabs flash until viewed;

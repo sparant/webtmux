@@ -1654,6 +1654,16 @@ export class SplitManager {
     }
   }
 
+  // Let a program inside a pane reach this browser's clipboard (`set-clipboard`).
+  // Same shape as the status line for the same reason: the checkbox moves when the
+  // reply lands, never when the click happens.
+  setTmuxClipboard(on) {
+    const u = this.focusedUnit;
+    if (!u || !this.toolbar) return;
+    this.toolbar.tmuxSettingsBusy = true;
+    if (!u.sendClipboard(!!on)) this.toolbar.tmuxSettingsBusy = false;
+  }
+
   _historyAction(action, limit, force, rerun = false) {
     const u = this.focusedUnit;
     const id = u?.layout?.activeWindowId;

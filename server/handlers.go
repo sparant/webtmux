@@ -261,6 +261,10 @@ func (server *Server) processWSConn(ctx context.Context, conn *websocket.Conn, h
 			// rearrange the tmux server it is watching.
 			if server.options.PermitWrite {
 				ctrl.ApplyStatusDefault()
+				// …and let a program inside a pane reach the BROWSER's clipboard
+				// with OSC 52, which stock tmux drops. Same default-not-policy
+				// rules; the long why is in pkg/tmux/settings.go.
+				ctrl.ApplyClipboardDefault()
 			}
 			tty.SetTmuxController(ctrl)
 			// Hand this connection the ONE server-global capture store (shared by
