@@ -2326,7 +2326,7 @@ class WebtmuxToolbar extends LitElement {
     const inner = els[i].querySelector('.close');
     if (inner?.matches(':hover')) this._tipEnter({ currentTarget: inner }, CLOSE_TAB_TIP);
     const dot = els[i].querySelector('.work');
-    if (dot?.matches(':hover')) this._tipEnter({ currentTarget: dot }, workTip(w.working));
+    if (dot?.matches(':hover')) this._tipEnter({ currentTarget: dot }, workTip(w.working, w.workingSince, w.activity));
   }
 
   // ---- the region picker -------------------------------------------------------
@@ -2638,7 +2638,7 @@ class WebtmuxToolbar extends LitElement {
             class="work ${workClass(w.working)}"
             role="img"
             aria-label=${workLabel(w.working)}
-            @mouseenter=${(e) => { e.stopPropagation(); this._tipEnter(e, workTip(w.working)); }}
+            @mouseenter=${(e) => { e.stopPropagation(); this._tipEnter(e, workTip(w.working, w.workingSince, w.activity)); }}
             @mouseleave=${(e) => { e.stopPropagation(); this._tipEnter({ currentTarget: e.currentTarget.closest('.rtab') }, tip); }}
           ></span><button
             class="tab ${w.active ? 'active' : ''} ${w.disabled ? 'disabled' : ''} ${!w.active && this.previewWindow === w.id ? 'previewing' : ''} ${alertClass(w.alert)}"

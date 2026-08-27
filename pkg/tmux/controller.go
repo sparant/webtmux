@@ -26,10 +26,15 @@ import (
 // session a window lives in, and a session named "a | b" alongside a window named
 // "c | d" cannot both go last.
 const allWindowsSep = "|"
-const allWindowsFields = 5
+const allWindowsFields = 7
 
+// #{@wt_working_since} and #{window_activity} are both machine fields (empty or a
+// bare integer — tmux never lets a user option or its own activity clock contain
+// '|'), so they sit with the other machine fields ahead of window_name per the rule
+// above.
 var allWindowsFormat = strings.Join([]string{
-	"#{window_id}", "#{session_id}", "#{window_index}", "#{@wt_working}", "#{window_name}",
+	"#{window_id}", "#{session_id}", "#{window_index}", "#{@wt_working}",
+	"#{@wt_working_since}", "#{window_activity}", "#{window_name}",
 }, allWindowsSep)
 
 // sessionNamesByID indexes an already-parsed `list-sessions` by tmux session id
@@ -90,10 +95,11 @@ func serverIdentity(raw string) string {
 // contributes its @wt_working — a window's light does not depend on knowing which
 // session it is in — but is left out of the DIRECTORY, which exists to be
 // navigated to and cannot name a target it can't resolve.
-func parseAllWindows(out string, sessions []sessionRow) (map[string]string, []WindowRef) {
+func parseAllWindows(out string, sessions []sessionRow) (working, since, activity map[string]string, refs []WindowRef) {
 	names := sessionNamesByID(sessions)
-	working := make(map[string]string)
-	var refs []WindowRef
+	working = make(map[string]string)
+	since = make(map[string]string)
+	activity = make(map[string]string)
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		if line == "" {
 			continue
@@ -103,6 +109,8 @@ func parseAllWindows(out string, sessions []sessionRow) (map[string]string, []Wi
 			continue
 		}
 		working[f[0]] = f[3]
+		since[f[0]] = f[4]
+		activity[f[0]] = f[5]
 		session, ok := names[f[1]]
 		if !ok {
 			continue
@@ -117,14 +125,16 @@ func parseAllWindows(out string, sessions []sessionRow) (map[string]string, []Wi
 		}
 		idx, _ := strconv.Atoi(f[2])
 		refs = append(refs, WindowRef{
-			ID:      f[0],
-			Working: f[3],
-			Session: session,
-			Index:   idx,
-			Name:    f[4],
+			ID:           f[0],
+			Working:      f[3],
+			WorkingSince: f[4],
+			Activity:     f[5],
+			Session:      session,
+			Index:        idx,
+			Name:         f[6],
 		})
 	}
-	return working, refs
+	return working, since, activity, refs
 }
 
 // The pane's OWN session identity, from `display-message -p`. session_name is
@@ -147,10 +157,11 @@ func parseSessionIdent(out string) (id, name string, ok bool) {
 // shifted the index, the active flag and @wt_working by one field each — the
 // sidebar then showed the wrong current window and the wrong stoplight.
 const windowsSep = "|"
-const windowsFields = 5
+const windowsFields = 7
 
 var windowsFormat = strings.Join([]string{
-	"#{window_id}", "#{window_index}", "#{window_active}", "#{@wt_working}", "#{window_name}",
+	"#{window_id}", "#{window_index}", "#{window_active}", "#{@wt_working}",
+	"#{@wt_working_since}", "#{window_activity}", "#{window_name}",
 }, windowsSep)
 
 // parseWindowRows turns `list-windows -t <session> -F windowsFormat` output into
@@ -171,8 +182,10 @@ func parseWindowRows(out string) []Window {
 			Index:  idx,
 			Active: f[2] == "1",
 			// Unset @wt_working expands to "" => an unfilled dot in the UI.
-			Working: f[3],
-			Name:    f[4],
+			Working:      f[3],
+			WorkingSince: f[4],
+			Activity:     f[5],
+			Name:         f[6],
 		})
 	}
 	return wins
@@ -686,7 +699,7 @@ func (c *Controller) RefreshLayout() error {
 	// happening, carries the session/index/name that make such a window NAVIGABLE
 	// (see Layout.AllWindows).
 	if allOut, err := c.runTmux("list-windows", "-a", "-F", allWindowsFormat); err == nil {
-		layout.AllWorking, layout.AllWindows = parseAllWindows(allOut, rows)
+		layout.AllWorking, layout.AllWorkingSince, layout.AllActivity, layout.AllWindows = parseAllWindows(allOut, rows)
 	}
 
 	// Shared UI visual-state blob (@wt_state SERVER-global option). Rides this push

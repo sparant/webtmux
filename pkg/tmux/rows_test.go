@@ -14,22 +14,25 @@ import (
 
 func TestParseWindowRows(t *testing.T) {
 	out := strings.Join([]string{
-		"@0|0|1|1|shell",
-		"@1|3|0||build",
-		"@7|9|0|2|", // an empty window name still yields a full row
+		"@0|0|1|1|1700000000|1700000100|shell",
+		"@1|3|0|||1700000200|build",
+		"@7|9|0|2|1700000300|1700000400|", // an empty window name still yields a full row
 	}, "\n")
 	wins := parseWindowRows(out)
 	if len(wins) != 3 {
 		t.Fatalf("want 3 windows, got %d: %+v", len(wins), wins)
 	}
 	if wins[0].ID != "@0" || wins[0].Index != 0 || !wins[0].Active ||
-		wins[0].Working != "1" || wins[0].Name != "shell" {
+		wins[0].Working != "1" || wins[0].WorkingSince != "1700000000" ||
+		wins[0].Activity != "1700000100" || wins[0].Name != "shell" {
 		t.Errorf("bad row: %+v", wins[0])
 	}
-	if wins[1].Index != 3 || wins[1].Active || wins[1].Working != "" || wins[1].Name != "build" {
+	if wins[1].Index != 3 || wins[1].Active || wins[1].Working != "" ||
+		wins[1].WorkingSince != "" || wins[1].Activity != "1700000200" || wins[1].Name != "build" {
 		t.Errorf("bad row: %+v", wins[1])
 	}
-	if wins[2].Working != "2" || wins[2].Name != "" {
+	if wins[2].Working != "2" || wins[2].WorkingSince != "1700000300" ||
+		wins[2].Activity != "1700000400" || wins[2].Name != "" {
 		t.Errorf("bad row: %+v", wins[2])
 	}
 }
@@ -37,7 +40,7 @@ func TestParseWindowRows(t *testing.T) {
 func TestParseWindowRowsNameWithSeparators(t *testing.T) {
 	// The Phase 4 smoke window: commas AND pipes, in the field that used to sit
 	// second. Everything the layout is computed from must survive it.
-	wins := parseWindowRows("@4|2|1|1|a, b | c\n")
+	wins := parseWindowRows("@4|2|1|1|1700000000|1700000100|a, b | c\n")
 	if len(wins) != 1 {
 		t.Fatalf("want 1 window, got %+v", wins)
 	}
@@ -50,7 +53,7 @@ func TestParseWindowRowsNameWithSeparators(t *testing.T) {
 func TestParseWindowRowsSkipsShortRows(t *testing.T) {
 	// A truncated row is dropped rather than half-parsed: a window with index 0 it
 	// never had is a select-window aimed at the wrong window.
-	wins := parseWindowRows("@0|0|1\n@1|1|0||ok\n\n")
+	wins := parseWindowRows("@0|0|1\n@1|1|0|||1700000000|ok\n\n")
 	if len(wins) != 1 || wins[0].ID != "@1" {
 		t.Errorf("want only the well-formed row, got %+v", wins)
 	}

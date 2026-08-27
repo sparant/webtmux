@@ -39,6 +39,25 @@ type Layout struct {
 	// have no status. Recent-tab dots read from this so each window's light reflects
 	// its OWN @wt_working regardless of which session is currently focused.
 	AllWorking map[string]string `json:"allWorking,omitempty"`
+	// AllWorkingSince maps a window id to the unix epoch (as a string) it last
+	// TRANSITIONED to its current AllWorking value, from @wt_working_since. The
+	// bridge stamps it only on an actual change (see tmux-stoplight-bridge.sh), so
+	// a window that has re-asserted the same colour for hours still reads the time
+	// it first reached it -- the answer to "how long has it been like this", which
+	// a colour alone can't give someone scanning a wall of windows. Unset (a window
+	// with no hook, or one from before this option existed) => "" => the UI shows
+	// no duration rather than guessing one.
+	AllWorkingSince map[string]string `json:"allWorkingSince,omitempty"`
+	// AllActivity maps a window id to tmux's own #{window_activity} -- the unix
+	// epoch (as a string) of the last time ANYTHING was written to that window,
+	// tracked by tmux internally regardless of the `monitor-activity` option (which
+	// only gates the bell/flag, not this timestamp -- verified against a real tmux
+	// server). Unlike AllWorkingSince this needs no hook and exists for every
+	// window on the server, agent or not: it answers "how long has this pane been
+	// silent", a different question from "how long has the agent been in this
+	// state" -- a background build can keep printing (activity moves) while the
+	// stoplight itself hasn't changed colour in an hour.
+	AllActivity map[string]string `json:"allActivity,omitempty"`
 	// AllWindows is the server-wide window DIRECTORY: one entry per (session, window)
 	// placement, from the same `list-windows -a` that fills AllWorking. AllWorking
 	// answers "what is that window doing" but is keyed by window id alone, so a
@@ -85,6 +104,10 @@ type WindowRef struct {
 	// Working is the same @wt_working value as AllWorking[ID] — carried here too so
 	// a consumer walking the directory doesn't have to join two structures.
 	Working string `json:"working"`
+	// WorkingSince / Activity mirror AllWorkingSince[ID] / AllActivity[ID] for the
+	// same join-avoidance reason as Working above.
+	WorkingSince string `json:"workingSince,omitempty"`
+	Activity     string `json:"activity,omitempty"`
 }
 
 // Window represents a tmux window
@@ -108,7 +131,14 @@ type Window struct {
 	// value this end has never heard of degrades to an unfilled dot in the UI, which
 	// is how a new state can be rolled out to the hooks before the server knows it.
 	Working string `json:"working"`
-	Panes   []Pane `json:"panes"`
+	// WorkingSince / Activity are this window's own copies of AllWorkingSince[ID] /
+	// AllActivity[ID] (see Layout), read from the SAME `list-windows` call as
+	// Working. The per-session Windows list is what the sidebar renders before the
+	// global `list-windows -a` pass has necessarily arrived, so these travel with
+	// Working rather than being available only via the global maps.
+	WorkingSince string `json:"workingSince,omitempty"`
+	Activity     string `json:"activity,omitempty"`
+	Panes        []Pane `json:"panes"`
 	// SessionCount is how many DISTINCT logical sessions this window is linked into
 	// (ephemeral web-* grouped shadows collapse onto their base, so a window shared
 	// by a split's grouped sessions still counts as one). >1 means the sidebar ×
