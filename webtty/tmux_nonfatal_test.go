@@ -64,6 +64,10 @@ func (c *failCtrl) RenameWindow(string, string) error    { return c.note("rename
 func (c *failCtrl) MoveWindow(string, int, string) error { return c.note("move-window") }
 func (c *failCtrl) NewSession() error                    { return c.note("new-session") }
 func (c *failCtrl) RenameSession(string, string) error   { return c.note("rename-session") }
+
+// SetSessionNewCmd arms what a later "+" types into a shell, so it is one of the
+// mutations the write-authority tests must see attempted or not attempted.
+func (c *failCtrl) SetSessionNewCmd(string, string) error { return c.note("set-option @wt_newcmd") }
 func (c *failCtrl) KillWindow(string) error              { return c.note("kill-window") }
 func (c *failCtrl) KillSession(string) error             { return c.note("kill-session") }
 func (c *failCtrl) LinkWindow(string, string) error      { return c.note("link-window") }

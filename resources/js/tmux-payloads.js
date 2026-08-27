@@ -30,3 +30,22 @@ export function parseRenameSessionPayload(payload) {
   if (i < 0) return null;
   return { oldName: s.slice(0, i), newName: s.slice(i + 1) };
 }
+
+// Set-session-command is the other payload with two user-typed strings: a session
+// name (which may contain spaces) and a command line (which certainly does). Same
+// separator as rename-session, for the same reason — there is no first-space rule
+// that can split two arbitrary strings.
+export function sessionCmdPayload(session, cmd) {
+  return String(session) + FIELD_SEP + String(cmd);
+}
+
+// The server's half of that contract. Returns null for a payload with no
+// separator, which is exactly what the server drops — and it must drop it, since
+// reading a separator-less payload as "this whole thing is a session name, with an
+// empty command" would silently CLEAR a session's command.
+export function parseSessionCmdPayload(payload) {
+  const s = String(payload);
+  const i = s.indexOf(FIELD_SEP);
+  if (i < 0) return null;
+  return { session: s.slice(0, i), cmd: s.slice(i + 1) };
+}

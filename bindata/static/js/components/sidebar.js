@@ -401,6 +401,41 @@ class WebtmuxSidebar extends LitElement {
       transition: all 0.2s;
     }
 
+    /* The session's new-window command: what its "+" runs. Sits directly under the
+       session tabs because that is the thing it belongs to — one line, so it reads
+       as a property of the list above it rather than a section of its own. */
+    .newcmd {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin: -8px 0 16px 0;
+    }
+
+    .newcmd label {
+      color: #666;
+      font-size: 13px;
+      flex: 0 0 auto;
+      cursor: default;
+    }
+
+    .newcmd input {
+      flex: 1 1 auto;
+      min-width: 0;
+      background: #1a1a2e;
+      color: #ddd;
+      border: 1px solid #0f3460;
+      border-radius: 4px;
+      padding: 4px 8px;
+      font-size: 13px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      box-sizing: border-box;
+      outline: none;
+    }
+
+    .newcmd input:focus { border-color: #4a9eff; color: #fff; }
+    .newcmd input::placeholder { color: #4a4a5e; }
+    .newcmd input:disabled { opacity: 0.5; cursor: not-allowed; }
+
     /* Inline session rename input (double-click a session tab). Mirrors .window-edit
        but sized like a session tab so it doesn't jump the row. */
     .session-edit {
@@ -927,6 +962,7 @@ class WebtmuxSidebar extends LitElement {
         `)}
         <button class="session-tab" title="New session" @click=${() => this.newSession()}>+</button>
       </div>
+      ${this.renderNewCmd(own)}
 
       <h3>Windows</h3>
       ${this._filterChip()}
@@ -939,6 +975,69 @@ class WebtmuxSidebar extends LitElement {
         ${this._roNote()}
       </div>
     `;
+  }
+
+  // The current session's new-window command: the command line its "+" (and a
+  // window created by the toolbar chord) types into the fresh shell.
+  //
+  // Bound to the SESSION, not to this browser: it is stored in tmux, so every
+  // client sees the same value and it outlives the tab. scripts/stack.sh sets it
+  // for the sessions it builds, which is how a claude-editors session arrives
+  // already knowing its "+" means "launch the next claude".
+  //
+  // .value (a property) rather than value= (an attribute), for the same reason the
+  // rename inputs use it: lit would otherwise only set the initial attribute, and a
+  // value pushed from another client would never reach a field the user has typed
+  // into. Committed on Enter and on blur; Escape puts the stored value back.
+  renderNewCmd(session) {
+    if (!session) return '';
+    const stored = this._sessionCmd(session);
+    return html`
+      <div class="newcmd">
+        <label title="Run this in every new window of ${session}. Left empty, a new window is just a shell.">+ runs</label>
+        <input
+          .value=${stored}
+          ?disabled=${this.readOnly}
+          placeholder=${this.readOnly ? 'read-only server' : 'shell only \u2014 type a command to run in every new window'}
+          title="Command run in each new window of ${session}. The window still starts a normal shell; this is typed into it, so Ctrl-C stops it and the window stays."
+          @keydown=${(e) => this.onNewCmdKey(e, session)}
+          @blur=${(e) => this.commitNewCmd(e, session)}
+        >
+      </div>
+    `;
+  }
+
+  // The stored command for a session name, from the layout push. Falls back to ''
+  // so the field renders before the first layout arrives.
+  _sessionCmd(name) {
+    const s = (this.layout?.sessions || []).find((x) => x.name === name);
+    return (s && s.newCmd) || '';
+  }
+
+  onNewCmdKey(e, session) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      e.currentTarget.blur(); // commit through the one path, rather than twice
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.currentTarget.value = this._sessionCmd(session);
+      e.currentTarget.blur();
+      return;
+    }
+    // Every other key is the user typing a command; the sidebar's own key handling
+    // (type-ahead filter, arrow navigation, single-letter shortcuts) must not see it.
+    e.stopPropagation();
+  }
+
+  // Send only on a real change. A blur with the same text would cost a tmux write
+  // and a layout push every time focus left the field — including the blur this
+  // component triggers itself on Escape.
+  commitNewCmd(e, session) {
+    const next = e.currentTarget.value;
+    if (next === this._sessionCmd(session)) return;
+    this.unit?.setSessionCmd(session, next);
   }
 
   // The one line that explains a sidebar full of inert rows. Sits in the footer

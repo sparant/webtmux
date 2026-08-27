@@ -167,4 +167,14 @@ const (
 	// frame that changed two things could not report a half-failure. The reply is a
 	// TmuxSettings carrying the state tmux was left in.
 	TmuxSettingsAction = 'W'
+	// Set (or clear) a session's new-window command — the command line a "+" in
+	// that session runs (payload: "<session>\x00<command>", empty command =
+	// clear). Stored in the session's @wt_newcmd user option and echoed back on
+	// every layout push as Session.NewCmd.
+	//
+	// NUL-separated rather than space-separated because BOTH halves are
+	// user-typed: a session name can contain spaces and a command line certainly
+	// does, so there is no first-space rule that works. Same reason and same
+	// separator as TmuxRenameSession.
+	TmuxSetSessionCmd = 'X'
 )

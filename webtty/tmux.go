@@ -30,6 +30,9 @@ type TmuxController interface {
 	MoveWindow(windowID string, targetPos int, session string) error
 	NewSession() error
 	RenameSession(oldName, newName string) error
+	// SetSessionNewCmd sets (empty clears) the command line a new window in this
+	// session runs — stored on the session as @wt_newcmd.
+	SetSessionNewCmd(session, cmd string) error
 	KillWindow(windowID string) error
 	KillSession(sessionName string) error
 	LinkWindow(windowID, targetSession string) error
@@ -350,6 +353,21 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 			windowID, session = s[:idx], strings.TrimSpace(s[idx+1:])
 		}
 		return wt.afterCmd("unlink window", wt.tmuxCtrl.UnlinkWindow(windowID, session))
+
+	case TmuxSetSessionCmd:
+		// payload = "<session>\x00<command>". Both halves are user-typed, so the
+		// separator is the one byte tmux forbids in a session name (see
+		// TmuxRenameSession, which has the same shape for the same reason). A
+		// payload with no separator is dropped rather than read as a session with
+		// an empty command — that would silently CLEAR the command of whatever
+		// session the whole payload happened to name.
+		s := string(payload)
+		idx := strings.IndexByte(s, 0)
+		if idx < 0 {
+			return nil
+		}
+		session, cmd := s[:idx], s[idx+1:]
+		return wt.afterCmd("set session command", wt.tmuxCtrl.SetSessionNewCmd(session, cmd))
 
 	case TmuxSetState:
 		// Persist the shared UI visual-state blob into the tmux global option
@@ -843,7 +861,8 @@ func isTmuxMessage(msgType byte) bool {
 		TmuxRenameSession, TmuxKillWindow, TmuxKillSession, TmuxLinkWindow,
 		TmuxUnlinkWindow, TmuxCaptureRequest, TmuxSavePaneFile, TmuxSaveInfoRequest,
 		TmuxScrollbackRequest, TmuxHistoryInfoRequest, TmuxHistoryAction,
-		TmuxSetState, TmuxRefresh, TmuxSettingsRequest, TmuxSettingsAction:
+		TmuxSetState, TmuxRefresh, TmuxSettingsRequest, TmuxSettingsAction,
+		TmuxSetSessionCmd:
 		return true
 	default:
 		return false

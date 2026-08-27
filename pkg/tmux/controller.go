@@ -631,7 +631,15 @@ func (c *Controller) RefreshLayout() error {
 	if err == nil {
 		rows = parseSessionRows(sessionsOut)
 		layout.SessionBase = logicalBase(rows, sess)
-		layout.Sessions = buildSessions(rows, sess, c.sessionEmptiness(rows))
+		// Each session's new-window command, from a SECOND list-sessions pass —
+		// see sessionCmdsFormat for why it cannot share the first one's line. A
+		// failure costs the sidebar's command field its value, never the layout:
+		// buildSessions takes a nil map as "no session has one".
+		var cmds map[string]string
+		if cmdsOut, cerr := c.runTmux("list-sessions", "-F", sessionCmdsFormat); cerr == nil {
+			cmds = parseSessionCmds(cmdsOut)
+		}
+		layout.Sessions = buildSessions(rows, sess, c.sessionEmptiness(rows), cmds)
 	}
 	if layout.SessionBase == "" {
 		layout.SessionBase = sess
@@ -942,11 +950,59 @@ func (c *Controller) swapWindows(sess string, a, b int) error {
 // the session (next free numeric name); -P -F prints the chosen name so we can
 // switch onto it. A split pane re-groups onto the new session via SwitchSession.
 func (c *Controller) NewSession() error {
-	out, err := c.runTmux("new-session", "-d", "-P", "-F", "#{session_name}")
+	// A new session is made FROM the one you are looking at, so it inherits both
+	// halves of what that session is: its name, indexed ("editors" -> "editors
+	// (1)"), and its new-window command. The "+" that creates it sits under a
+	// session in the sidebar, and the thing people do next is exactly what they
+	// were doing in the one they clicked from.
+	//
+	// Both are DEFAULTS. The name is renamed in place by double-clicking the tab,
+	// and the command by the field under the session list — neither is a decision
+	// this is making permanently.
+	base := c.logicalSession()
+	name, inherited := "", ""
+	if base != "" {
+		inherited = c.sessionNewCmd(base)
+		if out, err := c.runTmux("list-sessions", "-F", "#{session_name}"); err == nil {
+			taken := make(map[string]bool)
+			for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+				taken[strings.TrimSpace(line)] = true
+			}
+			name = nextSessionName(base, taken)
+		}
+	}
+
+	// Fall back to tmux's own naming when there is nothing to derive from. Without
+	// -s tmux picks the next free number, which is what this did before sessions
+	// had names worth inheriting.
+	args := []string{"new-session", "-d", "-P", "-F", "#{session_id}" + sessionsSep + "#{window_id}"}
+	if name != "" {
+		args = append(args, "-s", name)
+	}
+	out, err := c.runTmux(args...)
 	if err != nil {
 		return err
 	}
-	name := strings.TrimSpace(out)
+	sessID, winID := "", ""
+	if f := strings.SplitN(strings.TrimSpace(out), sessionsSep, 2); len(f) == 2 {
+		sessID, winID = f[0], strings.TrimSpace(f[1])
+	}
+	if name == "" {
+		// tmux named it; ask what it chose, since the switch below needs a name.
+		if nm, nerr := c.runTmux("display-message", "-t", sessID, "-p", "#{session_name}"); nerr == nil {
+			name = strings.TrimSpace(nm)
+		}
+	}
+	if inherited != "" && sessID != "" {
+		// Recorded on the new session before the command is run, so a client that
+		// refreshes in between sees a session whose field already agrees with what
+		// its first window is doing.
+		if _, serr := c.runTmux("set-option", "-t", sessID, newCmdOption, inherited); serr != nil {
+			log.Printf("new session %q did not inherit @wt_newcmd: %v", name, serr)
+		} else {
+			c.runNewCmd(winID, inherited)
+		}
+	}
 	if name == "" {
 		c.RefreshLayout()
 		return nil
@@ -1112,7 +1168,113 @@ func (c *Controller) NewWindow(session string) error {
 	if target == "" {
 		target = c.session()
 	}
-	_, err := c.runTmux("new-window", "-t", exactSession(target))
+	// -P -F gives back the new window's id, which is what runNewCmd needs to aim
+	// at. It is only ever used for that, so a tmux that prints nothing costs the
+	// command, not the window.
+	out, err := c.runTmux("new-window", "-t", exactSession(target), "-P", "-F", "#{window_id}")
+	if err != nil {
+		return err
+	}
+	c.runNewCmd(strings.TrimSpace(out), c.sessionNewCmd(target))
+	c.RefreshLayout()
+	return nil
+}
+
+// runNewCmd types a session's new-window command into a freshly created window.
+//
+// TYPED, not executed: the window is born running the normal shell and the command
+// goes in as keystrokes, so what you get is a shell that ran something — Ctrl-C
+// stops it and leaves you at a prompt, up-arrow runs it again, and the window
+// survives the command exiting. Launching the command AS the window's process
+// (tmux's own `default-command`, or `new-window <cmd>`) gives the opposite of all
+// three: the window dies with the command. This is the same convention
+// scripts/stack.sh has always used for its service windows, deliberately.
+//
+// No wait for the shell to be ready. tmux writes the keys into the pty, which
+// buffers them until the shell starts reading — the same reason stack.sh can
+// send-keys immediately after new-window.
+//
+// Best effort: a failure here has already produced the window the caller asked
+// for, so it is logged by the caller's next layout push doing nothing unusual,
+// not turned into an error that would make a created window look like a failure.
+func (c *Controller) runNewCmd(windowID, cmd string) {
+	if windowID == "" || cmd == "" {
+		return
+	}
+	// `--` so a command beginning with '-' is an argument, not a flag. send-keys
+	// to a WINDOW id lands in that window's active pane, which is its only pane.
+	if _, err := c.runTmux("send-keys", "-t", windowID, "--", cmd, "Enter"); err != nil {
+		log.Printf("new-window command not sent to %s: %v", windowID, err)
+	}
+}
+
+// sessionNewCmd reads one session's @wt_newcmd, live.
+//
+// Deliberately not read from the layout cache: the cache is up to one refresh
+// (500ms) old, and the case that matters most is a "+" clicked immediately after
+// typing the command into the sidebar field — where the cached value is the empty
+// string the field just replaced.
+//
+// A session must be named to set-option/show-options by its ID: `-t =name` is
+// rejected outright by the option commands (see exactSession), and a bare name
+// resolves by PREFIX, so a read for "dev" would answer about "dev-2". An
+// unresolvable name yields "", i.e. "this session has no command", which is the
+// safe direction: it makes a new window a plain shell.
+func (c *Controller) sessionNewCmd(session string) string {
+	id := c.sessionID(session)
+	if id == "" {
+		return ""
+	}
+	// -q so an UNSET user option is the empty string rather than a non-zero exit
+	// with "invalid option" — which is every session that has never been given a
+	// command, i.e. almost all of them.
+	out, err := c.runTmux("show-options", "-t", id, "-qv", newCmdOption)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// sessionID resolves a session NAME to its "$N" id, the only exact target the
+// option commands accept. Empty when the name matches no session.
+func (c *Controller) sessionID(name string) string {
+	if name == "" {
+		return ""
+	}
+	// session_id is machine-shaped, session_name is user-arbitrary, so the name
+	// goes last and SplitN hands it back whole — the same rule the other -F
+	// formats in this package follow.
+	out, err := c.runTmux("list-sessions", "-F", "#{session_id}"+sessionsSep+"#{session_name}")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		f := strings.SplitN(line, sessionsSep, 2)
+		if len(f) == 2 && f[1] == name {
+			return f[0]
+		}
+	}
+	return ""
+}
+
+// SetSessionNewCmd sets (or, with an empty cmd, clears) a session's new-window
+// command. Named by the logical session name the sidebar shows; see sessionNewCmd
+// for why that has to become an id first.
+func (c *Controller) SetSessionNewCmd(session, cmd string) error {
+	id := c.sessionID(session)
+	if id == "" {
+		return fmt.Errorf("%w: no session named %q", ErrRefused, session)
+	}
+	cmd = strings.TrimSpace(cmd)
+	var err error
+	if cmd == "" {
+		// -u UNSETS rather than storing "". They differ: an unset option is absent
+		// from `show-options` output entirely, which is what "this session has no
+		// command" should look like to anything reading tmux directly.
+		_, err = c.runTmux("set-option", "-t", id, "-u", newCmdOption)
+	} else {
+		_, err = c.runTmux("set-option", "-t", id, newCmdOption, cmd)
+	}
 	if err != nil {
 		return err
 	}

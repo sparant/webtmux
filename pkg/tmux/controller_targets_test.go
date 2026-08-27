@@ -113,9 +113,11 @@ func TestDestructiveOpsTargetExactly(t *testing.T) {
 			func(c *Controller) error { return c.MoveWindow("@0", 1, "dev") },
 			"swap-window", []string{"swap-window", "-s", "=dev:0", "-t", "=dev:1"}},
 
+		// -P -F rides along so the new window's id comes back: it is what the
+		// session's new-window command (@wt_newcmd) has to be aimed at.
 		{"new-window",
 			func(c *Controller) error { return c.NewWindow("dev") },
-			"new-window", []string{"new-window", "-t", "=dev"}},
+			"new-window", []string{"new-window", "-t", "=dev", "-P", "-F", "#{window_id}"}},
 
 		{"select-window",
 			func(c *Controller) error { return c.SelectWindow("@1") },

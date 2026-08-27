@@ -12,6 +12,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   FIELD_SEP, renameSessionPayload, parseRenameSessionPayload,
+  sessionCmdPayload, parseSessionCmdPayload,
 } from '../resources/js/tmux-payloads.js';
 
 test('the payload is NUL-delimited, not space-delimited', () => {
@@ -46,4 +47,41 @@ test('an empty new name still round-trips as empty (the server refuses it)', () 
 test('a payload with no separator parses as nothing, matching the server drop', () => {
   assert.equal(parseRenameSessionPayload('old new'), null);
   assert.equal(parseRenameSessionPayload(''), null);
+});
+
+// --- set-session-command ------------------------------------------------------
+// The other two-user-typed-strings payload: a session name and a command line.
+// A command line contains spaces and pipes as a matter of course, so this one
+// could never have used the first-space rule at all.
+
+test('a command line with spaces, pipes and quotes stays whole', () => {
+  const cmd = `WT_WINDOW="$TMUX_PANE" docker exec -it x bash -lc "tail -F log | grep -i err"`;
+  const p = sessionCmdPayload('claude-editors', cmd);
+  assert.deepEqual(parseSessionCmdPayload(p), { session: 'claude-editors', cmd });
+});
+
+test('a session name with a space keeps the command intact', () => {
+  const p = sessionCmdPayload('my project', 'make watch');
+  assert.deepEqual(parseSessionCmdPayload(p), { session: 'my project', cmd: 'make watch' });
+});
+
+test('an empty command round-trips as empty — that is how the field CLEARS it', () => {
+  assert.deepEqual(parseSessionCmdPayload(sessionCmdPayload('dev', '')), {
+    session: 'dev',
+    cmd: '',
+  });
+});
+
+test('a separator-less payload parses as nothing, matching the server drop', () => {
+  // It must NOT read as "session=the whole string, cmd=empty": that would
+  // silently CLEAR the command of whatever session the payload named.
+  assert.equal(parseSessionCmdPayload('claude-editors launch_new.sh'), null);
+  assert.equal(parseSessionCmdPayload(''), null);
+});
+
+test('a command containing a NUL cannot smuggle a second field', () => {
+  // Only the FIRST separator splits, so a NUL later in the command stays in the
+  // command — the server uses IndexByte for exactly this reason.
+  const p = sessionCmdPayload('dev', 'a\x00b');
+  assert.deepEqual(parseSessionCmdPayload(p), { session: 'dev', cmd: 'a\x00b' });
 });

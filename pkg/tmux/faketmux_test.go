@@ -42,6 +42,9 @@ type fakeServer struct {
 	// INHERITS must read back empty without it, or a temporary override could never
 	// be undone (see ownHistoryLimit).
 	options map[string]string
+	// nextWindow numbers the windows new-window creates, for the same reason
+	// nextPane does: a test that creates two must be able to tell them apart.
+	nextWindow int
 	// nextPane numbers the panes split-window creates, so a test can watch a
 	// rebuild replace a window's panes one at a time.
 	nextPane int
@@ -265,6 +268,20 @@ func (f *fakeServer) run(args ...string) (string, error) {
 		f.killPane(target)
 		return "", nil
 
+	case "new-window":
+		// `-P -F` asks tmux to print something about the window it just made; the
+		// controller uses it to aim the session's new-window command at the right
+		// window. Ids come from a counter so two creations in one test differ.
+		if hasFlag(args, "-P") {
+			f.mu.Lock()
+			f.nextWindow++
+			id := "@" + strconv.Itoa(500+f.nextWindow)
+			f.mu.Unlock()
+			return renderFormat(flagValue(args, "-F"), map[string]string{
+				"window_id": id, "window_index": "9", "window_name": "",
+			}) + "\n", nil
+		}
+
 	case "new-session":
 		// `-P -F` asks tmux to print something about the session it just made; the
 		// controller uses it to learn the session id it will then target exactly.
@@ -272,6 +289,9 @@ func (f *fakeServer) run(args ...string) (string, error) {
 			return renderFormat(flagValue(args, "-F"), map[string]string{
 				"session_id":   "$77",
 				"session_name": flagValue(args, "-s"),
+				// A new session is born with one window; the controller asks for its
+				// id so an inherited new-window command can be run in it.
+				"window_id": "@770",
 			}) + "\n", nil
 		}
 	}

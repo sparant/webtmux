@@ -13,6 +13,16 @@ type Session struct {
 	// single pane sitting at an idle shell prompt. The sidebar skips the kill
 	// confirmation for such sessions (there's no live work to protect).
 	Empty bool `json:"empty"`
+	// NewCmd is the command line a NEW WINDOW in this session runs, from the
+	// session's @wt_newcmd user option. Empty = a new window is just a shell.
+	//
+	// It is a property of the SESSION, not of webtmux: a session exists to hold
+	// windows that all do the same kind of thing (an editor per project, a claude
+	// per slot), and until now the only place that intent lived was in whoever
+	// remembered to type the right command. The sidebar shows it as an editable
+	// field, and scripts/stack.sh sets it when it builds the stack, so a session
+	// declared in stack.conf arrives already knowing what its "+" means.
+	NewCmd string `json:"newCmd,omitempty"`
 }
 
 // Layout represents the complete tmux state

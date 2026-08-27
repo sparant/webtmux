@@ -98,6 +98,11 @@ func authorityOf(msgType byte) msgAuthority {
 		return authWrite
 	case TmuxNewSession, TmuxSwitchSession, TmuxRenameSession, TmuxKillSession:
 		return authWrite
+	case TmuxSetSessionCmd:
+		// Writes a tmux option on a session every client shares, and that option
+		// decides what a later "+" TYPES INTO A SHELL. A read-only server must not
+		// be able to arm that.
+		return authWrite
 	case TmuxSendCommand:
 		// Never implemented (handleTmuxMessage has no case for it), but it is in
 		// isTmuxMessage and its NAME is "run an arbitrary tmux command" — the last

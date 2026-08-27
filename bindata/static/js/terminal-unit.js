@@ -22,7 +22,7 @@ import { Osc52Stream } from './osc52.js';
 import { stateStore } from './state-store.js';
 import { arrowSequence } from './arrow-keys.js';
 import { IS_MAC } from './os.js';
-import { renameSessionPayload } from './tmux-payloads.js';
+import { renameSessionPayload, sessionCmdPayload } from './tmux-payloads.js';
 import { planReconnectLanding } from './restore-view.js';
 import {
   normalizeMouseMode, resolvePress, needsForcedSelection, forceSelectionModifier,
@@ -66,6 +66,7 @@ export const MSG = {
   TmuxHistoryAction: 'U',
   TmuxSettingsRequest: 'V',
   TmuxSettingsAction: 'W',
+  TmuxSetSessionCmd: 'X',
 
   // Output (server -> client)
   Output: '1',
@@ -124,7 +125,7 @@ const TMUX_MSG_TYPES = new Set([
   MSG.TmuxSavePaneFile, MSG.TmuxSaveInfoRequest, MSG.TmuxScrollbackRequest,
   MSG.TmuxHistoryInfoRequest, MSG.TmuxHistoryAction,
   MSG.TmuxSettingsRequest, MSG.TmuxSettingsAction,
-  MSG.TmuxSetState, MSG.TmuxRefresh,
+  MSG.TmuxSetState, MSG.TmuxRefresh, MSG.TmuxSetSessionCmd,
 ]);
 
 // --- liveness heartbeat -------------------------------------------------------
@@ -1961,6 +1962,13 @@ export class TerminalUnit {
     // payload needs a separator neither can contain (see tmux-payloads.js). The
     // old first-space split aimed a rename of "my project" at "my".
     this.sendMessage(MSG.TmuxRenameSession, renameSessionPayload(oldName, newName));
+  }
+
+  // Set (or clear, with an empty command) the command line a new window in
+  // `session` runs. Driven by the field under the sidebar's session list; the
+  // server stores it on the session itself, so every client sees it.
+  setSessionCmd(session, cmd) {
+    this.sendMessage(MSG.TmuxSetSessionCmd, sessionCmdPayload(session, cmd));
   }
 
   // Kill a window by id (sidebar hover ×). Grouped sessions share the list, so the

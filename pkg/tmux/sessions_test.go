@@ -51,7 +51,7 @@ func TestLogicalBase(t *testing.T) {
 
 func TestBuildSessionsHidesShadowsAndMarksGroupActive(t *testing.T) {
 	rows := parseSessionRows(sessionsFixture)
-	got := buildSessions(rows, "web-abc123", nil) // a split viewing services
+	got := buildSessions(rows, "web-abc123", nil, nil) // a split viewing services
 
 	names := map[string]Session{}
 	for _, s := range got {
@@ -73,7 +73,7 @@ func TestBuildSessionsHidesShadowsAndMarksGroupActive(t *testing.T) {
 
 func TestBuildSessionsPrimary(t *testing.T) {
 	rows := parseSessionRows(sessionsFixture)
-	got := buildSessions(rows, "services", nil)
+	got := buildSessions(rows, "services", nil, nil)
 	for _, s := range got {
 		if s.Name == "services" && !s.Active {
 			t.Error("primary's own session not active")
@@ -87,7 +87,7 @@ func TestBuildSessionsPrimary(t *testing.T) {
 func TestBuildSessionsMarksEmpty(t *testing.T) {
 	rows := parseSessionRows(sessionsFixture)
 	empty := map[string]bool{"other": true} // only "other" is an idle-shell session
-	got := buildSessions(rows, "services", empty)
+	got := buildSessions(rows, "services", empty, nil)
 	for _, s := range got {
 		want := s.Name == "other"
 		if s.Empty != want {
@@ -105,6 +105,100 @@ func TestIsShellCommand(t *testing.T) {
 	for _, cmd := range []string{"vim", "node", "ssh", "claude", ""} {
 		if isShellCommand(cmd) {
 			t.Errorf("isShellCommand(%q) = true, want false", cmd)
+		}
+	}
+}
+
+// --- per-session new-window command -----------------------------------------
+
+func TestParseSessionCmds(t *testing.T) {
+	// The pipe in the second command is the whole point of the separate pass: a
+	// command line containing the field separator must survive intact.
+	out := "$0|scripts/claude-docker/launch_new.sh\n" +
+		"$1|tail -F log | grep -i error\n" +
+		"$2|\n"
+	cmds := parseSessionCmds(out)
+	if cmds["$0"] != "scripts/claude-docker/launch_new.sh" {
+		t.Errorf("plain command: %q", cmds["$0"])
+	}
+	if cmds["$1"] != "tail -F log | grep -i error" {
+		t.Errorf("command containing the separator was truncated: %q", cmds["$1"])
+	}
+	if _, ok := cmds["$2"]; ok {
+		t.Errorf("an empty value should be absent, not stored empty")
+	}
+}
+
+func TestParseSessionCmdsDropsJunk(t *testing.T) {
+	// A tmux too old to expand #{@user} options echoes the format back; storing it
+	// would later TYPE it into a shell. A line with no separator is the tail of a
+	// value containing a newline and belongs to no session.
+	cmds := parseSessionCmds("$0|#{@wt_newcmd}\n$1|real\nstray tail line\n")
+	if _, ok := cmds["$0"]; ok {
+		t.Errorf("unexpanded format was stored as a command: %q", cmds["$0"])
+	}
+	if cmds["$1"] != "real" {
+		t.Errorf("good row lost: %q", cmds["$1"])
+	}
+	if len(cmds) != 1 {
+		t.Errorf("want exactly the one good row, got %v", cmds)
+	}
+}
+
+func TestBuildSessionsCarriesNewCmd(t *testing.T) {
+	rows := parseSessionRows(sessionsFixture)
+	got := buildSessions(rows, "services", nil, map[string]string{"$0": "launch_new.sh"})
+	for _, s := range got {
+		if s.Name == "services" && s.NewCmd != "launch_new.sh" {
+			t.Errorf("services lost its command: %+v", s)
+		}
+		if s.Name == "other" && s.NewCmd != "" {
+			t.Errorf("a session with no command got one: %+v", s)
+		}
+	}
+}
+
+func TestNextSessionName(t *testing.T) {
+	cases := []struct {
+		base  string
+		taken []string
+		want  string
+	}{
+		{"editors", nil, "editors (1)"},
+		{"editors", []string{"editors (1)"}, "editors (2)"},
+		{"editors", []string{"editors (1)", "editors (2)"}, "editors (3)"},
+		// Deriving from an already-derived session must not nest the suffix.
+		{"editors (1)", []string{"editors (1)"}, "editors (2)"},
+		// A gap is filled, not skipped past.
+		{"editors", []string{"editors (2)"}, "editors (1)"},
+		// Parenthesised text that is not an index is part of the name.
+		{"editors (old)", nil, "editors (old) (1)"},
+		{"", nil, ""},
+	}
+	for _, c := range cases {
+		taken := make(map[string]bool)
+		for _, n := range c.taken {
+			taken[n] = true
+		}
+		if got := nextSessionName(c.base, taken); got != c.want {
+			t.Errorf("nextSessionName(%q, %v) = %q, want %q", c.base, c.taken, got, c.want)
+		}
+	}
+}
+
+func TestStripSessionIndex(t *testing.T) {
+	cases := map[string]string{
+		"editors (1)":   "editors",
+		"editors (12)":  "editors",
+		"editors":       "editors",
+		"editors (a)":   "editors (a)",
+		"editors ()":    "editors ()",
+		"(1)":           "(1)",
+		"editors (1) x": "editors (1) x",
+	}
+	for in, want := range cases {
+		if got := stripSessionIndex(in); got != want {
+			t.Errorf("stripSessionIndex(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

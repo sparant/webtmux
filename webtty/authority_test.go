@@ -101,6 +101,9 @@ func TestReadOnlyAllowsExactlyTheViewingMessages(t *testing.T) {
 		// A server-global tmux option: tmux has no per-client `status`, so this
 		// hides the status line for every client on the server, terminals included.
 		{"toggle the tmux status line", TmuxSettingsAction},
+		// Arms what a later "+" TYPES INTO A SHELL, on a session every client
+		// shares — a read-only server must not be able to set it.
+		{"set a session's new-window command", TmuxSetSessionCmd},
 	}
 	for _, tc := range write {
 		if !requiresWrite(tc.msg) {

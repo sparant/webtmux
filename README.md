@@ -32,6 +32,16 @@ A UI replacement for tmux Prefix+W. Lets you manage windows/sessions - create/de
 - Hover × kills a window — or just unlinks it when it lives in other sessions too.
 - Double-click renames windows and sessions inline.
 - "+" creates a session or a window.
+- Each session has a **default command** — the field under the session list. Leave
+  it empty and a new window is just a shell; fill it in and every window the "+"
+  creates starts a shell and runs that command in it. The window still belongs to
+  you: Ctrl-C stops the command and leaves you at the prompt, up-arrow runs it
+  again, and the window outlives it.
+  - Stored on the tmux session itself (`@wt_newcmd`), so it is shared by every
+    browser, survives a reload or a webtmux restart, and can be set from a script:
+    `tmux set-option -t <session> @wt_newcmd '<command>'`.
+  - A new session made with "+" inherits both halves of the session it was made
+    from: its command, and its name with an index — `editors` → `editors (1)`.
 - Session and window order persists.
 
 ### Toolbar and Recent Tabs
