@@ -12,7 +12,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  workClass, workLabel, workTip, WORK_LEGEND, isBusy, formatDuration,
+  workClass, workLabel, workTip, WORK_LEGEND, isBusy, formatDuration, workBadge,
   STATUS_FILTERS, normalizeStatusFilter, matchesStatus,
 } from '../resources/js/stoplight.js';
 
@@ -96,6 +96,25 @@ test('workTip ignores an unset/zero/negative/non-numeric since or activity', () 
   const now = 2_000_000;
   for (const bad of [undefined, null, '', 0, -5, 'nope']) {
     assert.equal(workTip('1', bad, bad, now), workTip('1'));
+  }
+});
+
+test('workBadge prefers since over activity', () => {
+  const now = 2_000_000;
+  assert.equal(workBadge(now - 125, now - 5, now), '2m');
+});
+
+test('workBadge falls back to activity when since is absent/invalid', () => {
+  const now = 2_000_000;
+  for (const bad of [undefined, null, '', 0, -5, 'nope']) {
+    assert.equal(workBadge(bad, now - 125, now), '2m');
+  }
+});
+
+test('workBadge is empty when neither reading is available, not a fake "0m"', () => {
+  const now = 2_000_000;
+  for (const bad of [undefined, null, '', 0, -5, 'nope']) {
+    assert.equal(workBadge(bad, bad, now), '');
   }
 });
 

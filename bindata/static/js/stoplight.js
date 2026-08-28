@@ -78,6 +78,23 @@ export function formatDuration(totalSeconds) {
   return rh ? `${d}d${rh}h` : `${d}d`;
 }
 
+// The short always-visible label next to a dot — the at-a-glance answer, for
+// someone scanning a whole strip of tabs without hovering anything, to "how long
+// has it been like this". Prefers sinceSeconds (the agent's own reported state,
+// the more meaningful reading when it exists) and falls back to activitySeconds
+// (tmux's own clock, so even a window with no stoplight hook at all still gets a
+// reading) — same preference either could be shown alone, but a badge only has
+// room for one number, unlike the tooltip which shows both. '' when neither is
+// available, so a caller can skip rendering the badge entirely rather than show
+// an empty one.
+export function workBadge(sinceSeconds, activitySeconds, nowSeconds = Date.now() / 1000) {
+  const since = Number(sinceSeconds);
+  if (Number.isFinite(since) && since > 0) return formatDuration(nowSeconds - since);
+  const activity = Number(activitySeconds);
+  if (Number.isFinite(activity) && activity > 0) return formatDuration(nowSeconds - activity);
+  return '';
+}
+
 // The complete hover text for a stoplight: where THIS window is, then how long it's
 // been that way, then the key.
 //

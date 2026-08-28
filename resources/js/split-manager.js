@@ -44,6 +44,7 @@ import {
   RECENT_DRAG_TYPE, parseRecentDrag, carriesRecentDrag,
 } from './recents-strip.js';
 import { planRegionMove } from './region-move.js';
+import { workBadge } from './stoplight.js';
 import { buildMruOrder } from './mru-order.js';
 import { SplitPersistence } from './split-state.js';
 import { resolveRestoreView, planRestoreLanding } from './restore-view.js';
@@ -1772,6 +1773,14 @@ export class SplitManager {
         // Same preference order as working, for the two hover-only "how long" readings.
         workingSince: workingSinceById.has(e.id) ? workingSinceById.get(e.id) : (live?.workingSince || ''),
         activity: activityById.has(e.id) ? activityById.get(e.id) : (live?.activity || ''),
+        // The always-visible short reading next to the dot — see stoplight.js
+        // workBadge(). Computed here (not read lazily by the template) so every
+        // consumer of a tabView() object, including the width-fitting probe tab,
+        // measures the SAME text a real render would show.
+        badge: workBadge(
+          workingSinceById.has(e.id) ? workingSinceById.get(e.id) : (live?.workingSince || ''),
+          activityById.has(e.id) ? activityById.get(e.id) : (live?.activity || ''),
+        ),
         // Flash this tab if its window dropped out of green behind your back. Read
         // from the server-wide registry rather than computed here, so a tab that gets
         // evicted and later returns shows the same alert the sidebar and the preview

@@ -8,7 +8,7 @@ import {
 } from '../window-tree.js';
 import { stateStore } from '../state-store.js';
 import { clientStore } from '../client-store.js';
-import { workClass, workLabel, workTip } from '../stoplight.js';
+import { workClass, workLabel, workTip, workBadge } from '../stoplight.js';
 import { ALERT_CSS, alertClass, alertTip } from '../alert-flash.js';
 import { alertOf } from '../work-alerts.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
@@ -264,6 +264,17 @@ class WebtmuxSidebar extends LitElement {
        request: something is blocked until you go and answer it. */
     .work.wait { background: #f5c542; border-color: #f5c542; box-shadow: 0 0 5px #f5c542; animation: wt-wait 1.4s ease-in-out infinite; }
     @keyframes wt-wait { 50% { opacity: 0.35; } }
+
+    /* The always-visible "how long has it been like this" reading (workBadge() in
+       stoplight.js). Placed AFTER the tab/edit-input, not between the dot and the
+       tab: the drop-line reorder indicator (.wrow's --dotcol, below) extends back
+       from the tab by exactly [dot width + gap] to reach the row's left edge, and
+       a sibling inserted there would have thrown that measurement off by its own
+       width. Tiny and muted so it explains rather than competes for attention. */
+    .work-age {
+      flex: 0 0 auto; font-size: 9px; color: #7d92b8; line-height: 1;
+      white-space: nowrap; letter-spacing: 0.02em;
+    }
 
     .window-tab {
       display: block;
@@ -1207,7 +1218,7 @@ class WebtmuxSidebar extends LitElement {
             title=${this._windowKillLabel(win)}
             @click=${(e) => { e.stopPropagation(); this.killWindow(win, e.currentTarget); }}
           >×</span>
-        </button>`}
+        </button>`}${this._badge(win) ? html`<span class="work-age" aria-hidden="true">${this._badge(win)}</span>` : ''}
       </div>
     `;
   }
@@ -1786,6 +1797,13 @@ class WebtmuxSidebar extends LitElement {
     const all = this.layout?.allActivity;
     if (all && win && Object.prototype.hasOwnProperty.call(all, win.id)) return all[win.id];
     return (win && win.activity) || '';
+  }
+
+  // The always-visible short reading next to the dot (see stoplight.js
+  // workBadge()) — the answer someone scanning the window list needs without
+  // hovering anything.
+  _badge(win) {
+    return workBadge(this._workingSince(win), this._activity(win));
   }
 
   // A window's attention flash ('' | '0' | '2'), from the shared registry. Keyed by

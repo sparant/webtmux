@@ -564,6 +564,15 @@ class WebtmuxToolbar extends LitElement {
     .work.wait { background: #f5c542; border-color: #f5c542; box-shadow: 0 0 5px #f5c542; animation: wt-wait 1.4s ease-in-out infinite; }
     @keyframes wt-wait { 50% { opacity: 0.35; } }
 
+    /* The always-visible "how long has it been like this" reading (workBadge() in
+       stoplight.js) — the answer someone scanning the whole strip needs without
+       hovering anything. Deliberately tiny and muted: it rides next to the dot it
+       explains, not competing with the window name for attention. */
+    .work-age {
+      flex: 0 0 auto; font-size: 9px; color: #7d92b8; line-height: 1;
+      white-space: nowrap; letter-spacing: 0.02em;
+    }
+
     /* The attention flash itself (.wt-alert and friends) is spliced in from
        alert-flash.js — the sidebar rows and the preview tiles flash for the same
        windows, and a signal that pulses differently in each place stops reading as
@@ -2640,7 +2649,7 @@ class WebtmuxToolbar extends LitElement {
             aria-label=${workLabel(w.working)}
             @mouseenter=${(e) => { e.stopPropagation(); this._tipEnter(e, workTip(w.working, w.workingSince, w.activity)); }}
             @mouseleave=${(e) => { e.stopPropagation(); this._tipEnter({ currentTarget: e.currentTarget.closest('.rtab') }, tip); }}
-          ></span><button
+          ></span>${w.badge ? html`<span class="work-age" aria-hidden="true">${w.badge}</span>` : ''}<button
             class="tab ${w.active ? 'active' : ''} ${w.disabled ? 'disabled' : ''} ${!w.active && this.previewWindow === w.id ? 'previewing' : ''} ${alertClass(w.alert)}"
             aria-label=${full}
             @click=${() => { this._tipLeave(); this.manager?.pickRecentWindow(w); }}
