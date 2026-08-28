@@ -8,7 +8,7 @@ import {
 } from '../window-tree.js';
 import { stateStore } from '../state-store.js';
 import { clientStore } from '../client-store.js';
-import { workClass, workLabel, workTip, workBadge, workBadgeTip } from '../stoplight.js';
+import { workClass, workLabel, workTip, workBadge, workBadgeTip, workBadgeModes, nextBadgeMode } from '../stoplight.js';
 import { ALERT_CSS, alertClass, alertTip } from '../alert-flash.js';
 import { alertOf } from '../work-alerts.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
@@ -272,11 +272,15 @@ class WebtmuxSidebar extends LitElement {
        a sibling inserted there would have thrown that measurement off by its own
        width. Muted (not competing for attention) but readable at a glance — 9px
        measured too small in practice. Hovering it explains the mechanism
-       (workBadgeTip()), same as hovering the dot explains the colour. */
+       (workBadgeTip()), same as hovering the dot explains the colour. `.cyclable`
+       (both readings exist) invites a click to switch between them — see
+       _cycleBadgeMode(). */
     .work-age {
       flex: 0 0 auto; font-size: 11px; color: #9fb4dc; line-height: 1;
       white-space: nowrap; letter-spacing: 0.02em; cursor: default;
     }
+    .work-age.cyclable { cursor: pointer; }
+    .work-age.cyclable:hover { color: #cfe0ff; text-decoration: underline dotted; }
 
     .window-tab {
       display: block;
@@ -628,6 +632,11 @@ class WebtmuxSidebar extends LitElement {
     // Which view: sessions-then-windows (default) or the flat all-windows tree.
     this.treeView = sb.tree === true;
     this.treeCollapsed = readCollapsed(sb);
+    // Per-window override of which "how long" reading the duration badge shows
+    // (see stoplight.js workBadgeModes()) — a plain Map, not a reactive property,
+    // read-modify-render entirely inside _cycleBadgeMode(), which calls
+    // requestUpdate() itself. Keyed by window id so it survives layout refreshes.
+    this._badgeMode = new Map();
     // Window id currently being renamed inline ('' = none).
     this.editingWindow = '';
     // Session name currently being renamed inline ('' = none).
@@ -1221,9 +1230,13 @@ class WebtmuxSidebar extends LitElement {
             @click=${(e) => { e.stopPropagation(); this.killWindow(win, e.currentTarget); }}
           >×</span>
         </button>`}${this._badge(win) ? html`<span
-          class="work-age"
+          class="work-age ${workBadgeModes(this._workingSince(win), this._activity(win)).length > 1 ? 'cyclable' : ''}"
           aria-label=${this._badge(win)}
-          @mouseenter=${(e) => this._tip.enter(e, workBadgeTip(this._workingSince(win), this._activity(win)))}
+          @click=${(e) => {
+            e.stopPropagation();
+            if (workBadgeModes(this._workingSince(win), this._activity(win)).length > 1) this._cycleBadgeMode(win);
+          }}
+          @mouseenter=${(e) => this._tip.enter(e, workBadgeTip(this._workingSince(win), this._activity(win), undefined, this._badgeMode.get(win.id)))}
           @mouseleave=${() => this._tip.leave()}
         >${this._badge(win)}</span>` : ''}
       </div>
@@ -1808,9 +1821,24 @@ class WebtmuxSidebar extends LitElement {
 
   // The always-visible short reading next to the dot (see stoplight.js
   // workBadge()) — the answer someone scanning the window list needs without
-  // hovering anything.
+  // hovering anything. An explicit per-window override (from clicking the badge —
+  // see _cycleBadgeMode) wins over the default auto preference.
   _badge(win) {
-    return workBadge(this._workingSince(win), this._activity(win));
+    const mode = this._badgeMode.get(win.id);
+    return workBadge(this._workingSince(win), this._activity(win), undefined, mode);
+  }
+
+  // Click-to-cycle the duration badge between its available readings (see
+  // stoplight.js workBadgeModes()/nextBadgeMode()). The caller already checked
+  // there's something to cycle TO before wiring this up.
+  _cycleBadgeMode(win) {
+    // No override yet means the badge is showing workBadge()'s own auto preference,
+    // which is exactly workBadgeModes()[0] by construction — treat that as "current"
+    // so the first click moves to the OTHER mode, not a no-op wrap back to itself.
+    const modes = workBadgeModes(this._workingSince(win), this._activity(win));
+    const current = this._badgeMode.get(win.id) || modes[0];
+    this._badgeMode.set(win.id, nextBadgeMode(current, this._workingSince(win), this._activity(win)));
+    this.requestUpdate();
   }
 
   // A window's attention flash ('' | '0' | '2'), from the shared registry. Keyed by

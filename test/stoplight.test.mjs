@@ -12,7 +12,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  workClass, workLabel, workTip, WORK_LEGEND, isBusy, formatDuration, workBadge, workBadgeTip,
+  workClass, workLabel, workTip, WORK_LEGEND, isBusy, formatDuration,
+  workBadge, workBadgeTip, workBadgeModes, nextBadgeMode,
   STATUS_FILTERS, normalizeStatusFilter, matchesStatus,
 } from '../resources/js/stoplight.js';
 
@@ -137,6 +138,55 @@ test('workBadgeTip says plainly when there is nothing to explain', () => {
   for (const bad of [undefined, null, '', 0, -5, 'nope']) {
     assert.equal(workBadgeTip(bad, bad, now), 'No timing data available for this window.');
   }
+});
+
+// --- click-to-cycle between the two readings -----------------------------------
+
+test('workBadgeModes lists exactly the readings a window actually has, since first', () => {
+  assert.deepEqual(workBadgeModes(100, 200), ['since', 'activity']);
+  assert.deepEqual(workBadgeModes(100, ''), ['since']);
+  assert.deepEqual(workBadgeModes('', 200), ['activity']);
+  assert.deepEqual(workBadgeModes('', ''), []);
+  assert.deepEqual(workBadgeModes(0, -5), [], 'zero/negative are not valid readings');
+});
+
+test('nextBadgeMode cycles when both readings exist', () => {
+  assert.equal(nextBadgeMode('since', 100, 200), 'activity');
+  assert.equal(nextBadgeMode('activity', 100, 200), 'since');
+  // an unrecognised/empty current mode is treated as "not the first" -> wraps to it
+  assert.equal(nextBadgeMode('', 100, 200), 'since');
+});
+
+test('nextBadgeMode is a no-op when there is nothing to cycle to', () => {
+  assert.equal(nextBadgeMode('since', 100, ''), 'since', 'only one reading exists');
+  assert.equal(nextBadgeMode('activity', '', ''), 'activity', 'no reading exists at all');
+});
+
+test('workBadge with an explicit mode shows exactly that reading, never substitutes', () => {
+  const now = 2_000_000;
+  assert.equal(workBadge(now - 60, now - 3700, now, 'since'), '1m');
+  assert.equal(workBadge(now - 60, now - 3700, now, 'activity'), '1h1m');
+  // forcing a mode with no data for it must NOT fall back to the other one
+  assert.equal(workBadge(now - 60, '', now, 'activity'), '');
+  assert.equal(workBadge('', now - 3700, now, 'since'), '');
+});
+
+test('workBadgeTip in an explicit mode explains exactly that mechanism', () => {
+  const now = 2_000_000;
+  const sinceTip = workBadgeTip(now - 60, now - 3700, now, 'since');
+  assert.ok(sinceTip.startsWith('In this state for 1m'), sinceTip);
+  assert.ok(!/window_activity/.test(sinceTip), 'forced to since: must not mention the other mechanism');
+
+  const activityTip = workBadgeTip(now - 60, now - 3700, now, 'activity');
+  assert.ok(activityTip.startsWith('Pane silent for 1h1m'), activityTip);
+  assert.ok(!/@wt_working/.test(activityTip), 'forced to activity: must not mention the other mechanism');
+});
+
+test('workBadgeTip mentions the click-to-cycle hint only when both readings exist', () => {
+  const now = 2_000_000;
+  assert.ok(/Click to switch/.test(workBadgeTip(now - 60, now - 3700, now)));
+  assert.ok(!/Click to switch/.test(workBadgeTip(now - 60, '', now)), 'only one reading -> nothing to cycle to');
+  assert.ok(!/Click to switch/.test(workBadgeTip('', '', now)), 'no reading -> nothing to cycle to');
 });
 
 // --- busy ---------------------------------------------------------------------

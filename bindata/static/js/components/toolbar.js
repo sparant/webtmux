@@ -25,7 +25,7 @@
 import { LitElement, html, css, svg } from 'lit';
 import { chord, IS_MAC } from '../os.js';
 import { stateStore } from '../state-store.js';
-import { workClass, workLabel, workTip, workBadgeTip } from '../stoplight.js';
+import { workClass, workLabel, workTip, workBadgeTip, workBadge, workBadgeModes, nextBadgeMode } from '../stoplight.js';
 import { ALERT_CSS, alertClass, alertTip } from '../alert-flash.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
 import { saveHint } from '../save-target.js';
@@ -569,11 +569,14 @@ class WebtmuxToolbar extends LitElement {
        hovering anything. Muted (not competing with the window name for attention)
        but readable at a glance — 9px measured too small in practice. Hovering it
        explains the mechanism (workBadgeTip()), same as hovering the dot explains
-       the colour. */
+       the colour. `.cyclable` (both readings exist) invites a click to switch
+       between them — see _cycleBadgeMode(). */
     .work-age {
       flex: 0 0 auto; font-size: 11px; color: #9fb4dc; line-height: 1;
       white-space: nowrap; letter-spacing: 0.02em; cursor: default;
     }
+    .work-age.cyclable { cursor: pointer; }
+    .work-age.cyclable:hover { color: #cfe0ff; text-decoration: underline dotted; }
 
     /* The attention flash itself (.wt-alert and friends) is spliced in from
        alert-flash.js — the sidebar rows and the preview tiles flash for the same
@@ -1436,6 +1439,12 @@ class WebtmuxToolbar extends LitElement {
     this._pickerTimer = null;
     this._pickerCloseTimer = null;
     this.collapsed = false;
+    // Per-window override of which "how long" reading the duration badge shows
+    // (see stoplight.js workBadgeModes()) — a plain Map, not a reactive property,
+    // because it's read-modify-render entirely inside click handlers that already
+    // call requestUpdate() themselves. Keyed by window id so it survives the
+    // recents array being REPLACED wholesale on every layout poll (~500ms).
+    this._badgeMode = new Map();
     // Scroll-wheel mode mirror (moved here from the sidebar). Seeded from the same
     // shared 'renderer' pref the terminal reads, so the label is right on first paint.
     this.scrollMode = normalizeScroll(stateStore.section('renderer').scrollMode || '');
@@ -2339,7 +2348,7 @@ class WebtmuxToolbar extends LitElement {
     const dot = els[i].querySelector('.work');
     if (dot?.matches(':hover')) this._tipEnter({ currentTarget: dot }, workTip(w.working, w.workingSince, w.activity));
     const age = els[i].querySelector('.work-age');
-    if (age?.matches(':hover')) this._tipEnter({ currentTarget: age }, workBadgeTip(w.workingSince, w.activity));
+    if (age?.matches(':hover')) this._tipEnter({ currentTarget: age }, workBadgeTip(w.workingSince, w.activity, undefined, this._badgeMode.get(w.id)));
   }
 
   // ---- the region picker -------------------------------------------------------
@@ -2628,6 +2637,19 @@ class WebtmuxToolbar extends LitElement {
     return this.recentQueued > 0 && this.recent.length < this.recentMax;
   }
 
+  // Click-to-cycle the duration badge between its available readings (see
+  // stoplight.js workBadgeModes()/nextBadgeMode()). The caller already checked
+  // there's something to cycle TO before wiring this up.
+  _cycleBadgeMode(w) {
+    // No override yet means the badge is showing workBadge()'s own auto preference,
+    // which is exactly workBadgeModes()[0] by construction — treat that as "current"
+    // so the first click moves to the OTHER mode, not a no-op wrap back to itself.
+    const modes = workBadgeModes(w.workingSince, w.activity);
+    const current = this._badgeMode.get(w.id) || modes[0];
+    this._badgeMode.set(w.id, nextBadgeMode(current, w.workingSince, w.activity));
+    this.requestUpdate();
+  }
+
   // One recents tab. Also renders the width probe (`spare`), and that is the reason
   // this is a function rather than inline markup: the probe has to be the SAME BOX as
   // a real tab or it measures a lie, and two copies of this template would drift apart
@@ -2638,6 +2660,14 @@ class WebtmuxToolbar extends LitElement {
     const full = `${w.session} — window ${w.index}: ${w.name}`;
     const tip = this._tabTip(w);
     const last = !spare && i === this.recent.length - 1;
+    // An explicit override (from clicking the badge) wins; otherwise fall back to
+    // the default/auto reading split-manager already computed into w.badge — kept
+    // as the fallback rather than always recomputing here so the width-fitting
+    // probe (which renders the NEXT tab via this same function) measures exactly
+    // what a real, never-yet-clicked tab would show.
+    const badgeMode = this._badgeMode.get(w.id);
+    const badge = badgeMode ? workBadge(w.workingSince, w.activity, undefined, badgeMode) : w.badge;
+    const cyclable = workBadgeModes(w.workingSince, w.activity).length > 1;
     return html`
           <span
             class="rtab ${spare ? 'spare' : ''} ${!spare && this.dragKey === key ? 'dragging' : ''} ${!spare && this.dragKey && this.dropIndex === i ? 'drop-before' : ''} ${!spare && this.dragKey && last && this.dropIndex === this.recent.length ? 'drop-end' : ''}"
@@ -2653,12 +2683,13 @@ class WebtmuxToolbar extends LitElement {
             aria-label=${workLabel(w.working)}
             @mouseenter=${(e) => { e.stopPropagation(); this._tipEnter(e, workTip(w.working, w.workingSince, w.activity)); }}
             @mouseleave=${(e) => { e.stopPropagation(); this._tipEnter({ currentTarget: e.currentTarget.closest('.rtab') }, tip); }}
-          ></span>${w.badge ? html`<span
-            class="work-age"
-            aria-label=${w.badge}
-            @mouseenter=${(e) => { e.stopPropagation(); this._tipEnter(e, workBadgeTip(w.workingSince, w.activity)); }}
+          ></span>${badge ? html`<span
+            class="work-age ${cyclable ? 'cyclable' : ''}"
+            aria-label=${badge}
+            @click=${(e) => { e.stopPropagation(); if (cyclable) this._cycleBadgeMode(w); }}
+            @mouseenter=${(e) => { e.stopPropagation(); this._tipEnter(e, workBadgeTip(w.workingSince, w.activity, undefined, badgeMode)); }}
             @mouseleave=${(e) => { e.stopPropagation(); this._tipEnter({ currentTarget: e.currentTarget.closest('.rtab') }, tip); }}
-          >${w.badge}</span>` : ''}<button
+          >${badge}</span>` : ''}<button
             class="tab ${w.active ? 'active' : ''} ${w.disabled ? 'disabled' : ''} ${!w.active && this.previewWindow === w.id ? 'previewing' : ''} ${alertClass(w.alert)}"
             aria-label=${full}
             @click=${() => { this._tipLeave(); this.manager?.pickRecentWindow(w); }}

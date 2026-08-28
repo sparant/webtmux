@@ -78,49 +78,88 @@ export function formatDuration(totalSeconds) {
   return rh ? `${d}d${rh}h` : `${d}d`;
 }
 
+// Which readings a window actually HAS, in the same preference order workBadge()
+// defaults to (since first). This is the single source of truth for "what can this
+// badge show" — both the badge's default pick and its click-to-cycle behaviour walk
+// this same list, so they can never disagree about what's available.
+export function workBadgeModes(sinceSeconds, activitySeconds) {
+  const modes = [];
+  const since = Number(sinceSeconds);
+  if (Number.isFinite(since) && since > 0) modes.push('since');
+  const activity = Number(activitySeconds);
+  if (Number.isFinite(activity) && activity > 0) modes.push('activity');
+  return modes;
+}
+
+// Given the currently-displayed mode (or '' / an unrecognised one), return the next
+// mode to show on a click — the next entry in workBadgeModes(), wrapping around.
+// A single-entry (or empty) list has nothing to cycle to, so it just returns what it
+// was given: the caller should not offer a click affordance in that case at all.
+export function nextBadgeMode(currentMode, sinceSeconds, activitySeconds) {
+  const modes = workBadgeModes(sinceSeconds, activitySeconds);
+  if (modes.length < 2) return currentMode;
+  const i = modes.indexOf(currentMode);
+  return modes[(i + 1) % modes.length];
+}
+
 // The short always-visible label next to a dot — the at-a-glance answer, for
 // someone scanning a whole strip of tabs without hovering anything, to "how long
-// has it been like this". Prefers sinceSeconds (the agent's own reported state,
-// the more meaningful reading when it exists) and falls back to activitySeconds
+// has it been like this".
+//
+// mode picks WHICH reading to show: 'since' or 'activity' show exactly that one (an
+// unavailable one degrades to '', not a silent substitution of the other — a forced
+// choice has to fail visibly, or clicking to "since" on a window with none would
+// look like nothing happened) rather than the other reading appearing under a label
+// the caller specifically asked to move away from. Omitted/falsy/unrecognised falls
+// back to the original auto behaviour: prefer sinceSeconds (the agent's own reported
+// state, the more meaningful reading when it exists), fall back to activitySeconds
 // (tmux's own clock, so even a window with no stoplight hook at all still gets a
-// reading) — same preference either could be shown alone, but a badge only has
-// room for one number, unlike the tooltip which shows both. '' when neither is
-// available, so a caller can skip rendering the badge entirely rather than show
-// an empty one.
-export function workBadge(sinceSeconds, activitySeconds, nowSeconds = Date.now() / 1000) {
+// reading). '' when the requested reading (or, in auto mode, both) is unavailable.
+export function workBadge(sinceSeconds, activitySeconds, nowSeconds = Date.now() / 1000, mode) {
   const since = Number(sinceSeconds);
-  if (Number.isFinite(since) && since > 0) return formatDuration(nowSeconds - since);
+  const hasSince = Number.isFinite(since) && since > 0;
   const activity = Number(activitySeconds);
-  if (Number.isFinite(activity) && activity > 0) return formatDuration(nowSeconds - activity);
+  const hasActivity = Number.isFinite(activity) && activity > 0;
+  if (mode === 'since') return hasSince ? formatDuration(nowSeconds - since) : '';
+  if (mode === 'activity') return hasActivity ? formatDuration(nowSeconds - activity) : '';
+  if (hasSince) return formatDuration(nowSeconds - since);
+  if (hasActivity) return formatDuration(nowSeconds - activity);
   return '';
 }
 
 // What the badge means and how it was worked out — separate from workTip() because
 // the badge is a NUMBER standing alone with no colour/label next to it to give it
 // context, so its own hover has to explain the mechanism, not just restate the dot's
-// state. Names which of the two readings is actually showing (workBadge()'s own
-// preference order) rather than always describing both, so this never claims a
-// mechanism the number on screen didn't come from.
-export function workBadgeTip(sinceSeconds, activitySeconds, nowSeconds = Date.now() / 1000) {
+// state. Names whichever reading workBadge() was ALSO given the same arguments and
+// mode would show, so the explanation can never claim a mechanism the number on
+// screen didn't come from — and, when a click-to-cycle is available, says so.
+export function workBadgeTip(sinceSeconds, activitySeconds, nowSeconds = Date.now() / 1000, mode) {
   const since = Number(sinceSeconds);
-  if (Number.isFinite(since) && since > 0) {
+  const hasSince = Number.isFinite(since) && since > 0;
+  const activity = Number(activitySeconds);
+  const hasActivity = Number.isFinite(activity) && activity > 0;
+  const showSince = mode === 'since' ? hasSince : mode === 'activity' ? false : hasSince;
+  const cycleHint = workBadgeModes(sinceSeconds, activitySeconds).length > 1
+    ? '\n\nClick to switch to the other reading.' : '';
+  if (showSince) {
     return [
       `In this state for ${formatDuration(nowSeconds - since)}`,
       '',
       'Time since @wt_working (the stoplight colour) last actually CHANGED — not',
       'since it was last re-asserted. The window’s own hooks stamp this only on a',
       'real transition, so re-reporting the same colour every ~60s does not reset it.',
-    ].join('\n');
+    ].join('\n') + cycleHint;
   }
-  const activity = Number(activitySeconds);
-  if (Number.isFinite(activity) && activity > 0) {
+  const showActivity = mode === 'activity' ? hasActivity : mode === 'since' ? false : hasActivity;
+  if (showActivity) {
     return [
       `Pane silent for ${formatDuration(nowSeconds - activity)}`,
       '',
       'Time since anything was last written to this pane, from tmux’s own',
-      '#{window_activity} clock. Shown because this window has no stoplight state',
-      '(@wt_working) reported at all — this is the only timing tmux itself can give it.',
-    ].join('\n');
+      '#{window_activity} clock.' + (mode === 'activity' ? '' :
+        ' Shown because this window has no stoplight state (@wt_working) reported at all —' +
+        ' this is the only timing tmux itself can give it.'),
+    ].join('\n') + cycleHint;
   }
   return 'No timing data available for this window.';
 }
