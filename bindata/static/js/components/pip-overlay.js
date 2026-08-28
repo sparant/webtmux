@@ -29,6 +29,7 @@ import { stateStore } from '../state-store.js';
 import { workClass, workLabel, workTip } from '../stoplight.js';
 import { ALERT_CSS, alertClass, alertTip } from '../alert-flash.js';
 import { alertOf } from '../work-alerts.js';
+import { Tip, TIP_CSS } from '../tooltip.js';
 import {
   terminalContentBox, cropBox, fitTransform, CropTracker, sameBox,
 } from '../content-bounds.js';
@@ -337,7 +338,7 @@ class WebtmuxPip extends LitElement {
        that must not fill with the alert colour — that would hide the very screen the
        flash is telling you to go and look at. Inset so the tile's own overflow can't
        clip it and its size never changes mid-pulse. */
-  `, ALERT_CSS];
+  `, ALERT_CSS, TIP_CSS];
 
   constructor() {
     super();
@@ -390,10 +391,12 @@ class WebtmuxPip extends LitElement {
     // corner box's width); inner tile/pframe transitions are handled per-tile in
     // _buildTile (their transitionend doesn't cross the shadow boundary to here).
     this.addEventListener('transitionend', () => this._rescaleAll());
+    this._tip = new Tip(this);  // shared hover hint — see tooltip.js
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    this._tip.dispose();
     this._teardownAll();
     this.manager?.hover?.cancel();
     if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null; }
@@ -517,6 +520,7 @@ class WebtmuxPip extends LitElement {
       <div class="tiles"></div>
       ${single ? this._singleChrome() : ''}
       ${bar ? this._barChrome() : ''}
+      <div class="wt-tip"></div>
     `;
   }
 
@@ -659,7 +663,24 @@ class WebtmuxPip extends LitElement {
     label.append(name, sess);
     tile.appendChild(label);
 
+    // The name clips with an ellipsis in .plabel .name (bar tiles are narrow, and a
+    // window's name has no length limit) — hovering the label answers the same
+    // question the recents strip answers on hover: which window, in full. Scoped to
+    // the label rather than the whole tile so it doesn't fight the frame's own native
+    // title (click hint + stoplight key — see FRAME_TIP / _paintWork) while you're
+    // looking at the live screen. See tooltip.js and toolbar.js's _tabTip.
+    label.addEventListener('mouseenter', () => this._tip.enter({ currentTarget: label }, this._tileTip(w)));
+    label.addEventListener('mouseleave', () => this._tip.leave());
+
     return tile;
+  }
+
+  // Full "session — window N: name" for a tile's hover hint. Reads `w` live (the
+  // same object _paint mutates in place as fresh captures land — `label` there, not
+  // `index`/`name`, which are only ever set once at add time), so a rename or a
+  // linked-window session change shows up without rebuilding the tile.
+  _tileTip(w) {
+    return w.session ? `${w.session} — window ${w.label}` : `window ${w.label}`;
   }
 
   // ---- live painting ----------------------------------------------------------
