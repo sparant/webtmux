@@ -283,9 +283,14 @@ class WebtmuxSidebar extends LitElement {
 
     /* Hover-revealed kill affordance on window & session tabs. A <span> (not a
        nested <button>, which is invalid inside the tab <button>); stopPropagation on
-       click so it kills rather than selecting/switching. Reserve room on hover so
-       the × never sits on top of the label. */
-    .window-tab:hover, .session-tab:hover { padding-right: 26px; }
+       click so it kills rather than selecting/switching. Reserve the room ALWAYS
+       (not just on :hover) on tabs that actually have a kill span — growing padding
+       only on :hover, in a flex-wrap row like .session-tabs, could tip a tab right at
+       the wrap boundary onto the next line, which drops :hover the instant it moves,
+       shrinking it back and re-wrapping it: an endless flicker. Fixed width means
+       hover never changes the box, so it can never cross the wrap boundary. Tabs with
+       no kill span (the "+" buttons) get no reservation and never grow on hover. */
+    .window-tab.has-kill, .session-tab.has-kill { padding-right: 26px; }
     .window-tab .kill, .session-tab .kill {
       display: none;
       position: absolute;
@@ -941,7 +946,7 @@ class WebtmuxSidebar extends LitElement {
             >`
           : html`
           <button
-            class="session-tab ${sess.active ? 'active' : ''} ${sess.name === this.dragOverSession ? 'link-target' : ''} ${sess.name === this.draggingSession ? 'sdragging' : ''} ${sess.name === this.sessionDropTarget ? (this.sessionDropAfter ? 'sdrop-after' : 'sdrop-before') : ''}"
+            class="session-tab has-kill ${sess.active ? 'active' : ''} ${sess.name === this.dragOverSession ? 'link-target' : ''} ${sess.name === this.draggingSession ? 'sdragging' : ''} ${sess.name === this.sessionDropTarget ? (this.sessionDropAfter ? 'sdrop-after' : 'sdrop-before') : ''}"
             draggable="true"
             @click=${() => this.switchSession(sess.name)}
             @dblclick=${() => this.startSessionRename(sess.name)}
@@ -1099,7 +1104,7 @@ class WebtmuxSidebar extends LitElement {
           >`
             : html`
           <button
-            class="session-tab srow-tab ${node.active ? 'active' : ''} ${node.name === this.dragOverSession ? 'link-target' : ''} ${node.name === this.draggingSession ? 'sdragging' : ''} ${node.name === this.sessionDropTarget ? (this.sessionDropAfter ? 'tdrop-after' : 'tdrop-before') : ''}"
+            class="session-tab srow-tab has-kill ${node.active ? 'active' : ''} ${node.name === this.dragOverSession ? 'link-target' : ''} ${node.name === this.draggingSession ? 'sdragging' : ''} ${node.name === this.sessionDropTarget ? (this.sessionDropAfter ? 'tdrop-after' : 'tdrop-before') : ''}"
             draggable="true"
             @click=${() => this.switchSession(node.name)}
             @dblclick=${() => this.startSessionRename(node.name)}
@@ -1186,7 +1191,7 @@ class WebtmuxSidebar extends LitElement {
           data-widx=${i}
           data-win=${win.id}
           data-sess=${win.session || ''}
-          class="window-tab ${this._isActiveRow(win) ? 'active' : ''} ${disabled ? 'disabled' : ''} ${this._isDraggingRow(win) ? 'dragging' : ''} ${this._dropLine(node, i) ? 'drop-before' : ''} ${!this._isActiveRow(win) && this._isPreviewRow(win) ? 'previewing' : ''} ${alertClass(this._alert(win))}"
+          class="window-tab has-kill ${this._isActiveRow(win) ? 'active' : ''} ${disabled ? 'disabled' : ''} ${this._isDraggingRow(win) ? 'dragging' : ''} ${this._dropLine(node, i) ? 'drop-before' : ''} ${!this._isActiveRow(win) && this._isPreviewRow(win) ? 'previewing' : ''} ${alertClass(this._alert(win))}"
           draggable="true"
           @mouseenter=${() => this.previewWindowRow(win.id, win.session)}
           @mouseleave=${() => this.endPreview()}
