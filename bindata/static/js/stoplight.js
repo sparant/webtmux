@@ -95,6 +95,36 @@ export function workBadge(sinceSeconds, activitySeconds, nowSeconds = Date.now()
   return '';
 }
 
+// What the badge means and how it was worked out — separate from workTip() because
+// the badge is a NUMBER standing alone with no colour/label next to it to give it
+// context, so its own hover has to explain the mechanism, not just restate the dot's
+// state. Names which of the two readings is actually showing (workBadge()'s own
+// preference order) rather than always describing both, so this never claims a
+// mechanism the number on screen didn't come from.
+export function workBadgeTip(sinceSeconds, activitySeconds, nowSeconds = Date.now() / 1000) {
+  const since = Number(sinceSeconds);
+  if (Number.isFinite(since) && since > 0) {
+    return [
+      `In this state for ${formatDuration(nowSeconds - since)}`,
+      '',
+      'Time since @wt_working (the stoplight colour) last actually CHANGED — not',
+      'since it was last re-asserted. The window’s own hooks stamp this only on a',
+      'real transition, so re-reporting the same colour every ~60s does not reset it.',
+    ].join('\n');
+  }
+  const activity = Number(activitySeconds);
+  if (Number.isFinite(activity) && activity > 0) {
+    return [
+      `Pane silent for ${formatDuration(nowSeconds - activity)}`,
+      '',
+      'Time since anything was last written to this pane, from tmux’s own',
+      '#{window_activity} clock. Shown because this window has no stoplight state',
+      '(@wt_working) reported at all — this is the only timing tmux itself can give it.',
+    ].join('\n');
+  }
+  return 'No timing data available for this window.';
+}
+
 // The complete hover text for a stoplight: where THIS window is, then how long it's
 // been that way, then the key.
 //

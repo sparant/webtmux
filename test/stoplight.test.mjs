@@ -12,7 +12,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  workClass, workLabel, workTip, WORK_LEGEND, isBusy, formatDuration, workBadge,
+  workClass, workLabel, workTip, WORK_LEGEND, isBusy, formatDuration, workBadge, workBadgeTip,
   STATUS_FILTERS, normalizeStatusFilter, matchesStatus,
 } from '../resources/js/stoplight.js';
 
@@ -115,6 +115,27 @@ test('workBadge is empty when neither reading is available, not a fake "0m"', ()
   const now = 2_000_000;
   for (const bad of [undefined, null, '', 0, -5, 'nope']) {
     assert.equal(workBadge(bad, bad, now), '');
+  }
+});
+
+test('workBadgeTip names the mechanism matching whatever workBadge actually shows', () => {
+  const now = 2_000_000;
+  // since present -> explains @wt_working transitions, matches the badge's own value.
+  const sinceTip = workBadgeTip(now - 125, now - 5, now);
+  assert.ok(sinceTip.startsWith(`In this state for ${workBadge(now - 125, now - 5, now)}`), sinceTip);
+  assert.ok(/@wt_working/.test(sinceTip) && /transition/i.test(sinceTip), sinceTip);
+  assert.ok(!/window_activity/.test(sinceTip), 'the since branch must not cite the OTHER mechanism');
+
+  // since absent, activity present -> explains tmux's own clock instead.
+  const activityTip = workBadgeTip(undefined, now - 3700, now);
+  assert.ok(activityTip.startsWith(`Pane silent for ${workBadge(undefined, now - 3700, now)}`), activityTip);
+  assert.ok(/window_activity/.test(activityTip), activityTip);
+});
+
+test('workBadgeTip says plainly when there is nothing to explain', () => {
+  const now = 2_000_000;
+  for (const bad of [undefined, null, '', 0, -5, 'nope']) {
+    assert.equal(workBadgeTip(bad, bad, now), 'No timing data available for this window.');
   }
 });
 

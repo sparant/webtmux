@@ -25,7 +25,7 @@
 import { LitElement, html, css, svg } from 'lit';
 import { chord, IS_MAC } from '../os.js';
 import { stateStore } from '../state-store.js';
-import { workClass, workLabel, workTip } from '../stoplight.js';
+import { workClass, workLabel, workTip, workBadgeTip } from '../stoplight.js';
 import { ALERT_CSS, alertClass, alertTip } from '../alert-flash.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
 import { saveHint } from '../save-target.js';
@@ -566,11 +566,13 @@ class WebtmuxToolbar extends LitElement {
 
     /* The always-visible "how long has it been like this" reading (workBadge() in
        stoplight.js) — the answer someone scanning the whole strip needs without
-       hovering anything. Deliberately tiny and muted: it rides next to the dot it
-       explains, not competing with the window name for attention. */
+       hovering anything. Muted (not competing with the window name for attention)
+       but readable at a glance — 9px measured too small in practice. Hovering it
+       explains the mechanism (workBadgeTip()), same as hovering the dot explains
+       the colour. */
     .work-age {
-      flex: 0 0 auto; font-size: 9px; color: #7d92b8; line-height: 1;
-      white-space: nowrap; letter-spacing: 0.02em;
+      flex: 0 0 auto; font-size: 11px; color: #9fb4dc; line-height: 1;
+      white-space: nowrap; letter-spacing: 0.02em; cursor: default;
     }
 
     /* The attention flash itself (.wt-alert and friends) is spliced in from
@@ -2336,6 +2338,8 @@ class WebtmuxToolbar extends LitElement {
     if (inner?.matches(':hover')) this._tipEnter({ currentTarget: inner }, CLOSE_TAB_TIP);
     const dot = els[i].querySelector('.work');
     if (dot?.matches(':hover')) this._tipEnter({ currentTarget: dot }, workTip(w.working, w.workingSince, w.activity));
+    const age = els[i].querySelector('.work-age');
+    if (age?.matches(':hover')) this._tipEnter({ currentTarget: age }, workBadgeTip(w.workingSince, w.activity));
   }
 
   // ---- the region picker -------------------------------------------------------
@@ -2649,7 +2653,12 @@ class WebtmuxToolbar extends LitElement {
             aria-label=${workLabel(w.working)}
             @mouseenter=${(e) => { e.stopPropagation(); this._tipEnter(e, workTip(w.working, w.workingSince, w.activity)); }}
             @mouseleave=${(e) => { e.stopPropagation(); this._tipEnter({ currentTarget: e.currentTarget.closest('.rtab') }, tip); }}
-          ></span>${w.badge ? html`<span class="work-age" aria-hidden="true">${w.badge}</span>` : ''}<button
+          ></span>${w.badge ? html`<span
+            class="work-age"
+            aria-label=${w.badge}
+            @mouseenter=${(e) => { e.stopPropagation(); this._tipEnter(e, workBadgeTip(w.workingSince, w.activity)); }}
+            @mouseleave=${(e) => { e.stopPropagation(); this._tipEnter({ currentTarget: e.currentTarget.closest('.rtab') }, tip); }}
+          >${w.badge}</span>` : ''}<button
             class="tab ${w.active ? 'active' : ''} ${w.disabled ? 'disabled' : ''} ${!w.active && this.previewWindow === w.id ? 'previewing' : ''} ${alertClass(w.alert)}"
             aria-label=${full}
             @click=${() => { this._tipLeave(); this.manager?.pickRecentWindow(w); }}

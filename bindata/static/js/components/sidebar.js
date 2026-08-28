@@ -8,7 +8,7 @@ import {
 } from '../window-tree.js';
 import { stateStore } from '../state-store.js';
 import { clientStore } from '../client-store.js';
-import { workClass, workLabel, workTip, workBadge } from '../stoplight.js';
+import { workClass, workLabel, workTip, workBadge, workBadgeTip } from '../stoplight.js';
 import { ALERT_CSS, alertClass, alertTip } from '../alert-flash.js';
 import { alertOf } from '../work-alerts.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
@@ -270,10 +270,12 @@ class WebtmuxSidebar extends LitElement {
        tab: the drop-line reorder indicator (.wrow's --dotcol, below) extends back
        from the tab by exactly [dot width + gap] to reach the row's left edge, and
        a sibling inserted there would have thrown that measurement off by its own
-       width. Tiny and muted so it explains rather than competes for attention. */
+       width. Muted (not competing for attention) but readable at a glance — 9px
+       measured too small in practice. Hovering it explains the mechanism
+       (workBadgeTip()), same as hovering the dot explains the colour. */
     .work-age {
-      flex: 0 0 auto; font-size: 9px; color: #7d92b8; line-height: 1;
-      white-space: nowrap; letter-spacing: 0.02em;
+      flex: 0 0 auto; font-size: 11px; color: #9fb4dc; line-height: 1;
+      white-space: nowrap; letter-spacing: 0.02em; cursor: default;
     }
 
     .window-tab {
@@ -1218,7 +1220,12 @@ class WebtmuxSidebar extends LitElement {
             title=${this._windowKillLabel(win)}
             @click=${(e) => { e.stopPropagation(); this.killWindow(win, e.currentTarget); }}
           >×</span>
-        </button>`}${this._badge(win) ? html`<span class="work-age" aria-hidden="true">${this._badge(win)}</span>` : ''}
+        </button>`}${this._badge(win) ? html`<span
+          class="work-age"
+          aria-label=${this._badge(win)}
+          @mouseenter=${(e) => this._tip.enter(e, workBadgeTip(this._workingSince(win), this._activity(win)))}
+          @mouseleave=${() => this._tip.leave()}
+        >${this._badge(win)}</span>` : ''}
       </div>
     `;
   }
