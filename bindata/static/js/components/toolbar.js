@@ -569,8 +569,8 @@ class WebtmuxToolbar extends LitElement {
        hovering anything. Muted (not competing with the window name for attention)
        but readable at a glance — 9px measured too small in practice. Hovering it
        explains the mechanism (workBadgeTip()), same as hovering the dot explains
-       the colour. `.cyclable` (both readings exist) invites a click to switch
-       between them — see _cycleBadgeMode(). */
+       the colour. The .cyclable variant (both readings exist) invites a click to
+       switch between them — see _cycleBadgeMode(). */
     .work-age {
       flex: 0 0 auto; font-size: 11px; color: #9fb4dc; line-height: 1;
       white-space: nowrap; letter-spacing: 0.02em; cursor: default;
