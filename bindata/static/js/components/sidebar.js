@@ -1173,7 +1173,7 @@ class WebtmuxSidebar extends LitElement {
           class="work ${workClass(this._working(win))}"
           role="img"
           aria-label=${workLabel(this._working(win))}
-          @mouseenter=${(e) => this._tip.enter(e, workTip(this._working(win)))}
+          @mouseenter=${(e) => this._tip.enter(e, workTip(this._working(win), this._workingSince(win), this._activity(win)))}
           @mouseleave=${() => this._tip.leave()}
         ></span>
         ${win.id === this.editingWindow
@@ -1771,6 +1771,21 @@ class WebtmuxSidebar extends LitElement {
     const all = this.layout?.allWorking;
     if (all && win && Object.prototype.hasOwnProperty.call(all, win.id)) return all[win.id];
     return (win && win.working) || '';
+  }
+
+  // Same preference order as _working, for the two hover-only "how long" readings
+  // (see stoplight.js workTip()). Kept as their own methods rather than folded into
+  // _working so a caller that only needs the colour never has to think about them.
+  _workingSince(win) {
+    const all = this.layout?.allWorkingSince;
+    if (all && win && Object.prototype.hasOwnProperty.call(all, win.id)) return all[win.id];
+    return (win && win.workingSince) || '';
+  }
+
+  _activity(win) {
+    const all = this.layout?.allActivity;
+    if (all && win && Object.prototype.hasOwnProperty.call(all, win.id)) return all[win.id];
+    return (win && win.activity) || '';
   }
 
   // A window's attention flash ('' | '0' | '2'), from the shared registry. Keyed by

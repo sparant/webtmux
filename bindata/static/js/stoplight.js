@@ -62,9 +62,47 @@ export const WORK_LEGEND = [
   '  ○ Unfilled — not reporting a status',
 ].join('\n');
 
-// The complete hover text for a stoplight: where THIS window is, then the key.
-export function workTip(working) {
-  return `${workLabel(working)}\n\n${WORK_LEGEND}`;
+// Turn a count of seconds into a short "how long" reading: '<1m', '5m', '2h14m',
+// '3d7h'. Never fractional and never negative-looking — a clock a hair ahead of
+// tmux's would otherwise print "-1m" the instant a value is stamped.
+export function formatDuration(totalSeconds) {
+  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) return '';
+  const s = Math.floor(totalSeconds);
+  if (s < 60) return '<1m';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) { const rm = m % 60; return rm ? `${h}h${rm}m` : `${h}h`; }
+  const d = Math.floor(h / 24);
+  const rh = h % 24;
+  return rh ? `${d}d${rh}h` : `${d}d`;
+}
+
+// The complete hover text for a stoplight: where THIS window is, then how long it's
+// been that way, then the key.
+//
+// Two independent "how long" readings, because they answer different questions:
+//   sinceSeconds    from @wt_working_since — how long the AGENT has reported this
+//                   exact colour (stamped only on a real transition, never on a
+//                   re-assert of the same value).
+//   activitySeconds from tmux's own #{window_activity} — how long since ANYTHING
+//                   was written to the pane at all, whether or not anything installed
+//                   a stoplight hook. A background build can keep this moving while
+//                   sinceSeconds sits still, which is exactly the distinction that
+//                   makes both worth showing rather than picking one.
+// Both optional and independently omitted when absent/invalid, so every existing
+// single-argument call site keeps behaving exactly as before.
+export function workTip(working, sinceSeconds, activitySeconds, nowSeconds = Date.now() / 1000) {
+  const lines = [workLabel(working)];
+  const since = Number(sinceSeconds);
+  if (Number.isFinite(since) && since > 0) {
+    lines.push(`In this state for ${formatDuration(nowSeconds - since)}`);
+  }
+  const activity = Number(activitySeconds);
+  if (Number.isFinite(activity) && activity > 0) {
+    lines.push(`Pane silent for ${formatDuration(nowSeconds - activity)}`);
+  }
+  return `${lines.join(' — ')}\n\n${WORK_LEGEND}`;
 }
 
 // --- filtering BY stoplight ---------------------------------------------------

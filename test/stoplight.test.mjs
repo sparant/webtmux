@@ -12,7 +12,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  workClass, workLabel, workTip, WORK_LEGEND, isBusy,
+  workClass, workLabel, workTip, WORK_LEGEND, isBusy, formatDuration,
   STATUS_FILTERS, normalizeStatusFilter, matchesStatus,
 } from '../resources/js/stoplight.js';
 
@@ -43,6 +43,59 @@ test('every state hovers with the full colour key, not just its own line', () =>
 test('the key names every colour it can paint', () => {
   for (const colour of ['Green', 'Green ring', 'Amber', 'Red', 'Unfilled']) {
     assert.ok(WORK_LEGEND.includes(colour), `legend is missing ${colour}`);
+  }
+});
+
+// --- duration formatting and the "how long" lines in the tooltip --------------
+
+test('formatDuration renders the expected boundary shapes', () => {
+  assert.equal(formatDuration(0), '<1m');
+  assert.equal(formatDuration(59), '<1m');
+  assert.equal(formatDuration(60), '1m');
+  assert.equal(formatDuration(125), '2m');
+  assert.equal(formatDuration(3600), '1h');
+  assert.equal(formatDuration(3600 + 8 * 60), '1h8m');
+  assert.equal(formatDuration(24 * 3600), '1d');
+  assert.equal(formatDuration(24 * 3600 + 3 * 3600), '1d3h');
+});
+
+test('formatDuration degrades to empty rather than a nonsense reading', () => {
+  for (const bad of [-1, NaN, Infinity, undefined, null, 'nope']) {
+    assert.equal(formatDuration(bad), '');
+  }
+});
+
+test('workTip with no since/activity is byte-identical to the old single-arg form', () => {
+  // The whole point of the added parameters being optional: every pre-existing
+  // call site (three of them, across sidebar.js and toolbar.js) must keep behaving
+  // exactly as before until it is updated to pass the new values.
+  for (const v of ['1', '0', '2', '3', '']) {
+    assert.equal(workTip(v), `${workLabel(v)}\n\n${WORK_LEGEND}`);
+  }
+});
+
+test('workTip appends "in this state" when a valid since is given', () => {
+  const now = 2_000_000;
+  const tip = workTip('0', now - 125, undefined, now);
+  assert.ok(tip.startsWith('Waiting for work to do — In this state for 2m'), tip);
+});
+
+test('workTip appends "pane silent" when a valid activity is given', () => {
+  const now = 2_000_000;
+  const tip = workTip('3', undefined, now - 3700, now);
+  assert.ok(tip.startsWith('Working in the background — it can take input meanwhile — Pane silent for 1h1m'), tip);
+});
+
+test('workTip shows both readings together when both are given, since first', () => {
+  const now = 2_000_000;
+  const tip = workTip('0', now - 60, now - 30, now);
+  assert.ok(tip.startsWith('Waiting for work to do — In this state for 1m — Pane silent for <1m'), tip);
+});
+
+test('workTip ignores an unset/zero/negative/non-numeric since or activity', () => {
+  const now = 2_000_000;
+  for (const bad of [undefined, null, '', 0, -5, 'nope']) {
+    assert.equal(workTip('1', bad, bad, now), workTip('1'));
   }
 });
 

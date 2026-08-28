@@ -1709,9 +1709,19 @@ export class SplitManager {
     // the server's `list-windows -a` snapshot (same on every layout); merge across
     // regions so it's populated even before the focused region's first layout arrives.
     const workingById = new Map();
+    // Same merge, for the two "how long" readings that ride alongside @wt_working —
+    // see stoplight.js workTip(). Kept as separate maps (not folded into workingById)
+    // so a server too old to send them just omits the keys and every reader's
+    // `.get(id)` returns undefined, which workTip already treats as "don't show it".
+    const workingSinceById = new Map();
+    const activityById = new Map();
     for (const u of this.units) {
       const aw = u.layout?.allWorking;
       if (aw) for (const id in aw) if (!workingById.has(id)) workingById.set(id, aw[id]);
+      const asnc = u.layout?.allWorkingSince;
+      if (asnc) for (const id in asnc) if (!workingSinceById.has(id)) workingSinceById.set(id, asnc[id]);
+      const act = u.layout?.allActivity;
+      if (act) for (const id in act) if (!activityById.has(id)) activityById.set(id, act[id]);
     }
     // Raise/clear the attention flashes across the WHOLE server before anything is
     // rendered, so every surface below reads one settled answer.
@@ -1759,6 +1769,9 @@ export class SplitManager {
         // (red), "" unset (unfilled dot). Prefer the global map (correct across sessions)
         // and fall back to the focused region's per-session copy only if absent.
         working: workingById.has(e.id) ? workingById.get(e.id) : (live?.working || ''),
+        // Same preference order as working, for the two hover-only "how long" readings.
+        workingSince: workingSinceById.has(e.id) ? workingSinceById.get(e.id) : (live?.workingSince || ''),
+        activity: activityById.has(e.id) ? activityById.get(e.id) : (live?.activity || ''),
         // Flash this tab if its window dropped out of green behind your back. Read
         // from the server-wide registry rather than computed here, so a tab that gets
         // evicted and later returns shows the same alert the sidebar and the preview
