@@ -31,21 +31,38 @@ export function parseRenameSessionPayload(payload) {
   return { oldName: s.slice(0, i), newName: s.slice(i + 1) };
 }
 
-// Set-session-command is the other payload with two user-typed strings: a session
-// name (which may contain spaces) and a command line (which certainly does). Same
-// separator as rename-session, for the same reason — there is no first-space rule
-// that can split two arbitrary strings.
-export function sessionCmdPayload(session, cmd) {
-  return String(session) + FIELD_SEP + String(cmd);
+// Set-session-menu carries a session name (which may contain spaces) followed by
+// the whole new-window menu as JSON. Same separator as rename-session, for the same
+// reason — the first half is user-typed, so there is no first-space rule.
+//
+// JSON for the menu, not a delimited string: its entries are arbitrary command
+// lines, and every single-byte delimiter is one somebody's pipeline or loop needs.
+// (The server re-encodes it before storing — see pkg/tmux/newcmds.go for why '$'
+// and '|' cannot survive a tmux option as themselves. That is a storage concern,
+// not a wire one, so nothing here escapes anything.)
+export function sessionCmdsPayload(session, cmds) {
+  return String(session) + FIELD_SEP + JSON.stringify(cmds || []);
 }
 
 // The server's half of that contract. Returns null for a payload with no
 // separator, which is exactly what the server drops — and it must drop it, since
 // reading a separator-less payload as "this whole thing is a session name, with an
-// empty command" would silently CLEAR a session's command.
-export function parseSessionCmdPayload(payload) {
+// empty menu" would silently CLEAR a session's menu.
+export function parseSessionCmdsPayload(payload) {
   const s = String(payload);
   const i = s.indexOf(FIELD_SEP);
   if (i < 0) return null;
-  return { session: s.slice(0, i), cmd: s.slice(i + 1) };
+  const raw = s.slice(i + 1);
+  let cmds = null;
+  try { cmds = JSON.parse(raw || '[]'); } catch (e) { return null; }
+  if (!Array.isArray(cmds)) return null;
+  return { session: s.slice(0, i), cmds };
+}
+
+// New-window carries the menu INDEX first and the session last: the index is
+// machine-shaped and the session name is user-arbitrary, which is the rule every
+// payload here follows. An empty session means the pane's own.
+export function newWindowPayload(session, menu) {
+  const i = Number(menu) || 0;
+  return String(i) + ' ' + String(session || '');
 }

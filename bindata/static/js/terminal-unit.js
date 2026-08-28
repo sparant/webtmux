@@ -22,7 +22,7 @@ import { Osc52Stream } from './osc52.js';
 import { stateStore } from './state-store.js';
 import { arrowSequence } from './arrow-keys.js';
 import { IS_MAC } from './os.js';
-import { renameSessionPayload, sessionCmdPayload } from './tmux-payloads.js';
+import { renameSessionPayload, sessionCmdsPayload, newWindowPayload } from './tmux-payloads.js';
 import { planReconnectLanding } from './restore-view.js';
 import {
   normalizeMouseMode, resolvePress, needsForcedSelection, forceSelectionModifier,
@@ -66,7 +66,7 @@ export const MSG = {
   TmuxHistoryAction: 'U',
   TmuxSettingsRequest: 'V',
   TmuxSettingsAction: 'W',
-  TmuxSetSessionCmd: 'X',
+  TmuxSetSessionCmds: 'X',
 
   // Output (server -> client)
   Output: '1',
@@ -125,7 +125,7 @@ const TMUX_MSG_TYPES = new Set([
   MSG.TmuxSavePaneFile, MSG.TmuxSaveInfoRequest, MSG.TmuxScrollbackRequest,
   MSG.TmuxHistoryInfoRequest, MSG.TmuxHistoryAction,
   MSG.TmuxSettingsRequest, MSG.TmuxSettingsAction,
-  MSG.TmuxSetState, MSG.TmuxRefresh, MSG.TmuxSetSessionCmd,
+  MSG.TmuxSetState, MSG.TmuxRefresh, MSG.TmuxSetSessionCmds,
 ]);
 
 // --- liveness heartbeat -------------------------------------------------------
@@ -1934,11 +1934,12 @@ export class TerminalUnit {
     this.sendMessage(MSG.TmuxSplitPane, horizontal ? 'h' : 'v');
   }
 
-  // Create a window in `session` (empty = this pane's own session, which is what
-  // the toolbar chord and the default sidebar view want). The sidebar's tree view
-  // names the session, because there its "+" sits under a specific one.
-  newWindow(session = '') {
-    this.sendMessage(MSG.TmuxNewWindow, session || '');
+  // Create a window in `session` (empty = this pane's own session) and run the
+  // `menu`-th entry of that session's new-window menu in it. The sidebar draws one
+  // "+" per entry and passes its index; the toolbar chord passes none, meaning the
+  // first entry — which for a stack-declared session is a plain shell.
+  newWindow(session = '', menu = 0) {
+    this.sendMessage(MSG.TmuxNewWindow, newWindowPayload(session, menu));
   }
 
   // Reorder a window to ordinal position `targetPos` (0-based, in index order)
@@ -1964,11 +1965,11 @@ export class TerminalUnit {
     this.sendMessage(MSG.TmuxRenameSession, renameSessionPayload(oldName, newName));
   }
 
-  // Set (or clear, with an empty command) the command line a new window in
-  // `session` runs. Driven by the field under the sidebar's session list; the
-  // server stores it on the session itself, so every client sees it.
-  setSessionCmd(session, cmd) {
-    this.sendMessage(MSG.TmuxSetSessionCmd, sessionCmdPayload(session, cmd));
+  // Replace `session`'s new-window menu — the list of commands its "+" buttons
+  // offer (an empty list clears it). Driven by the plus row in the sidebar; the
+  // server stores it on the session itself, so every client sees the same menu.
+  setSessionCmds(session, cmds) {
+    this.sendMessage(MSG.TmuxSetSessionCmds, sessionCmdsPayload(session, cmds));
   }
 
   // Kill a window by id (sidebar hover ×). Grouped sessions share the list, so the

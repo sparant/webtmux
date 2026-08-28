@@ -103,7 +103,7 @@ func TestReadOnlyAllowsExactlyTheViewingMessages(t *testing.T) {
 		{"toggle the tmux status line", TmuxSettingsAction},
 		// Arms what a later "+" TYPES INTO A SHELL, on a session every client
 		// shares — a read-only server must not be able to set it.
-		{"set a session's new-window command", TmuxSetSessionCmd},
+		{"set a session's new-window menu", TmuxSetSessionCmds},
 	}
 	for _, tc := range write {
 		if !requiresWrite(tc.msg) {

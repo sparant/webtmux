@@ -98,7 +98,7 @@ func authorityOf(msgType byte) msgAuthority {
 		return authWrite
 	case TmuxNewSession, TmuxSwitchSession, TmuxRenameSession, TmuxKillSession:
 		return authWrite
-	case TmuxSetSessionCmd:
+	case TmuxSetSessionCmds:
 		// Writes a tmux option on a session every client shares, and that option
 		// decides what a later "+" TYPES INTO A SHELL. A read-only server must not
 		// be able to arm that.

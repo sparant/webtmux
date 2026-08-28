@@ -65,9 +65,11 @@ func (c *failCtrl) MoveWindow(string, int, string) error { return c.note("move-w
 func (c *failCtrl) NewSession() error                    { return c.note("new-session") }
 func (c *failCtrl) RenameSession(string, string) error   { return c.note("rename-session") }
 
-// SetSessionNewCmd arms what a later "+" types into a shell, so it is one of the
+// SetSessionNewCmds arms what a later "+" types into a shell, so it is one of the
 // mutations the write-authority tests must see attempted or not attempted.
-func (c *failCtrl) SetSessionNewCmd(string, string) error { return c.note("set-option @wt_newcmd") }
+func (c *failCtrl) SetSessionNewCmds(string, []tmux.NewCmd) error {
+	return c.note("set-option @wt_newcmds")
+}
 func (c *failCtrl) KillWindow(string) error              { return c.note("kill-window") }
 func (c *failCtrl) KillSession(string) error             { return c.note("kill-session") }
 func (c *failCtrl) LinkWindow(string, string) error      { return c.note("link-window") }
@@ -79,7 +81,7 @@ func (c *failCtrl) EnterCopyMode() error                 { return c.note("copy-m
 func (c *failCtrl) ExitCopyMode() error                  { return c.note("copy-mode -q") }
 func (c *failCtrl) ScrollUp(int) error                   { return c.note("scroll-up") }
 func (c *failCtrl) ScrollDown(int) error                 { return c.note("scroll-down") }
-func (c *failCtrl) NewWindow(string) error               { return c.note("new-window") }
+func (c *failCtrl) NewWindow(string, int) error          { return c.note("new-window") }
 
 // The scrollback-buffer trio. All three mutate — a resize rebuilds panes, a clear
 // throws history away, and the default-setter rewrites a server-global option —

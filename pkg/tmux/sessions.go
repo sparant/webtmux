@@ -52,7 +52,14 @@ const newCmdOption = "@wt_newcmd"
 // shifts the other, and no field order fixes that. So the command rides its own
 // line, keyed by #{session_id}: that is "$N", which cannot contain a separator,
 // leaving the command as the only arbitrary field on the line.
-var sessionCmdsFormat = "#{session_id}" + sessionsSep + "#{" + newCmdOption + "}"
+// The legacy single-command option is read alongside the list so a session
+// configured before the list existed keeps working: same line, after the list,
+// and it is consulted only when the list is absent. Both are the last fields of
+// their own halves — see parseSessionCmds for how a line with two arbitrary
+// values is split, which is possible here only because the LIST half is JSON and
+// so cannot contain a bare separator.
+var sessionCmdsFormat = "#{session_id}" + sessionsSep + "#{" + newCmdsOption + "}" +
+	sessionsSep + "#{" + newCmdOption + "}"
 
 // parseSessionCmds maps session id -> new-window command line.
 //
@@ -64,20 +71,27 @@ var sessionCmdsFormat = "#{session_id}" + sessionsSep + "#{" + newCmdOption + "}
 //   - A value still wrapped in "#{...}". tmux only learned to expand #{@user}
 //     formats in 3.2; an older one echoes the format back verbatim, and that
 //     string would then be typed into a shell as if it were the command.
-func parseSessionCmds(out string) map[string]string {
-	cmds := make(map[string]string)
+func parseSessionCmds(out string) map[string][]NewCmd {
+	menus := make(map[string][]NewCmd)
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		f := strings.SplitN(line, sessionsSep, 2)
-		if len(f) < 2 || f[0] == "" {
+		// Three fields: id | menu-JSON | legacy-command. The id is machine-shaped,
+		// and the JSON menu cannot contain an unquoted separator, so splitting from
+		// the LEFT twice leaves the whole remainder — the legacy command, the only
+		// freely-arbitrary field — intact.
+		f := strings.SplitN(line, sessionsSep, 3)
+		if len(f) < 3 || f[0] == "" {
 			continue
 		}
-		cmd := strings.TrimSpace(f[1])
-		if cmd == "" || strings.HasPrefix(cmd, "#{") {
+		if menu := decodeNewCmds(f[1]); menu != nil {
+			menus[f[0]] = menu
 			continue
 		}
-		cmds[f[0]] = cmd
+		// No list: adopt the single command this feature shipped with.
+		if legacy := legacyNewCmd(f[2]); legacy != nil {
+			menus[f[0]] = legacy
+		}
 	}
-	return cmds
+	return menus
 }
 
 // nextSessionName proposes the name for a session created FROM base: the same
@@ -193,7 +207,7 @@ func logicalBase(rows []sessionRow, cur string) string {
 // — so a split pane viewing services through web-abc marks "services" active.
 // empty maps a session name to whether it is an idle, nothing-running session
 // (see sessionEmptiness); nil leaves every Empty flag false.
-func buildSessions(rows []sessionRow, cur string, empty map[string]bool, cmds map[string]string) []Session {
+func buildSessions(rows []sessionRow, cur string, empty map[string]bool, menus map[string][]NewCmd) []Session {
 	curGroup := ""
 	for _, r := range rows {
 		if r.name == cur {
@@ -214,7 +228,7 @@ func buildSessions(rows []sessionRow, cur string, empty map[string]bool, cmds ma
 			Attached: r.attached,
 			Active:   active,
 			Empty:    empty[r.name],
-			NewCmd:   cmds[r.id],
+			NewCmds:  menus[r.id],
 		})
 	}
 	return out

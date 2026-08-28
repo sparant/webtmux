@@ -46,9 +46,11 @@ func TestLiveNewCmdRoundTripsThroughTmux(t *testing.T) {
 	run, _ := liveTmux(t)
 	c := newControllerWithRunner("live", false, "", run)
 
-	const cmd = "tail -F log | grep -i error" // a '|' the -F parsing must survive
-	if err := c.SetSessionNewCmd("live", cmd); err != nil {
-		t.Fatalf("SetSessionNewCmd against real tmux: %v", err)
+	// Both hazards in one value: a '|' the layout's -F parsing must survive, and a
+	// '$' that tmux 3.4 escapes in a stored option (see encodeNewCmds).
+	const cmd = `tail -F "$LOG" | grep -i error`
+	if err := c.SetSessionNewCmds("live", []NewCmd{{Label: "tail", Cmd: cmd}}); err != nil {
+		t.Fatalf("SetSessionNewCmds against real tmux: %v", err)
 	}
 
 	// Read back the way the UI does: through the layout, i.e. through
@@ -57,22 +59,23 @@ func TestLiveNewCmdRoundTripsThroughTmux(t *testing.T) {
 	if err := c.RefreshLayout(); err != nil {
 		t.Fatalf("RefreshLayout: %v", err)
 	}
-	got := ""
+	var got []NewCmd
 	for _, s := range c.GetLayout().Sessions {
 		if s.Name == "live" {
-			got = s.NewCmd
+			got = s.NewCmds
 		}
 	}
-	if got != cmd {
-		t.Fatalf("Session.NewCmd = %q, want %q (does this tmux expand #{@user} options?)", got, cmd)
+	if len(got) != 1 || got[0].Cmd != cmd || got[0].Label != "tail" {
+		t.Fatalf("Session.NewCmds = %+v, want one entry %q (does this tmux expand "+
+			"#{@user} options, and did the '$' survive?)", got, cmd)
 	}
 
 	// And clearing really unsets it, rather than storing an empty string.
-	if err := c.SetSessionNewCmd("live", ""); err != nil {
+	if err := c.SetSessionNewCmds("live", nil); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
-	if v := c.sessionNewCmd("live"); v != "" {
-		t.Errorf("after clearing, sessionNewCmd = %q", v)
+	if v := c.sessionNewCmds("live"); v != nil {
+		t.Errorf("after clearing, sessionNewCmds = %+v", v)
 	}
 }
 
@@ -85,15 +88,18 @@ func TestLiveNewWindowRunsTheCommandInTheNewWindow(t *testing.T) {
 	// Writes the RUNNING pane's own id. Two things at once: that the command runs
 	// at all, and that $TMUX_PANE resolves to the new window's pane — the property
 	// scripts/stack.sh depends on when it stores WT_WINDOW="$TMUX_PANE" unexpanded.
-	if err := c.SetSessionNewCmd("live", "printf '%s' \"$TMUX_PANE\" > "+marker); err != nil {
-		t.Fatalf("SetSessionNewCmd: %v", err)
+	if err := c.SetSessionNewCmds("live", []NewCmd{
+		{Label: "shell"}, // entry 0: a plain shell, so entry 1 proves the INDEX works
+		{Cmd: "printf '%s' \"$TMUX_PANE\" > " + marker},
+	}); err != nil {
+		t.Fatalf("SetSessionNewCmds: %v", err)
 	}
 
 	before, err := run("list-panes", "-a", "-F", "#{pane_id}")
 	if err != nil {
 		t.Fatalf("list-panes: %v", err)
 	}
-	if err := c.NewWindow("live"); err != nil {
+	if err := c.NewWindow("live", 1); err != nil {
 		t.Fatalf("NewWindow: %v", err)
 	}
 
@@ -111,7 +117,7 @@ func TestLiveNewWindowRunsTheCommandInTheNewWindow(t *testing.T) {
 func TestLiveNewWindowWithoutACommandJustGetsAShell(t *testing.T) {
 	run, _ := liveTmux(t)
 	c := newControllerWithRunner("live", false, "", run)
-	if err := c.NewWindow("live"); err != nil {
+	if err := c.NewWindow("live", 0); err != nil {
 		t.Fatalf("NewWindow: %v", err)
 	}
 	out, err := run("list-windows", "-t", "=live", "-F", "#{window_id}")
@@ -129,8 +135,8 @@ func TestLiveNewSessionInheritsAndRuns(t *testing.T) {
 
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "inherited")
-	if err := c.SetSessionNewCmd("live", "printf ran > "+marker); err != nil {
-		t.Fatalf("SetSessionNewCmd: %v", err)
+	if err := c.SetSessionNewCmds("live", []NewCmd{{Cmd: "printf ran > " + marker}}); err != nil {
+		t.Fatalf("SetSessionNewCmds: %v", err)
 	}
 
 	// The switch at the end of NewSession needs an attached client to move, and
@@ -146,10 +152,10 @@ func TestLiveNewSessionInheritsAndRuns(t *testing.T) {
 		t.Fatalf("no derived session; sessions are %q, want one named %q", out, "live (1)")
 	}
 
-	// The command was copied onto the new session...
-	derived := c.sessionNewCmd("live (1)")
-	if derived != "printf ran > "+marker {
-		t.Errorf("derived session's command = %q, want it inherited", derived)
+	// The menu was copied onto the new session...
+	derived := c.sessionNewCmds("live (1)")
+	if len(derived) != 1 || derived[0].Cmd != "printf ran > "+marker {
+		t.Errorf("derived session's menu = %+v, want it inherited", derived)
 	}
 	// ...and ran in its first window.
 	waitForFile(t, marker)

@@ -19,6 +19,7 @@ type recCtrl struct {
 	unlinkID      string
 	unlinkSess    string
 	newWindowSess string
+	newWindowMenu int
 	renameOld     string
 	renameNew     string
 	calls         int
@@ -36,8 +37,8 @@ func (c *recCtrl) MoveWindow(id string, pos int, session string) error {
 	return nil
 }
 
-func (c *recCtrl) NewWindow(session string) error {
-	c.newWindowSess = session
+func (c *recCtrl) NewWindow(session string, menu int) error {
+	c.newWindowSess, c.newWindowMenu = session, menu
 	c.calls++
 	return nil
 }
@@ -98,20 +99,33 @@ func TestMoveWindowPayloadRejectsANonNumericPosition(t *testing.T) {
 	}
 }
 
-func TestNewWindowPayloadCarriesTheSession(t *testing.T) {
-	// Each session in the tree view has its own "+", so the target rides the payload;
-	// the toolbar chord and the default view send nothing, meaning "this pane's".
-	for _, tc := range []struct{ payload, session string }{
-		{"", ""},
-		{"editors", "editors"},
-		{"  editors  ", "editors"},
+func TestNewWindowPayloadCarriesTheSessionAndMenuIndex(t *testing.T) {
+	// Each session has its own "+" buttons — one per new-window menu entry — so the
+	// payload carries which entry AND which session. A payload with no leading
+	// integer is a client from before the menu existed: index 0, all of it session.
+	for _, tc := range []struct {
+		payload string
+		session string
+		menu    int
+	}{
+		{"", "", 0},                         // the pane's own session, first entry
+		{"editors", "editors", 0},           // legacy: session only
+		{"  editors  ", "editors", 0},       // legacy, padded
+		{"0 editors", "editors", 0},         // explicit first entry
+		{"2 editors", "editors", 2},         // third "+"
+		{"2", "", 2},                        // third "+" of the pane's own session
+		{"2  my session ", "my session", 2}, // a session name with a space survives
+		// A session whose NAME starts with a number is not an index: the split is on
+		// the first space, and "9lives" is not an integer.
+		{"9lives", "9lives", 0},
 	} {
 		wt, ctrl := newRecordingWebTTY(t)
 		if err := wt.handleTmuxMessage(TmuxNewWindow, []byte(tc.payload)); err != nil {
 			t.Fatalf("%q: %v", tc.payload, err)
 		}
-		if ctrl.newWindowSess != tc.session || ctrl.calls != 1 {
-			t.Errorf("%q created in %q (calls=%d); want %q", tc.payload, ctrl.newWindowSess, ctrl.calls, tc.session)
+		if ctrl.newWindowSess != tc.session || ctrl.newWindowMenu != tc.menu || ctrl.calls != 1 {
+			t.Errorf("%q -> session %q menu %d (calls=%d); want %q / %d",
+				tc.payload, ctrl.newWindowSess, ctrl.newWindowMenu, ctrl.calls, tc.session, tc.menu)
 		}
 	}
 }

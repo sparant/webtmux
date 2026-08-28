@@ -648,11 +648,11 @@ func (c *Controller) RefreshLayout() error {
 		// see sessionCmdsFormat for why it cannot share the first one's line. A
 		// failure costs the sidebar's command field its value, never the layout:
 		// buildSessions takes a nil map as "no session has one".
-		var cmds map[string]string
+		var menus map[string][]NewCmd
 		if cmdsOut, cerr := c.runTmux("list-sessions", "-F", sessionCmdsFormat); cerr == nil {
-			cmds = parseSessionCmds(cmdsOut)
+			menus = parseSessionCmds(cmdsOut)
 		}
-		layout.Sessions = buildSessions(rows, sess, c.sessionEmptiness(rows), cmds)
+		layout.Sessions = buildSessions(rows, sess, c.sessionEmptiness(rows), menus)
 	}
 	if layout.SessionBase == "" {
 		layout.SessionBase = sess
@@ -973,9 +973,10 @@ func (c *Controller) NewSession() error {
 	// and the command by the field under the session list — neither is a decision
 	// this is making permanently.
 	base := c.logicalSession()
-	name, inherited := "", ""
+	name := ""
+	var inherited []NewCmd
 	if base != "" {
-		inherited = c.sessionNewCmd(base)
+		inherited = c.sessionNewCmds(base)
 		if out, err := c.runTmux("list-sessions", "-F", "#{session_name}"); err == nil {
 			taken := make(map[string]bool)
 			for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
@@ -1006,14 +1007,19 @@ func (c *Controller) NewSession() error {
 			name = strings.TrimSpace(nm)
 		}
 	}
-	if inherited != "" && sessID != "" {
-		// Recorded on the new session before the command is run, so a client that
-		// refreshes in between sees a session whose field already agrees with what
+	if len(inherited) > 0 && sessID != "" {
+		// Recorded on the new session before anything is run, so a client that
+		// refreshes in between sees a session whose menu already agrees with what
 		// its first window is doing.
-		if _, serr := c.runTmux("set-option", "-t", sessID, newCmdOption, inherited); serr != nil {
-			log.Printf("new session %q did not inherit @wt_newcmd: %v", name, serr)
+		encoded, eerr := encodeNewCmds(inherited)
+		if eerr != nil {
+			log.Printf("new session %q did not inherit its menu: %v", name, eerr)
+		} else if _, serr := c.runTmux("set-option", "-t", sessID, newCmdsOption, encoded); serr != nil {
+			log.Printf("new session %q did not inherit its menu: %v", name, serr)
 		} else {
-			c.runNewCmd(winID, inherited)
+			// The FIRST entry, which is the menu's default — the same thing the
+			// toolbar chord runs, and for a stack-declared session a plain shell.
+			c.runNewCmd(winID, inherited[0].Cmd)
 		}
 	}
 	if name == "" {
@@ -1176,10 +1182,26 @@ func (c *Controller) ScrollDown(lines int) error {
 // it, which is the point — you are adding a window to a session you are looking at,
 // not one you are working in. (tmux makes the new window current WITHIN that
 // session; no client is switched.)
-func (c *Controller) NewWindow(session string) error {
+// NewWindow creates a window in `session` (empty = the pane's own) and runs the
+// `menu`-th entry of that session's new-window menu in it.
+//
+// An out-of-range index runs NOTHING rather than falling back to entry 0. The
+// index comes from a button the client drew from a layout that may be up to one
+// refresh old, so "out of range" means the menu changed underneath — and the
+// safe reading of a stale button is a plain shell, never somebody else's command.
+func (c *Controller) NewWindow(session string, menu int) error {
 	target := session
 	if target == "" {
 		target = c.session()
+	}
+	// Read the menu BEFORE creating the window: if the read is going to fail there
+	// is no reason to leave a window behind, and the ordering makes the "which
+	// command" decision independent of window creation.
+	cmd := ""
+	if menu >= 0 {
+		if cmds := c.sessionNewCmds(target); menu < len(cmds) {
+			cmd = cmds[menu].Cmd
+		}
 	}
 	// -P -F gives back the new window's id, which is what runNewCmd needs to aim
 	// at. It is only ever used for that, so a tmux that prints nothing costs the
@@ -1188,7 +1210,7 @@ func (c *Controller) NewWindow(session string) error {
 	if err != nil {
 		return err
 	}
-	c.runNewCmd(strings.TrimSpace(out), c.sessionNewCmd(target))
+	c.runNewCmd(strings.TrimSpace(out), cmd)
 	c.RefreshLayout()
 	return nil
 }
@@ -1221,31 +1243,36 @@ func (c *Controller) runNewCmd(windowID, cmd string) {
 	}
 }
 
-// sessionNewCmd reads one session's @wt_newcmd, live.
+// sessionNewCmds reads one session's new-window menu, live.
 //
 // Deliberately not read from the layout cache: the cache is up to one refresh
 // (500ms) old, and the case that matters most is a "+" clicked immediately after
-// typing the command into the sidebar field — where the cached value is the empty
-// string the field just replaced.
+// editing the menu — where the cached menu is the one the edit just replaced, and
+// an index would then select the wrong entry.
 //
 // A session must be named to set-option/show-options by its ID: `-t =name` is
 // rejected outright by the option commands (see exactSession), and a bare name
 // resolves by PREFIX, so a read for "dev" would answer about "dev-2". An
-// unresolvable name yields "", i.e. "this session has no command", which is the
-// safe direction: it makes a new window a plain shell.
-func (c *Controller) sessionNewCmd(session string) string {
+// unresolvable name yields no menu, which is the safe direction: it makes a new
+// window a plain shell.
+func (c *Controller) sessionNewCmds(session string) []NewCmd {
 	id := c.sessionID(session)
 	if id == "" {
-		return ""
+		return nil
 	}
 	// -q so an UNSET user option is the empty string rather than a non-zero exit
 	// with "invalid option" — which is every session that has never been given a
-	// command, i.e. almost all of them.
-	out, err := c.runTmux("show-options", "-t", id, "-qv", newCmdOption)
-	if err != nil {
-		return ""
+	// menu, i.e. almost all of them.
+	if out, err := c.runTmux("show-options", "-t", id, "-qv", newCmdsOption); err == nil {
+		if menu := decodeNewCmds(out); menu != nil {
+			return menu
+		}
 	}
-	return strings.TrimSpace(out)
+	// The single-command option this feature shipped with; see legacyNewCmd.
+	if out, err := c.runTmux("show-options", "-t", id, "-qv", newCmdOption); err == nil {
+		return legacyNewCmd(out)
+	}
+	return nil
 }
 
 // sessionID resolves a session NAME to its "$N" id, the only exact target the
@@ -1270,27 +1297,32 @@ func (c *Controller) sessionID(name string) string {
 	return ""
 }
 
-// SetSessionNewCmd sets (or, with an empty cmd, clears) a session's new-window
-// command. Named by the logical session name the sidebar shows; see sessionNewCmd
-// for why that has to become an id first.
-func (c *Controller) SetSessionNewCmd(session, cmd string) error {
+// SetSessionNewCmds replaces a session's new-window menu (an empty list clears
+// it). Named by the logical session name the sidebar shows; see sessionNewCmds for
+// why that has to become an id first.
+func (c *Controller) SetSessionNewCmds(session string, cmds []NewCmd) error {
 	id := c.sessionID(session)
 	if id == "" {
 		return fmt.Errorf("%w: no session named %q", ErrRefused, session)
 	}
-	cmd = strings.TrimSpace(cmd)
-	var err error
-	if cmd == "" {
-		// -u UNSETS rather than storing "". They differ: an unset option is absent
-		// from `show-options` output entirely, which is what "this session has no
-		// command" should look like to anything reading tmux directly.
-		_, err = c.runTmux("set-option", "-t", id, "-u", newCmdOption)
-	} else {
-		_, err = c.runTmux("set-option", "-t", id, newCmdOption, cmd)
-	}
+	encoded, err := encodeNewCmds(cmds)
 	if err != nil {
+		return fmt.Errorf("%w: cannot encode the menu for %q: %v", ErrRefused, session, err)
+	}
+	if encoded == "" {
+		// -u UNSETS rather than storing "[]". They differ: an unset option is absent
+		// from `show-options` output entirely, which is what "this session has no
+		// menu" should look like to anything reading tmux directly.
+		if _, err := c.runTmux("set-option", "-t", id, "-u", newCmdsOption); err != nil {
+			return err
+		}
+	} else if _, err := c.runTmux("set-option", "-t", id, newCmdsOption, encoded); err != nil {
 		return err
 	}
+	// Retire the legacy single-command option whenever a menu is written, so the
+	// two can never disagree about what the "+" does. Best effort: it is usually
+	// not set at all, and -u on an unset option is not an error.
+	c.runTmux("set-option", "-t", id, "-u", newCmdOption)
 	c.RefreshLayout()
 	return nil
 }

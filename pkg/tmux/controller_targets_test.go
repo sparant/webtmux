@@ -116,7 +116,7 @@ func TestDestructiveOpsTargetExactly(t *testing.T) {
 		// -P -F rides along so the new window's id comes back: it is what the
 		// session's new-window command (@wt_newcmd) has to be aimed at.
 		{"new-window",
-			func(c *Controller) error { return c.NewWindow("dev") },
+			func(c *Controller) error { return c.NewWindow("dev", 0) },
 			"new-window", []string{"new-window", "-t", "=dev", "-P", "-F", "#{window_id}"}},
 
 		{"select-window",
@@ -276,7 +276,7 @@ func TestNoCommandTargetsASessionByBareName(t *testing.T) {
 	c.SelectPane("%0")
 	c.RenameWindow("@0", "x")
 	c.MoveWindow("@0", 1, "dev")
-	c.NewWindow("dev")
+	c.NewWindow("dev", 0)
 	c.KillWindow("@1")
 	c.LinkWindow("@0", "dev-2")
 	c.UnlinkWindow("@1", "dev")

@@ -91,7 +91,13 @@ const (
 	// Scroll in copy mode (payload: lines as string)
 	TmuxScrollUp   = 'B'
 	TmuxScrollDown = 'C'
-	// Create new window
+	// Create a new window and run one entry of the target session's new-window
+	// menu in it (payload: "<menu index> <session>"; the session may be empty for
+	// the pane's own, and a payload with no leading integer means index 0, which
+	// is what a client older than the menu sends).
+	//
+	// The index goes FIRST because it is machine-shaped and the session name is
+	// user-arbitrary — the same rule every other payload here follows.
 	TmuxNewWindow = 'D'
 	// Switch session by name
 	TmuxSwitchSession = 'E'
@@ -167,14 +173,17 @@ const (
 	// frame that changed two things could not report a half-failure. The reply is a
 	// TmuxSettings carrying the state tmux was left in.
 	TmuxSettingsAction = 'W'
-	// Set (or clear) a session's new-window command — the command line a "+" in
-	// that session runs (payload: "<session>\x00<command>", empty command =
-	// clear). Stored in the session's @wt_newcmd user option and echoed back on
-	// every layout push as Session.NewCmd.
+	// Replace a session's NEW-WINDOW MENU — the ordered list of commands its "+"
+	// buttons offer (payload: "<session>\x00<json array>"; an empty array, or an
+	// empty second half, clears it). Stored in the session's @wt_newcmds user
+	// option and echoed back on every layout push as Session.NewCmds.
 	//
-	// NUL-separated rather than space-separated because BOTH halves are
-	// user-typed: a session name can contain spaces and a command line certainly
-	// does, so there is no first-space rule that works. Same reason and same
-	// separator as TmuxRenameSession.
-	TmuxSetSessionCmd = 'X'
+	// NUL-separated rather than space-separated because the first half is
+	// user-typed: a session name can contain spaces, so there is no first-space
+	// rule that works. Same reason and same separator as TmuxRenameSession.
+	//
+	// The menu is JSON because its entries are arbitrary command lines — a
+	// pipeline contains '|', a loop contains ';' — so no single-byte delimiter is
+	// safe. See pkg/tmux/newcmds.go, including why '$' is written \u0024.
+	TmuxSetSessionCmds = 'X'
 )

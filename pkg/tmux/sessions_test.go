@@ -109,51 +109,62 @@ func TestIsShellCommand(t *testing.T) {
 	}
 }
 
-// --- per-session new-window command -----------------------------------------
+// --- per-session new-window menu ---------------------------------------------
 
 func TestParseSessionCmds(t *testing.T) {
-	// The pipe in the second command is the whole point of the separate pass: a
-	// command line containing the field separator must survive intact.
-	out := "$0|scripts/claude-docker/launch_new.sh\n" +
-		"$1|tail -F log | grep -i error\n" +
-		"$2|\n"
-	cmds := parseSessionCmds(out)
-	if cmds["$0"] != "scripts/claude-docker/launch_new.sh" {
-		t.Errorf("plain command: %q", cmds["$0"])
+	// Three fields per line: id | menu JSON | legacy single command. The menu is
+	// JSON precisely so a command containing the field separator survives.
+	// Built through the encoder, not by hand: the encoding is what makes a command
+	// containing the field separator survive this line at all.
+	menu, err := encodeNewCmds([]NewCmd{{Label: "tail", Cmd: "tail -F log | grep -i error"}})
+	if err != nil {
+		t.Fatalf("encodeNewCmds: %v", err)
 	}
-	if cmds["$1"] != "tail -F log | grep -i error" {
-		t.Errorf("command containing the separator was truncated: %q", cmds["$1"])
+	out := "$0|" + menu + "|\n" +
+		"$1||legacy.sh\n" + // no menu: the legacy option is adopted
+		"$2||\n" // neither
+	menus := parseSessionCmds(out)
+	if len(menus["$0"]) != 1 || menus["$0"][0].Cmd != "tail -F log | grep -i error" {
+		t.Errorf("menu with a separator in it was mangled: %+v", menus["$0"])
 	}
-	if _, ok := cmds["$2"]; ok {
-		t.Errorf("an empty value should be absent, not stored empty")
+	if menus["$0"][0].Label != "tail" {
+		t.Errorf("label lost: %+v", menus["$0"])
+	}
+	if len(menus["$1"]) != 1 || menus["$1"][0].Cmd != "legacy.sh" {
+		t.Errorf("legacy single command not adopted: %+v", menus["$1"])
+	}
+	if _, ok := menus["$2"]; ok {
+		t.Errorf("a session with neither should be absent, not empty: %v", menus)
 	}
 }
 
 func TestParseSessionCmdsDropsJunk(t *testing.T) {
-	// A tmux too old to expand #{@user} options echoes the format back; storing it
-	// would later TYPE it into a shell. A line with no separator is the tail of a
-	// value containing a newline and belongs to no session.
-	cmds := parseSessionCmds("$0|#{@wt_newcmd}\n$1|real\nstray tail line\n")
-	if _, ok := cmds["$0"]; ok {
-		t.Errorf("unexpanded format was stored as a command: %q", cmds["$0"])
+	// A tmux too old to expand #{@user} options echoes the format back; adopting it
+	// would later TYPE it into a shell. A line with too few fields belongs to no
+	// session (an option value containing a newline arrives as extra lines).
+	menus := parseSessionCmds("$0||#{@wt_newcmd}\n$1|[{\"cmd\":\"real.sh\"}]|\nstray tail\n")
+	if _, ok := menus["$0"]; ok {
+		t.Errorf("unexpanded format was adopted as a command: %+v", menus["$0"])
 	}
-	if cmds["$1"] != "real" {
-		t.Errorf("good row lost: %q", cmds["$1"])
+	if len(menus["$1"]) != 1 || menus["$1"][0].Cmd != "real.sh" {
+		t.Errorf("good row lost: %+v", menus["$1"])
 	}
-	if len(cmds) != 1 {
-		t.Errorf("want exactly the one good row, got %v", cmds)
+	if len(menus) != 1 {
+		t.Errorf("want exactly the one good row, got %v", menus)
 	}
 }
 
-func TestBuildSessionsCarriesNewCmd(t *testing.T) {
+func TestBuildSessionsCarriesTheMenu(t *testing.T) {
 	rows := parseSessionRows(sessionsFixture)
-	got := buildSessions(rows, "services", nil, map[string]string{"$0": "launch_new.sh"})
+	got := buildSessions(rows, "services", nil, map[string][]NewCmd{
+		"$0": {{Label: "claude", Cmd: "launch_new.sh"}},
+	})
 	for _, s := range got {
-		if s.Name == "services" && s.NewCmd != "launch_new.sh" {
-			t.Errorf("services lost its command: %+v", s)
+		if s.Name == "services" && (len(s.NewCmds) != 1 || s.NewCmds[0].Label != "claude") {
+			t.Errorf("services lost its menu: %+v", s)
 		}
-		if s.Name == "other" && s.NewCmd != "" {
-			t.Errorf("a session with no command got one: %+v", s)
+		if s.Name == "other" && len(s.NewCmds) != 0 {
+			t.Errorf("a session with no menu got one: %+v", s)
 		}
 	}
 }

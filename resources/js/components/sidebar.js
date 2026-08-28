@@ -14,6 +14,10 @@ import { alertOf } from '../work-alerts.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
 import { ConfirmPopup, CONFIRM_CSS } from '../confirm-popup.js';
 import { trimPastedName } from '../paste-name.js';
+import {
+  menuFor, displayName, describe as describeEntry,
+  withCmdAt, withoutIndex, withAppended, isDefaultMenu,
+} from '../newcmd-menu.js';
 
 // How many renders revealWindow's "scroll this row into view" waits for its row to
 // appear. A cross-session reveal needs the new session's window list to arrive, which
@@ -32,6 +36,10 @@ class WebtmuxSidebar extends LitElement {
     editingWindow: { type: String },
     // Session name currently being renamed inline ('' = none). Parity with editingWindow.
     editingSession: { type: String },
+    // Which new-window menu entry is open for editing, as "<session>\0<index>"
+    // ('' = none). Keyed by both halves because the tree view draws a plus row
+    // under every session. State, not a property: nothing outside sets it.
+    _editingCmd: { state: true },
     // FLAT ("all windows") view: every session on the server, each with its own
     // windows listed beneath it — the tree `prefix + w` shows. The default view
     // (sessions across the top, only the current session's windows below) answers
@@ -272,8 +280,9 @@ class WebtmuxSidebar extends LitElement {
        a sibling inserted there would have thrown that measurement off by its own
        width. Muted (not competing for attention) but readable at a glance — 9px
        measured too small in practice. Hovering it explains the mechanism
-       (workBadgeTip()), same as hovering the dot explains the colour. `.cyclable`
-       (both readings exist) invites a click to switch between them — see
+       (workBadgeTip()), same as hovering the dot explains the colour. The
+       .cyclable variant (both readings exist) invites a click to switch between
+       them — see
        _cycleBadgeMode(). */
     .work-age {
       flex: 0 0 auto; font-size: 11px; color: #9fb4dc; line-height: 1;
@@ -423,40 +432,44 @@ class WebtmuxSidebar extends LitElement {
       transition: all 0.2s;
     }
 
-    /* The session's new-window command: what its "+" runs. Sits directly under the
-       session tabs because that is the thing it belongs to — one line, so it reads
-       as a property of the list above it rather than a section of its own. */
-    .newcmd {
+    /* The new-window menu: one "+" per command the session offers. Sits where the
+       single "+" used to, at the end of the window list, because that is where a
+       new window comes from — the buttons name what they will start. */
+    .plus-row {
       display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
       align-items: center;
-      gap: 6px;
-      margin: -8px 0 16px 0;
     }
 
-    .newcmd label {
-      color: #666;
+    .plus-row .window-tab { flex: 0 1 auto; }
+
+    /* The add-another button is quieter than the ones that DO something: it makes
+       a menu entry, it does not start a window. */
+    .plus-add {
+      opacity: 0.55;
       font-size: 13px;
-      flex: 0 0 auto;
-      cursor: default;
+      padding-left: 6px;
+      padding-right: 6px;
     }
+    .plus-add:hover { opacity: 1; }
 
-    .newcmd input {
-      flex: 1 1 auto;
+    /* The command editor replaces its own button in place, so the row does not
+       jump while you type. Monospace because the content is a command line. */
+    .cmd-edit {
+      flex: 1 1 100%;
       min-width: 0;
-      background: #1a1a2e;
-      color: #ddd;
-      border: 1px solid #0f3460;
+      background: #0f3460;
+      color: #fff;
+      border: 1px solid #4a9eff;
       border-radius: 4px;
-      padding: 4px 8px;
+      padding: 5px 8px;
       font-size: 13px;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       box-sizing: border-box;
       outline: none;
     }
-
-    .newcmd input:focus { border-color: #4a9eff; color: #fff; }
-    .newcmd input::placeholder { color: #4a4a5e; }
-    .newcmd input:disabled { opacity: 0.5; cursor: not-allowed; }
+    .cmd-edit::placeholder { color: #6a7a9e; }
 
     /* Inline session rename input (double-click a session tab). Mirrors .window-edit
        but sized like a session tab so it doesn't jump the row. */
@@ -641,6 +654,10 @@ class WebtmuxSidebar extends LitElement {
     this.editingWindow = '';
     // Session name currently being renamed inline ('' = none).
     this.editingSession = '';
+    this._editingCmd = '';
+    // Set when an entry is added, so its editor opens once the layout carrying it
+    // arrives — the add and the edit cannot be the same render.
+    this._pendingEdit = '';
     // Drag-and-drop reorder state.
     this.draggingWindow = '';
     this.draggingWindowSession = '';
@@ -684,6 +701,16 @@ class WebtmuxSidebar extends LitElement {
   }
 
   updated(changedProperties) {
+    // An entry just added by addCmd: open its editor as soon as the layout carrying
+    // it arrives. The add and the edit cannot happen in one render — the entry does
+    // not exist here until the server has stored it and pushed it back.
+    if (this._pendingEdit && changedProperties.has('layout')) {
+      const [session, idx] = this._pendingEdit.split('\u0000');
+      if (this._menu(session).length > Number(idx)) {
+        this._pendingEdit = '';
+        this.startCmdEdit(session, Number(idx));
+      }
+    }
     // A pending "scroll to this row" from revealWindow, re-tried until the row shows
     // up (a cross-session reveal waits for the new session's window list to arrive).
     if (this._revealRow) this._scrollRevealIntoView();
@@ -989,7 +1016,6 @@ class WebtmuxSidebar extends LitElement {
         `)}
         <button class="session-tab" title="New session" @click=${() => this.newSession()}>+</button>
       </div>
-      ${this.renderNewCmd(own)}
 
       <h3>Windows</h3>
       ${this._filterChip()}
@@ -1004,44 +1030,76 @@ class WebtmuxSidebar extends LitElement {
     `;
   }
 
-  // The current session's new-window command: the command line its "+" (and a
-  // window created by the toolbar chord) types into the fresh shell.
+  // ---- the new-window menu -----------------------------------------------------
+  // One "+" per command the session offers, captioned with what it starts. Replaces
+  // the single "+" that always produced a bare prompt, and the session-level field
+  // that could only describe ONE command — a session holds windows that do the same
+  // KIND of thing, but rarely only one kind.
   //
-  // Bound to the SESSION, not to this browser: it is stored in tmux, so every
-  // client sees the same value and it outlives the tab. scripts/stack.sh sets it
-  // for the sessions it builds, which is how a claude-editors session arrives
-  // already knowing its "+" means "launch the next claude".
-  //
-  // .value (a property) rather than value= (an attribute), for the same reason the
-  // rename inputs use it: lit would otherwise only set the initial attribute, and a
-  // value pushed from another client would never reach a field the user has typed
-  // into. Committed on Enter and on blur; Escape puts the stored value back.
-  renderNewCmd(session) {
-    if (!session) return '';
-    const stored = this._sessionCmd(session);
+  // The menu lives on the tmux session (@wt_newcmds), so it is shared by every
+  // client, outlives the tab, and can be declared by scripts/stack.sh.
+  renderPlusRow(node) {
+    const menu = this._menu(node.name);
     return html`
-      <div class="newcmd">
-        <label title="Run this in every new window of ${session}. Left empty, a new window is just a shell.">+ runs</label>
-        <input
-          .value=${stored}
-          ?disabled=${this.readOnly}
-          placeholder=${this.readOnly ? 'read-only server' : 'shell only \u2014 type a command to run in every new window'}
-          title="Command run in each new window of ${session}. The window still starts a normal shell; this is typed into it, so Ctrl-C stops it and the window stays."
-          @keydown=${(e) => this.onNewCmdKey(e, session)}
-          @blur=${(e) => this.commitNewCmd(e, session)}
-        >
+      <div class="wrow plus-row">
+        <span class="work-gap" aria-hidden="true"></span>
+        ${menu.map((entry, i) => this._editingCmd === this._cmdKey(node.name, i)
+          ? html`
+            <input
+              class="cmd-edit"
+              .value=${entry.cmd}
+              placeholder="command to run in the new window \u2014 empty for a plain shell"
+              @keydown=${(e) => this.onCmdKey(e, node.name, i)}
+              @blur=${(e) => this.commitCmd(e, node.name, i)}
+              @click=${(e) => e.stopPropagation()}
+            >`
+          : html`
+          <button
+            class="window-tab ${this._dropLine(node, node.windows.length) ? 'drop-before' : ''}"
+            title=${describeEntry(entry, node.name)}
+            @click=${() => this.newWindow(node.name, i)}
+            @dblclick=${() => this.startCmdEdit(node.name, i)}
+          >+ ${displayName(entry)}${this.readOnly || menu.length < 2 ? '' : html`<span
+              class="kill"
+              aria-label="Remove this + from ${node.name}"
+              title="Remove this + (does not touch any window)"
+              @click=${(e) => { e.stopPropagation(); this.removeCmd(node.name, i); }}
+            >\u00d7</span>`}</button>
+        `)}
+        ${this.readOnly ? '' : html`
+        <button
+          class="window-tab plus-add"
+          title="Add another + to ${node.name}, with its own command"
+          @click=${() => this.addCmd(node.name)}
+        >+\u2026</button>`}
       </div>
     `;
   }
 
-  // The stored command for a session name, from the layout push. Falls back to ''
-  // so the field renders before the first layout arrives.
-  _sessionCmd(name) {
-    const s = (this.layout?.sessions || []).find((x) => x.name === name);
-    return (s && s.newCmd) || '';
+  // This session's menu, from the layout push. menuFor supplies the single plain
+  // "+" for a session that has no menu, so the row is never empty.
+  _menu(name) {
+    const sess = (this.layout?.sessions || []).find((x) => x.name === name);
+    return menuFor(sess);
   }
 
-  onNewCmdKey(e, session) {
+  // Editing is keyed by (session, index) rather than by index alone: the tree view
+  // draws a plus row under EVERY session, and an index-only key would open the
+  // editor on all of them at once.
+  _cmdKey(session, index) { return `${session}\u0000${index}`; }
+
+  startCmdEdit(session, index) {
+    if (this.readOnly) return;
+    this._editingCmd = this._cmdKey(session, index);
+    this.requestUpdate();
+    // Focus after lit has swapped the button for the input.
+    this.updateComplete.then(() => {
+      const el = this.renderRoot?.querySelector('.cmd-edit');
+      if (el) { el.focus(); el.select(); }
+    });
+  }
+
+  onCmdKey(e, session, index) {
     if (e.key === 'Enter') {
       e.preventDefault();
       e.currentTarget.blur(); // commit through the one path, rather than twice
@@ -1049,25 +1107,50 @@ class WebtmuxSidebar extends LitElement {
     }
     if (e.key === 'Escape') {
       e.preventDefault();
-      e.currentTarget.value = this._sessionCmd(session);
+      this._editingCmd = '';   // discard before the blur handler can commit
       e.currentTarget.blur();
+      this.requestUpdate();
       return;
     }
-    // Every other key is the user typing a command; the sidebar's own key handling
-    // (type-ahead filter, arrow navigation, single-letter shortcuts) must not see it.
+    // Everything else is the user typing a command line; the sidebar's own key
+    // handling (type-ahead filter, arrow navigation, single-letter shortcuts) must
+    // not see it.
     e.stopPropagation();
   }
 
-  // Send only on a real change. A blur with the same text would cost a tmux write
-  // and a layout push every time focus left the field — including the blur this
-  // component triggers itself on Escape.
-  commitNewCmd(e, session) {
+  commitCmd(e, session, index) {
+    if (this._editingCmd !== this._cmdKey(session, index)) return; // cancelled
     const next = e.currentTarget.value;
-    if (next === this._sessionCmd(session)) return;
-    this.unit?.setSessionCmd(session, next);
+    this._editingCmd = '';
+    const menu = this._menu(session);
+    if (index < menu.length && next === menu[index].cmd) { this.requestUpdate(); return; }
+    this._sendMenu(session, withCmdAt(menu, index, next));
   }
 
-  // The one line that explains a sidebar full of inert rows. Sits in the footer
+  removeCmd(session, index) {
+    if (this.readOnly) return;
+    this._sendMenu(session, withoutIndex(this._menu(session), index));
+  }
+
+  addCmd(session) {
+    if (this.readOnly) return;
+    const menu = withAppended(this._menu(session));
+    this._sendMenu(session, menu);
+    // Open the new entry's editor as soon as the layout carrying it arrives — an
+    // added "+" with no command is only useful if you can say what it runs.
+    this._pendingEdit = this._cmdKey(session, menu.length - 1);
+  }
+
+  // One message per edit: the whole menu, replaced. A per-entry protocol would
+  // need the server to reconcile two lists and could leave a half-applied menu.
+  _sendMenu(session, menu) {
+    // A single empty entry is what a session with NO menu already shows, so store
+    // nothing rather than something indistinguishable from nothing.
+    this.unit?.setSessionCmds(session, isDefaultMenu(menu) ? [] : menu);
+    this.requestUpdate();
+  }
+
+  // The one line that explains a sidebar full of inert rows.  // The one line that explains a sidebar full of inert rows. Sits in the footer
   // both views already render, so neither view has to grow a banner.
   _roNote() {
     if (!this.readOnly) return '';
@@ -1170,15 +1253,7 @@ class WebtmuxSidebar extends LitElement {
         @drop=${(e) => this.onWinListDrop(e, node)}
       >
         ${node.windows.map((win, i) => this.renderWindowRow(win, i, node))}
-        ${plus ? html`
-        <div class="wrow">
-          <span class="work-gap" aria-hidden="true"></span>
-          <button
-            class="window-tab ${this._dropLine(node, node.windows.length) ? 'drop-before' : ''}"
-            title="New window in ${node.name}"
-            @click=${() => this.newWindow(node.name)}
-          >+</button>
-        </div>` : ''}
+        ${plus ? this.renderPlusRow(node) : ''}
       </div>
     `;
   }
@@ -2283,8 +2358,8 @@ class WebtmuxSidebar extends LitElement {
   // where it was, so the "+" you just pressed would appear to do nothing. Sending ""
   // targets the pane's own client, which follows the new window — the behaviour the
   // default view's "+" has always had.
-  newWindow(session = '') {
-    this.unit?.newWindow(session === this._ownSession() ? '' : session);
+  newWindow(session = '', menu = 0) {
+    this.unit?.newWindow(session === this._ownSession() ? '' : session, menu);
   }
 
   // Create a fresh session and switch this pane's view to it (the "+" at the end

@@ -30,9 +30,9 @@ type TmuxController interface {
 	MoveWindow(windowID string, targetPos int, session string) error
 	NewSession() error
 	RenameSession(oldName, newName string) error
-	// SetSessionNewCmd sets (empty clears) the command line a new window in this
-	// session runs — stored on the session as @wt_newcmd.
-	SetSessionNewCmd(session, cmd string) error
+	// SetSessionNewCmds replaces this session's new-window menu — the list of
+	// commands its "+" buttons offer, stored on the session as @wt_newcmds.
+	SetSessionNewCmds(session string, cmds []tmux.NewCmd) error
 	KillWindow(windowID string) error
 	KillSession(sessionName string) error
 	LinkWindow(windowID, targetSession string) error
@@ -70,7 +70,7 @@ type TmuxController interface {
 	ScrollDown(lines int) error
 	// NewWindow takes the session to create the window in ("" = the pane's own):
 	// the sidebar's tree view gives every session its own "+".
-	NewWindow(session string) error
+	NewWindow(session string, menu int) error
 	Events() <-chan tmux.Event
 }
 
@@ -266,8 +266,20 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 		return nil
 
 	case TmuxNewWindow:
-		// payload = the target session, or empty for the pane's own.
-		return wt.afterCmd("new window", wt.tmuxCtrl.NewWindow(strings.TrimSpace(string(payload))))
+		// payload = "<menu index> <session>" — which of the session's new-window
+		// commands to run, then the session (empty = the pane's own). A payload with
+		// no leading integer is read as index 0 with the whole thing as the session,
+		// which is exactly what a client from before the menu sends.
+		menu, session := 0, strings.TrimSpace(string(payload))
+		if i := strings.IndexByte(session, ' '); i > 0 {
+			if n, err := strconv.Atoi(session[:i]); err == nil {
+				menu, session = n, strings.TrimSpace(session[i+1:])
+			}
+		} else if n, err := strconv.Atoi(session); err == nil {
+			// Index with no session: the pane's own session.
+			menu, session = n, ""
+		}
+		return wt.afterCmd("new window", wt.tmuxCtrl.NewWindow(session, menu))
 
 	case TmuxSwitchSession:
 		return wt.afterCmd("switch session", wt.tmuxCtrl.SwitchSession(string(payload)))
@@ -354,20 +366,34 @@ func (wt *WebTTY) handleTmuxMessage(msgType byte, payload []byte) error {
 		}
 		return wt.afterCmd("unlink window", wt.tmuxCtrl.UnlinkWindow(windowID, session))
 
-	case TmuxSetSessionCmd:
-		// payload = "<session>\x00<command>". Both halves are user-typed, so the
-		// separator is the one byte tmux forbids in a session name (see
-		// TmuxRenameSession, which has the same shape for the same reason). A
-		// payload with no separator is dropped rather than read as a session with
-		// an empty command — that would silently CLEAR the command of whatever
-		// session the whole payload happened to name.
+	case TmuxSetSessionCmds:
+		// payload = "<session>\x00<json array>". The separator is the one byte tmux
+		// forbids in a session name (see TmuxRenameSession, same shape, same
+		// reason). A payload with no separator is dropped rather than read as a
+		// session with an empty menu — that would silently CLEAR the menu of
+		// whatever session the whole payload happened to name.
 		s := string(payload)
 		idx := strings.IndexByte(s, 0)
 		if idx < 0 {
 			return nil
 		}
-		session, cmd := s[:idx], s[idx+1:]
-		return wt.afterCmd("set session command", wt.tmuxCtrl.SetSessionNewCmd(session, cmd))
+		session, raw := s[:idx], strings.TrimSpace(s[idx+1:])
+		var cmds []tmux.NewCmd
+		if raw != "" {
+			// Validated HERE, before anything is written: the read side drops a
+			// value it cannot parse, so storing an unparseable one would leave a
+			// session whose menu silently vanished with no error anywhere. Log and
+			// DROP rather than error — a returned error tears the connection down.
+			if err := json.Unmarshal([]byte(raw), &cmds); err != nil {
+				log.Printf("dropping new-window menu for %q: not a JSON array: %v", session, err)
+				return nil
+			}
+			if len(raw) > 16*1024 {
+				log.Printf("dropping new-window menu for %q: %d bytes (cap 16K)", session, len(raw))
+				return nil
+			}
+		}
+		return wt.afterCmd("set session menu", wt.tmuxCtrl.SetSessionNewCmds(session, cmds))
 
 	case TmuxSetState:
 		// Persist the shared UI visual-state blob into the tmux global option
@@ -862,7 +888,7 @@ func isTmuxMessage(msgType byte) bool {
 		TmuxUnlinkWindow, TmuxCaptureRequest, TmuxSavePaneFile, TmuxSaveInfoRequest,
 		TmuxScrollbackRequest, TmuxHistoryInfoRequest, TmuxHistoryAction,
 		TmuxSetState, TmuxRefresh, TmuxSettingsRequest, TmuxSettingsAction,
-		TmuxSetSessionCmd:
+		TmuxSetSessionCmds:
 		return true
 	default:
 		return false

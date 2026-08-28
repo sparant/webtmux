@@ -12,7 +12,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   FIELD_SEP, renameSessionPayload, parseRenameSessionPayload,
-  sessionCmdPayload, parseSessionCmdPayload,
+  sessionCmdsPayload, parseSessionCmdsPayload, newWindowPayload,
 } from '../resources/js/tmux-payloads.js';
 
 test('the payload is NUL-delimited, not space-delimited', () => {
@@ -49,39 +49,45 @@ test('a payload with no separator parses as nothing, matching the server drop', 
   assert.equal(parseRenameSessionPayload(''), null);
 });
 
-// --- set-session-command ------------------------------------------------------
-// The other two-user-typed-strings payload: a session name and a command line.
-// A command line contains spaces and pipes as a matter of course, so this one
-// could never have used the first-space rule at all.
+// --- set-session-menu + new-window ------------------------------------------
 
-test('a command line with spaces, pipes and quotes stays whole', () => {
-  const cmd = `WT_WINDOW="$TMUX_PANE" docker exec -it x bash -lc "tail -F log | grep -i err"`;
-  const p = sessionCmdPayload('claude-editors', cmd);
-  assert.deepEqual(parseSessionCmdPayload(p), { session: 'claude-editors', cmd });
+test('the menu rides as JSON after the session name', () => {
+  const cmds = [{ label: 'shell', cmd: '' }, { label: 'claude', cmd: 'run me | tee log' }];
+  const p = sessionCmdsPayload('claude-editors', cmds);
+  assert.deepEqual(parseSessionCmdsPayload(p), { session: 'claude-editors', cmds });
 });
 
-test('a session name with a space keeps the command intact', () => {
-  const p = sessionCmdPayload('my project', 'make watch');
-  assert.deepEqual(parseSessionCmdPayload(p), { session: 'my project', cmd: 'make watch' });
-});
-
-test('an empty command round-trips as empty — that is how the field CLEARS it', () => {
-  assert.deepEqual(parseSessionCmdPayload(sessionCmdPayload('dev', '')), {
-    session: 'dev',
-    cmd: '',
+test('a session name with a space keeps the menu intact', () => {
+  const p = sessionCmdsPayload('my project', [{ label: '', cmd: 'make watch' }]);
+  assert.deepEqual(parseSessionCmdsPayload(p), {
+    session: 'my project',
+    cmds: [{ label: '', cmd: 'make watch' }],
   });
 });
 
-test('a separator-less payload parses as nothing, matching the server drop', () => {
-  // It must NOT read as "session=the whole string, cmd=empty": that would
-  // silently CLEAR the command of whatever session the payload named.
-  assert.equal(parseSessionCmdPayload('claude-editors launch_new.sh'), null);
-  assert.equal(parseSessionCmdPayload(''), null);
+test('an empty menu round-trips as empty — that is how a menu CLEARS', () => {
+  assert.deepEqual(parseSessionCmdsPayload(sessionCmdsPayload('dev', [])), { session: 'dev', cmds: [] });
+  assert.deepEqual(parseSessionCmdsPayload(sessionCmdsPayload('dev', null)), { session: 'dev', cmds: [] });
 });
 
-test('a command containing a NUL cannot smuggle a second field', () => {
-  // Only the FIRST separator splits, so a NUL later in the command stays in the
-  // command — the server uses IndexByte for exactly this reason.
-  const p = sessionCmdPayload('dev', 'a\x00b');
-  assert.deepEqual(parseSessionCmdPayload(p), { session: 'dev', cmd: 'a\x00b' });
+test('a separator-less payload parses as nothing, matching the server drop', () => {
+  // It must NOT read as "session = the whole string, menu = empty": that would
+  // silently CLEAR the menu of whatever session the payload named.
+  assert.equal(parseSessionCmdsPayload('claude-editors []'), null);
+  assert.equal(parseSessionCmdsPayload(''), null);
+});
+
+test('a non-array or unparseable menu is rejected, not half-read', () => {
+  assert.equal(parseSessionCmdsPayload('dev\u0000{"cmd":"x"}'), null);
+  assert.equal(parseSessionCmdsPayload('dev\u0000not json'), null);
+});
+
+test('new-window puts the machine-shaped index first and the session last', () => {
+  assert.equal(newWindowPayload('', 0), '0 ');
+  assert.equal(newWindowPayload('editors', 2), '2 editors');
+  // A session name with a space is the last field, so it survives whole.
+  assert.equal(newWindowPayload('my session', 1), '1 my session');
+  // Junk index degrades to the first entry rather than to NaN on the wire.
+  assert.equal(newWindowPayload('dev', undefined), '0 dev');
+  assert.equal(newWindowPayload('dev', 'x'), '0 dev');
 });
