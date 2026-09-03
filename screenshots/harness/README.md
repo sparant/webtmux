@@ -134,6 +134,19 @@ Pieces:
   is coloured in ~1s rather than the ~11s the old heartbeat took. Writes live/slow/lost
   spinner crops for `check-link-ink.sh`, which asserts the three are told apart ON THE
   PIXELS — a third state is worth nothing if it renders like one of the other two),
+  `verify-preview-slots.js` (WHERE a previewed window is drawn, now that it is a
+  per-window choice rather than a function of the set's size: ⌃⌥I puts a lone window in
+  the docked BAR — which the count-derived preview could not do — its own hover controls
+  pin it to a corner and hand the reserved edge back, a second window sits in the bar
+  while the first stays pinned, two windows hold two different corners at once, a corner
+  another window is in is not offered at all while the tile's own is drawn active, ⌃⌥⇧I
+  pins and unpins from the keyboard, a box of the window you are looking at is the mini
+  hint and one of a window you are not is full size, a corner box clears the space the
+  bar reserved, and every placement survives a reload. The one-code-path claim is
+  asserted by moving ONE window between the two surfaces and diffing the control cluster
+  it renders on each — they must differ by exactly the "back to the bar" button.
+  `SHOTS=1` writes the two clusters and both surfaces to `screenshots/verify/`, because
+  whether six buttons are legible on a 300px tile is not a DOM assertion),
   `verify-recents-target.js` (WHICH pane a recents tab goes to: a hovered tab grows a
   region picker only when the view is split, hovering a chip previews the window in
   THAT pane, clicking one lands it there, and asking for a window the other pane is

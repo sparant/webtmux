@@ -190,21 +190,32 @@ const jpg = (name) => ({ path: `${OUT}/${name}.jpg`, type: 'jpeg', quality: 90 }
     await sleep(1200);
   });
 
+  // TWO windows pinned to two different screen corners. Each corner holds one window,
+  // so this is a state the old count-derived preview could not reach at all: it drew a
+  // corner box only while exactly one window was previewed.
   await shot('preview-pip', async () => {
     await goTo('htop');
-    await chord('i'); // add htop to preview
+    await chord('Shift+I'); // htop -> a free corner as a floating PiP box
     await sleep(600);
-    await goTo('editor'); // move away -> corner PiP paints htop
-    await sleep(2000);
+    await goTo('logs');
+    await chord('Shift+I'); // logs -> the next free corner
+    await sleep(600);
+    await goTo('editor');   // away from both, so neither shrinks to its self-preview hint
+    await sleep(2200);
     await page.screenshot(jpg('preview-pip'));
   });
 
+  // …and the docked bar, which reserves space instead of covering the terminal. The two
+  // surfaces coexist — htop and logs stay pinned in their corners while these join the bar.
   await shot('preview-bar', async () => {
     await goTo('server');
     await chord('i');
     await sleep(600);
+    await goTo('tests');
+    await chord('i');
+    await sleep(600);
     await goTo('editor');
-    await sleep(2000);
+    await sleep(2200);
     await page.screenshot(jpg('preview-bar'));
     await chord('h'); // hide preview for later shots
     await sleep(600);

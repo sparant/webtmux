@@ -109,8 +109,10 @@ export class SplitManager {
     this.shortcuts = document.createElement('webtmux-shortcuts');
     this.container.appendChild(this.shortcuts);
 
-    // The live Preview (Picture-in-Picture for one window, a docked edge bar for
-    // several). Hidden until a window is added via Ctrl+Alt+I or the toolbar button.
+    // The live Preview: a docked edge bar plus up to four floating corner boxes, with
+    // each previewed window carrying which of the two it is drawn on (see
+    // preview-slots.js). Hidden until a window is added via Ctrl+Alt+I or the toolbar
+    // button.
     // Reads from the same shared CaptureCache; any change to its set/hidden state
     // syncs the toolbar's preview buttons via onChange.
     this.pip = document.createElement('webtmux-pip');
@@ -1844,9 +1846,9 @@ export class SplitManager {
     this.toolbar.previewCount = this.pip?.count || 0;
     this.toolbar.previewHidden = !!this.pip?.hidden;
     this.toolbar.previewHasFocused = !!(activeId && this.pip?.hasWindow(activeId));
-    // Tell the preview which window the focused pane shows, so a single-window PiP
-    // of that very window blanks itself (it'd only duplicate what's already on
-    // screen). Reappears the instant the focused pane moves to another window.
+    // Tell the preview which window the focused pane shows, so a corner PiP box holding
+    // that very window shrinks to a hint (it'd only duplicate what's already on
+    // screen). Back to full size the instant the focused pane moves to another window.
     this.pip?.setFocusedWindow(activeId);
   }
 
@@ -2349,14 +2351,29 @@ export class SplitManager {
   }
 
   // Add/remove the FOCUSED region's current window to/from the live preview
-  // (Ctrl+Alt+I and the toolbar preview button). One window shows as a corner PiP
-  // box; a second flips it to a docked edge bar. onChange keeps the toolbar synced.
+  // (Ctrl+Alt+I and the toolbar preview button). It lands in the DOCKED BAR, which
+  // reserves its own space and covers nothing — the placement a bare keystroke should
+  // mean. From there its hover controls pin it to any free screen corner, and
+  // toggleFocusedPip below is the keyboard's way to the same place. onChange keeps the
+  // toolbar synced.
   toggleFocusedInPreview() {
     if (!this.pip) return;
     const u = this.focusedUnit;
     const id = u?.layout?.activeWindowId;
     if (!id) return;   // nothing to preview yet (no layout) — no-op
     this.pip.toggleWindow(id, this._metaFor(u, id));
+  }
+
+  // Pin the FOCUSED region's window to a free screen corner as a floating PiP box, or
+  // send it back to the bar if it is already pinned (Ctrl+Alt+Shift+I). Corners hold one
+  // window each, so this walks a window between the two surfaces without asking which
+  // corner — the tile's own controls are there when you want to aim.
+  toggleFocusedPip() {
+    if (!this.pip) return;
+    const u = this.focusedUnit;
+    const id = u?.layout?.activeWindowId;
+    if (!id) return;
+    this.pip.togglePip(id, this._metaFor(u, id));
   }
 
   // Hide/show the whole preview without forgetting which windows are in it.
@@ -2437,9 +2454,10 @@ export class SplitManager {
     //   =  choose-buffer                      -> toggle the copy-buffer panel
     //   ?  list-keys                          -> the shortcuts overlay (physical '/')
     // Split-add has no unmodified tmux letter (tmux uses % / ", both need Shift), so
-    // it keeps the intuitive Enter. Exposé ('e'), Picture-in-Picture add ('i' = pIp),
-    // preview hide/show ('h' = Hide) and remove-current-from-recents ('d' = Dismiss)
-    // are webtmux-only, so they keep their own mnemonic letters.
+    // it keeps the intuitive Enter. Exposé ('e'), preview add ('i' = pIp, with ⇧ for a
+    // floating corner box instead of the bar), preview hide/show ('h' = Hide) and
+    // remove-current-from-recents ('d' = Dismiss) are webtmux-only, so they keep their
+    // own mnemonic letters.
     // stopPropagation keeps xterm from seeing them.
     window.addEventListener('keydown', (ev) => {
       // AltGr on Windows (and some Linux layouts) reports as Ctrl+Alt, so without
@@ -2496,7 +2514,11 @@ export class SplitManager {
           this.expose?.toggle();
           break;
         case 'KeyI':                                   // add/remove focused window in the preview (i = pIp)
-          this.toggleFocusedInPreview();
+          // …and with Shift, pin it to a screen CORNER instead of the bar (or unpin it).
+          // Same letter because it is the same question — where do I want to keep an eye
+          // on this window — with Shift asking for the floating answer.
+          if (ev.shiftKey) this.toggleFocusedPip();
+          else this.toggleFocusedInPreview();
           break;
         case 'KeyH':                                   // hide/show the whole preview (h = Hide)
           this.togglePreviewHidden();

@@ -3216,7 +3216,7 @@ class WebtmuxToolbar extends LitElement {
       <button
         class="pip-toggle ${this.previewHasFocused ? 'on' : ''}"
         aria-label="Add focused window to preview"
-        @mouseenter=${(e) => this._tipEnter(e, `${this.previewHasFocused ? 'Remove the focused window from' : 'Add the focused window to'} the live preview (${chord('I')}). One window shows as a corner box; a second turns it into a docked edge bar.${this.previewCount ? ` ${this.previewCount} window${this.previewCount === 1 ? '' : 's'} in preview.` : ''}`)}
+        @mouseenter=${(e) => this._tipEnter(e, `${this.previewHasFocused ? 'Remove the focused window from' : 'Add the focused window to'} the live preview (${chord('I')}). It joins the docked edge bar, which reserves its own space rather than covering the terminal.\nHover a preview tile to pin it to a screen corner as a floating box instead — one window per corner, four at once — or ${chord('Shift+I')} to pin the focused one straight away.${this.previewCount ? `\n\n${this.previewCount} window${this.previewCount === 1 ? '' : 's'} in preview.` : ''}`)}
         @mouseleave=${() => this._tipLeave()}
         @click=${() => { this._tipLeave(); this.manager?.toggleFocusedInPreview(); }}
       >◳</button>

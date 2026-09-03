@@ -89,13 +89,16 @@ Bring up a Mac-style Exposé view to see 4 or 9 windows at once. Syllable substr
 
 Keep an eye on specific windows, even while you focus on others.
 
-![Preview replayed: Ctrl+Alt+I floats one window as a corner PiP that blanks while you view its window; a second window docks both as an edge bar; Ctrl+Alt+H hides and restores it](screenshots/preview-pip.gif)
+![Preview replayed: Ctrl+Alt+I docks a window in the edge bar; Ctrl+Alt+Shift+I floats another as a corner PiP box and a third in a second corner; Ctrl+Alt+H hides and restores the lot](screenshots/preview-pip.gif)
 
 - "Preview" collects windows to keep an eye on. Toggle with Ctrl+Alt+I
-  - A single window floats as a corner PiP box.
-  - Two or more dock as a bar along a screen edge that reserves space instead of covering the terminal.
-- Ctrl+Alt+I adds/removes the focused window.
-- Ctrl+Alt+H hides/shows the preview while keeping the windows in it.
+- Each previewed window is drawn on one of two surfaces, and which one is **your choice per window**, not a function of how many windows are in there:
+  - The **docked bar** along a screen edge, which reserves space instead of covering the terminal. This is where Ctrl+Alt+I puts a window, and it holds any number.
+  - A floating **corner PiP box**. There are four corners and each holds one window, so up to four can float at once — over a bar that is still holding others.
+- Hovering any preview tile — bar tile or corner box, same controls — offers the corners that are actually free, a way back to the bar, and a close. A corner another window is in is not offered.
+- Ctrl+Alt+I adds/removes the focused window (bar); Ctrl+Alt+Shift+I pins it to a free corner, or unpins it back to the bar.
+- Dock the bar to any edge, and drag nothing: the bar's own buttons move it top/bottom/left/right.
+- Ctrl+Alt+H hides/shows the whole preview while keeping the windows in it — and where each one was drawn.
 - Provides another way to quickly switch to high priority windows.
 - A previewed window drops out of the [recent tabs](#toolbar-and-recent-tabs) while it is in here: two ways to reach the same window, one of them showing you its screen, is one too many. Hiding the preview or taking the window out of it puts the tab back in its old slot.
 

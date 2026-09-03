@@ -187,10 +187,16 @@ async function main() {
   const claudeId = await idOf('claude');
   const pip = await page.evaluate(() => {
     const el = document.querySelector('webtmux-pip');
-    return { mode: el?.mode, edge: el?.edge, wins: el?.windowIds?.() };
+    return {
+      mode: el?.mode, edge: el?.edge, wins: el?.windowIds?.(),
+      // ⌃⌥I puts a window in the BAR whatever the count, so both of these are bar tiles.
+      slots: (el?._wins || []).map((w) => w.slot),
+    };
   });
   console.log(`preview: ${JSON.stringify(pip)}  tests=${testsId} claude=${claudeId}`);
-  if (pip.mode !== 'bar' || pip.edge !== 'right') throw new Error('preview bar did not dock right');
+  if (pip.mode !== 'on' || pip.edge !== 'right' || !pip.slots.every((s) => s === 'bar')) {
+    throw new Error('preview bar did not dock right');
+  }
 
   // ---- 1. a highlight exists to begin with ------------------------------------
   await dragSelect();
