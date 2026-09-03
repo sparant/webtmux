@@ -3,24 +3,35 @@
 // buffers Exposé uses) and polled so they stay live. Clicking a preview switches
 // the FOCUSED region to that window.
 //
-// It has TWO shapes, chosen by how many windows are being previewed:
-//   • ONE window  → a small floating Picture-in-Picture box pinned to a screen
-//     CORNER, exactly like the classic PiP: hover reveals corner-move buttons + a
-//     close, and the box floats OVER the terminal (z-index 50).
-//   • 2+ windows  → a docked PREVIEW BAR spanning a screen EDGE (top/bottom/left/
-//     right). Unlike the corner box the bar does NOT float over the terminal — it
-//     RESERVES space (via the --wt-preview-* vars that pad #app), so it sits at the
-//     terminal's own level and never covers content. Each tile has a hover ×
-//     (remove) and click-to-activate; the bar itself carries edge-placement buttons
-//     and a hide toggle.
+// A previewed window is drawn on ONE of two kinds of surface, and which one is the
+// window's own property — its SLOT (see preview-slots.js) — not a function of how many
+// windows are being previewed:
 //
-// A SEPARATE hide/show toggle blanks the preview without forgetting the set, so you
-// can tuck it away and bring it back with the same windows. Owned by the
-// SplitManager (one instance); the toolbar drives add/remove/hide.
+//   • the docked PREVIEW BAR, spanning a screen edge (top/bottom/left/right). The
+//     default, and where Ctrl+Alt+I puts a window. Unlike a floating box the bar does
+//     NOT cover the terminal — it RESERVES space (via the --wt-preview-* vars that pad
+//     #app), so it sits at the terminal's own level. Holds any number of tiles.
+//   • a corner PICTURE-IN-PICTURE box, pinned to one of the four screen corners and
+//     floating OVER the terminal (z-index 50). Each corner holds at most one window, so
+//     up to four windows can be pipped at once — and one window can be pipped while
+//     others sit in the bar.
 //
-// Chrome (frame, controls, labels) is Lit-rendered; each window's xterm lives in a
-// static `.screen-host` div reconciled imperatively in _syncTiles(), so a reactive
-// re-render (placement move, label update) never orphans a terminal.
+// The two used to be one derived shape: one previewed window WAS a corner box, two or
+// more WERE a bar, and neither was askable for. So a single window could not be a bar
+// tile, adding a second silently dissolved your corner box, and the other three corners
+// were unreachable. Now every tile carries the same hover control cluster — the four
+// corner buttons (only the ones that are actually free), a "back to the bar" button when
+// it is pinned, and a close — so moving a window between the two surfaces is one click
+// from wherever it currently is.
+//
+// A SEPARATE hide/show toggle blanks the whole preview without forgetting the set, so
+// you can tuck it away and bring it back with the same windows in the same places. Owned
+// by the SplitManager (one instance); the toolbar drives add/remove/hide.
+//
+// Chrome (bar frame, corner boxes, bar controls) is Lit-rendered; each window's tile —
+// xterm, label, stoplight and control cluster — lives in a static `.tiles` container
+// reconciled imperatively in _syncTiles(), so a reactive re-render (a bar re-dock, a
+// label update) never orphans a terminal.
 import { LitElement, html, css } from 'lit';
 import { Terminal } from '@xterm/xterm';
 import { CaptureCache, placementKey } from '../capture-cache.js';
@@ -31,16 +42,14 @@ import { ALERT_CSS, alertClass, alertTip } from '../alert-flash.js';
 import { alertOf } from '../work-alerts.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
 import {
+  BAR, CORNERS, EDGES, CORNER_GLYPH, CORNER_NAME, EDGE_GLYPH, EDGE_NAME,
+  normalizeSlot, cornerOccupancy, freeCorner, placeWindow, tileControls, winsFromState,
+} from '../preview-slots.js';
+import {
   terminalContentBox, cropBox, fitTransform, CropTracker, sameBox,
 } from '../content-bounds.js';
 
 const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css';
-const CORNERS = ['tl', 'tr', 'bl', 'br'];
-const CORNER_GLYPH = { tl: '⌜', tr: '⌝', bl: '⌞', br: '⌟' };
-const CORNER_NAME = { tl: 'top-left', tr: 'top-right', bl: 'bottom-left', br: 'bottom-right' };
-const EDGES = ['top', 'bottom', 'left', 'right'];
-const EDGE_GLYPH = { top: '↑', bottom: '↓', left: '←', right: '→' };
-const EDGE_NAME = { top: 'top', bottom: 'bottom', left: 'left', right: 'right' };
 const FRAME_TIP = 'Click to switch the focused view to this window';
 const BAR_THICK = 200;     // px: bar height (top/bottom) or width (left/right)
 const POLL_MS = 1500;      // keep previews live (server coalesces to 500ms)
@@ -48,31 +57,59 @@ const STALE_MS = 5000;     // no fresh capture for this long => the window is go
 
 class WebtmuxPip extends LitElement {
   static properties = {
-    // Derived display mode, reflected so the host CSS can key off it:
-    //   'off'    — nothing to show (empty set, or hidden)
-    //   'single' — one window, floating corner box (classic PiP)
-    //   'bar'    — 2+ windows, docked edge bar
+    // Reflected so the host CSS (and a debugging eye) can tell a live preview from an
+    // empty or tucked-away one: 'on' | 'off'. It no longer names a SHAPE — the shape is
+    // per-window now, and both shapes can be on screen at the same time.
     mode: { type: String, reflect: true },
-    // Which corner the single-window box is pinned to (reflected for positioning).
-    corner: { type: String, reflect: true },
-    // Which edge the multi-window bar is docked to (reflected for positioning).
+    // Which edge the docked bar is on (reflected for the harness / debugging).
     edge: { type: String, reflect: true },
-    // Single-window self-preview: the one previewed window IS the focused pane's
-    // current window. Reflected so the host CSS shrinks the box to a 1/4-size hint
-    // instead of hiding it (see willUpdate).
-    mini: { type: Boolean, reflect: true },
-    _wins: { state: true },     // [{windowId, session, label}] — the preview set
+    _wins: { state: true },     // [{windowId, session, label, index, name, slot}]
     _hidden: { state: true },   // true = tucked away (set kept, nothing drawn)
     _stale: { state: true },    // Set<windowId> of windows whose captures stopped
-    _focusedWinId: { state: true }, // window id the FOCUSED terminal is showing (self-preview suppression)
+    _focusedWinId: { state: true }, // window id the FOCUSED terminal is showing (self-preview hint)
   };
 
   static styles = [css`
-    :host { display: none; }
-    :host([mode='single']), :host([mode='bar']) { display: block; }
+    /* The host draws nothing itself: it holds the docked bar and up to four corner
+       boxes, each of which positions ITSELF against the viewport. display:contents keeps
+       the host out of the way entirely rather than making it a fixed full-screen layer —
+       a layer would be one stacking context, and the bar (below the sidebars) and the
+       corner boxes (above the terminal) deliberately sit at different depths. */
+    :host { display: contents; }
 
-    /* ---- SINGLE: the classic floating corner box ---------------------------- */
-    :host([mode='single']) {
+    /* ---- the docked BAR: a strip at terminal z-level (space is reserved by #app
+       padding via the --wt-preview-* vars, so it never floats over content) --- */
+    .bar { display: none; }
+    .bar.on {
+      display: flex;
+      position: fixed;
+      z-index: 30;
+      background: #0e1220;
+      border: 1px solid #0f3460;
+      box-sizing: border-box;
+      font-family: Menlo, Monaco, "Courier New", monospace;
+    }
+    .bar[edge='top'] {
+      top: var(--wt-toolbar-h, 44px); left: 0; right: 0; height: 200px;
+      border-width: 0 0 1px 0; flex-direction: row;
+    }
+    .bar[edge='bottom'] {
+      bottom: 0; left: 0; right: 0; height: 200px;
+      border-width: 1px 0 0 0; flex-direction: row;
+    }
+    .bar[edge='left'] {
+      left: 0; top: var(--wt-toolbar-h, 44px); bottom: 0; width: 200px;
+      border-width: 0 1px 0 0; flex-direction: column;
+    }
+    .bar[edge='right'] {
+      right: 0; top: var(--wt-toolbar-h, 44px); bottom: 0; width: 200px;
+      border-width: 0 0 0 1px; flex-direction: column;
+    }
+
+    /* ---- a corner PiP box: one per corner, floating over the terminal ------- */
+    .pipbox { display: none; }
+    .pipbox.on {
+      display: block;
       position: fixed;
       z-index: 50;
       width: 360px;
@@ -82,58 +119,45 @@ class WebtmuxPip extends LitElement {
       box-shadow: 0 10px 34px rgba(0, 0, 0, 0.6);
       overflow: hidden;
       font-family: Menlo, Monaco, "Courier New", monospace;
+      /* The box no longer balloons on hover: hovering it previews the window in a real
+         terminal region, which is bigger and doesn't cover what the box was over. The
+         transition stays for the mini↔normal change below. */
+      transition: width 0.2s ease;
     }
-    /* The corner box no longer balloons to 3× on hover: hovering it now previews the
-       window in a real terminal region, which is bigger and doesn't cover whatever
-       was underneath the box. The transition stays for the mini↔normal change below. */
-    /* The right-corner offsets clear BOTH right-edge panels — the windows sidebar
-       and the copy-buffer one, each publishing the width it occupies (0 when
-       closed). Adding them is right whether the panels are floating or mounted:
-       either way that many pixels of the right edge are spoken for. */
-    :host([mode='single']) { transition: width 0.2s ease; }
-    :host([mode='single'][corner='tl']) { top: calc(var(--wt-toolbar-h, 44px) + 12px); left: 16px; }
-    :host([mode='single'][corner='tr']) { top: calc(var(--wt-toolbar-h, 44px) + 12px); right: calc(var(--wt-sidebar-w, 0px) + var(--wt-copy-sidebar-w, 0px) + 16px); }
-    :host([mode='single'][corner='bl']) { bottom: 16px; left: 16px; }
-    :host([mode='single'][corner='br']) { bottom: 16px; right: calc(var(--wt-sidebar-w, 0px) + var(--wt-copy-sidebar-w, 0px) + 16px); }
-
-    /* Self-preview HINT: when the single-window PiP holds the very window the FOCUSED
-       pane is already showing, we no longer blank it (that made toggling it on feel
-       like a no-op — nothing appeared). Instead shrink it to 1/4 of the normal box
-       (width 360→90, frame 216→54 below) so the keystroke visibly does something.
-       Hovering + pausing pops it back to the normal single size to inspect. */
-    :host([mode='single'][mini]) { width: 90px; }
-    :host([mode='single'][mini]:hover) { width: 360px; transition-delay: 0.35s; }
-
-    /* ---- BAR: a docked strip at terminal z-level (space is reserved by #app
-       padding via the --wt-preview-* vars, so it never floats over content) --- */
-    :host([mode='bar']) {
-      position: fixed;
-      z-index: 30;
-      background: #0e1220;
-      border: 1px solid #0f3460;
-      box-sizing: border-box;
-      font-family: Menlo, Monaco, "Courier New", monospace;
-      display: flex;
+    /* Corner offsets clear everything that has already spoken for that edge: the
+       toolbar, the two right-edge panels (windows sidebar + copy buffers, each
+       publishing the width it occupies, 0 when closed) and — new, now that both can be
+       on screen at once — the space the docked BAR reserved. A PiP box that floats over
+       the bar would be covering the one surface that was built not to cover anything. */
+    .pipbox[corner='tl'] {
+      top: calc(var(--wt-toolbar-h, 44px) + var(--wt-preview-top, 0px) + 12px);
+      left: calc(var(--wt-preview-left, 0px) + 16px);
     }
-    :host([mode='bar'][edge='top']) {
-      top: var(--wt-toolbar-h, 44px); left: 0; right: 0; height: 200px;
-      border-width: 0 0 1px 0; flex-direction: row;
+    .pipbox[corner='tr'] {
+      top: calc(var(--wt-toolbar-h, 44px) + var(--wt-preview-top, 0px) + 12px);
+      right: calc(var(--wt-sidebar-w, 0px) + var(--wt-copy-sidebar-w, 0px) + var(--wt-preview-right, 0px) + 16px);
     }
-    :host([mode='bar'][edge='bottom']) {
-      bottom: 0; left: 0; right: 0; height: 200px;
-      border-width: 1px 0 0 0; flex-direction: row;
+    .pipbox[corner='bl'] {
+      bottom: calc(var(--wt-preview-bottom, 0px) + 16px);
+      left: calc(var(--wt-preview-left, 0px) + 16px);
     }
-    :host([mode='bar'][edge='left']) {
-      left: 0; top: var(--wt-toolbar-h, 44px); bottom: 0; width: 200px;
-      border-width: 0 1px 0 0; flex-direction: column;
-    }
-    :host([mode='bar'][edge='right']) {
-      right: 0; top: var(--wt-toolbar-h, 44px); bottom: 0; width: 200px;
-      border-width: 0 0 0 1px; flex-direction: column;
+    .pipbox[corner='br'] {
+      bottom: calc(var(--wt-preview-bottom, 0px) + 16px);
+      right: calc(var(--wt-sidebar-w, 0px) + var(--wt-copy-sidebar-w, 0px) + var(--wt-preview-right, 0px) + 16px);
     }
 
-    /* The tiles container: a row for top/bottom bars, a column for left/right, and
-       the whole box in single mode. Scrolls when the previews overflow. */
+    /* Self-preview HINT: a corner box holding the very window the FOCUSED pane is
+       already showing is a live copy of what is right in front of you. We don't blank it
+       (that made pinning the current window feel like a no-op — nothing appeared);
+       instead it shrinks to 1/4 of the normal box (width 360→90, frame 216→54 below) so
+       the gesture visibly does something, and pops back to full size on a hover-and-pause
+       when you want to read it. Only corner boxes do this; a bar tile reserves its own
+       space and covers nothing, so there is nothing to get out of the way. */
+    .pipbox.mini { width: 90px; }
+    .pipbox.mini:hover { width: 360px; transition-delay: 0.35s; }
+
+    /* The tiles container: a row for top/bottom bars, a column for left/right, and the
+       whole box inside a corner PiP. Scrolls when the bar's previews overflow. */
     .tiles {
       flex: 1 1 auto;
       min-width: 0;
@@ -141,16 +165,16 @@ class WebtmuxPip extends LitElement {
       display: flex;
       gap: 8px;
     }
-    :host([mode='single']) .tiles { padding: 0; gap: 0; }
-    :host([mode='bar'][edge='top']) .tiles,
-    :host([mode='bar'][edge='bottom']) .tiles { flex-direction: row; overflow-x: auto; overflow-y: hidden; padding: 8px; }
-    :host([mode='bar'][edge='left']) .tiles,
-    :host([mode='bar'][edge='right']) .tiles { flex-direction: column; overflow-y: auto; overflow-x: hidden; padding: 8px; }
+    .pipbox .tiles { padding: 0; gap: 0; height: 100%; }
+    .bar[edge='top'] .tiles,
+    .bar[edge='bottom'] .tiles { flex-direction: row; overflow-x: auto; overflow-y: hidden; padding: 8px; }
+    .bar[edge='left'] .tiles,
+    .bar[edge='right'] .tiles { flex-direction: column; overflow-y: auto; overflow-x: hidden; padding: 8px; }
 
-    /* A single preview tile: a scaled screen + a label strip. Bar tiles keep a FIXED
-       size (the bar never grows). Hovering one used to pop a floating magnifier next
-       to the bar; it now previews the window in a real terminal region instead (see
-       hover-preview.js) — bigger, in place, and the same gesture everywhere else. */
+    /* A single preview tile: a scaled screen + a label strip. THE SAME ELEMENT in the
+       bar and in a corner box — only its size and border come from the surface it is in.
+       Hovering one previews the window in a real terminal region (see hover-preview.js) —
+       bigger, in place, and the same gesture everywhere else in the UI. */
     .ptile {
       position: relative;
       display: flex;
@@ -165,19 +189,19 @@ class WebtmuxPip extends LitElement {
       user-select: none;
       -webkit-user-select: none;
     }
-    /* Single mode: the one tile fills the whole box (no border/radius of its own). */
-    :host([mode='single']) .ptile {
+    /* In a corner box the one tile fills the box (no border/radius of its own). */
+    .pipbox .ptile {
       flex: 1 1 auto;
       border: none;
       border-radius: 0;
     }
-    /* Bar mode tile sizing: fixed-ish along the scroll axis, full across it. */
-    :host([mode='bar'][edge='top']) .ptile,
-    :host([mode='bar'][edge='bottom']) .ptile { flex: 0 0 300px; height: 100%; }
-    :host([mode='bar'][edge='left']) .ptile,
-    :host([mode='bar'][edge='right']) .ptile { flex: 0 0 auto; height: 150px; width: 100%; }
+    /* Bar tile sizing: fixed-ish along the scroll axis, full across it. */
+    .bar[edge='top'] .ptile,
+    .bar[edge='bottom'] .ptile { flex: 0 0 300px; height: 100%; }
+    .bar[edge='left'] .ptile,
+    .bar[edge='right'] .ptile { flex: 0 0 auto; height: 150px; width: 100%; }
     .ptile.current { border-color: #37d17a; }
-    :host([mode='single']) .ptile.current { border: none; }
+    .pipbox .ptile.current { border: none; }
 
     .pframe {
       position: relative;
@@ -188,14 +212,14 @@ class WebtmuxPip extends LitElement {
       cursor: pointer;                 /* the whole preview is click-to-activate */
       border-bottom: 1px solid #0f3460;
     }
-    /* Single mode keeps the classic fixed-height frame. */
-    :host([mode='single']) .pframe { height: 216px; flex: none; transition: height 0.2s ease; }
+    /* A corner box keeps the classic fixed-height frame. */
+    .pipbox .pframe { height: 216px; flex: none; transition: height 0.2s ease; }
     /* Mini self-preview frame: 1/4 height at rest, back to the normal 216 on hover.
-       This grow SURVIVES the change above, because the mini box holds the window the
-       focused region is already showing — so hovering it previews nothing (there'd be
-       nothing new to see), and popping it back to full size is the only way to read it. */
-    :host([mode='single'][mini]) .pframe { height: 54px; }
-    :host([mode='single'][mini]:hover) .pframe { height: 216px; transition-delay: 0.35s; }
+       This grow SURVIVES the hover-preview change above, because the mini box holds the
+       window the focused region is already showing — so hovering it previews nothing
+       (there'd be nothing new to see), and popping it back is the only way to read it. */
+    .pipbox.mini .pframe { height: 54px; }
+    .pipbox.mini:hover .pframe { height: 216px; transition-delay: 0.35s; }
     /* THE PREVIEW IS INERT — the same rule the Exposé tiles follow, for the same
        reason (see .tile-screen there). The xterm inside a preview is read-only but
        still a live control: it takes mousedown to focus its hidden textarea and
@@ -203,8 +227,8 @@ class WebtmuxPip extends LitElement {
        snapshot — with the highlight in the wrong place, because the screen is
        CSS-scaled and xterm's hit-testing knows nothing about that — instead of
        pressing the tile. Transparent to the pointer, the whole frame is the single
-       click-to-activate target it is documented to be, and the × / stoplight that
-       sit on top of it are unaffected (they are siblings, not children). */
+       click-to-activate target it is documented to be, and the controls / stoplight
+       that sit on top of it are unaffected (they are siblings, not children). */
     .screen-host { position: absolute; inset: 0; pointer-events: none; }
     .screen { position: absolute; top: 0; left: 0; transform-origin: top left; }
 
@@ -216,29 +240,6 @@ class WebtmuxPip extends LitElement {
       color: #ffb4b4; font-size: 13px; letter-spacing: 0.04em;
       text-shadow: 0 1px 4px #000; pointer-events: none;
     }
-
-    /* Per-tile hover × (remove from preview). Top-right of each tile. */
-    .premove {
-      position: absolute;
-      top: 6px; right: 6px;
-      width: 22px; height: 22px;
-      display: flex; align-items: center; justify-content: center;
-      border-radius: 5px;
-      border: 2px solid rgba(233, 69, 96, 0.7);
-      background: rgba(9, 13, 28, 0.9);
-      color: #f3a7b4;
-      font-size: 13px; line-height: 1; padding: 0;
-      cursor: pointer;
-      opacity: 0; pointer-events: none;
-      transition: opacity 0.12s, transform 0.1s, background 0.12s, color 0.12s;
-      z-index: 4;
-    }
-    .ptile:hover .premove { opacity: 1; pointer-events: auto; }
-    .premove:hover { transform: scale(1.12); background: #e94560; color: #fff; border-color: #e94560; }
-    /* Single mode: the tile IS the whole box, so its top-right × duplicates the
-       classic top-center close (.controls .close). Hide the per-tile × here — it's
-       only meant for the bar's individual tiles. */
-    :host([mode='single']) .premove { display: none; }
 
     .plabel {
       flex: 0 0 auto;
@@ -255,8 +256,8 @@ class WebtmuxPip extends LitElement {
        as every other stoplight (see stoplight.js): green working, amber prompting
        (pulsing), red waiting for work to do, unfilled not reporting. Sits under the
        hover controls (z-index 3) and passes the pointer through so it never blocks
-       the × / corner buttons it shares this corner with — which is why the colour
-       key lives on the frame's tooltip, not the dot's (see _paintWork). */
+       the buttons it shares this corner with — which is why the colour key lives on
+       the frame's tooltip, not the dot's (see _paintWork). */
     .pwork {
       position: absolute;
       top: 7px; right: 7px;
@@ -276,9 +277,20 @@ class WebtmuxPip extends LitElement {
     .pwork.wait { background: #f5c542; border-color: #f5c542; box-shadow: 0 0 6px #f5c542; animation: wt-wait 1.4s ease-in-out infinite; }
     @keyframes wt-wait { 50% { opacity: 0.35; } }
 
-    /* ---- classic single-box hover controls (corner move + close) ------------ */
-    .controls { position: absolute; inset: 0; pointer-events: none; z-index: 3; }
-    .cbtn, .close {
+    /* ---- the tile's hover CONTROLS — one cluster, both surfaces --------------
+       Where a previewed window is drawn is a property of the window, so the controls
+       that move it are a property of the TILE, and a bar tile and a corner box get the
+       same ones from the same builder (_paintControls):
+         • four corner buttons, laid out at the tile's own corners so the button's
+           position IS the placement it names. Only free corners are drawn — a corner
+           another window already holds is not a placement, so it is not offered — plus
+           this tile's own corner, marked active.
+         • "▤" back to the docked bar, shown only when the tile is pinned to a corner.
+         • "✕" take this window out of the preview altogether.
+       They differ in exactly one thing: buttons are smaller in the bar, whose tiles are
+       smaller. */
+    .tctl { position: absolute; inset: 0; pointer-events: none; z-index: 3; }
+    .tbtn {
       position: absolute;
       display: flex; align-items: center; justify-content: center;
       border-radius: 6px;
@@ -289,22 +301,32 @@ class WebtmuxPip extends LitElement {
       transition: opacity 0.12s, transform 0.1s, border-color 0.12s, background 0.12s;
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.55);
     }
-    .cbtn { width: 32px; height: 32px; font-size: 18px; }
-    .cbtn.tl { top: 8px; left: 8px; }
-    .cbtn.tr { top: 8px; right: 8px; }
-    .cbtn.bl { bottom: 8px; left: 8px; }
-    .cbtn.br { bottom: 8px; right: 8px; }
-    .close {
-      top: 8px; left: 50%; transform: translateX(-50%);
+    .ptile:hover .tbtn { opacity: 1; pointer-events: auto; }
+    /* A mini box is 90px wide until the hover-and-pause pops it back to 360; drawing the
+       cluster into those 90px would stack every button on top of every other one for a
+       third of a second. Hold them until the box has finished growing (the same 0.35s
+       delay, plus the 0.2s the width takes). Scoped to :hover so they still vanish the
+       instant the pointer leaves. */
+    .pipbox.mini .ptile:hover .tbtn { transition-delay: 0.55s; }
+    .tbtn.corner { width: 32px; height: 32px; font-size: 18px; }
+    .bar .tbtn.corner { width: 26px; height: 26px; font-size: 15px; }
+    .tbtn.tl { top: 8px; left: 8px; }
+    .tbtn.tr { top: 8px; right: 8px; }
+    .tbtn.bl { bottom: 8px; left: 8px; }
+    .tbtn.br { bottom: 8px; right: 8px; }
+    .tbtn.corner:hover { transform: scale(1.15); border-color: #7cc0ff; background: rgba(20, 28, 54, 0.95); color: #fff; }
+    .tbtn.corner.active { border-color: #37d17a; color: #37d17a; }
+    .tbtn.corner.active:hover { border-color: #5be39a; color: #fff; }
+    /* Close (top centre) and back-to-the-bar (bottom centre): the two controls that are
+       not about a corner get the two edges no corner button claims. */
+    .tbtn.close, .tbtn.tobar {
+      left: 50%; transform: translateX(-50%);
       width: 34px; height: 26px; font-size: 14px;
-      border-color: rgba(233, 69, 96, 0.7);
     }
-    :host([mode='single']:hover) .cbtn,
-    :host([mode='single']:hover) .close { opacity: 1; pointer-events: auto; }
-    .cbtn:hover { transform: scale(1.15); border-color: #7cc0ff; background: rgba(20, 28, 54, 0.95); color: #fff; }
-    .cbtn.active { border-color: #37d17a; color: #37d17a; }
-    .cbtn.active:hover { border-color: #5be39a; color: #fff; }
-    .close:hover { transform: translateX(-50%) scale(1.12); border-color: #e94560; background: #e94560; color: #fff; }
+    .tbtn.close { top: 8px; border-color: rgba(233, 69, 96, 0.7); }
+    .tbtn.tobar { bottom: 8px; }
+    .tbtn.close:hover { transform: translateX(-50%) scale(1.12); border-color: #e94560; background: #e94560; color: #fff; }
+    .tbtn.tobar:hover { transform: translateX(-50%) scale(1.12); border-color: #7cc0ff; background: rgba(20, 28, 54, 0.95); color: #fff; }
 
     /* ---- bar chrome: a compact always-visible control cluster ---------------- */
     .barctl {
@@ -315,11 +337,11 @@ class WebtmuxPip extends LitElement {
       padding: 6px;
       background: #0b0f1c;
     }
-    :host([mode='bar'][edge='left']) .barctl,
-    :host([mode='bar'][edge='right']) .barctl { flex-direction: row; flex-wrap: wrap; justify-content: center; }
+    .bar[edge='left'] .barctl,
+    .bar[edge='right'] .barctl { flex-direction: row; flex-wrap: wrap; justify-content: center; }
     .barctl .grp { display: flex; gap: 4px; }
-    :host([mode='bar'][edge='top']) .barctl,
-    :host([mode='bar'][edge='bottom']) .barctl { flex-direction: column; justify-content: center; }
+    .bar[edge='top'] .barctl,
+    .bar[edge='bottom'] .barctl { flex-direction: column; justify-content: center; }
     .bbtn {
       width: 28px; height: 28px;
       display: flex; align-items: center; justify-content: center;
@@ -343,25 +365,27 @@ class WebtmuxPip extends LitElement {
   constructor() {
     super();
     this.mode = 'off';
-    this.mini = false;
-    // Placement (corner for single PiP, edge for the docked bar) is a shared 'pip'
-    // pref → StateStore. The window SET + hidden flag are persisted too (for reload
-    // restore) but applied once via restoreState(), not from this subscription — so
-    // re-adding restored windows can't loop back through the store.
+    // The bar's EDGE is a shared 'pip' pref → StateStore, as is `corner` — which is no
+    // longer where "the" box lives (each pipped window names its own corner) but which
+    // corner a NEW pip prefers, and how a pre-slot blob is read back. The window SET +
+    // hidden flag are persisted too (for reload restore) but applied once via
+    // restoreState(), not from this subscription — so re-adding restored windows can't
+    // loop back through the store.
     const pip = stateStore.section('pip');
-    this.corner = CORNERS.includes(pip.corner) ? pip.corner : 'tr';
     this.edge = EDGES.includes(pip.previewEdge) ? pip.previewEdge : 'bottom';
+    this._preferCorner = CORNERS.includes(pip.corner) ? pip.corner : 'tr';
     stateStore.subscribe(() => {
       const p = stateStore.section('pip');
-      if (CORNERS.includes(p.corner)) this.corner = p.corner;
       if (EDGES.includes(p.previewEdge)) this.edge = p.previewEdge;
+      if (CORNERS.includes(p.corner)) this._preferCorner = p.corner;
       this.requestUpdate();
     });
     this.cache = null;      // shared CaptureCache — set by SplitManager
     this.manager = null;    // SplitManager — set by SplitManager
     this.onChange = null;   // fired whenever the set / hidden state changes (toolbar sync)
-    this._wins = [];        // [{windowId, session, label, index, name}]
+    this._wins = [];        // [{windowId, session, label, index, name, slot}]
     this._hidden = false;
+    this._on = false;          // derived in willUpdate: is anything actually drawn?
     this._restoring = false;   // applying a persisted set — writes are suppressed
     // Has the USER changed the preview on this client? Until they have, the shared
     // blob is allowed to re-apply itself over what we restored from the cache.
@@ -386,10 +410,8 @@ class WebtmuxPip extends LitElement {
         if (this._has(c.windowId)) this._paint(c.windowId);
       }
     };
-    // The hover-to-enlarge CSS resizes the frame; re-letterbox the xterm inside it
-    // when that transition settles. Fires on the HOST's own transition (the single
-    // corner box's width); inner tile/pframe transitions are handled per-tile in
-    // _buildTile (their transitionend doesn't cross the shadow boundary to here).
+    // The hover-to-enlarge CSS resizes a corner box; re-letterbox the xterm inside it
+    // when that transition settles. Transitions on the boxes bubble to the host.
     this.addEventListener('transitionend', () => this._rescaleAll());
     this._tip = new Tip(this);  // shared hover hint — see tooltip.js
   }
@@ -402,6 +424,7 @@ class WebtmuxPip extends LitElement {
     if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null; }
     this.cache?.removeEventListener('update', this._onCacheUpdate);
     this.mode = 'off';    // so _applySpace releases any reserved edge padding
+    this._on = false;
     this._applySpace();
   }
 
@@ -410,9 +433,12 @@ class WebtmuxPip extends LitElement {
   get count() { return this._wins.length; }
   get hidden() { return this._hidden; }
   hasWindow(id) { return this._has(id); }
+  // Where a previewed window is drawn: 'bar', a corner, or null when it isn't previewed.
+  slotOf(id) { return this._wins.find((w) => w.windowId === id)?.slot || null; }
   // The windows the preview is currently SHOWING. The SplitManager treats these as
   // covered when deciding what the strip's overflow arrow still has to announce — a
-  // tile flashing in the bar has already done the arrow's job for that window.
+  // tile flashing in the bar (or in a corner box) has already done the arrow's job for
+  // that window.
   //
   // Empty while the preview is tucked away: a hidden tile flashes at nobody, and
   // counting it would let the arrow go quiet about a window that has no visible
@@ -420,10 +446,10 @@ class WebtmuxPip extends LitElement {
   windowIds() { return this._hidden ? [] : this._wins.map((w) => w.windowId); }
   _has(id) { return this._wins.some((w) => w.windowId === id); }
 
-  // The window the FOCUSED terminal is currently showing. When the preview holds
-  // exactly this one window, the single-window PiP self-suppresses (see willUpdate)
-  // — no point floating a live copy of what you're already looking at. Reactive
-  // state, so a change re-derives the mode; a no-op when unchanged.
+  // The window the FOCUSED terminal is currently showing. A corner box holding exactly
+  // this window shrinks to a hint rather than floating a live copy of what you are
+  // already looking at (see the .pipbox.mini rules). Reactive state, so a change
+  // re-derives which box is mini; a no-op when unchanged.
   setFocusedWindow(id) {
     const v = id || null;
     if (this._focusedWinId === v) return;
@@ -431,9 +457,11 @@ class WebtmuxPip extends LitElement {
   }
 
   // Add a window to the preview (no-op if already present). meta = {index,name,session}.
-  addWindow(id, meta = {}) {
+  // Lands in the docked bar unless a slot is named — the bar is the placement that
+  // covers nothing and has no capacity limit, so it is what a keystroke should mean.
+  addWindow(id, meta = {}, slot = BAR) {
     if (!id || this._has(id)) return;
-    this._wins = [...this._wins, this._entry(id, meta)];
+    this._wins = placeWindow([...this._wins, this._entry(id, meta, slot)], id, slot);
     this._hidden = false;              // adding always reveals
     this._ensurePolling();
     this.cache?.request([id], true);   // prime a capture immediately
@@ -450,9 +478,23 @@ class WebtmuxPip extends LitElement {
   }
 
   // Add if absent, remove if present — the toolbar button / Ctrl+Alt+I behavior.
-  toggleWindow(id, meta = {}) {
+  toggleWindow(id, meta = {}, slot = BAR) {
     if (this._has(id)) this.removeWindow(id);
-    else this.addWindow(id, meta);
+    else this.addWindow(id, meta, slot);
+  }
+
+  // Pin a window to a corner (Ctrl+Alt+Shift+I and the tiles' corner buttons), or send
+  // it back to the bar if it is already pinned — one key that walks a window between the
+  // two surfaces. A window that isn't previewed at all joins at a free corner, falling
+  // back to the bar when all four are taken: the corners are a fixed resource, and
+  // silently doing nothing is a worse answer than the placement that always works.
+  togglePip(id, meta = {}) {
+    if (!id) return;
+    const slot = this.slotOf(id);
+    if (slot && slot !== BAR) { this.setSlot(id, BAR); return; }
+    const corner = freeCorner(this._wins, this._preferCorner) || BAR;
+    if (slot === BAR) this.setSlot(id, corner);
+    else this.addWindow(id, meta, corner);
   }
 
   // Hide/show the whole preview WITHOUT forgetting the set.
@@ -470,11 +512,26 @@ class WebtmuxPip extends LitElement {
 
   // ---- placement --------------------------------------------------------------
 
-  setCorner(c) {
-    if (!CORNERS.includes(c)) return;
-    this.corner = c;
-    stateStore.patchSection('pip', { corner: c });
-    this._rescaleAll();
+  // Move one previewed window between the bar and the four corners. Corner collisions
+  // can't normally happen (the controls only offer free corners), but placeWindow bumps
+  // an occupant to the bar rather than drawing two boxes in one place if one ever does.
+  setSlot(id, slot) {
+    if (!this._has(id)) return;
+    const want = normalizeSlot(slot);
+    if (this.slotOf(id) === want) return;
+    this._wins = placeWindow(this._wins, id, want);
+    // Remember the corner as the default for the NEXT pip: whichever corner you keep
+    // reaching for is the one an unaimed "pin this" should use.
+    // (…but not while a persisted set is being applied: adopting a blob is not the user
+    // reaching for a corner, and publishing a preference from it is churn.)
+    if (want !== BAR) {
+      this._preferCorner = want;
+      if (!this._restoring) stateStore.patchSection('pip', { corner: want });
+    }
+    // A tile that changed surface is rebuilt (see _syncTiles), so re-prime its capture:
+    // the cache still holds the last screen, and repainting from it is instant.
+    this.cache?.request([id], true);
+    this._changed();
   }
 
   setEdge(e) {
@@ -488,67 +545,47 @@ class WebtmuxPip extends LitElement {
   // ---- lit lifecycle ----------------------------------------------------------
 
   willUpdate() {
-    // Derive the display mode from the set size + hidden flag BEFORE render, so the
-    // reflected `mode` attribute (and thus the host CSS) is correct this frame.
-    const derived = (this._hidden || this._wins.length === 0)
-      ? 'off'
-      : (this._wins.length === 1 ? 'single' : 'bar');
-    // Self-preview: a single-window PiP of the very window the FOCUSED terminal is
-    // already showing is redundant — you'd be watching a live copy of what's right in
-    // front of you. We used to blank it (mode 'off'), but then toggling the PiP on for
-    // the current window did nothing visible and felt broken. Instead keep it 'single'
-    // and flag `mini`, which shrinks the box to a 1/4-size hint (host CSS) — the
-    // keystroke visibly does something, and the box pops to full size the moment focus
-    // moves to a different window. Only 'single' can self-match; the bar never does.
-    this.mode = derived;
-    this.mini = derived === 'single' && this._wins[0]?.windowId === this._focusedWinId;
+    // Is anything drawn at all? Derived BEFORE render so the reflected `mode` attribute
+    // is correct this frame, and so _syncTiles knows whether to build or tear down.
+    this._on = !this._hidden && this._wins.length > 0;
+    this.mode = this._on ? 'on' : 'off';
   }
 
   updated() {
     // Keep the imperative xterm tiles, reserved space, and scaling in sync with the
-    // current mode/placement after every render.
+    // current placement after every render.
     this._syncTiles();
     this._applySpace();
     this._rescaleAll();
   }
 
+  // Both surfaces are rendered UNCONDITIONALLY and shown with a class, rather than
+  // being added and removed from the template. Their `.tiles` containers hold
+  // imperatively-built tiles, so a container that Lit is free to recreate is a container
+  // that can lose a live terminal on an unrelated re-render; a stable one cannot.
   render() {
-    const single = this.mode === 'single';
-    const bar = this.mode === 'bar';
+    const bar = this._on ? this._wins.filter((w) => w.slot === BAR) : [];
+    const corners = this._on ? cornerOccupancy(this._wins) : new Map();
     return html`
       <link rel="stylesheet" href=${XTERM_CSS} />
-      <div class="tiles"></div>
-      ${single ? this._singleChrome() : ''}
-      ${bar ? this._barChrome() : ''}
+      <div class="bar ${bar.length ? 'on' : ''}" edge=${this.edge}>
+        ${bar.length ? this._barChrome() : ''}
+        <div class="tiles" data-slot="bar"></div>
+      </div>
+      ${CORNERS.map((c) => html`
+        <div
+          class="pipbox ${corners.has(c) ? 'on' : ''} ${corners.get(c) === this._focusedWinId ? 'mini' : ''}"
+          corner=${c}
+        ><div class="tiles" data-slot=${c}></div></div>
+      `)}
       <div class="wt-tip"></div>
     `;
   }
 
-  // Classic corner-box controls: the 4 corner-move buttons (each previews where the
-  // box will jump) + a close that empties the preview.
-  _singleChrome() {
-    return html`
-      <div class="controls" @click=${(e) => e.stopPropagation()}>
-        ${CORNERS.map((c) => html`
-          <button
-            class="cbtn ${c} ${this.corner === c ? 'active' : ''}"
-            title="Move to ${CORNER_NAME[c]}"
-            aria-label="Move preview to ${CORNER_NAME[c]}"
-            @click=${(e) => { e.stopPropagation(); this.setCorner(c); }}
-          >${CORNER_GLYPH[c]}</button>
-        `)}
-        <button
-          class="close"
-          title="Close preview (${chord('I')})"
-          aria-label="Close preview"
-          @click=${(e) => { e.stopPropagation(); this.removeWindow(this._wins[0]?.windowId); }}
-        >✕</button>
-      </div>
-    `;
-  }
-
   // Bar controls: dock-to-edge buttons + a hide toggle, in a compact cluster at the
-  // start of the bar (buttons aligned along the bar's cross-axis).
+  // start of the bar (buttons aligned along the bar's cross-axis). These are the BAR's
+  // own controls — where the strip is docked, and whether the preview is on screen at
+  // all — as distinct from the per-tile cluster, which moves one window.
   _barChrome() {
     return html`
       <div class="barctl" @click=${(e) => e.stopPropagation()}>
@@ -575,39 +612,57 @@ class WebtmuxPip extends LitElement {
   // ---- imperative tile reconciliation ----------------------------------------
 
   _syncTiles() {
-    const host = this.renderRoot?.querySelector('.tiles');
-    if (!host) return;
     // Going 'off' (empty set OR hidden) must DISPOSE the xterm instances, not just
     // drop their tile DOM: each rec.screen lives inside the tile we're about to
     // clear, so keeping the rec around orphans its terminal. On re-show _ensureTerm
     // would then hand back that orphaned rec and never re-attach it to the fresh
-    // tile — leaving every preview (and the single-window PiP) blank. Tearing down
-    // here forces a clean rebuild+repaint from the cache when the preview returns.
-    if (this.mode === 'off') { this._teardownAll(); host.textContent = ''; return; }
+    // tile — leaving every preview blank. Tearing down here forces a clean
+    // rebuild+repaint from the cache when the preview returns.
+    const hosts = new Map();
+    for (const el of this.renderRoot?.querySelectorAll('.tiles') || []) hosts.set(el.dataset.slot, el);
+    if (!this._on) {
+      this._teardownAll();
+      for (const el of hosts.values()) el.textContent = '';
+      return;
+    }
 
-    const want = this._wins.map((w) => w.windowId);
-    const have = [...host.children].map((el) => el.dataset.window);
-
-    // Remove tiles no longer in the set.
-    for (const el of [...host.children]) {
-      if (!want.includes(el.dataset.window)) {
-        this._teardownTerm(el.dataset.window);
-        el.remove();
+    // Drop tiles that left the preview or CHANGED SURFACE. A tile that moved is rebuilt
+    // in its new container rather than re-parented: an xterm carries measurement state
+    // tied to where it is laid out, and the capture cache still holds this window's last
+    // screen, so a fresh tile repaints from it in the same frame it is created.
+    for (const [slot, host] of hosts) {
+      for (const el of [...host.children]) {
+        const w = this._wins.find((x) => x.windowId === el.dataset.window);
+        if (!w || w.slot !== slot) { this._teardownTerm(el.dataset.window); el.remove(); }
       }
     }
-    // Add / reorder tiles to match the set order.
-    this._wins.forEach((w, i) => {
-      let el = [...host.children].find((c) => c.dataset.window === w.windowId);
-      if (!el) el = this._buildTile(w);
-      if (host.children[i] !== el) host.insertBefore(el, host.children[i] || null);
-    });
-    // Paint whatever's cached now — screen, stoplight and flash. The status pass has
-    // to run here and not only from setWorking/setAlerts: those only fire when the
-    // VALUE changes, so a tile rebuilt while nothing was moving (re-showing the
-    // preview, reordering the set) would come back with a blank dot and no ring on a
-    // window that has been asking for attention the whole time.
+    // …and sweep any terminal whose tile is no longer in the tree at all (a corner box
+    // that went away takes its container's children with it, without passing through the
+    // loop above).
+    for (const id of [...this._terms.keys()]) {
+      if (!this._tileEl(id)) this._teardownTerm(id);
+    }
+
+    // Add / reorder tiles to match the set order within each surface.
+    for (const [slot, host] of hosts) {
+      const want = this._wins.filter((w) => w.slot === slot);
+      want.forEach((w, i) => {
+        let el = [...host.children].find((c) => c.dataset.window === w.windowId);
+        if (!el) el = this._buildTile(w);
+        if (host.children[i] !== el) host.insertBefore(el, host.children[i] || null);
+      });
+    }
+    // Paint whatever's cached now — screen, controls, stoplight and flash. The status
+    // pass has to run here and not only from setWorking/setAlerts: those only fire when
+    // the VALUE changes, so a tile rebuilt while nothing was moving (re-showing the
+    // preview, moving another window to a corner) would come back with a blank dot and no
+    // ring on a window that has been asking for attention the whole time. The controls
+    // pass has to run here too, and for a related reason: which corners a tile may offer
+    // depends on where the OTHER windows are, so every tile's cluster is re-derived
+    // whenever any window moves.
     for (const w of this._wins) {
       this._paint(w.windowId);
+      this._paintControls(w);
       this._paintWork(w.windowId);
     }
   }
@@ -617,7 +672,7 @@ class WebtmuxPip extends LitElement {
     tile.className = 'ptile';
     tile.dataset.window = w.windowId;
 
-    // Re-letterbox this tile's xterm once a size transition settles (single mode's
+    // Re-letterbox this tile's xterm once a size transition settles (a corner box's
     // pframe grows on hover; bubbles to the tile within the shadow tree).
     tile.addEventListener('transitionend', () => this._rescale(w.windowId));
 
@@ -644,13 +699,11 @@ class WebtmuxPip extends LitElement {
     work.setAttribute('role', 'img');
     frame.appendChild(work);
 
-    const remove = document.createElement('button');
-    remove.className = 'premove';
-    remove.textContent = '✕';
-    remove.title = 'Remove from preview';
-    remove.setAttribute('aria-label', 'Remove from preview');
-    remove.addEventListener('click', (e) => { e.stopPropagation(); this.removeWindow(w.windowId); });
-    frame.appendChild(remove);
+    // The placement/close cluster. Filled by _paintControls, which is re-run for every
+    // tile whenever the set moves — its contents depend on the other windows.
+    const ctl = document.createElement('div');
+    ctl.className = 'tctl';
+    frame.appendChild(ctl);
 
     const label = document.createElement('div');
     label.className = 'plabel';
@@ -675,6 +728,52 @@ class WebtmuxPip extends LitElement {
     return tile;
   }
 
+  // Fill (or refresh) one tile's hover controls from the shared placement model — the
+  // SAME call for a bar tile and for a corner box, because "where should this window be
+  // drawn" is one question with one answer wherever it is asked from.
+  //
+  // Rebuilt only when the answer actually changes: this runs for every tile on every
+  // reconcile, and replacing the buttons under a pointer that is resting on one would
+  // restart their fade and drop the press.
+  _paintControls(w) {
+    const tile = this._tileEl(w.windowId);
+    const ctl = tile?.querySelector('.tctl');
+    if (!ctl) return;
+    const model = tileControls(this._wins, w.windowId);
+    const sig = JSON.stringify(model);
+    if (ctl.dataset.sig === sig) return;
+    ctl.dataset.sig = sig;
+    ctl.textContent = '';
+
+    const button = (cls, glyph, title, fn) => {
+      const b = document.createElement('button');
+      b.className = `tbtn ${cls}`;
+      b.textContent = glyph;
+      b.title = title;
+      b.setAttribute('aria-label', title);
+      b.addEventListener('click', (e) => { e.stopPropagation(); fn(); });
+      ctl.appendChild(b);
+      return b;
+    };
+
+    for (const { corner, active } of model.corners) {
+      button(
+        `corner ${corner}${active ? ' active' : ''}`,
+        CORNER_GLYPH[corner],
+        active
+          ? `Pinned to the ${CORNER_NAME[corner]} corner`
+          : `Pin to the ${CORNER_NAME[corner]} corner`,
+        () => this.setSlot(w.windowId, corner),
+      );
+    }
+    if (model.toBar) {
+      // ▬ rather than ▤: at this size ▤ is three lines in a box, which is the sidebar's
+      // ☰ with extra steps. A solid strip is what the docked bar looks like.
+      button('tobar', '▬', 'Move back to the preview bar', () => this.setSlot(w.windowId, BAR));
+    }
+    button('close', '✕', `Remove from the preview (${chord('I')})`, () => this.removeWindow(w.windowId));
+  }
+
   // Full "session — window N: name" for a tile's hover hint. Reads `w` live (the
   // same object _paint mutates in place as fresh captures land — `label` there, not
   // `index`/`name`, which are only ever set once at add time), so a rename or a
@@ -686,7 +785,7 @@ class WebtmuxPip extends LitElement {
   // ---- live painting ----------------------------------------------------------
 
   _paint(id) {
-    if (this.mode === 'off') return;
+    if (!this._on) return;
     const win = this._wins.find((w) => w.windowId === id);
     // Prefer the capture for THIS preview's own session (accurate index/session when
     // the window is linked into several); fall back to any representative — the
@@ -837,9 +936,12 @@ class WebtmuxPip extends LitElement {
 
   // ---- helpers ----------------------------------------------------------------
 
-  _entry(id, meta) {
+  _entry(id, meta, slot) {
     const label = meta.index != null ? `${meta.index}: ${meta.name || 'bash'}` : (meta.name || '…');
-    return { windowId: id, session: meta.session || '', label, index: meta.index, name: meta.name };
+    return {
+      windowId: id, session: meta.session || '', label,
+      index: meta.index, name: meta.name, slot: normalizeSlot(slot),
+    };
   }
 
   _tileEl(id) {
@@ -894,10 +996,9 @@ class WebtmuxPip extends LitElement {
     this._paintAlert(id, tile);
     // The colour key belongs on the FRAME, not on the dot itself. The dot is
     // deliberately pointer-events:none — it shares the tile's top-right corner with
-    // the hover-revealed × (and, in single mode, the move-to-corner button), so
-    // making it hoverable would eat part of their hit area. Because it lets the
-    // pointer through, hovering the dot IS hovering the frame, so the frame's
-    // tooltip is what a user pointing at the dot actually reads.
+    // the hover-revealed controls — so making it hoverable would eat part of their hit
+    // area. Because it lets the pointer through, hovering the dot IS hovering the
+    // frame, so the frame's tooltip is what a user pointing at the dot actually reads.
     const frame = tile.querySelector('.pframe');
     if (frame) frame.title = `${FRAME_TIP}\n\n${workTip(v)}${alertTip(this._alertFor(id))}`;
   }
@@ -910,7 +1011,7 @@ class WebtmuxPip extends LitElement {
   }
 
   // Put the ring flash on (or take it off) a tile. Applied to the TILE rather than
-  // the frame so it rings the label too — in bar mode the label is what tells you
+  // the frame so it rings the label too — in the bar the label is what tells you
   // WHICH window is asking, and a ring that stops short of it reads as decoration on
   // a screenshot rather than a flag on a window.
   _paintAlert(id, tile) {
@@ -942,14 +1043,15 @@ class WebtmuxPip extends LitElement {
     for (const id of [...this._terms.keys()]) this._teardownTerm(id);
   }
 
-  // Any change to the set or hidden flag: re-render, stop polling when empty or
-  // tucked away (a hidden preview has no tiles to feed — force-polling captures
-  // for it would fork tmux every 1.5s indefinitely for nothing), tell the toolbar
-  // (via onChange) to refresh its preview buttons. setHidden(false) re-primes.
+  // Any change to the set, a window's placement, or the hidden flag: re-render, stop
+  // polling when empty or tucked away (a hidden preview has no tiles to feed —
+  // force-polling captures for it would fork tmux every 1.5s indefinitely for nothing),
+  // tell the toolbar (via onChange) to refresh its preview buttons. setHidden(false)
+  // re-primes.
   _changed() {
     // Anything that reaches here while we are NOT restoring is the user adding,
-    // removing or hiding a preview — so the shared blob stops re-applying itself
-    // over this client's set (see the adopt in restoreState).
+    // removing, moving or hiding a preview — so the shared blob stops re-applying
+    // itself over this client's set (see the adopt in restoreState).
     if (!this._restoring) this._userTouched = true;
     if (this._wins.length === 0 || this._hidden) {
       if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null; }
@@ -962,11 +1064,12 @@ class WebtmuxPip extends LitElement {
     if (this.onChange) this.onChange();
   }
 
-  // Persist the preview SET (window ids + their labels) and hidden flag into the
-  // shared 'pip' section so a reload restores the preview. Full entries (not bare
-  // ids) so labels are right before the first capture arrives. Merged (patchSection)
-  // so corner/previewEdge are preserved. Skipped while restoreState() is applying,
-  // so re-adding restored windows can't re-enter here mid-restore.
+  // Persist the preview SET (window ids, labels and PLACEMENTS) and the hidden flag into
+  // the shared 'pip' section so a reload restores the preview exactly as it was drawn.
+  // Full entries (not bare ids) so labels are right before the first capture arrives.
+  // Merged (patchSection) so corner/previewEdge are preserved. Skipped while
+  // restoreState() is applying, so re-adding restored windows can't re-enter here
+  // mid-restore.
   //
   // …and skipped before the first layout push, which is the guard that matters: until
   // then everything we hold came out of THIS browser's localStorage cache, and on a
@@ -976,14 +1079,15 @@ class WebtmuxPip extends LitElement {
     if (this._restoring) return false;
     if (!stateStore.loadedOnce) return false;
     const wins = this._wins.map((w) => ({
-      windowId: w.windowId, session: w.session, index: w.index, name: w.name,
+      windowId: w.windowId, session: w.session, index: w.index, name: w.name, slot: w.slot,
     }));
     return stateStore.patchSection('pip', { wins, hidden: this._hidden });
   }
 
-  // Restore the preview set + hidden flag from the shared 'pip' section (reload
-  // recovery). Called once by the SplitManager after cache/manager are wired. Guarded
-  // so the re-adds it performs don't write back through _persist() (idempotent churn).
+  // Restore the preview set + placements + hidden flag from the shared 'pip' section
+  // (reload recovery). Called once by the SplitManager after cache/manager are wired.
+  // Guarded so the re-adds it performs don't write back through _persist() (idempotent
+  // churn).
   //
   // ADOPT, DON'T RESTORE-ONCE. The cache read here makes the preview reappear
   // instantly, but it is this browser's private guess; the tmux server's copy is the
@@ -999,18 +1103,21 @@ class WebtmuxPip extends LitElement {
   }
 
   // Make the live preview match a persisted 'pip' section: add what's missing, drop
-  // what's no longer listed, and match the hidden flag. RECONCILES rather than just
-  // adding, because the adopt above can run against a blob holding FEWER windows than
-  // the cache did — and a preview that only ever grows would keep resurrecting tiles
-  // another browser closed.
+  // what's no longer listed, move anything whose placement changed, and match the hidden
+  // flag. RECONCILES rather than just adding, because the adopt above can run against a
+  // blob holding FEWER windows than the cache did — and a preview that only ever grows
+  // would keep resurrecting tiles another browser closed.
+  //
+  // winsFromState also upgrades a blob written before placements existed, so a preview
+  // that was open across the change comes back looking like what it was (see
+  // preview-slots.js).
   //
   // The unconditional re-persist this used to end with is gone. Its stated purpose
   // was "so its rev is current", which is precisely the bug: a restore is not an
   // edit, and republishing a cache-derived set at a fresh rev is how a stale (or
   // empty) preview overwrote the shared one.
   _applyPersisted(pip) {
-    const wins = Array.isArray(pip && pip.wins) ? pip.wins : [];
-    const want = wins.filter((w) => w && w.windowId);
+    const want = winsFromState(pip);
     const wantIds = new Set(want.map((w) => w.windowId));
     const hidden = !!(pip && pip.hidden);
     if (!want.length && !this._wins.length && this._hidden === hidden) return;
@@ -1020,7 +1127,8 @@ class WebtmuxPip extends LitElement {
         if (!wantIds.has(w)) this.removeWindow(w);
       }
       for (const w of want) {
-        this.addWindow(w.windowId, { index: w.index, name: w.name, session: w.session });
+        this.addWindow(w.windowId, { index: w.index, name: w.name, session: w.session }, w.slot);
+        this.setSlot(w.windowId, w.slot);   // already present? move it to where the blob says
       }
       this.setHidden(hidden);
     } finally {
@@ -1029,10 +1137,11 @@ class WebtmuxPip extends LitElement {
   }
 
   // Reserve edge space for the docked BAR by publishing --wt-preview-* on :root
-  // (consumed as #app padding). The floating corner box reserves nothing.
+  // (consumed as #app padding, and read back by the corner boxes so they clear it). A
+  // floating corner box reserves nothing — that is the difference between the two.
   _applySpace() {
     const vars = { top: '0px', bottom: '0px', left: '0px', right: '0px' };
-    if (this.mode === 'bar') vars[this.edge] = BAR_THICK + 'px';
+    if (this._on && this._wins.some((w) => w.slot === BAR)) vars[this.edge] = BAR_THICK + 'px';
     try {
       const s = document.documentElement.style;
       s.setProperty('--wt-preview-top', vars.top);

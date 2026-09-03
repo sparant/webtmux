@@ -22,8 +22,9 @@ const GROUPS = [
     rows: [
       { keys: [...M, 'W'], desc: 'Toggle the sidebar (windows & sessions) — tmux ⌃b w' },
       { keys: [...M, 'E'], desc: 'Exposé — every window across all sessions (press again: 2×2 → 3×3 → close)' },
-      { keys: [...M, 'I'], desc: 'Preview — add/remove the focused window (1 = corner box, 2+ = docked edge bar). A previewed window gives up its recents tab while it is in there, and gets it back when it leaves' },
-      { keys: [...M, 'H'], desc: 'Preview — hide / show it (keeps its windows)' },
+      { keys: [...M, 'I'], desc: 'Preview — add/remove the focused window. It joins the docked edge bar, which reserves space rather than covering the terminal. A previewed window gives up its recents tab while it is in there, and gets it back when it leaves' },
+      { keys: [...M, '⇧', 'I'], desc: 'Preview — pin the focused window to a free screen corner as a floating box instead (again: back to the bar). One window per corner, so up to four float at once; a tile’s hover controls aim it at a particular corner' },
+      { keys: [...M, 'H'], desc: 'Preview — hide / show it (keeps its windows, and where each one is drawn)' },
       { keys: [...M, 'D'], desc: 'Recents — remove the current window from the strip & view (same as its tab ×)' },
       { keys: [...M, 'C'], desc: 'New window in the focused pane’s session (also ⌘⌥C on a Mac)' },
       { keys: [...M, '⏎'], desc: 'Split view — add another terminal region' },

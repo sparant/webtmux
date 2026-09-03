@@ -401,23 +401,27 @@ const clearLights = () => {
     clearLights();
   });
 
-  // ---- preview-pip.gif: one window -> corner PiP; a second -> docked bar;
-  // ---- hide/show; PiP blanks while you view its window
+  // ---- preview-pip.gif: ⌃⌥I docks a window in the bar; ⌃⌥⇧I pins one to a corner;
+  // ---- a second corner too (they don't fight); hide/show keeps both placements
   await scene(browser, 'preview-pip', async () => {
     await goTo('htop');
-    await chord('i');              // htop joins the preview
+    await chord('i');              // htop joins the DOCKED BAR — the default placement
     await sleep(1000);
-    await tabOf('editor').click(); // away -> corner PiP paints htop
-    await sleep(3200);
+    await tabOf('editor').click(); // away, so the bar tile paints htop live
+    await sleep(3000);
     await tabOf('server').click();
     await sleep(1500);             // let the switch land before toggling
-    await chord('i');              // server joins too -> tiles dock as an edge bar
+    await chord('Shift+I');        // server floats as a corner PiP box instead
+    await sleep(800);
+    await tabOf('logs').click();
+    await sleep(1500);
+    await chord('Shift+I');        // …and logs takes a second corner, alongside it
     await sleep(800);
     await tabOf('editor').click();
     await sleep(3200);
     await chord('h');              // hide the preview…
     await sleep(1600);
-    await chord('h');              // …and bring it back, windows intact
+    await chord('h');              // …and bring it back, windows and placements intact
     await sleep(2200);
   }); // last scene: nothing after this needs a clean toolbar
 

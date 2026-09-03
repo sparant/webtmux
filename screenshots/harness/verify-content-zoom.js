@@ -208,7 +208,10 @@ async function main() {
   if (process.env.SHOTS) {
     const fs = require('fs');
     fs.mkdirSync('/src/.zoomshots', { recursive: true });
-    const box = await page.locator('webtmux-pip').boundingBox();
+    // The host itself is display:contents (it holds the bar AND the corner boxes, which
+    // position themselves), so it has no box of its own — clip to the BAR, which is
+    // where ⌃⌥I put these tiles. Playwright's css engine pierces the open shadow root.
+    const box = await page.locator('webtmux-pip .bar').boundingBox();
     if (box) {
       await page.screenshot({ path: '/src/.zoomshots/pip-after.png', clip: box });
       await page.evaluate(() => {
