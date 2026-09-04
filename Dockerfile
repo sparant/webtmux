@@ -25,6 +25,24 @@ FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-bookworm AS base
 RUN apt-get update && apt-get install -y --no-install-recommends nodejs \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
+# The dependencies, as their OWN layer, before any source is copied. `COPY . /src`
+# is invalidated by every edit to every file, and without this the build layer that
+# follows it re-fetches every module from proxy.golang.org each time — so a
+# JS-only change (which is most changes here) could not be built without working
+# DNS and a reachable module proxy. One flaky lookup failed the whole artifact
+# build, with an error that reads as if the source were broken. Keyed on go.mod +
+# go.sum alone, this layer is reused until a dependency actually changes.
+#
+# It changes nothing about WHAT is compiled: go.sum pins every module by hash, so
+# this fetches exactly what the build would have fetched anyway, just earlier and
+# once. The reproducibility contract is untouched.
+#
+# ABOVE the stamp ARGs on purpose. An ARG whose value changes invalidates the
+# layers that follow it, and VERSION/GIT_COMMIT/BUILD_TIME change on every single
+# build — declaring them first would put the module cache back downstream of a
+# value that is different every time, which is the whole problem again.
+COPY go.mod go.sum ./
+RUN go mod download
 ARG VERSION=dev
 ARG GIT_COMMIT=unknown
 ARG BUILD_TIME=unknown
