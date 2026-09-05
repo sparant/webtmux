@@ -2222,6 +2222,19 @@ export class TerminalUnit {
     return this.sendMessage(MSG.TmuxSettingsAction, JSON.stringify({ clipboard: !!on }));
   }
 
+  // Switch tmux's `after-rename-window` hook — the command tmux runs whenever a
+  // window is renamed. With a window id it switches that ONE window's opt-in
+  // instead, leaving the hook itself alone. Same reply frame as the two above.
+  //
+  // Neither form ever sends a hook COMMAND: the server restores what it stashed,
+  // so a browser cannot make a tmux server run something new. See
+  // pkg/tmux/rename_forward.go.
+  sendRenameForward(on, windowId = '') {
+    if (!this.isConnected()) return false;
+    return this.sendMessage(MSG.TmuxSettingsAction,
+      JSON.stringify({ renameForward: !!on, window: windowId || '' }));
+  }
+
   enterCopyMode() {
     this.sendMessage(MSG.TmuxCopyMode, '1');
     this.inCopyMode = true;

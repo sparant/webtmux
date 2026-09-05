@@ -138,6 +138,22 @@ type Settings struct {
 	// ClipboardChosen is true once the user has decided, exactly as Chosen is.
 	ClipboardChosen bool `json:"clipboardChosen"`
 
+	// RenameHook is what the tmux `after-rename-window` hook currently runs, one
+	// entry per hooked command, verbatim. Shown rather than summarised: it names a
+	// script on the server's filesystem, and "a command runs when you rename a
+	// window" is not something a person should have to take on trust. Empty means
+	// nothing is hooked. See rename_forward.go.
+	RenameHook []string `json:"renameHook"`
+	// RenameOn is the boolean the checkbox draws: something is hooked.
+	RenameOn bool `json:"renameOn"`
+	// RenameSaved is whether webtmux is holding a hook it can put back. It is what
+	// separates "off, click to restore" from "this server has no rename hook at
+	// all", which look identical from RenameOn alone and mean very different things.
+	RenameSaved bool `json:"renameSaved"`
+	// RenameWindows lists the windows that have opted in, on or off. The hook fires
+	// for every window; this is the set that will actually DO anything.
+	RenameWindows []RenameWindow `json:"renameWindows"`
+
 	// Error is why the answer is not trustworthy — an empty string means it is.
 	Error string `json:"error,omitempty"`
 }
@@ -179,6 +195,12 @@ func (c *Controller) ReadSettings() (Settings, error) {
 	// not answer costs the clipboard ROW its state, not the whole reply.
 	clip, _ := globalOption(c.run, "set-clipboard")
 	clipChosen, _ := globalOption(c.run, clipboardChoiceOption)
+	// Same best-effort footing, and here it buys something specific: the hook read
+	// and the window read are independent, so a server with windows opted in and no
+	// hook installed reports exactly that rather than nothing at all. That state is
+	// real — the launcher ran, the hook did not — and it is the one this row exists
+	// to make visible.
+	hook, savedHook, renameWins := readRenameForward(c.run)
 	return Settings{
 		Status:          strings.TrimSpace(status),
 		On:              statusIsOn(status),
@@ -186,6 +208,10 @@ func (c *Controller) ReadSettings() (Settings, error) {
 		Clipboard:       strings.TrimSpace(clip),
 		ClipboardOn:     strings.TrimSpace(clip) == clipboardOn,
 		ClipboardChosen: clipChosen == "1" || clipChosen == "0",
+		RenameHook:      hook,
+		RenameOn:        len(hook) > 0,
+		RenameSaved:     len(savedHook) > 0,
+		RenameWindows:   renameWins,
 	}, nil
 }
 
