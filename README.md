@@ -96,8 +96,9 @@ Keep an eye on specific windows, even while you focus on others.
   - The **docked bar** along a screen edge, which reserves space instead of covering the terminal. This is where Ctrl+Alt+I puts a window, and it holds any number.
   - A floating **corner PiP box**. There are four corners and each holds one window, so up to four can float at once — over a bar that is still holding others.
 - Hovering any preview tile — bar tile or corner box, same controls — offers the corners that are actually free, a way back to the bar, and a close. A corner another window is in is not offered.
+- **Arrange the bar by hand: drag a tile where you want it.** The bar draws its tiles in the order you put them in and never reshuffles them, so the window you keep glancing at can live at the end you actually look at. A line shows the gap the tile will land in, along whichever axis the bar is docked on. Dragging a floating corner box onto the bar docks it — at the position you drop it, not at the end. The order is shared state, so it survives a reload and every other browser sees it.
 - Ctrl+Alt+I adds/removes the focused window (bar); Ctrl+Alt+Shift+I pins it to a free corner, or unpins it back to the bar.
-- Dock the bar to any edge, and drag nothing: the bar's own buttons move it top/bottom/left/right.
+- Dock the bar to any edge with its own buttons: top/bottom/left/right.
 - Ctrl+Alt+H hides/shows the whole preview while keeping the windows in it — and where each one was drawn.
 - Provides another way to quickly switch to high priority windows.
 - A previewed window drops out of the [recent tabs](#toolbar-and-recent-tabs) while it is in here: two ways to reach the same window, one of them showing you its screen, is one too many. Hiding the preview or taking the window out of it puts the tab back in its old slot.

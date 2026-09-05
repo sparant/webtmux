@@ -147,6 +147,24 @@ Pieces:
   it renders on each — they must differ by exactly the "back to the bar" button.
   `SHOTS=1` writes the two clusters and both surfaces to `screenshots/verify/`, because
   whether six buttons are legible on a 300px tile is not a DOM assertion),
+  `verify-preview-reorder.js` (the preview bar's ORDER is the user's: a tile dropped in
+  an earlier gap lands in it and one dragged FORWARDS lands in the gap the insertion line
+  promised rather than one past it, the line marks that gap before the drop, a tile
+  dropped where it already is rewrites nothing, a LEFT-docked bar reorders on the vertical
+  axis, a corner box dropped on the bar docks at the position it was dropped in, the
+  windows that stayed pinned stay pinned, and the arrangement survives a reload. Its
+  private MIME type is asserted both ways: it is what the bar reads, and a terminal region
+  does NOT light up for it the way it does for a recents tab.
+  Most of the drags are dispatched as DragEvents with a hand-made DataTransfer, but the
+  FIRST one is real: `page.dragAndDrop` does drive a native HTML5 drag here (contrary to
+  what verify-recents-target.js's comment assumes), and it is the only way to test the one
+  thing a synthetic driver cannot see — whether the browser makes a tile a drag source at
+  all. It runs first on purpose: a native drag is the flakiest thing in this harness, and
+  the same call later in the run, over a page also holding a floating corner box, timed
+  out once and crashed the renderer outright the next time.
+  `SHOTS=1` writes the bar mid-drag and a column-docked bar to `screenshots/verify/`,
+  since whether a 3px line inside a tile's edge reads as "it lands HERE" is not a DOM
+  assertion),
   `verify-recents-target.js` (WHICH pane a recents tab goes to: a hovered tab grows a
   region picker only when the view is split, hovering a chip previews the window in
   THAT pane, clicking one lands it there, and asking for a window the other pane is
