@@ -60,9 +60,15 @@ type TmuxController interface {
 	// pkg/tmux/settings.go.
 	// SetClipboard turns `set-clipboard on` on or off — whether a program inside a
 	// pane can put text on the BROWSER's clipboard with OSC 52.
+	// SetRenameForward switches tmux's own `after-rename-window` hook, and
+	// SetWindowRenameForward switches one window's opt-in to it. Both are
+	// save-and-restore over state webtmux did not create: see
+	// pkg/tmux/rename_forward.go for why neither ever composes a hook command.
 	ReadSettings() (tmux.Settings, error)
 	SetStatusBar(on bool) (tmux.Settings, error)
 	SetClipboard(on bool) (tmux.Settings, error)
+	SetRenameForward(on bool) (tmux.Settings, error)
+	SetWindowRenameForward(windowID string, on bool) (tmux.Settings, error)
 	EnterCopyMode() error
 	ExitCopyMode() error
 	RefreshClient() error

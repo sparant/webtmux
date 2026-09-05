@@ -166,12 +166,14 @@ const (
 	// Ask for the tmux settings the link menu shows (no payload). Read-only —
 	// `show-options -g -v`. The reply is a TmuxSettings. Sent when the menu opens.
 	TmuxSettingsRequest = 'V'
-	// Change one tmux setting (payload JSON: {"statusBar":bool} or
-	// {"clipboard":bool}). Named fields rather than a bare "on"/"off" so a second
-	// setting needs no second message type — which is why adding `clipboard` cost
-	// a field. Exactly ONE field per frame: the reply carries a single Error, so a
-	// frame that changed two things could not report a half-failure. The reply is a
-	// TmuxSettings carrying the state tmux was left in.
+	// Change one tmux setting (payload JSON: {"statusBar":bool}, {"clipboard":bool},
+	// or {"renameForward":bool,"window":"@N"}). Named fields rather than a bare
+	// "on"/"off" so a second setting needs no second message type — which is why
+	// adding `clipboard` cost a field, and `renameForward` a field and a target.
+	// Exactly ONE setting per frame: the reply carries a single Error, so a frame
+	// that changed two things could not report a half-failure. ("window" is not a
+	// second setting — it scopes renameForward, and is ignored without it.) The
+	// reply is a TmuxSettings carrying the state tmux was left in.
 	TmuxSettingsAction = 'W'
 	// Replace a session's NEW-WINDOW MENU — the ordered list of commands its "+"
 	// buttons offer (payload: "<session>\x00<json array>"; an empty array, or an

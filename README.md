@@ -253,6 +253,25 @@ A program running on the tmux machine — a CLI printing a login URL, a token, a
   every client on the server — a terminal attached to the same session included.
   Seeing the setting works on a read-only server (`-w` absent); changing it does
   not.
+- **Run a command when a window is renamed.** tmux can do this
+  (`set-hook -g after-rename-window`) and almost nobody knows, because the only
+  way to find out is to run `show-hooks`. The menu makes it a row: whether
+  anything is hooked, **the command verbatim**, and a switch. It covers a rename
+  typed in webtmux, one from `⌃b ,` and one from a script alike, because the hook
+  lives in the tmux server rather than in any client.
+  **webtmux never writes the command.** It names a script on the machine tmux runs
+  on, which the browser cannot see and could not validate, so the switch is
+  save-and-restore: off stashes the hook in `@wt_rename_hook_saved` and removes it,
+  on puts back exactly what was stashed, and a server that never had one gets an
+  inert row that says so rather than a checkbox that cannot do anything.
+  Under the row are **the windows that opted in** — a hook fires for every window,
+  but a well-built handler acts only on windows carrying `@wt_rename_handler`, so
+  this is the list that answers "which of my tabs *do* something when I rename
+  them, and what?". Each is a switch of its own (the same save-and-restore, one
+  level down), and one whose last push never landed is marked amber.
+  What the local stack uses it for: renaming a window renames the **Claude Code
+  session** running in it, so a tab called `claude-cli-4` stops being a session
+  called `4` in remote.
 
 ### Keyboard navigation & discoverability
 
@@ -915,8 +934,9 @@ WebTmux extends the gotty protocol with tmux-specific message types:
 - `U` TmuxHistoryAction - Set the default (for this tmux server, or persisted to
   tmux.conf) / resize / clear a scrollback buffer
 - `V` TmuxSettingsRequest - Read the tmux settings the link menu shows
-- `W` TmuxSettingsAction - Change one of them (currently: draw or hide tmux's own
-  status line, and record that the user chose it)
+- `W` TmuxSettingsAction - Change one of them (draw or hide tmux's own status
+  line; forward an application's OSC 52 to the browser; switch the
+  `after-rename-window` hook, or one window's opt-in to it)
 
 **Server -> Client:**
 
