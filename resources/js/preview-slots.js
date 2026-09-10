@@ -15,6 +15,10 @@
 //
 // The bar holds any number of tiles; each corner holds at most one window. Those two
 // rules are the whole model, and every function here is a consequence of them.
+//
+// One more thing belongs to a bar tile beyond its surface: its POSITION. The bar draws
+// its tiles in set order, so that order is the user's to arrange — see dropInBar, and
+// PREVIEW_DRAG_TYPE for the gesture that drives it.
 export const BAR = 'bar';
 export const CORNERS = ['tl', 'tr', 'bl', 'br'];
 export const SLOTS = [BAR, ...CORNERS];
@@ -82,6 +86,64 @@ export function placeWindow(wins, id, slot) {
   });
 }
 
+// The positions the BAR TILES occupy inside the whole set, in draw order. The bar draws
+// `wins.filter(slot === BAR)`, so these indices are the bar's coordinate system — and
+// writing a rearrangement back through them is what keeps the corner entries, which have
+// no tile in the bar at all, exactly where they were.
+function barSlots(wins) {
+  const out = [];
+  (wins || []).forEach((w, i) => { if (normalizeSlot(w?.slot) === BAR) out.push(i); });
+  return out;
+}
+
+// The bar's tiles in draw order — what a drop index counts.
+export function barWins(wins) {
+  return (wins || []).filter((w) => normalizeSlot(w?.slot) === BAR);
+}
+
+// Drop one window into the bar at an insertion GAP among the tiles the bar is drawing.
+// Returns a NEW set, or null when the drag changes nothing.
+//
+// This is the drag-and-drop half of placeWindow: same question ("where is this window
+// drawn"), asked by pointing instead of by pressing a button, and so it answers with a
+// POSITION as well as a surface. Two kinds of drag arrive here and both are the same
+// move — a bar tile dragged past its neighbours, and a corner box dragged down into the
+// bar, which is `toBar` plus a say in where it lands.
+//
+// `toIndex` is a gap, not a slot: it counts the tiles the bar is DRAWING NOW, so it runs
+// 0…barWins().length and a value past the last tile means "at the end". Removing the
+// dragged tile first shifts everything after it down one, which is why a gap past the
+// source maps one lower — the same translation the recents strip makes
+// (reorderVisibleRecents in recents-strip.js).
+//
+// Corner entries keep their array positions: a window that is dragged out of a corner is
+// re-filed among the bar tiles, but the ones that stayed pinned are not renumbered
+// around it, so sending a corner box back and pinning it again is a round trip.
+export function dropInBar(wins, id, toIndex) {
+  if (!Number.isFinite(toIndex)) return null;
+  const arr = wins || [];
+  const i = arr.findIndex((w) => w.windowId === id);
+  if (i < 0) return null;
+  const self = arr[i];
+  const wasBar = normalizeSlot(self.slot) === BAR;
+  const from = wasBar ? barSlots(arr).indexOf(i) : -1;
+
+  const rest = arr.filter((_, k) => k !== i);
+  const slots = barSlots(rest);
+  let gap = wasBar && toIndex > from ? toIndex - 1 : toIndex;
+  gap = Math.max(0, Math.min(slots.length, gap));
+  if (wasBar && gap === from) return null;
+
+  // Where that gap lands in the WHOLE set: just before the tile it precedes, or —
+  // for the end gap — just after the last bar tile, so a corner entry that trails the
+  // bar in the array is not stepped over.
+  const at = gap < slots.length
+    ? slots[gap]
+    : (slots.length ? slots[slots.length - 1] + 1 : rest.length);
+  rest.splice(at, 0, { ...self, slot: BAR });
+  return rest;
+}
+
 // What the hover controls on ONE tile should offer. Same answer for a bar tile and a
 // corner box — which is the point: the control cluster is a property of a previewed
 // window, not of the surface it happens to be drawn on.
@@ -99,6 +161,42 @@ export function tileControls(wins, id) {
     .filter((c) => !taken.has(c) || taken.get(c) === id)
     .map((c) => ({ corner: c, active: taken.get(c) === id }));
   return { corners, toBar: normalizeSlot(self.slot) !== BAR };
+}
+
+// ---- dragging a preview tile ---------------------------------------------------
+//
+// A tile's hover controls name every placement by button, which is precise but is not
+// how you rearrange a row of pictures — for THAT you pick one up and put it where you
+// want it. So a tile is draggable, and the two preview surfaces are drop targets: the
+// bar takes a drop at a position among its tiles, a corner box takes one outright.
+//
+// Its own private MIME type, for the reasons RECENT_DRAG_TYPE spells out (recents-
+// strip.js): `types` is all a `dragover` handler can read, so the type is what each
+// surface decides on, and a type nobody else claims cannot be pasted by some other
+// handler. A DIFFERENT type from the recents one on purpose — a recents tab dropped on
+// the preview bar is not this gesture (it means "preview this window", which the
+// toolbar's ⌃⌥I already says), and the terminal regions must go on ignoring a preview
+// drag entirely rather than lighting up as targets for it.
+export const PREVIEW_DRAG_TYPE = 'application/x-webtmux-preview';
+
+// A previewed window is identified by its window id alone. Unlike a recents tab it
+// needs no session: the preview holds one entry per window, whichever session it was
+// added from.
+export function previewDragPayload(id) {
+  return String(id || '');
+}
+
+// Total, like every read from outside: a payload that names no window degrades to "not
+// a preview drag" rather than to a move of window `undefined`.
+export function parsePreviewDrag(raw) {
+  return typeof raw === 'string' && raw ? raw : null;
+}
+
+// Is this drag one of ours? Asked on every dragover, from `types` alone.
+export function carriesPreviewDrag(dt) {
+  const types = dt && dt.types;
+  if (!types) return false;
+  return Array.prototype.includes.call(types, PREVIEW_DRAG_TYPE);
 }
 
 // Read a persisted 'pip' section into a slotted set, upgrading blobs written before

@@ -43,7 +43,9 @@ import { alertOf } from '../work-alerts.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
 import {
   BAR, CORNERS, EDGES, CORNER_GLYPH, CORNER_NAME, EDGE_GLYPH, EDGE_NAME,
-  normalizeSlot, cornerOccupancy, freeCorner, placeWindow, tileControls, winsFromState,
+  PREVIEW_DRAG_TYPE, normalizeSlot, cornerOccupancy, freeCorner, placeWindow,
+  tileControls, winsFromState, barWins, dropInBar, previewDragPayload, parsePreviewDrag,
+  carriesPreviewDrag,
 } from '../preview-slots.js';
 import {
   terminalContentBox, cropBox, fitTransform, CropTracker, sameBox,
@@ -67,6 +69,13 @@ class WebtmuxPip extends LitElement {
     _hidden: { state: true },   // true = tucked away (set kept, nothing drawn)
     _stale: { state: true },    // Set<windowId> of windows whose captures stopped
     _focusedWinId: { state: true }, // window id the FOCUSED terminal is showing (self-preview hint)
+    // Live drag-to-place state: the tile being dragged, and the insertion GAP in the
+    // bar the drop would land in (-1 = not over the bar). Reactive because the SURFACES
+    // are Lit-rendered and light up as targets for the length of the drag; the tiles
+    // themselves are imperative, so their dragging/insertion classes are painted in
+    // _paintDrag(), which a re-render runs anyway.
+    _dragId: { state: true },
+    _dropIndex: { state: true },
   };
 
   static styles = [css`
@@ -202,6 +211,49 @@ class WebtmuxPip extends LitElement {
     .bar[edge='right'] .ptile { flex: 0 0 auto; height: 150px; width: 100%; }
     .ptile.current { border-color: #37d17a; }
     .pipbox .ptile.current { border: none; }
+
+    /* ---- drag to place ------------------------------------------------------
+       A tile is picked up and put where you want it. THE BAR IS THE DROP TARGET,
+       and the only one: within it a drag is a reorder, and from a corner box into it
+       a drag is "dock this, HERE". The corners stay button-only — an empty corner
+       draws nothing (a .pipbox with no window is display:none), so three of the four
+       could not be aimed at with a pointer even if the drop were wired, and a gesture
+       that works on the corner that happens to be occupied is worse than one that
+       plainly belongs to the bar.
+
+       The pointer says "you can pick this up" only on the frame — the label already
+       answers a hover with its own tooltip, and .plabel is the one part of a tile
+       that is text. */
+    .ptile[draggable] .pframe { cursor: grab; }
+    .ptile.dragging { opacity: 0.4; }
+    .ptile.dragging .pframe { cursor: grabbing; }
+
+    /* The insertion line for a bar drop, drawn in the gap before this tile (or after
+       the last one). INSIDE the tile's edge, not in the 8px gap beside it: .ptile
+       clips its overflow, so a line at a negative offset would not be drawn at all. */
+    .ptile.drop-before::before,
+    .ptile.drop-end::after {
+      content: '';
+      position: absolute;
+      z-index: 4;
+      background: #6ba8ff;
+      box-shadow: 0 0 7px rgba(107, 168, 255, 0.95);
+      pointer-events: none;
+    }
+    /* A row bar cuts vertically between tiles; a column bar cuts horizontally. */
+    .bar[edge='top'] .ptile.drop-before::before,
+    .bar[edge='bottom'] .ptile.drop-before::before { top: 0; bottom: 0; left: 0; width: 3px; }
+    .bar[edge='top'] .ptile.drop-end::after,
+    .bar[edge='bottom'] .ptile.drop-end::after { top: 0; bottom: 0; right: 0; width: 3px; }
+    .bar[edge='left'] .ptile.drop-before::before,
+    .bar[edge='right'] .ptile.drop-before::before { left: 0; right: 0; top: 0; height: 3px; }
+    .bar[edge='left'] .ptile.drop-end::after,
+    .bar[edge='right'] .ptile.drop-end::after { left: 0; right: 0; bottom: 0; height: 3px; }
+
+    /* The bar says it is the target for the length of the drag — which is the whole
+       instruction for a corner box being dragged, since until the pointer is over the
+       bar there is no insertion line to read. */
+    .bar.dragging { border-color: #4a7fd0; }
 
     .pframe {
       position: relative;
@@ -392,6 +444,8 @@ class WebtmuxPip extends LitElement {
     this._userTouched = false;
     this._stale = new Set();
     this._focusedWinId = null; // set by SplitManager: the window the focused pane shows
+    this._dragId = '';         // window id of the tile being dragged (see _onTileDragStart)
+    this._dropIndex = -1;      // insertion gap in the bar under the pointer, -1 = none
     this._terms = new Map(); // windowId -> {term, screen, cols, rows}
     this._pollTimer = null;
     // Per-window @wt_working, pushed by the SplitManager (the same map the recents
@@ -564,11 +618,17 @@ class WebtmuxPip extends LitElement {
   // imperatively-built tiles, so a container that Lit is free to recreate is a container
   // that can lose a live terminal on an unrelated re-render; a stable one cannot.
   render() {
-    const bar = this._on ? this._wins.filter((w) => w.slot === BAR) : [];
+    const bar = this._on ? barWins(this._wins) : [];
     const corners = this._on ? cornerOccupancy(this._wins) : new Map();
     return html`
       <link rel="stylesheet" href=${XTERM_CSS} />
-      <div class="bar ${bar.length ? 'on' : ''}" edge=${this.edge}>
+      <div
+        class="bar ${bar.length ? 'on' : ''} ${this._dragId ? 'dragging' : ''}"
+        edge=${this.edge}
+        @dragover=${this._onBarDragOver}
+        @dragleave=${this._onBarDragLeave}
+        @drop=${this._onBarDrop}
+      >
         ${bar.length ? this._barChrome() : ''}
         <div class="tiles" data-slot="bar"></div>
       </div>
@@ -665,12 +725,21 @@ class WebtmuxPip extends LitElement {
       this._paintControls(w);
       this._paintWork(w.windowId);
     }
+    this._paintDrag();
   }
 
   _buildTile(w) {
     const tile = document.createElement('div');
     tile.className = 'ptile';
     tile.dataset.window = w.windowId;
+
+    // Pick it up and put it where you want it — a bar tile among its neighbours, a
+    // corner box down into the bar. Every tile is draggable, not just the bar's: the
+    // drop TARGET is the bar either way, and "drag it out of the corner" is the gesture
+    // the ▬ button spells out in words.
+    tile.draggable = true;
+    tile.addEventListener('dragstart', (e) => this._onTileDragStart(e, w));
+    tile.addEventListener('dragend', () => this._endDrag());
 
     // Re-letterbox this tile's xterm once a size transition settles (a corner box's
     // pframe grows on hover; bubbles to the tile within the shadow tree).
@@ -772,6 +841,116 @@ class WebtmuxPip extends LitElement {
       button('tobar', '▬', 'Move back to the preview bar', () => this.setSlot(w.windowId, BAR));
     }
     button('close', '✕', `Remove from the preview (${chord('I')})`, () => this.removeWindow(w.windowId));
+  }
+
+  // ---- drag to place ----------------------------------------------------------
+  // The bar's order is the user's: tiles are drawn in set order and nothing reshuffles
+  // them, which is what makes the bar a place you can leave things — so it has to be
+  // arrangeable by hand. Insertion-GAP semantics along whichever axis the bar is docked
+  // on, mirroring the recents strip's reorder (toolbar.js) and the sidebar's: a line
+  // shows the gap the tile will land in, and the drop moves it there.
+  //
+  // The same drop also DOCKS a corner box, at the position you point at — which is why
+  // the move is computed by dropInBar (preview-slots.js) rather than by a plain splice:
+  // it is one gesture with one answer, and the pinned windows that stayed put must not
+  // be renumbered around the one that moved.
+
+  _onTileDragStart(e, w) {
+    this._dragId = w.windowId;
+    this._dropIndex = -1;
+    this._tip.leave();
+    // Pointing at a tile previews its window in a real region (the tile's own
+    // mouseenter — see _buildTile). Picking the tile UP is a rearrangement, not a
+    // browse, so that preview is dismissed for the length of the drag; otherwise a
+    // reorder is done while the pane behind it is showing something you didn't ask
+    // for, and the mouseleave that would have ended it never fires mid-drag.
+    this.manager?.hover?.cancel();
+    try {
+      e.dataTransfer.effectAllowed = 'move';
+      // A private type: `types` is all a dragover handler can read, and it keeps this
+      // drag out of every other drop handler in the app — see PREVIEW_DRAG_TYPE.
+      e.dataTransfer.setData(PREVIEW_DRAG_TYPE, previewDragPayload(w.windowId));
+    } catch (_) {}
+  }
+
+  _endDrag() {
+    if (!this._dragId && this._dropIndex < 0) return;
+    this._dragId = '';
+    this._dropIndex = -1;
+  }
+
+  _onBarDragOver(e) {
+    if (!this._dragId && !carriesPreviewDrag(e.dataTransfer)) return;
+    e.preventDefault();
+    try { e.dataTransfer.dropEffect = 'move'; } catch (_) {}
+    const idx = this._dropIndexAt(e);
+    if (idx !== this._dropIndex) this._dropIndex = idx;
+  }
+
+  // Only clear the line when the pointer truly leaves the bar — dragleave also fires
+  // when crossing between the tiles inside it, where relatedTarget is still within.
+  _onBarDragLeave(e) {
+    if (!e.currentTarget.contains(e.relatedTarget)) this._dropIndex = -1;
+  }
+
+  _onBarDrop(e) {
+    if (!this._dragId && !carriesPreviewDrag(e.dataTransfer)) return;
+    e.preventDefault();
+    // Prefer the live drag state; fall back to the payload so a re-render that cleared
+    // _dragId (the poll repaints constantly) can never eat the drop.
+    const id = this._dragId || this._dtWindow(e);
+    const gap = this._dropIndex >= 0 ? this._dropIndex : this._dropIndexAt(e);
+    this._endDrag();
+    if (!id) return;
+    const next = dropInBar(this._wins, id, gap);
+    if (!next) return;
+    this._wins = next;
+    // A tile that came from a corner changed surface, so _syncTiles rebuilds it: prime
+    // a capture the way setSlot does, and it repaints from the cache in the same frame.
+    this.cache?.request([id], true);
+    this._changed();
+  }
+
+  // The insertion gap under the pointer: the first tile whose midpoint is past it,
+  // measured along the bar's OWN axis — a top/bottom bar is a row and a left/right bar
+  // is a column, and a reorder that read the wrong coordinate would land every drop in
+  // the same place.
+  _dropIndexAt(e) {
+    const host = this.renderRoot?.querySelector('.tiles[data-slot="bar"]');
+    const tiles = [...(host?.children || [])];
+    const vertical = this.edge === 'left' || this.edge === 'right';
+    const pos = vertical ? e.clientY : e.clientX;
+    for (let i = 0; i < tiles.length; i++) {
+      const r = tiles[i].getBoundingClientRect();
+      if (pos < (vertical ? r.top + r.height / 2 : r.left + r.width / 2)) return i;
+    }
+    return tiles.length;
+  }
+
+  // The dragged window recovered from the drop payload. Matched back against the
+  // preview rather than trusted, so a payload from anywhere else can't name a window.
+  _dtWindow(e) {
+    let raw = '';
+    try { raw = e.dataTransfer.getData(PREVIEW_DRAG_TYPE) || ''; } catch (_) { return ''; }
+    const id = parsePreviewDrag(raw);
+    return id && this._has(id) ? id : '';
+  }
+
+  // Paint the drag's two marks onto the imperative tiles: which one is in the air, and
+  // which gap the drop would land in. Run from _syncTiles, so the reactive drag state
+  // reaches the tiles through the same reconcile every other tile property does.
+  _paintDrag() {
+    const host = this.renderRoot?.querySelector('.tiles[data-slot="bar"]');
+    const bar = [...(host?.children || [])];
+    for (const el of this.renderRoot?.querySelectorAll('.ptile') || []) {
+      el.classList.toggle('dragging', !!this._dragId && el.dataset.window === this._dragId);
+      el.classList.remove('drop-before', 'drop-end');
+    }
+    if (!this._dragId || this._dropIndex < 0) return;
+    // Past the last tile there is no tile to draw a line BEFORE, so the last one draws
+    // it on its far edge instead.
+    if (this._dropIndex < bar.length) bar[this._dropIndex].classList.add('drop-before');
+    else if (bar.length) bar[bar.length - 1].classList.add('drop-end');
   }
 
   // Full "session — window N: name" for a tile's hover hint. Reads `w` live (the
