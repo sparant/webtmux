@@ -1200,6 +1200,46 @@ export class SplitManager {
     if (entry) this.removeRecent(entry);
   }
 
+  // Empty the strip — every tab AND the whole off-strip queue standing behind them.
+  //
+  // This exists because × on a tab is the wrong tool for "I am done with all of it",
+  // and looks broken when it is used that way. Removing one entry FREES A SLOT, and
+  // the head of the off-strip queue immediately takes it (see recents-strip.js) —
+  // exactly right for "I am done with this one", and, repeated down a strip backed by
+  // a 50-entry history, it just deals the next card fifty times. The strip appears to
+  // refuse to empty, because nothing the user can click is addressed to the queue.
+  //
+  // So clearing reaches the whole durable list, not the tabs. That includes the
+  // entries whose tabs are standing down for the preview: those are hidden, not gone,
+  // and leaving them would put tabs back the moment the preview let go — the same
+  // "it came back" the clear was asked to end.
+  //
+  // What it deliberately does NOT do, unlike removeRecent: close a split region that
+  // happens to be showing one of these windows. That is the tail of a per-window "I am
+  // done with this one" gesture; applied to the whole strip it would tear down the
+  // user's layout to tidy a history list. Every window keeps running and every region
+  // keeps its view — only the strip forgets.
+  //
+  // The strip is not sealed shut afterwards: recents are a record of where you go, so
+  // the next window you focus earns a tab again, from an empty strip. That is the
+  // difference between clearing a history and turning the feature off (the cap, which
+  // never goes below one tab, is the control for the latter).
+  clearRecents() {
+    if (!this.recentWindows.length) return;
+    // A tab's hover preview must not outlive the tab that owns it — nothing would ever
+    // fire the matching leave (same reason removeRecent cancels it).
+    if (this.hover?.windowId) this.hover.cancel();
+    // Forget the shared access recency as well, so the Exposé's "Last accessed" sort
+    // stops ranking these as recent. Same pairing as removeRecent, which is the
+    // single-entry version of this.
+    for (const e of this.recentWindows) this.captureCache?.forgetAccessed(e.id);
+    this.recentWindows = [];
+    // Persisted by _persistRecents inside the refresh. The empty list is a real change,
+    // so the signature guard lets it through to @wt_state — and every other browser on
+    // this tmux server clears with us, which is what a shared strip has to mean.
+    this._refreshToolbar();
+  }
+
   // Pane-focus dots: one per region (only when >1), green on the focused pane.
   // Also surface the focused region's copy-mode state (ground truth from the
   // layout poll's #{pane_in_mode}) so the toolbar can recolor + show the status.
@@ -1815,6 +1855,11 @@ export class SplitManager {
     // the number that decides it lives.
     const queued = this.offStripRecents();
     this.toolbar.recentQueued = queued.length;
+    // …and the whole durable list, which is the number the clear affordance is about:
+    // tabs + queue + the ones the preview is holding. Pushed as its own count rather
+    // than left to the toolbar to add the three up, so the two can never disagree about
+    // how much "clear" is about to forget.
+    this.toolbar.recentTotal = this.recentWindows.length;
     // The width probe. The toolbar can measure the tabs it drew, but not the width of
     // one it hasn't — and guessing is what makes a fitted strip flap between N and N+1
     // forever. So the next entry in line is handed over and rendered as an invisible

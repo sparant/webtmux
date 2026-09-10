@@ -62,6 +62,7 @@ A tab flashes amber when its window has stopped working, and an arrow flashes wh
   - control+Option+N/P - used to navigate to the next/previous window in your most-recent list.
   - Remove a window from your most recents with the hover-revealed close button ×
   - Past the tab count, windows queue up rather than being forgotten: the strip shows the first 5 and the rest wait in line. Close a tab (or raise the count) and the next one in line slides straight back in. Only × — you saying you are done with a window — removes one for good.
+  - Clear the whole strip in one go — hover the **Recent ▾** label for a ✕, or use its menu. That is the one that reaches the queue as well: because closing a tab hands its slot to the next window in line, clicking × down the strip never empties it. It asks first, and nothing is closed or killed — the windows keep running and the split regions keep their views.
   - Most recents persist across reloads
   - With the view [split](#split-view-and-regions), hovering a tab offers a chip per region: click one (or drag the tab onto a region) to say which region the window opens in, instead of always the focused one. See [Split View And Regions](#split-view-and-regions).
   - A window you put in the [preview](#preview-and-picture-in-picture) gives up its tab while it is there — it is already on screen, and the slot is better spent on a window that isn't. Close (or hide) the preview and the tab comes back where it was. Control+Option+L still cycles every window, previewed or not.
