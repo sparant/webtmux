@@ -1707,6 +1707,19 @@ export class SplitManager {
     if (!u.sendClipboard(!!on)) this.toolbar.tmuxSettingsBusy = false;
   }
 
+  // Switch tmux's rename hook, or one window's opt-in to it (windowId set).
+  //
+  // Unlike the two above, this one is not about the region asking — the hook is
+  // server-global and a window id is a server-wide identifier, so any region may
+  // ask about any window. Same no-optimism rule: the row moves when the reply
+  // lands, so a window whose option tmux refused to move keeps showing what it is.
+  setTmuxRenameForward(on, windowId = '') {
+    const u = this.focusedUnit;
+    if (!u || !this.toolbar) return;
+    this.toolbar.tmuxSettingsBusy = true;
+    if (!u.sendRenameForward(!!on, windowId)) this.toolbar.tmuxSettingsBusy = false;
+  }
+
   _historyAction(action, limit, force, rerun = false) {
     const u = this.focusedUnit;
     const id = u?.layout?.activeWindowId;

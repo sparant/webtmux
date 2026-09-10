@@ -97,10 +97,12 @@ func (c *failCtrl) ResizeWindowHistory(string, int, bool, bool) (tmux.HistoryRes
 	return tmux.HistoryResize{}, c.note("resize-history")
 }
 
-// The tmux-settings trio. ReadSettings is view-only — like RefreshClient it must
+// The tmux-settings set. ReadSettings is view-only — like RefreshClient it must
 // NOT be counted as a mutation, or the write-authority test would see a read-only
-// client "running a tmux command" for merely opening the link menu. SetStatusBar
-// and SetClipboard each rewrite a server-global option and are counted.
+// client "running a tmux command" for merely opening the link menu. The setters
+// each rewrite server state and are counted; the rename pair rewrites a global
+// hook and a window option respectively, which is why both are here rather than
+// one standing in for the other.
 func (c *failCtrl) ReadSettings() (tmux.Settings, error) {
 	c.repainted++ // reuse the view-only counter: "something read-only happened"
 	return tmux.Settings{}, errNope
@@ -112,6 +114,14 @@ func (c *failCtrl) SetStatusBar(bool) (tmux.Settings, error) {
 
 func (c *failCtrl) SetClipboard(bool) (tmux.Settings, error) {
 	return tmux.Settings{}, c.note("set-option set-clipboard")
+}
+
+func (c *failCtrl) SetRenameForward(bool) (tmux.Settings, error) {
+	return tmux.Settings{}, c.note("set-hook after-rename-window")
+}
+
+func (c *failCtrl) SetWindowRenameForward(string, bool) (tmux.Settings, error) {
+	return tmux.Settings{}, c.note("set-option @wt_rename_handler")
 }
 
 // countingCapture is a CaptureProvider that records every call and can be made to

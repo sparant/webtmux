@@ -26,6 +26,15 @@ import (
 type settingsRequest struct {
 	StatusBar *bool `json:"statusBar"`
 	Clipboard *bool `json:"clipboard"`
+	// RenameForward switches the tmux `after-rename-window` hook as a whole. With
+	// Window set it switches that ONE window's opt-in instead — the same verb at
+	// two scopes, because "stop renaming my session when I retitle this tab" and
+	// "stop doing this at all" are the same question asked about different things,
+	// and a second field pair would have to answer "what if both arrive?".
+	RenameForward *bool `json:"renameForward"`
+	// Window is a tmux window id (@N). Only meaningful beside RenameForward; the
+	// controller validates it, since it becomes a `-t` target.
+	Window string `json:"window"`
 }
 
 // handleSettingsRequest answers "what are the tmux settings right now?". Read-only
@@ -47,9 +56,23 @@ func (wt *WebTTY) handleSettingsAction(payload []byte) error {
 	// Exactly one setting per action. Two fields in one frame would need an answer
 	// for "the first applied and the second did not", and the reply carries one
 	// Error — so the protocol says what it can report rather than the other way up.
-	switch {
-	case req.StatusBar != nil && req.Clipboard != nil:
+	if countSet(req.StatusBar != nil, req.Clipboard != nil, req.RenameForward != nil) > 1 {
 		return wt.sendSettings(tmux.Settings{Error: "settings request changed two things at once"})
+	}
+	switch {
+	case req.RenameForward != nil:
+		var set tmux.Settings
+		var err error
+		if req.Window != "" {
+			set, err = wt.tmuxCtrl.SetWindowRenameForward(req.Window, *req.RenameForward)
+		} else {
+			set, err = wt.tmuxCtrl.SetRenameForward(*req.RenameForward)
+		}
+		if err != nil {
+			log.Printf("tmux rename-forward toggle failed: %v", err)
+			return wt.sendSettings(wt.settingsReport(err))
+		}
+		return wt.sendSettings(set)
 	case req.StatusBar != nil:
 		set, err := wt.tmuxCtrl.SetStatusBar(*req.StatusBar)
 		if err != nil {
@@ -66,6 +89,19 @@ func (wt *WebTTY) handleSettingsAction(payload []byte) error {
 		return wt.sendSettings(set)
 	}
 	return wt.sendSettings(tmux.Settings{Error: "settings request changed nothing"})
+}
+
+// countSet counts how many of an action's fields were populated. With two fields
+// the "exactly one" rule was a readable two-armed switch case; with three it stops
+// being one, and the arm that gets forgotten is the one nobody writes a test for.
+func countSet(flags ...bool) int {
+	n := 0
+	for _, f := range flags {
+		if f {
+			n++
+		}
+	}
+	return n
 }
 
 // settingsReport re-reads the settings and folds an action's failure in. The

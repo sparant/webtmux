@@ -115,10 +115,13 @@ func authorityOf(msgType byte) msgAuthority {
 		// Rewrites @wt_state, which every other client adopts.
 		return authWrite
 	case TmuxSettingsAction:
-		// Rewrites a server-GLOBAL tmux option. tmux has no per-client `status`,
-		// so hiding the status line hides it for every client on the server —
-		// including a terminal nobody in this browser can see. That makes it one
-		// of the more far-reaching writes here, not one of the smaller ones.
+		// Rewrites a server-GLOBAL tmux option, a server-global HOOK, or one
+		// window's option — whichever the payload named. tmux has no per-client
+		// `status`, so hiding the status line hides it for every client on the
+		// server, including a terminal nobody in this browser can see; and the
+		// rename hook decides whether a command runs on every rename anywhere on
+		// the server. That makes this one of the more far-reaching writes here,
+		// not one of the smaller ones.
 		return authWrite
 	case TmuxHistoryAction:
 		// The loudest write in the protocol: a resize REBUILDS panes, which kills

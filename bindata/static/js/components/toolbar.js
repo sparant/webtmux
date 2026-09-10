@@ -1440,7 +1440,15 @@ class WebtmuxToolbar extends LitElement {
        hint has always carried, now in something you can read at your own pace
        instead of racing a tooltip timeout. */
     .spin-wrap { position: relative; flex: 0 0 auto; display: inline-flex; }
-    .link-menu { left: 0; right: auto; min-width: 340px; max-width: min(380px, 92vw); }
+    /* max-height, unlike the other two menus, because this one GROWS: the rename
+       row lists a window per opt-in on top of three settings that each explain
+       themselves in a paragraph. Without it a laptop viewport gets a menu whose
+       bottom rows are off-screen and unreachable — the rows are anchored to the
+       toolbar at the top, so there is nothing to scroll the page to. */
+    .link-menu {
+      left: 0; right: auto; min-width: 340px; max-width: min(380px, 92vw);
+      max-height: calc(100vh - 56px); overflow-y: auto;
+    }
     .link-menu .mitem { align-items: flex-start; }
     .link-menu .mitem .mark { margin-top: 2px; }
     .link-menu .mtext { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
@@ -1466,6 +1474,50 @@ class WebtmuxToolbar extends LitElement {
     .link-menu .mstat .mhint { white-space: pre-line; }
     .link-menu .mitem[disabled] { opacity: 0.45; cursor: default; }
     .link-menu .mitem[disabled]:hover { border-color: #0f3460; }
+    /* The hook's command, verbatim. Shown rather than summarised: it names a
+       script on the tmux machine, and "something runs when you rename a window"
+       is not a thing to ask anyone to take on trust. It wraps rather than
+       ellipsing for the same reason — a path cut off in the middle is the half
+       that does not identify it. */
+    .link-menu .mcode {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 10.5px; line-height: 1.4; color: #9fb2d6;
+      background: #0b1a30; border: 1px solid #14315a; border-radius: 4px;
+      padding: 4px 6px; margin-top: 4px;
+      white-space: pre-wrap; overflow-wrap: anywhere; max-height: 88px; overflow-y: auto;
+    }
+    /* The opted-in windows. Indented under the row they belong to, and scrollable
+       rather than unbounded: a busy server can have a dozen, and the menu must not
+       grow past the viewport it is anchored in. */
+    .link-menu .rwins {
+      display: flex; flex-direction: column; gap: 2px;
+      margin: -2px 0 2px 22px; max-height: 168px; overflow-y: auto;
+    }
+    .link-menu .rwin {
+      display: flex; align-items: center; gap: 6px; width: 100%;
+      background: transparent; border: 1px solid transparent; border-radius: 4px;
+      padding: 3px 6px; color: #c8d4ee; font: inherit; font-size: 11px;
+      text-align: left; cursor: pointer;
+    }
+    .link-menu .rwin:hover:not([disabled]) { border-color: #0f3460; background: #0d1c33; }
+    .link-menu .rwin[disabled] { opacity: 0.45; cursor: default; }
+    .link-menu .rwin .mark { flex: 0 0 10px; margin-top: 0; color: #57d9a3; }
+    /* The window's identity gets the room; the handler name is the smaller fact
+       and shrinks first, because "which tab" is what you scan the list for. */
+    .link-menu .rwin .rwname {
+      flex: 1 1 auto; min-width: 0; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap;
+    }
+    .link-menu .rwin .rwh {
+      flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; color: #7e8db0; font-size: 10.5px;
+    }
+    /* A window switched off still lists what it would run, in the same row, so
+       turning it back on is not a leap of faith. */
+    .link-menu .rwin.off .rwname, .link-menu .rwin.off .rwh { color: #6b7899; }
+    /* The one failure this list can report: the hook ran and the name did not
+       land. Amber, the same "waiting on you" colour the stoplight uses. */
+    .link-menu .rwin .rwpend { flex: 0 0 auto; color: #ffb454; font-size: 15px; line-height: 1; }
     .link-menu .merr { color: #ff8fa3; font-size: 11px; line-height: 1.35; padding: 0 2px; }
   `, ALERT_CSS, TIP_CSS, CONFIRM_CSS];
 
@@ -3054,6 +3106,77 @@ class WebtmuxToolbar extends LitElement {
     this.manager?.setTmuxClipboard?.(!on);
   }
 
+  // Flip tmux's `after-rename-window` hook as a whole, and one window's opt-in to
+  // it. Nothing optimistic, same as above.
+  _toggleRenameForward() {
+    const on = !!this.tmuxSettings?.renameOn;
+    this.manager?.setTmuxRenameForward?.(!on, '');
+  }
+
+  _toggleRenameWindow(w) {
+    this.manager?.setTmuxRenameForward?.(!w.on, w.id);
+  }
+
+  // The rename row's second line. It has a harder job than the other two: those
+  // describe a tmux setting most people have at least heard of, while this one has
+  // to establish that renaming a window can RUN something at all — a tmux ability
+  // that lives in `show-hooks`, a command almost nobody types.
+  _renameHint(set) {
+    const what = 'tmux can run a command every time a window is renamed'
+      + ' (`set-hook -g after-rename-window`). It is a server-wide hook, so it'
+      + ' covers a rename typed here, one from `⌃b ,`, and one from a script.';
+    if (!set) return what;
+    if (set.renameOn) {
+      const n = (set.renameWindows || []).filter((w) => w.on).length;
+      const who = n === 0
+        ? ' No window has opted in, so nothing happens on a rename yet.'
+        : ` ${n} window${n === 1 ? '' : 's'} below ${n === 1 ? 'has' : 'have'} opted in`
+          + ' — renaming one of those does something as well as changing the name.';
+      return `${what} It is set on this server:${who}`;
+    }
+    if (set.renameSaved) {
+      return `${what} Switched off from here — the command is remembered and goes`
+        + ' back exactly as it was.';
+    }
+    // The honest third state. An off checkbox over a server that never had a hook
+    // would invite a click that cannot do anything, so the row says so and is inert.
+    return `${what} Nothing is hooked on this server. webtmux does not write the`
+      + ' command itself — it names a script on the machine tmux runs on, which'
+      + ' this browser cannot see — so it can only switch off one that is there'
+      + ' and put it back.';
+  }
+
+  // The per-window list under the rename row: which windows do something when you
+  // rename them, and what. This is the part that makes the row worth opening —
+  // "a hook is installed" is server trivia, "this tab renames its Claude session"
+  // is the thing you actually wanted to know.
+  _renameWindowRows(set, locked) {
+    const wins = set?.renameWindows || [];
+    if (!wins.length) return '';
+    return html`
+      <div class="rwins">
+        ${wins.map((w) => html`
+          <button
+            class="rwin ${w.on ? '' : 'off'}"
+            ?disabled=${locked || this.tmuxSettingsBusy}
+            aria-pressed=${w.on ? 'true' : 'false'}
+            title=${w.on
+              ? `Renaming ${w.session}:${w.name} runs "${w.handler}"`
+                + (w.pane ? ` against pane ${w.pane}` : '')
+                + (w.synced ? '' : ' — its last rename has not been applied')
+              : `Renaming ${w.session}:${w.name} does nothing. Click to restore "${w.handler}".`}
+            @click=${() => this._toggleRenameWindow(w)}
+          >
+            <span class="mark">${w.on ? '✓' : ''}</span>
+            <span class="rwname">${w.session}:${w.name}</span>
+            <span class="rwh">${w.handler}</span>
+            ${w.on && !w.synced ? html`<span class="rwpend" title="The last rename has not reached it">·</span>` : ''}
+          </button>
+        `)}
+      </div>
+    `;
+  }
+
   // The clipboard row's second line. This one has to explain a mechanism, not just
   // a preference, because the thing it fixes looks like a bug in the OTHER program:
   // you press the key it offers, it says it copied, and nothing is on your
@@ -3108,6 +3231,7 @@ class WebtmuxToolbar extends LitElement {
     const set = this.tmuxSettings;
     const on = !!set?.on;
     const clip = !!set?.clipboardOn;
+    const rename = !!set?.renameOn;
     // Read-only servers watch; they do not rearrange the tmux server they are
     // watching (see webtty/authority.go). The row still SHOWS the setting — the
     // read behind it is allowed — it just cannot be clicked, and says why.
@@ -3153,6 +3277,25 @@ class WebtmuxToolbar extends LitElement {
                 : this._clipboardHint(set)}</span>
           </span>
         </button>
+        <button
+          class="mitem"
+          ?disabled=${locked || !set || this.tmuxSettingsBusy || !(set.renameOn || set.renameSaved)}
+          aria-pressed=${rename ? 'true' : 'false'}
+          @click=${() => this._toggleRenameForward()}
+        >
+          <span class="mark">${rename ? '✓' : ''}</span>
+          <span class="mtext">
+            <b>run a command when a window is renamed</b>
+            <span class="mhint">${!set ? 'Asking tmux…'
+              : locked
+                ? 'This server is read-only, so the setting can be seen but not changed. '
+                  + this._renameHint(set)
+                : this._renameHint(set)}</span>
+            ${(set?.renameHook || []).length ? html`
+              <code class="mcode">${(set.renameHook || []).join('\n')}</code>` : ''}
+          </span>
+        </button>
+        ${set ? this._renameWindowRows(set, locked) : ''}
         ${set?.error ? html`<div class="merr">${set.error}</div>` : ''}
       </div>
     `;
