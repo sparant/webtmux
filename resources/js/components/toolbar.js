@@ -52,6 +52,7 @@ import {
   RECENT_DRAG_TYPE, recentDragPayload, parseRecentDrag,
 } from '../recents-strip.js';
 import { placePopup } from '../popup-place.js';
+import { ConfirmPopup, CONFIRM_CSS } from '../confirm-popup.js';
 
 // Recent-tab label shape. Two INDEPENDENT toggles rather than one four-way cycle,
 // because they answer unrelated questions: "which session is this in" and "how much
@@ -373,6 +374,10 @@ class WebtmuxToolbar extends LitElement {
     // user's cap rather than the width is what is holding it back — then there is
     // nothing a wider window would let in, so there is nothing to measure.
     recentNext: { type: Object },
+    // Everything the strip remembers: tabs + queue + the ones the preview is holding.
+    // The clear affordance is about this number, not about the tabs — clearing only
+    // what is drawn is precisely the treadmill it exists to end (see clearRecents).
+    recentTotal: { type: Number },
     // What each terminal region is showing, in pane order — the region picker's
     // chips (see _regionPicker). Fed on every layout push by SplitManager.regionViews.
     regions: { type: Array },
@@ -460,6 +465,40 @@ class WebtmuxToolbar extends LitElement {
       font-family: inherit; cursor: pointer;
     }
     .label:hover { color: #9fc4ff; background: #1a1a2e; }
+
+    /* Clear the whole strip. Hung off the "Recent" label, revealed on hover, because
+       it is a rare gesture that must not sit permanently next to the ordinary ones —
+       and because the label is exactly the thing it is about.
+
+       Its space is RESERVED even while it is invisible, rather than the button being
+       taken out of the flow. The tabs are width-fitted to what is left of the toolbar
+       (see _fitStrip), so a control that only claimed room once the pointer arrived
+       would re-measure the strip on hover and could drop a tab out from under the very
+       pointer that revealed it. Only the ink comes and goes. */
+    .label-clear {
+      flex: 0 0 auto;
+      margin-right: 2px;
+      padding: 2px 3px;
+      border: none;
+      background: none;
+      color: #6b7ba8;
+      font-size: 12px;
+      line-height: 1;
+      font-family: inherit;
+      border-radius: 4px;
+      cursor: pointer;
+      opacity: 0;
+      /* Invisible means unclickable: an opacity-0 button still takes clicks, and this
+         one is destructive. Keyboard focus re-enables it via :focus-within below, so
+         it stays reachable without a pointer. */
+      pointer-events: none;
+      transition: opacity 0.12s ease;
+    }
+    .label-wrap:hover .label-clear,
+    .label-wrap:focus-within .label-clear { opacity: 1; pointer-events: auto; }
+    .label-clear:hover { color: #e94560; background: #1a1a2e; }
+    /* Nothing to clear: no ink, no target, even on hover. */
+    .label-clear[disabled] { opacity: 0 !important; pointer-events: none !important; }
 
     /* A recents entry = the status dot + the tab, as one drag unit. The dot lives
        OUTSIDE the tab button on purpose: inside, it sat on the tab's own background,
@@ -1340,6 +1379,12 @@ class WebtmuxToolbar extends LitElement {
       padding: 7px 9px; font-size: 12.5px; cursor: pointer; text-align: left;
     }
     .label-menu .mitem:hover { border-color: #4a9eff; }
+    /* The one item in here that throws something away wears the app's destructive
+       colour, so it can never be mistaken for another display toggle. */
+    .label-menu .mitem.danger { color: #d99aa8; }
+    .label-menu .mitem.danger:hover { border-color: #e94560; color: #fff; }
+    .label-menu .mitem[disabled] { opacity: 0.35; cursor: default; }
+    .label-menu .mitem[disabled]:hover { border-color: #0f3460; color: #d99aa8; }
     .label-menu .mitem .mark { width: 12px; flex: 0 0 auto; color: #37d17a; }
     .label-menu .mprev {
       color: #6b7690; font-size: 11px; padding: 2px 2px 0;
@@ -1422,14 +1467,18 @@ class WebtmuxToolbar extends LitElement {
     .link-menu .mitem[disabled] { opacity: 0.45; cursor: default; }
     .link-menu .mitem[disabled]:hover { border-color: #0f3460; }
     .link-menu .merr { color: #ff8fa3; font-size: 11px; line-height: 1.35; padding: 0 2px; }
-  `, ALERT_CSS, TIP_CSS];
+  `, ALERT_CSS, TIP_CSS, CONFIRM_CSS];
 
   constructor() {
     super();
     this.recent = [];
     this.recentHeld = 0;
     this.recentQueued = 0;
+    this.recentTotal = 0;
     this.recentNext = null;
+    // "Are you sure?" for the one destructive control up here — the same popup the
+    // sidebar asks kill questions with, anchored at whatever was clicked.
+    this._confirm = new ConfirmPopup(this);
     this.regions = [];
     this.pickerFor = '';
     // The pointer is inside the picker, not on the tab that opened it. Kept as a
@@ -2219,6 +2268,7 @@ class WebtmuxToolbar extends LitElement {
     super.disconnectedCallback();
     clearTimeout(this._buildTipTimer);
     this._tip.dispose();
+    this._confirm.dispose();
     this._unsubCopy?.();
     this._stripObserver?.disconnect();
     this._stripObserver = null;
@@ -2614,6 +2664,11 @@ class WebtmuxToolbar extends LitElement {
             here changes nothing until it is wider — the rest are waiting, not closed
           </div>
         ` : ''}
+        <button
+          class="mitem danger"
+          ?disabled=${!this.recentTotal}
+          @click=${(e) => { this.labelMenuOpen = false; this._askClearRecents(e.currentTarget); }}
+        ><span class="mark"></span>Clear the strip${this.recentTotal ? ` (${this.recentTotal})` : ''}…</button>
         <div class="mtitle">Labels</div>
         <button class="mitem" @click=${() => this._setLabelPref('showSession', !this.showSession)}>
           <span class="mark">${this.showSession ? '✓' : ''}</span>Show session
@@ -2624,6 +2679,73 @@ class WebtmuxToolbar extends LitElement {
         <div class="mprev">now: ${shape(this.showSession, this.trimName)}</div>
       </div>
     `;
+  }
+
+  // ---- clearing the strip --------------------------------------------------------
+  //
+  // Two ways in, on purpose, and they run the same code.
+  //
+  // The ✕ beside the label is the one the gesture deserves — clearing follows a run of
+  // × clicks that didn't do what the user wanted, and it should not be three clicks
+  // deeper than the thing it rescues. It is revealed on hover so it isn't a permanent
+  // destructive control sitting among the ordinary ones.
+  //
+  // But hover is not a gesture a touch device has, and hidden-until-hovered is not a
+  // thing you can find by looking. So the menu — where every other strip-wide decision
+  // already lives, and which is reachable by tap and by keyboard — carries it too, in
+  // words, with the count spelled out.
+
+  // Both hang off the "Recent ▾" label, which is now rendered UNCONDITIONALLY — it used
+  // to appear only once the strip held something. That gate was harmless while the only
+  // way to an empty strip was a fresh boot, where the first focus admits a window inside
+  // the first poll. It stops being harmless the moment the strip can be emptied on
+  // purpose: the label is the only door to the tab-count control AND to the clear
+  // itself, so a clear that takes its own way back off screen is a trapdoor. The cost
+  // is one quiet word on a toolbar that is never empty in practice.
+
+  // The reveal-on-hover ✕. Rendered even with nothing to clear (disabled, and the CSS
+  // keeps it invisible either way) so the space it reserves never changes: it sits
+  // inside the width the strip fits its tabs into, and a control that came and went
+  // with the count would re-fit the strip underneath it.
+  _clearButton() {
+    const n = this.recentTotal;
+    const hidden = Math.max(0, n - this.recent.length);
+    return html`
+      <button
+        class="label-clear"
+        ?disabled=${!n}
+        aria-label="Clear the recents strip"
+        @mouseenter=${(e) => this._tipEnter(e, `Clear the recents strip — all ${n} remembered ${n === 1 ? 'window' : 'windows'}`
+          + (hidden ? `, including the ${hidden} with no tab right now (waiting behind the last tab, or held by the preview)` : '')
+          + `.\nThis is the one that empties it: × on a tab frees a slot, and the next window in line immediately takes it.`
+          + `\nNothing is closed or killed — the windows keep running and the split regions keep their views.`)}
+        @mouseleave=${() => this._tipLeave()}
+        @click=${(e) => { this._tipLeave(); this._askClearRecents(e.currentTarget); }}
+      >✕</button>
+    `;
+  }
+
+  // Ask before emptying it. Destructive and not undoable (the strip's hand-arranged
+  // order is real work), so it goes through the shared confirm popup — anchored at
+  // whichever control asked, like every other question in the app.
+  //
+  // The message leads with the number the user cannot see, because that number IS the
+  // confusion this affordance answers: a strip that "won't empty" is a strip with a
+  // queue behind it, and saying so here is the only place the queue is ever named at
+  // the moment it matters.
+  _askClearRecents(anchor) {
+    const n = this.recentTotal;
+    if (!n || !anchor) return;
+    const hidden = Math.max(0, n - this.recent.length);
+    this._confirm.ask(anchor, {
+      message: `Clear the recents strip?\n\n${n} remembered ${n === 1 ? 'window' : 'windows'}`
+        + (hidden
+          ? ` — ${this.recent.length} with a tab, ${hidden} with none yet (waiting behind the last tab, or held by the preview).`
+          : '.')
+        + `\n\nThe windows keep running; only the strip forgets them.`,
+      yes: 'Clear',
+      onConfirm: () => this.manager?.clearRecents(),
+    });
   }
 
   // The overflow arrow at the end of the strip: N windows need you and none of them
@@ -3077,24 +3199,23 @@ class WebtmuxToolbar extends LitElement {
         @mouseleave=${() => this._tipLeave()}
         @click=${() => { this._tipLeave(); this.manager?.shortcuts?.toggle(); }}
       >⌨</button>
-      ${this.recent.length || this.recentHeld ? html`
-        <span class="label-wrap">
-          <button
-            class="label"
-            aria-label="Recent tab options"
-            @mouseenter=${(e) => this._tipEnter(e, `Recent windows — click for options: how many tabs to keep (now ${this.recentMax}), and their labels (show the session, trim the window name). Drag tabs to reorder them.`
-              + (this.recentHeld
-                ? `\n${this.recentHeld} recent ${this.recentHeld === 1 ? 'window is' : 'windows are'} in the preview right now, so ${this.recentHeld === 1 ? 'its tab is' : 'their tabs are'} hidden — already on screen there. Close the preview and ${this.recentHeld === 1 ? 'it comes' : 'they come'} back.`
-                : '')
-              + (this.recentQueued
-                ? `\n${this.recentQueued} more ${this.recentQueued === 1 ? 'window is' : 'windows are'} waiting behind the last tab. Close a tab (×) or keep more tabs and ${this.recentQueued === 1 ? 'it slides' : 'they slide'} back in.`
-                : ''))}
-            @mouseleave=${() => this._tipLeave()}
-            @click=${() => { this._tipLeave(); this.labelMenuOpen = !this.labelMenuOpen; }}
-          >Recent ▾</button>
-          ${this.labelMenuOpen ? this._labelMenu() : ''}
-        </span>
-      ` : ''}
+      <span class="label-wrap">
+        ${this._clearButton()}
+        <button
+          class="label"
+          aria-label="Recent tab options"
+          @mouseenter=${(e) => this._tipEnter(e, `Recent windows — click for options: how many tabs to keep (now ${this.recentMax}), and their labels (show the session, trim the window name). Drag tabs to reorder them.`
+            + (this.recentHeld
+              ? `\n${this.recentHeld} recent ${this.recentHeld === 1 ? 'window is' : 'windows are'} in the preview right now, so ${this.recentHeld === 1 ? 'its tab is' : 'their tabs are'} hidden — already on screen there. Close the preview and ${this.recentHeld === 1 ? 'it comes' : 'they come'} back.`
+              : '')
+            + (this.recentQueued
+              ? `\n${this.recentQueued} more ${this.recentQueued === 1 ? 'window is' : 'windows are'} waiting behind the last tab. Close a tab (×) or keep more tabs and ${this.recentQueued === 1 ? 'it slides' : 'they slide'} back in.`
+              : ''))}
+          @mouseleave=${() => this._tipLeave()}
+          @click=${() => { this._tipLeave(); this.labelMenuOpen = !this.labelMenuOpen; }}
+        >Recent ▾</button>
+        ${this.labelMenuOpen ? this._labelMenu() : ''}
+      </span>
       <div
         class="tabs"
         @dragover=${(e) => this._onStripDragOver(e)}
@@ -3107,6 +3228,7 @@ class WebtmuxToolbar extends LitElement {
       ${this._overflowArrow()}
       ${this._regionPicker()}
       <div class="wt-tip"></div>
+      <div class="wt-confirm"></div>
       <span class="tsep"></span>
       <button
         class="tbtn"

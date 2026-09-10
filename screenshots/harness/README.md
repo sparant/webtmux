@@ -170,6 +170,16 @@ Pieces:
   which reconnecting does NOT switch it back on. Emits the escape from a staged script
   rather than an inline `printf`, because `send-keys` types the command onto the pane and
   a base64 body echoed there would defeat the "was it painted?" assertion).
+  `verify-recents-clear.js` (emptying the strip: the ✕ beside the "Recent" label holds
+  its space while invisible and comes out on hover, it asks before acting and No changes
+  nothing, and Clear empties the tabs, the off-strip QUEUE and the entries the preview is
+  holding — nothing slides into the freed slots, releasing the preview does not bring a
+  cleared window back, and a reload does not resurrect the list from `@wt_state`. Also
+  that the windows all keep running and no split region is torn down, that the label
+  survives an empty strip so the menu is still reachable, and that the menu's own clear
+  row does the same thing. The queue is what the feature is about: × on a tab frees a
+  slot and the next window in line takes it, which is why clicking × down the strip never
+  emptied it).
 - `diag-osc52.js` — a DIAGNOSTIC rather than a gate, for when a copy from a pane does
   not arrive. It emits all three channels a real program uses (raw OSC 52, the
   `ESC Ptmux;` DCS passthrough, and `tmux load-buffer -w -`) under several `set-clipboard`
