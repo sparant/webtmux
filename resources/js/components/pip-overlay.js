@@ -51,6 +51,7 @@ import {
   PICKER_DELAY, PICKER_GRACE, REGION_PICKER_CSS, regionPickerTemplate,
 } from '../region-picker.js';
 import { placeOnSide } from '../popup-place.js';
+import { labelPrefs, windowLabel } from '../window-label.js';
 import {
   terminalContentBox, cropBox, fitTransform, CropTracker, sameBox,
 } from '../content-bounds.js';
@@ -304,8 +305,10 @@ class WebtmuxPip extends LitElement {
       display: flex; align-items: center; gap: 7px;
       padding: 5px 9px; font-size: 12px; color: #d6ddf5; white-space: nowrap;
     }
+    /* Index + name, drawn the way a recents tab draws them (toolbar.js .tab .sess /
+       .wname) and shaped by the same Recent ▾ "Labels" toggles — see _paintLabel. */
+    .plabel .idx { flex: 0 0 auto; color: #4a9eff; font-size: 11px; opacity: 0.85; }
     .plabel .name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-    .plabel .sess { flex: 0 0 auto; color: #7f8bb5; letter-spacing: 0.06em; font-size: 11px; }
 
     /* Working stoplight, at the head of every tile's label (bar tile and corner box
        alike) — where the recents tab has it, next to the name it belongs to. A preview
@@ -432,10 +435,21 @@ class WebtmuxPip extends LitElement {
     const pip = stateStore.section('pip');
     this.edge = EDGES.includes(pip.previewEdge) ? pip.previewEdge : 'bottom';
     this._preferCorner = CORNERS.includes(pip.corner) ? pip.corner : 'tr';
+    // How a tile's label is shaped: the recents strip's "Labels" toggles (show the
+    // session, trim the name), which live in the shared 'toolbar' section. The same
+    // prefs, so a window reads the same in the strip and in the bar.
+    this._labelPrefs = labelPrefs(stateStore.section('toolbar'));
     stateStore.subscribe(() => {
       const p = stateStore.section('pip');
       if (EDGES.includes(p.previewEdge)) this.edge = p.previewEdge;
       if (CORNERS.includes(p.corner)) this._preferCorner = p.corner;
+      // The labels are imperative (see _buildTile), so a render would not reach them —
+      // repaint them directly, and only when a toggle actually moved.
+      const lp = labelPrefs(stateStore.section('toolbar'));
+      if (lp.showSession !== this._labelPrefs.showSession || lp.trimName !== this._labelPrefs.trimName) {
+        this._labelPrefs = lp;
+        for (const w of this._wins) this._paintLabel(w);
+      }
       this.requestUpdate();
     });
     this.cache = null;      // shared CaptureCache — set by SplitManager
@@ -809,16 +823,28 @@ class WebtmuxPip extends LitElement {
     work.setAttribute('role', 'img');
     work.addEventListener('mouseenter', () => this._tip.enter({ currentTarget: work }, workTip(this._working.get(id) || '')));
     work.addEventListener('mouseleave', () => this._tileHint(tile, id));
+    const idx = document.createElement('span');
+    idx.className = 'idx';
     const name = document.createElement('span');
     name.className = 'name';
-    name.textContent = w.label || '…';
-    const sess = document.createElement('span');
-    sess.className = 'sess';
-    sess.textContent = w.session || '';
-    label.append(work, name, sess);
+    label.append(work, idx, name);
     tile.appendChild(label);
+    this._paintLabel(w, tile);
 
     return tile;
+  }
+
+  // Write a tile's label: the window index, then its name as the recents strip would
+  // label it (window-label.js — session shown or not, name trimmed or not, per the
+  // Recent ▾ menu). Until the first capture says what the window is called, '…'.
+  _paintLabel(w, tileEl) {
+    const tile = tileEl || this._tileEl(w.windowId);
+    if (!tile) return;
+    const idxEl = tile.querySelector('.plabel .idx');
+    const nameEl = tile.querySelector('.plabel .name');
+    const known = w.name != null && w.name !== '';
+    if (idxEl) idxEl.textContent = known && w.index != null ? String(w.index) : '';
+    if (nameEl) nameEl.textContent = known ? windowLabel(w, this._labelPrefs) : (w.label || '…');
   }
 
   // The live entry for a window. Handlers look it up rather than closing over the `w`
@@ -917,8 +943,8 @@ class WebtmuxPip extends LitElement {
     if (this._pickFor) this._pickFor = '';
   }
 
-  // The window as the picker names it: index and name off its capture (the entry's own
-  // index/name are only ever set once, at add time).
+  // The window as the picker names it: index and name off its capture, falling back to
+  // the entry's (which _paint keeps current once a capture has landed).
   _winView(w) {
     const entry = this.cache?.byPlacement?.get(placementKey(w.session, w.windowId))
       || this.cache?.get(w.windowId);
@@ -1175,11 +1201,12 @@ class WebtmuxPip extends LitElement {
     // anchored to the session it was added from.
     if (win) {
       win.label = `${entry.index}: ${entry.name}`;
+      // …and the parts, which the label strip formats (and the persisted set carries,
+      // so a reload comes back with the renamed name rather than the add-time one).
+      win.index = entry.index;
+      win.name = entry.name;
       if (!win.session && entry.sessionName) win.session = entry.sessionName;
-      const nameEl = tile.querySelector('.plabel .name');
-      const sessEl = tile.querySelector('.plabel .sess');
-      if (nameEl) nameEl.textContent = win.label;
-      if (sessEl) sessEl.textContent = win.session || '';
+      this._paintLabel(win, tile);
     }
     // Mark active (matches the focused pane's current window).
     const activeId = this.manager?.focusedUnit?.layout?.activeWindowId;

@@ -55,26 +55,11 @@ import {
   RECENT_DRAG_TYPE, recentDragPayload, parseRecentDrag,
 } from '../recents-strip.js';
 import { placePopup } from '../popup-place.js';
+import { labelPrefs, windowLabel } from '../window-label.js';
 import { ConfirmPopup, CONFIRM_CSS } from '../confirm-popup.js';
 
-// Recent-tab label shape. Two INDEPENDENT toggles rather than one four-way cycle,
-// because they answer unrelated questions: "which session is this in" and "how much
-// of the name do I need". Defaults are the quiet ones — most windows live in the
-// session you're already in, and long names are usually "<tool> <what>", where the
-// leading word is the part you already know.
-const LABEL_DEFAULTS = { showSession: false, trimName: true };
-
-// Drop everything up to and including the first space: "ssh web-01" reads
-// as "web-01". A name with no space is left alone (there's nothing redundant
-// to remove), and a name that is ALL prefix ("ssh ") keeps the original rather
-// than collapsing to nothing.
-function trimWindowName(name) {
-  const s = String(name || '');
-  const i = s.indexOf(' ');
-  if (i < 0) return s;
-  const tail = s.slice(i + 1).trim();
-  return tail || s;
-}
+// Recent-tab label shape (LABEL_DEFAULTS, trimWindowName, windowLabel) lives in
+// window-label.js — the preview's tiles are labelled by the same prefs.
 
 // Scroll-wheel modes, in the order the toolbar cycles them — the one list
 // terminal-unit.js owns. `name` is the short form the closed mouse button and the
@@ -1566,10 +1551,9 @@ class WebtmuxToolbar extends LitElement {
   // so the strip looks the same in every browser on this tmux server).
   _applyLabelPrefs() {
     const t = stateStore.section('toolbar');
-    this.showSession = t.recentShowSession === undefined
-      ? LABEL_DEFAULTS.showSession : t.recentShowSession === true;
-    this.trimName = t.recentTrimName === undefined
-      ? LABEL_DEFAULTS.trimName : t.recentTrimName === true;
+    const prefs = labelPrefs(t);
+    this.showSession = prefs.showSession;
+    this.trimName = prefs.trimName;
     this.recentMax = clampRecentsMax(t.recentMax);
   }
 
@@ -1594,8 +1578,7 @@ class WebtmuxToolbar extends LitElement {
 
   // The visible text of a recent tab under the current label prefs.
   _tabLabel(w) {
-    const name = this.trimName ? trimWindowName(w.name) : (w.name || 'bash');
-    return this.showSession ? `${w.session}: ${name}` : name;
+    return windowLabel(w, { showSession: this.showSession, trimName: this.trimName });
   }
 
   // Advance the tmux-activity spinner one notch. Called (debounced) by the
@@ -2599,10 +2582,7 @@ class WebtmuxToolbar extends LitElement {
   // is about.
   _labelMenu() {
     const sample = this.recent[0] || { session: 'services', name: 'ssh web-01', index: 3 };
-    const shape = (showSession, trimName) => {
-      const name = trimName ? trimWindowName(sample.name) : (sample.name || 'bash');
-      return showSession ? `${sample.session}: ${name}` : name;
-    };
+    const shape = (showSession, trimName) => windowLabel(sample, { showSession, trimName });
     return html`
       <div class="label-backdrop" @click=${() => { this.labelMenuOpen = false; }}></div>
       <div class="label-menu" @click=${(e) => e.stopPropagation()}>
@@ -2642,7 +2622,7 @@ class WebtmuxToolbar extends LitElement {
           ?disabled=${!this.recentTotal}
           @click=${(e) => { this.labelMenuOpen = false; this._askClearRecents(e.currentTarget); }}
         ><span class="mark"></span>Clear the strip${this.recentTotal ? ` (${this.recentTotal})` : ''}…</button>
-        <div class="mtitle">Labels</div>
+        <div class="mtitle">Labels — tabs and preview tiles</div>
         <button class="mitem" @click=${() => this._setLabelPref('showSession', !this.showSession)}>
           <span class="mark">${this.showSession ? '✓' : ''}</span>Show session
         </button>
