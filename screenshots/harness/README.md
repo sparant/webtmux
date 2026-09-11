@@ -172,6 +172,10 @@ Pieces:
   gesture is its own inverse. Also drives the drag: the panes light up as targets for
   the length of it, the payload rides a private MIME type, and a drop moves the window
   exactly as its chip does).,
+  `verify-pip-label-format.js` (a Preview tile's label strip follows the Recent ▾
+  "Labels" toggles: every combination of show-session and trim-name, flipped through
+  the real menu, labels each tile exactly as the toolbar's own formatter labels its
+  tab, and a tmux rename reaches the tile still formatted),
   `verify-pip-tile-tip.js` (what a Preview tile says when you point at it — the recents
   tab's answer, at the recents tab's speed: no native `title` anywhere in the preview,
   the tile's hint leads with the full "session — window N: name" and does not explain
