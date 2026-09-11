@@ -11,7 +11,7 @@
 // difference that reads as "the sidebar is being slow" rather than as two
 // mechanisms. One controller, one delay, one look.
 import { css } from 'lit';
-import { placePopup } from './popup-place.js';
+import { placePopup, placeOnSide, PLACE_MARGIN } from './popup-place.js';
 
 // How long the pointer has to rest before the hint appears. Long enough that
 // crossing a strip of tabs doesn't strobe hints at you, short enough that
@@ -68,37 +68,43 @@ export class Tip {
   // next), swap its text and position INSTANTLY. Waiting again between neighbours
   // would make a row of hinted controls feel stuck; the delay is there to filter
   // out passing through, and you've already stopped passing through.
-  enter(ev, text) {
+  //
+  // `side` ('above' | 'below' | 'left' | 'right') is for an anchor that is a big box
+  // docked against a screen edge — a preview tile — where the shared "below, else
+  // above" rule lands the hint off screen or on top of the next tile (see
+  // placeOnSide). Omit it for a control, which is every other caller.
+  enter(ev, text, side = null) {
     if (!text) return;
     const target = ev?.currentTarget;
     if (!target) return;
     if (this._timer) clearTimeout(this._timer);
     const tip = this._el();
     if (tip && tip.classList.contains('show')) {
-      this.show(target, text);
+      this.show(target, text, side);
       return;
     }
     this._timer = setTimeout(() => {
       this._timer = null;
       if (!target.isConnected) return;   // re-rendered away while we waited
-      this.show(target, text);
+      this.show(target, text, side);
     }, TIP_DELAY);
   }
 
   // Position + reveal the hint under `target` by the shared placement rule — see
   // popup-place.js, which the confirm popup follows too so the two can't end up
   // with different ideas of where "next to this control" is.
-  show(target, text) {
+  show(target, text, side = null) {
     const tip = this._el();
     if (!tip || !target?.isConnected) return;
     tip.textContent = text;
     // Show first (still transparent) so it has real dimensions to measure against.
     tip.classList.add('show');
-    const { left, top } = placePopup(
-      target.getBoundingClientRect(),
-      { width: tip.offsetWidth, height: tip.offsetHeight },
-      { viewport: { width: window.innerWidth, height: window.innerHeight } },
-    );
+    const rect = target.getBoundingClientRect();
+    const size = { width: tip.offsetWidth, height: tip.offsetHeight };
+    const viewport = { width: window.innerWidth, height: window.innerHeight };
+    const { left, top } = side
+      ? placeOnSide(rect, size, side, { viewport, gap: PLACE_MARGIN })
+      : placePopup(rect, size, { viewport });
     tip.style.left = `${left}px`;
     tip.style.top = `${top}px`;
   }

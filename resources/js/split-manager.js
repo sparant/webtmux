@@ -1876,10 +1876,13 @@ export class SplitManager {
     // window doesn't come back on the next reload). Signature-guarded — see
     // _persistRecents; the common no-change case costs one JSON.stringify.
     this._persistRecents();
-    // What the strip's region picker offers: one chip per region, in pane order. Fed
-    // unconditionally (the toolbar decides when a picker is worth showing) so the
-    // chips can never describe a split that has since been closed.
-    this.toolbar.regions = this.regionViews();
+    // What the region picker offers: one chip per region, in pane order. Fed
+    // unconditionally (each surface decides when a picker is worth showing) so the
+    // chips can never describe a split that has since been closed. The preview's
+    // tiles carry the same picker as the strip's tabs — see region-picker.js.
+    const regions = this.regionViews();
+    this.toolbar.regions = regions;
+    this.pip?.setRegions(regions);
     this.toolbar.collapsed = !!this.sidebar?.collapsed;
     // Keep the toolbar's mode labels reflecting the focused pane's settings.
     if (focused?.scrollMode) this.toolbar.scrollMode = focused.scrollMode;

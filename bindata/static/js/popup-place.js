@@ -58,3 +58,48 @@ export function placePopup(anchor, size, opts = {}) {
 
   return { left: Math.round(left), top: Math.round(top) };
 }
+
+// ---- hanging off one named SIDE --------------------------------------------------
+//
+// placePopup's "below, else above" is right for a control in a row of controls. It is
+// wrong for a preview TILE, which is a big box docked against a screen edge: below a
+// tile in a bottom bar is off screen, and below a tile in a left bar is on top of the
+// next tile down. What a tile's popups want is "on the side facing the middle of the
+// screen", and which side that is depends on where the tile is docked — so the caller
+// names it (see tileSide in preview-slots.js) and this does the geometry.
+//
+// `gap` is 0 for something the pointer has to travel INTO (the region picker: a gap
+// between the tile and the picker is a strip where the hover it depends on ends) and
+// PLACE_MARGIN for a hint, which the pointer never enters.
+//
+// side  'above' | 'below' | 'left' | 'right'
+// Flips to the opposite side when the named one has no room, and clamps along the
+// other axis so the whole popup stays on screen.
+export function placeOnSide(anchor, size, side, opts = {}) {
+  const { viewport = { width: 0, height: 0 }, gap = 0, margin = PLACE_MARGIN } = opts;
+  const w = size.width || 0;
+  const h = size.height || 0;
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi));
+  let left;
+  let top;
+  if (side === 'left' || side === 'right') {
+    const before = anchor.left - gap - w;   // to the left of the anchor
+    const after = anchor.right + gap;       // to the right of it
+    const room = (x) => x >= margin && x + w <= viewport.width - margin;
+    left = side === 'left'
+      ? (room(before) || !room(after) ? before : after)
+      : (room(after) || !room(before) ? after : before);
+    left = clamp(left, margin, viewport.width - margin - w);
+    top = clamp(anchor.top, margin, viewport.height - margin - h);
+  } else {
+    const before = anchor.top - gap - h;    // above the anchor
+    const after = anchor.bottom + gap;      // below it
+    const room = (y) => y >= margin && y + h <= viewport.height - margin;
+    top = side === 'above'
+      ? (room(before) || !room(after) ? before : after)
+      : (room(after) || !room(before) ? after : before);
+    top = clamp(top, margin, viewport.height - margin - h);
+    left = clamp(anchor.left, margin, viewport.width - margin - w);
+  }
+  return { left: Math.round(left), top: Math.round(top) };
+}

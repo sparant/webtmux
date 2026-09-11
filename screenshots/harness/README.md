@@ -172,6 +172,12 @@ Pieces:
   gesture is its own inverse. Also drives the drag: the panes light up as targets for
   the length of it, the payload rides a private MIME type, and a drop moves the window
   exactly as its chip does).,
+  `verify-pip-tile-tip.js` (what a Preview tile says when you point at it — the recents
+  tab's answer, at the recents tab's speed: no native `title` anywhere in the preview,
+  the tile's hint leads with the full "session — window N: name" and does not explain
+  the stoplight, the dot in the label strip is what does, and with the view split the
+  tile grows the same region picker a recents tab does — flush on its inward side,
+  previewing and sending the window to the pane you pick),
   `verify-link-menu.js` (the dropdown the spinner opens: attaching hides tmux's own
   status line and remembers what it hid WITHOUT recording it as the user's choice, the
   menu's connection row agrees with the spinner's state, the settings row is drawn from

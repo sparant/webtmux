@@ -163,6 +163,34 @@ export function tileControls(wins, id) {
   return { corners, toBar: normalizeSlot(self.slot) !== BAR };
 }
 
+// ---- what a tile says when you point at it --------------------------------------
+
+// Which side of a tile its hint and its region picker hang off: the side facing the
+// middle of the screen. A bottom bar's tiles answer above themselves, a left bar's to
+// their right, a top-left corner box below itself — never off the screen edge the tile
+// is docked against, and never on top of the next tile along the bar.
+export function tileSide(slot, edge) {
+  const s = normalizeSlot(slot);
+  if (s === BAR) return { top: 'below', bottom: 'above', left: 'right', right: 'left' }[edge] || 'above';
+  return s === 'tl' || s === 'tr' ? 'below' : 'above';
+}
+
+// The tile's hover hint, in the recents tab's format (toolbar.js _tabTip): WHICH
+// window in full first — the label strip ellipsis-clips it, and a window's name has
+// no length limit — then what pointing, clicking and dragging do. What the stoplight
+// colours mean is NOT in here: that key belongs to the dot, and is what hovering the
+// dot says (see pip-overlay.js _buildTile).
+//
+// `w.label` is "N: name" (pip-overlay keeps it fresh from each capture). The drag
+// clause depends on the surface: in the bar a drag reorders, and a corner box's drag
+// is how it gets back into the bar.
+export function tileTip(w, slot) {
+  const label = w?.label || '…';
+  const title = w?.session ? `${w.session} — window ${label}` : `window ${label}`;
+  const drag = normalizeSlot(slot) === BAR ? 'drag to reorder' : 'drag onto the bar to dock it';
+  return `${title}\nHover to preview it in a terminal region · click to switch there · ${drag}`;
+}
+
 // ---- dragging a preview tile ---------------------------------------------------
 //
 // A tile's hover controls name every placement by button, which is precise but is not
