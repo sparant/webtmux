@@ -45,14 +45,17 @@ import {
   BAR, CORNERS, EDGES, CORNER_GLYPH, CORNER_NAME, EDGE_GLYPH, EDGE_NAME,
   PREVIEW_DRAG_TYPE, normalizeSlot, cornerOccupancy, freeCorner, placeWindow,
   tileControls, winsFromState, barWins, dropInBar, previewDragPayload, parsePreviewDrag,
-  carriesPreviewDrag,
+  carriesPreviewDrag, tileSide, tileTip,
 } from '../preview-slots.js';
+import {
+  PICKER_DELAY, PICKER_GRACE, REGION_PICKER_CSS, regionPickerTemplate,
+} from '../region-picker.js';
+import { placeOnSide } from '../popup-place.js';
 import {
   terminalContentBox, cropBox, fitTransform, CropTracker, sameBox,
 } from '../content-bounds.js';
 
 const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css';
-const FRAME_TIP = 'Click to switch the focused view to this window';
 const BAR_THICK = 200;     // px: bar height (top/bottom) or width (left/right)
 const POLL_MS = 1500;      // keep previews live (server coalesces to 500ms)
 const STALE_MS = 5000;     // no fresh capture for this long => the window is gone
@@ -76,6 +79,9 @@ class WebtmuxPip extends LitElement {
     // _paintDrag(), which a re-render runs anyway.
     _dragId: { state: true },
     _dropIndex: { state: true },
+    // The window whose REGION PICKER is open ('' = none). Split view only — see
+    // "the region picker" below.
+    _pickFor: { state: true },
   };
 
   static styles = [css`
@@ -221,9 +227,9 @@ class WebtmuxPip extends LitElement {
        that works on the corner that happens to be occupied is worse than one that
        plainly belongs to the bar.
 
-       The pointer says "you can pick this up" only on the frame — the label already
-       answers a hover with its own tooltip, and .plabel is the one part of a tile
-       that is text. */
+       The pointer says "you can pick this up" only on the frame — .plabel is the one
+       part of a tile that is text, and it holds the stoplight dot, which answers a
+       hover with its own hint. */
     .ptile[draggable] .pframe { cursor: grab; }
     .ptile.dragging { opacity: 0.4; }
     .ptile.dragging .pframe { cursor: grabbing; }
@@ -295,31 +301,31 @@ class WebtmuxPip extends LitElement {
 
     .plabel {
       flex: 0 0 auto;
-      display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+      display: flex; align-items: center; gap: 7px;
       padding: 5px 9px; font-size: 12px; color: #d6ddf5; white-space: nowrap;
     }
-    .plabel .name { overflow: hidden; text-overflow: ellipsis; }
+    .plabel .name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     .plabel .sess { flex: 0 0 auto; color: #7f8bb5; letter-spacing: 0.06em; font-size: 11px; }
 
-    /* Working stoplight, top-right of every preview surface (bar tile and corner
-       box alike). A preview exists so you can watch a window you're NOT looking at,
-       so its "is it busy / is it waiting for me" state belongs on it — that's most
-       of why the window is in the preview at all. Same colours, and the same words,
-       as every other stoplight (see stoplight.js): green working, amber prompting
-       (pulsing), red waiting for work to do, unfilled not reporting. Sits under the
-       hover controls (z-index 3) and passes the pointer through so it never blocks
-       the buttons it shares this corner with — which is why the colour key lives on
-       the frame's tooltip, not the dot's (see _paintWork). */
+    /* Working stoplight, at the head of every tile's label (bar tile and corner box
+       alike) — where the recents tab has it, next to the name it belongs to. A preview
+       exists so you can watch a window you're NOT looking at, so its "is it busy / is
+       it waiting for me" state belongs on it — that's most of why the window is in the
+       preview at all. Same colours, and the same words, as every other stoplight (see
+       stoplight.js): green working, amber prompting (pulsing), red waiting for work to
+       do, unfilled not reporting.
+
+       It used to sit in the frame's top-right corner, which is also where the "pin
+       top-right" button appears on hover — so it had to let the pointer through, and
+       the only place left for its colour key was the whole frame's tooltip. Down here
+       it covers nothing, so it is hoverable, and the key is what hovering IT says. */
     .pwork {
-      position: absolute;
-      top: 7px; right: 7px;
+      flex: 0 0 auto;
       width: 9px; height: 9px;
       border-radius: 50%;
       border: 1px solid #5a6a8a;
       background: transparent;
       box-sizing: border-box;
-      z-index: 2;
-      pointer-events: none;
     }
     .pwork.on   { background: #2ecc71; border-color: #2ecc71; box-shadow: 0 0 5px #2ecc71; }
     .pwork.off  { background: #e74c3c; border-color: #e74c3c; }
@@ -412,7 +418,7 @@ class WebtmuxPip extends LitElement {
        that must not fill with the alert colour — that would hide the very screen the
        flash is telling you to go and look at. Inset so the tile's own overflow can't
        clip it and its size never changes mid-pulse. */
-  `, ALERT_CSS, TIP_CSS];
+  `, ALERT_CSS, TIP_CSS, REGION_PICKER_CSS];
 
   constructor() {
     super();
@@ -446,6 +452,16 @@ class WebtmuxPip extends LitElement {
     this._focusedWinId = null; // set by SplitManager: the window the focused pane shows
     this._dragId = '';         // window id of the tile being dragged (see _onTileDragStart)
     this._dropIndex = -1;      // insertion gap in the bar under the pointer, -1 = none
+    // The region picker's bookkeeping (see "the region picker"). _regions is fed by the
+    // SplitManager on every refresh; it is NOT reactive state, because a re-render
+    // repaints every tile's terminal and the refresh runs twice a second.
+    this._pickFor = '';
+    this._regions = [];
+    this._regionsSig = '';
+    this._hoverId = '';        // the tile the pointer is on ('' = none)
+    this._pickTimer = null;
+    this._pickCloseTimer = null;
+    this._pickHold = false;    // the pointer is inside the picker itself
     this._terms = new Map(); // windowId -> {term, screen, cols, rows}
     this._pollTimer = null;
     // Per-window @wt_working, pushed by the SplitManager (the same map the recents
@@ -465,14 +481,17 @@ class WebtmuxPip extends LitElement {
       }
     };
     // The hover-to-enlarge CSS resizes a corner box; re-letterbox the xterm inside it
-    // when that transition settles. Transitions on the boxes bubble to the host.
-    this.addEventListener('transitionend', () => this._rescaleAll());
+    // when that transition settles — and re-anchor a picker hanging off it, which was
+    // placed against the box's size before it grew. Transitions on the boxes bubble to
+    // the host.
+    this.addEventListener('transitionend', () => { this._rescaleAll(); this._placePicker(); });
     this._tip = new Tip(this);  // shared hover hint — see tooltip.js
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     this._tip.dispose();
+    this._closePicker();
     this._teardownAll();
     this.manager?.hover?.cancel();
     if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null; }
@@ -611,6 +630,7 @@ class WebtmuxPip extends LitElement {
     this._syncTiles();
     this._applySpace();
     this._rescaleAll();
+    this._placePicker();
   }
 
   // Both surfaces are rendered UNCONDITIONALLY and shown with a class, rather than
@@ -638,6 +658,7 @@ class WebtmuxPip extends LitElement {
           corner=${c}
         ><div class="tiles" data-slot=${c}></div></div>
       `)}
+      ${this._regionPicker()}
       <div class="wt-tip"></div>
     `;
   }
@@ -646,6 +667,11 @@ class WebtmuxPip extends LitElement {
   // start of the bar (buttons aligned along the bar's cross-axis). These are the BAR's
   // own controls — where the strip is docked, and whether the preview is on screen at
   // all — as distinct from the per-tile cluster, which moves one window.
+  //
+  // Hinted through the shared Tip rather than native `title`, like every tile control:
+  // `title` waits about a second and can't be told to hurry (see tooltip.js). A click
+  // takes the hint down — both buttons move or remove the very control it is anchored
+  // to, and a hint whose anchor left gets no mouseleave to tell it so.
   _barChrome() {
     return html`
       <div class="barctl" @click=${(e) => e.stopPropagation()}>
@@ -653,17 +679,19 @@ class WebtmuxPip extends LitElement {
           ${EDGES.map((e) => html`
             <button
               class="bbtn ${this.edge === e ? 'active' : ''}"
-              title="Dock the preview bar to the ${EDGE_NAME[e]}"
               aria-label="Dock preview bar to ${EDGE_NAME[e]}"
-              @click=${(ev) => { ev.stopPropagation(); this.setEdge(e); }}
+              @mouseenter=${(ev) => this._tip.enter(ev, `Dock the preview bar to the ${EDGE_NAME[e]}`)}
+              @mouseleave=${() => this._tip.leave()}
+              @click=${(ev) => { ev.stopPropagation(); this._tip.leave(); this.setEdge(e); }}
             >${EDGE_GLYPH[e]}</button>
           `)}
         </div>
         <button
           class="bbtn hide"
-          title="Hide the preview (keeps these ${this._wins.length} windows; ${chord('I')} on a window re-adds/removes it)"
           aria-label="Hide preview"
-          @click=${(ev) => { ev.stopPropagation(); this.setHidden(true); }}
+          @mouseenter=${(ev) => this._tip.enter(ev, `Hide the preview (keeps these ${this._wins.length} windows; ${chord('I')} on a window re-adds/removes it)`)}
+          @mouseleave=${() => this._tip.leave()}
+          @click=${(ev) => { ev.stopPropagation(); this._tip.leave(); this.setHidden(true); }}
         >⊘</button>
       </div>
     `;
@@ -746,27 +774,23 @@ class WebtmuxPip extends LitElement {
     tile.addEventListener('transitionend', () => this._rescale(w.windowId));
 
     // Hovering a preview shows that window full size in a terminal region (the
-    // shared browse gesture — see hover-preview.js). A thumbnail is for noticing
-    // that something happened; when you want to actually READ it, you get a region.
-    tile.addEventListener('mouseenter', () => this.manager?.hover?.enter(w.windowId, w.session || ''));
-    tile.addEventListener('mouseleave', () => this.manager?.hover?.leave());
+    // shared browse gesture — see hover-preview.js), and says which window it is —
+    // or, with the view split, offers the region picker. See _tileEnter.
+    const id = w.windowId;
+    tile.addEventListener('mouseenter', () => this._tileEnter(tile, id));
+    tile.addEventListener('mouseleave', () => this._tileLeave());
 
+    // No native `title` on the frame any more: it took about a second to appear and
+    // carried the stoplight key for a dot that isn't in the frame. The tile's hint is
+    // the shared Tip (_tileEnter), which answers as fast as the recents tab's does.
     const frame = document.createElement('div');
     frame.className = 'pframe';
-    frame.title = FRAME_TIP;   // _paintWork appends the stoplight key to this
-    frame.addEventListener('click', () => this._activate(w.windowId));
+    frame.addEventListener('click', () => { this._tip.leave(); this._activate(id); });
     tile.appendChild(frame);
 
     const host = document.createElement('div');
     host.className = 'screen-host';
     frame.appendChild(host);
-
-    // Working stoplight, top-right (see the .pwork rules). Built here rather than in
-    // _paint so it exists before the first capture lands.
-    const work = document.createElement('span');
-    work.className = 'pwork';
-    work.setAttribute('role', 'img');
-    frame.appendChild(work);
 
     // The placement/close cluster. Filled by _paintControls, which is re-run for every
     // tile whenever the set moves — its contents depend on the other windows.
@@ -776,25 +800,173 @@ class WebtmuxPip extends LitElement {
 
     const label = document.createElement('div');
     label.className = 'plabel';
+    // Working stoplight, at the head of the label (see the .pwork rules). Built here
+    // rather than in _paint so it exists before the first capture lands. Hovering it
+    // is the ONE place the preview explains the colours — the tile's own hint names
+    // the window and says what the gestures do, as the recents tab's does.
+    const work = document.createElement('span');
+    work.className = 'pwork';
+    work.setAttribute('role', 'img');
+    work.addEventListener('mouseenter', () => this._tip.enter({ currentTarget: work }, workTip(this._working.get(id) || '')));
+    work.addEventListener('mouseleave', () => this._tileHint(tile, id));
     const name = document.createElement('span');
     name.className = 'name';
     name.textContent = w.label || '…';
     const sess = document.createElement('span');
     sess.className = 'sess';
     sess.textContent = w.session || '';
-    label.append(name, sess);
+    label.append(work, name, sess);
     tile.appendChild(label);
 
-    // The name clips with an ellipsis in .plabel .name (bar tiles are narrow, and a
-    // window's name has no length limit) — hovering the label answers the same
-    // question the recents strip answers on hover: which window, in full. Scoped to
-    // the label rather than the whole tile so it doesn't fight the frame's own native
-    // title (click hint + stoplight key — see FRAME_TIP / _paintWork) while you're
-    // looking at the live screen. See tooltip.js and toolbar.js's _tabTip.
-    label.addEventListener('mouseenter', () => this._tip.enter({ currentTarget: label }, this._tileTip(w)));
-    label.addEventListener('mouseleave', () => this._tip.leave());
-
     return tile;
+  }
+
+  // The live entry for a window. Handlers look it up rather than closing over the `w`
+  // a tile was built from: placement moves hand back new entries, and _paint keeps the
+  // label on whichever one is current.
+  _win(id) { return this._wins.find((x) => x.windowId === id) || null; }
+
+  // ---- hovering a tile -------------------------------------------------------------
+  //
+  // What the recents tab does, for the same window, in the same words and at the same
+  // speed (toolbar.js _tabEnter): the full "session — window N: name" and what the
+  // gestures do after the shared hint's delay — or, with the view split, the region
+  // picker instead, which also says which pane the window is in and lets you send it to
+  // another. Both hang off the side of the tile that faces the middle of the screen
+  // (tileSide), because below a tile in a bottom bar is off screen.
+
+  _tileEnter(tile, id) {
+    const w = this._win(id);
+    if (!w) return;
+    this._hoverId = id;
+    if (this._splitView()) { this._tip.leave(); this._openPicker(id); }
+    else this._tip.enter({ currentTarget: tile }, this._tileTip(w), tileSide(w.slot, this.edge));
+    this.manager?.hover?.enter(id, w.session || '');
+  }
+
+  // The preview controller and the picker both apply their own leave grace, so sweeping
+  // from one tile to the next (or from a tile into its picker) tears nothing down.
+  _tileLeave() {
+    this._hoverId = '';
+    this._tip.leave();
+    this.manager?.hover?.leave();
+    this._schedulePickerClose();
+  }
+
+  // The pointer came off a control inside the tile (the dot, a pin button) and is back
+  // on the tile itself: say the tile's own hint again. Nothing in split view — there the
+  // picker is the tile's hint, and it is already up.
+  _tileHint(tile, id) {
+    const w = this._win(id);
+    if (!w || this._splitView()) { this._tip.leave(); return; }
+    this._tip.enter({ currentTarget: tile }, this._tileTip(w), tileSide(w.slot, this.edge));
+  }
+
+  // ---- the region picker -------------------------------------------------------------
+  //
+  // With the view split, "click to switch there" stops being an answer: there are
+  // several theres. The recents tab solves that with a picker (region-picker.js) — one
+  // chip per pane, which pane already holds the window, hover a chip to preview it
+  // there, click to send it — and a preview tile is the same question about the same
+  // window, so it gets the same picker. Without it the only way to learn which split a
+  // previewed window was in was to go and look at every split.
+  //
+  // The bookkeeping mirrors the toolbar's: open after PICKER_DELAY (swapping at once if
+  // one is already up), survive PICKER_GRACE after the pointer leaves the tile so it can
+  // travel into the picker, and stay while the pointer is inside it.
+
+  _splitView() { return this._regions.length > 1; }
+
+  // What the picker offers: SplitManager.regionViews(), pushed on every refresh.
+  // Re-rendered only when the answer changed — and only while a picker is up, since a
+  // render repaints every tile.
+  setRegions(list) {
+    const next = Array.isArray(list) ? list : [];
+    const sig = JSON.stringify(next);
+    if (sig === this._regionsSig) return;
+    this._regionsSig = sig;
+    this._regions = next;
+    if (!this._splitView()) { this._closePicker(); return; }
+    if (this._pickFor) this.requestUpdate();
+  }
+
+  _openPicker(id) {
+    if (this._pickCloseTimer) { clearTimeout(this._pickCloseTimer); this._pickCloseTimer = null; }
+    if (this._pickFor === id) return;
+    if (this._pickTimer) clearTimeout(this._pickTimer);
+    if (this._pickFor) { this._pickFor = id; return; }
+    this._pickTimer = setTimeout(() => {
+      this._pickTimer = null;
+      if (this._hoverId === id) this._pickFor = id;
+    }, PICKER_DELAY);
+  }
+
+  _schedulePickerClose() {
+    if (!this._pickFor && !this._pickTimer) return;
+    if (this._pickCloseTimer) clearTimeout(this._pickCloseTimer);
+    this._pickCloseTimer = setTimeout(() => {
+      this._pickCloseTimer = null;
+      if (!this._pickHold) this._closePicker();
+    }, PICKER_GRACE);
+  }
+
+  _closePicker() {
+    if (this._pickTimer) { clearTimeout(this._pickTimer); this._pickTimer = null; }
+    if (this._pickCloseTimer) { clearTimeout(this._pickCloseTimer); this._pickCloseTimer = null; }
+    this._pickHold = false;
+    if (this._pickFor) this._pickFor = '';
+  }
+
+  // The window as the picker names it: index and name off its capture (the entry's own
+  // index/name are only ever set once, at add time).
+  _winView(w) {
+    const entry = this.cache?.byPlacement?.get(placementKey(w.session, w.windowId))
+      || this.cache?.get(w.windowId);
+    return {
+      id: w.windowId,
+      session: w.session || entry?.sessionName || '',
+      index: entry?.index ?? w.index ?? '',
+      name: entry?.name || w.name || '',
+    };
+  }
+
+  _regionPicker() {
+    if (!this._pickFor || !this._on || !this._splitView()) return '';
+    const w = this._win(this._pickFor);
+    if (!w) return '';
+    const win = this._winView(w);
+    return regionPickerTemplate({
+      win,
+      regions: this._regions,
+      extra: alertTip(this._alertFor(w.windowId)),
+      onEnter: () => {
+        this._pickHold = true;
+        if (this._pickCloseTimer) { clearTimeout(this._pickCloseTimer); this._pickCloseTimer = null; }
+      },
+      // A grace rather than an outright close: the tile is right there, and a pointer
+      // that drifts back onto it should find its picker still up (_openPicker keeps it).
+      onLeave: () => { this._pickHold = false; this.manager?.hover?.leave(); this._schedulePickerClose(); },
+      onSlotEnter: (i) => this.manager?.previewWindowIn?.(win, i),
+      onSlotPick: (i) => { this._closePicker(); this._tip.leave(); this.manager?.sendWindowTo?.(win, i); },
+    });
+  }
+
+  // Keep the picker against its tile, flush on the side facing the middle of the screen
+  // — flush, because the pointer has to cross from the tile into it without a gap.
+  _placePicker() {
+    const el = this.renderRoot?.querySelector('.rpick');
+    if (!el) return;
+    const w = this._win(this._pickFor);
+    const tile = w && this._tileEl(w.windowId);
+    if (!tile) { this._closePicker(); return; }
+    const { left, top } = placeOnSide(
+      tile.getBoundingClientRect(),
+      { width: el.offsetWidth, height: el.offsetHeight },
+      tileSide(w.slot, this.edge),
+      { viewport: { width: window.innerWidth, height: window.innerHeight }, gap: 0 },
+    );
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
   }
 
   // Fill (or refresh) one tile's hover controls from the shared placement model — the
@@ -814,13 +986,17 @@ class WebtmuxPip extends LitElement {
     ctl.dataset.sig = sig;
     ctl.textContent = '';
 
+    // Hinted through the shared Tip, not native `title` (see _barChrome); leaving a
+    // button hands the hint back to the tile. A click takes it down — every one of
+    // these moves or removes the tile the hint is anchored in.
     const button = (cls, glyph, title, fn) => {
       const b = document.createElement('button');
       b.className = `tbtn ${cls}`;
       b.textContent = glyph;
-      b.title = title;
       b.setAttribute('aria-label', title);
-      b.addEventListener('click', (e) => { e.stopPropagation(); fn(); });
+      b.addEventListener('mouseenter', () => this._tip.enter({ currentTarget: b }, title));
+      b.addEventListener('mouseleave', () => this._tileHint(tile, w.windowId));
+      b.addEventListener('click', (e) => { e.stopPropagation(); this._tip.leave(); this._closePicker(); fn(); });
       ctl.appendChild(b);
       return b;
     };
@@ -859,6 +1035,10 @@ class WebtmuxPip extends LitElement {
     this._dragId = w.windowId;
     this._dropIndex = -1;
     this._tip.leave();
+    // The picker asks "which pane?" — a drag is not that question, and the popover
+    // would sit over the very gaps the tile is being dragged between.
+    this._hoverId = '';
+    this._closePicker();
     // Pointing at a tile previews its window in a real region (the tile's own
     // mouseenter — see _buildTile). Picking the tile UP is a rearrangement, not a
     // browse, so that preview is dismissed for the length of the drag; otherwise a
@@ -953,12 +1133,13 @@ class WebtmuxPip extends LitElement {
     else if (bar.length) bar[bar.length - 1].classList.add('drop-end');
   }
 
-  // Full "session — window N: name" for a tile's hover hint. Reads `w` live (the
-  // same object _paint mutates in place as fresh captures land — `label` there, not
-  // `index`/`name`, which are only ever set once at add time), so a rename or a
-  // linked-window session change shows up without rebuilding the tile.
+  // A tile's hover hint: the full "session — window N: name", what the gestures do
+  // (tileTip — the recents tab's format), and the window's attention flash if it has
+  // one, as the tab's hint ends with. Computed at hover time from the live entry
+  // (_paint keeps `label` current as captures land), so a rename shows up without
+  // rebuilding the tile.
   _tileTip(w) {
-    return w.session ? `${w.session} — window ${w.label}` : `window ${w.label}`;
+    return tileTip(w, w.slot) + alertTip(this._alertFor(w.windowId));
   }
 
   // ---- live painting ----------------------------------------------------------
@@ -1173,13 +1354,6 @@ class WebtmuxPip extends LitElement {
     dot.classList.toggle('wait', cls === 'wait');
     dot.setAttribute('aria-label', workLabel(v));
     this._paintAlert(id, tile);
-    // The colour key belongs on the FRAME, not on the dot itself. The dot is
-    // deliberately pointer-events:none — it shares the tile's top-right corner with
-    // the hover-revealed controls — so making it hoverable would eat part of their hit
-    // area. Because it lets the pointer through, hovering the dot IS hovering the
-    // frame, so the frame's tooltip is what a user pointing at the dot actually reads.
-    const frame = tile.querySelector('.pframe');
-    if (frame) frame.title = `${FRAME_TIP}\n\n${workTip(v)}${alertTip(this._alertFor(id))}`;
   }
 
   // This window's flash, keyed by the session the tile was ADDED from (a linked
@@ -1232,6 +1406,9 @@ class WebtmuxPip extends LitElement {
     // removing, moving or hiding a preview — so the shared blob stops re-applying
     // itself over this client's set (see the adopt in restoreState).
     if (!this._restoring) this._userTouched = true;
+    // A picker for a window that just left (or a preview that was just tucked away)
+    // has nothing left to hang off.
+    if (this._pickFor && (this._hidden || !this._has(this._pickFor))) this._closePicker();
     if (this._wins.length === 0 || this._hidden) {
       if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null; }
       this.cache?.removeEventListener('update', this._onCacheUpdate);

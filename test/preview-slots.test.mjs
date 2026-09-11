@@ -18,6 +18,7 @@ import {
   BAR, CORNERS, normalizeSlot, cornerOccupancy, normalizeWins, freeCorner,
   placeWindow, tileControls, winsFromState, barWins, dropInBar,
   PREVIEW_DRAG_TYPE, previewDragPayload, parsePreviewDrag, carriesPreviewDrag,
+  tileSide, tileTip,
 } from '../resources/js/preview-slots.js';
 
 // A preview-set entry, shaped like WebtmuxPip._wins.
@@ -264,4 +265,42 @@ test('a preview drag is recognised only by its own private type', () => {
   assert.equal(carriesPreviewDrag({ types: ['text/plain'] }), false);
   assert.equal(carriesPreviewDrag(null), false);
   assert.equal(carriesPreviewDrag({}), false);
+});
+
+// ---- what a tile says, and which side it says it from --------------------------
+
+test('tileSide: a bar tile answers on the side facing the middle of the screen', () => {
+  assert.equal(tileSide(BAR, 'bottom'), 'above');
+  assert.equal(tileSide(BAR, 'top'), 'below');
+  assert.equal(tileSide(BAR, 'left'), 'right');
+  assert.equal(tileSide(BAR, 'right'), 'left');
+});
+
+test('tileSide: a corner box answers below a top corner and above a bottom one', () => {
+  assert.equal(tileSide('tl', 'bottom'), 'below');
+  assert.equal(tileSide('tr', 'bottom'), 'below');
+  assert.equal(tileSide('bl', 'top'), 'above');
+  assert.equal(tileSide('br', 'top'), 'above');
+});
+
+test('tileTip leads with the full "session — window N: name", as the recents tab does', () => {
+  const tip = tileTip({ session: 'dev', label: '3: a-very-long-window-name' }, BAR);
+  assert.equal(tip.split('\n')[0], 'dev — window 3: a-very-long-window-name');
+  assert.match(tip, /click to switch there/);
+  assert.match(tip, /drag to reorder/);
+});
+
+test('tileTip does not explain the stoplight — that is the dot\'s own hint', () => {
+  const tip = tileTip({ session: 'dev', label: '1: x' }, BAR);
+  assert.doesNotMatch(tip, /green|amber|red|working/i);
+});
+
+test('tileTip: a corner box\'s drag docks it rather than reordering', () => {
+  const tip = tileTip({ session: 'dev', label: '1: x' }, 'tr');
+  assert.match(tip, /drag onto the bar to dock it/);
+  assert.doesNotMatch(tip, /reorder/);
+});
+
+test('tileTip without a session still names the window', () => {
+  assert.equal(tileTip({ label: '2: y' }, BAR).split('\n')[0], 'window 2: y');
 });

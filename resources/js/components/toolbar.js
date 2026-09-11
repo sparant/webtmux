@@ -28,6 +28,9 @@ import { stateStore } from '../state-store.js';
 import { workClass, workLabel, workTip, workBadgeTip, workBadge, workBadgeModes, nextBadgeMode } from '../stoplight.js';
 import { ALERT_CSS, alertClass, alertTip } from '../alert-flash.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
+import {
+  PICKER_DELAY, PICKER_GRACE, REGION_PICKER_CSS, regionPickerTemplate, windowTitle,
+} from '../region-picker.js';
 import { saveHint } from '../save-target.js';
 import {
   DEFAULT_SAVE_SCOPE, SCOPE_OPTIONS, normalizeScope,
@@ -265,18 +268,6 @@ const LINK_MENU_HINT = '\n\nClick for the connection in full, and for tmux\'s ow
 // the pointer isn't on.
 const CLOSE_TAB_TIP =
   'Remove this tab from Recent — the window keeps running (this does not close or kill it)';
-
-// How long the pointer rests on a tab before its region picker appears. Shorter than
-// the hint's TIP_DELAY: this one is a control you are reaching for rather than a
-// label you are reading, and it replaces the hint while it is up. Long enough that
-// sweeping the strip end to end pops nothing.
-const PICKER_DELAY = 240;
-
-// …and how long the picker survives the pointer leaving the tab. The popover sits
-// flush against the tab's bottom edge, so this only has to cover the frame between
-// the tab's mouseleave and the picker's mouseenter — the two fire in that order and
-// nothing in between says which one is about to win.
-const PICKER_GRACE = 140;
 
 class WebtmuxToolbar extends LitElement {
   static properties = {
@@ -529,56 +520,9 @@ class WebtmuxToolbar extends LitElement {
     .rtab.drop-before::before { left: -4px; }
     .rtab.drop-end::after { right: -4px; }
 
-    /* ---- the region picker ------------------------------------------------------
-       Hangs off a hovered tab whenever the view is split. Fixed, so the strip's own
-       overflow:hidden (see .tabs) can't clip it, and flush against the tab's bottom
-       edge rather than the usual 6px below it: the pointer has to travel from the tab
-       into this without crossing a gap, or the hover it depends on ends on the way. */
-    .rpick {
-      position: fixed;
-      z-index: 1000;
-      padding: 7px 8px 8px;
-      border-radius: 6px;
-      background: #0b1020;
-      border: 1px solid #4a9eff;
-      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.55);
-      font-family: Menlo, Monaco, "Courier New", monospace;
-      color: #e8eefc;
-      max-width: min(520px, calc(100vw - 16px));
-    }
-    .rpick-head {
-      font-size: 11px; color: #9fb4dc; margin-bottom: 6px;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    }
-    /* The chips are laid out in the panes' OWN proportions (flex-grow comes from the
-       divider drag), so the row is a small picture of the split rather than a list of
-       equal boxes that happen to be numbered. */
-    .rpick-row { display: flex; align-items: stretch; gap: 4px; min-width: 260px; }
-    .rslot {
-      flex: 1 1 0;
-      min-width: 62px;
-      display: flex; flex-direction: column; gap: 2px;
-      padding: 6px 8px;
-      border-radius: 4px;
-      border: 1px solid #2c4a7a;
-      background: #131c33;
-      color: #cfe0ff;
-      font: inherit; font-size: 11px; text-align: left;
-      cursor: pointer;
-    }
-    .rslot:hover { border-color: #4a9eff; background: #1b2b4d; }
-    /* The pane that is focused right now — where an unaimed click would have landed. */
-    .rslot.focused { border-color: #4a9eff; }
-    /* The pane already showing this window. Still clickable (it means "focus it"),
-       but it is not somewhere to send anything. */
-    .rslot.here { border-color: #37d17a; background: #12281e; color: #b6ebcd; }
-    .rslot-n { font-size: 10px; color: #7d92b8; letter-spacing: 0.04em; }
-    .rslot.here .rslot-n { color: #7fc9a3; }
-    .rslot-w { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .rpick-hint {
-      margin-top: 6px; font-size: 10.5px; line-height: 1.4; color: #8fa4cc;
-      white-space: normal; max-width: 340px;
-    }
+    /* The region picker (.rpick and its chips) hangs off a hovered tab whenever the
+       view is split — its rules are REGION_PICKER_CSS, shared with the preview tiles
+       (see region-picker.js). */
 
     /* Working-status dot: green = working, green ring = working in the background,
        amber = prompting (blocked on your answer), red = waiting for work to do,
@@ -1519,7 +1463,7 @@ class WebtmuxToolbar extends LitElement {
        land. Amber, the same "waiting on you" colour the stoplight uses. */
     .link-menu .rwin .rwpend { flex: 0 0 auto; color: #ffb454; font-size: 15px; line-height: 1; }
     .link-menu .merr { color: #ff8fa3; font-size: 11px; line-height: 1.35; padding: 0 2px; }
-  `, ALERT_CSS, TIP_CSS, CONFIRM_CSS];
+  `, ALERT_CSS, TIP_CSS, CONFIRM_CSS, REGION_PICKER_CSS];
 
   constructor() {
     super();
@@ -2397,7 +2341,7 @@ class WebtmuxToolbar extends LitElement {
   // now does. Hovering it shows nothing new for the same reason: it's already on
   // screen.
   _tabTip(w) {
-    const full = `${w.session} — window ${w.index}: ${w.name}`;
+    const full = windowTitle(w.session, w.index, w.name);
     // Split view adds the aiming half — but there the picker is what you are looking
     // at, not this, so the sentence is only ever read in single view (and by anything
     // reading the label rather than the popover).
@@ -2528,39 +2472,16 @@ class WebtmuxToolbar extends LitElement {
   _regionPicker() {
     const w = this._pickerEntry();
     if (!w) return '';
-    const regions = this.regions || [];
-    const holder = regions.find((r) => r.windowId === w.id);
-    const label = (r) => (r.name ? `${r.windowIndex == null ? '' : r.windowIndex + ': '}${r.name}` : 'no window');
-    return html`
-      <div
-        class="rpick"
-        @mouseenter=${() => { this._pickerHold = true;
-          if (this._pickerCloseTimer) { clearTimeout(this._pickerCloseTimer); this._pickerCloseTimer = null; } }}
-        @mouseleave=${() => { this._pickerHold = false; this._closePicker(); this.manager?.hover?.leave(); }}
-      >
-        <div class="rpick-head">${w.session} — window ${w.index}: ${w.name}</div>
-        <div class="rpick-row">
-          ${regions.map((r) => html`
-            <button
-              class="rslot ${r.windowId === w.id ? 'here' : ''} ${r.focused ? 'focused' : ''}"
-              style="flex-grow: ${r.grow}"
-              aria-label=${r.windowId === w.id
-                ? `Region ${r.index + 1} is already showing ${w.name}`
-                : `Move ${w.name} to region ${r.index + 1}`}
-              @mouseenter=${() => this._slotEnter(w, r.index)}
-              @click=${() => this._slotPick(w, r.index)}
-            >
-              <span class="rslot-n">${r.index + 1}${r.windowId === w.id ? ' · here' : ''}${r.focused && r.windowId !== w.id ? ' · focused' : ''}</span>
-              <span class="rslot-w">${label(r)}</span>
-            </button>
-          `)}
-        </div>
-        <div class="rpick-hint">${holder
-          ? html`It is in region ${holder.index + 1}. Pick another and the two panes trade windows.`
-          : html`Pick a pane to open it there — hovering one shows it first.`}
-          You can also drag the tab straight onto a pane.${alertTip(w.alert)}</div>
-      </div>
-    `;
+    return regionPickerTemplate({
+      win: w,
+      regions: this.regions,
+      extra: ` You can also drag the tab straight onto a pane.${alertTip(w.alert)}`,
+      onEnter: () => { this._pickerHold = true;
+        if (this._pickerCloseTimer) { clearTimeout(this._pickerCloseTimer); this._pickerCloseTimer = null; } },
+      onLeave: () => { this._pickerHold = false; this._closePicker(); this.manager?.hover?.leave(); },
+      onSlotEnter: (i) => this._slotEnter(w, i),
+      onSlotPick: (i) => this._slotPick(w, i),
+    });
   }
 
   // Keep the popover under its tab. Flush against the tab's bottom edge rather than
@@ -2831,7 +2752,7 @@ class WebtmuxToolbar extends LitElement {
   // is `visibility: hidden; pointer-events: none`, so none of them can fire.
   _recentTab(w, i, spare = false) {
     const key = this._key(w);
-    const full = `${w.session} — window ${w.index}: ${w.name}`;
+    const full = windowTitle(w.session, w.index, w.name);
     const tip = this._tabTip(w);
     const last = !spare && i === this.recent.length - 1;
     // An explicit override (from clicking the badge) wins; otherwise fall back to

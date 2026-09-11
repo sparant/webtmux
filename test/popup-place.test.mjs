@@ -85,3 +85,49 @@ test('the same anchor gives a hint and a confirmation the same vertical position
   const confirm = placePopup(anchor, size(280, 90), { viewport: VIEW, align: 'right' });
   assert.equal(tip.top, confirm.top);
 });
+
+// ---- placeOnSide: a popup that hangs off a named side of a big anchor -----------
+import { placeOnSide } from '../resources/js/popup-place.js';
+
+test('placeOnSide: above a tile docked at the bottom, flush when gap is 0', () => {
+  const tile = rect(100, 620, 300, 170);
+  const p = placeOnSide(tile, size(280, 90), 'above', { viewport: VIEW, gap: 0 });
+  assert.deepEqual(p, { left: 100, top: 620 - 90 });
+});
+
+test('placeOnSide: below a tile docked at the top, gap applied', () => {
+  const tile = rect(100, 44, 300, 170);
+  const p = placeOnSide(tile, size(280, 90), 'below', { viewport: VIEW, gap: M });
+  assert.deepEqual(p, { left: 100, top: 44 + 170 + M });
+});
+
+test('placeOnSide: right of a left-bar tile, top edges aligned', () => {
+  const tile = rect(8, 300, 184, 150);
+  const p = placeOnSide(tile, size(280, 90), 'right', { viewport: VIEW, gap: 0 });
+  assert.deepEqual(p, { left: 192, top: 300 });
+});
+
+test('placeOnSide: left of a right-bar tile', () => {
+  const tile = rect(808, 300, 184, 150);
+  const p = placeOnSide(tile, size(280, 90), 'left', { viewport: VIEW, gap: 0 });
+  assert.deepEqual(p, { left: 808 - 280, top: 300 });
+});
+
+test('placeOnSide: flips to the opposite side when the named one has no room', () => {
+  // "above" a tile at the very top of the screen has nowhere to go.
+  const tile = rect(100, 10, 300, 150);
+  const p = placeOnSide(tile, size(280, 90), 'above', { viewport: VIEW, gap: 0 });
+  assert.equal(p.top, 160);
+  // …and "right" of a tile hard against the right edge goes left instead.
+  const q = placeOnSide(rect(800, 300, 190, 150), size(280, 90), 'right', { viewport: VIEW, gap: 0 });
+  assert.equal(q.left, 800 - 280);
+});
+
+test('placeOnSide: clamps along the other axis to stay on screen', () => {
+  // A tile at the far right of a bottom bar: the popup would run off the right edge.
+  const p = placeOnSide(rect(900, 620, 300, 170), size(280, 90), 'above', { viewport: VIEW, gap: 0 });
+  assert.equal(p.left, VIEW.width - M - 280);
+  // A tile at the bottom of a left bar: the popup would run off the bottom.
+  const q = placeOnSide(rect(8, 700, 184, 150), size(280, 200), 'right', { viewport: VIEW, gap: 0 });
+  assert.equal(q.top, VIEW.height - M - 200);
+});
