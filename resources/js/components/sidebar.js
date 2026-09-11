@@ -6,6 +6,9 @@ import {
   buildTree, filterTree, flattenTree, stepRow, moveTargetPos, translateGap, sessionCountOf,
   rowKey, rowText,
 } from '../window-tree.js';
+import {
+  sessionKey, windowKey, makePending, pendingWindow, pendingSession, prunePending,
+} from '../kill-pending.js';
 import { stateStore } from '../state-store.js';
 import { clientStore } from '../client-store.js';
 import { workClass, workLabel, workTip, workBadge, workBadgeTip, workBadgeModes, nextBadgeMode } from '../stoplight.js';
@@ -334,6 +337,59 @@ class WebtmuxSidebar extends LitElement {
     .window-tab:hover .kill, .session-tab:hover .kill { display: block; }
     .window-tab .kill:hover, .session-tab .kill:hover { background: #e94560; color: #fff; }
 
+    /* Pending kill: the row is being torn down but the layout that removes it
+       has not arrived yet (kill-session on a busy session can take a good while
+       — tmux waits for the processes to die). Without this, the untouched row
+       in an otherwise-quiet list reads as "the × did nothing". The bar is the
+       acknowledgment: accepted, draining. See kill-pending.js for the state —
+       it is keyed by placement and settled by the first push whose list no
+       longer draws the row (a kill, an unlink, or a rename, which settles it
+       harmlessly); a push that draws the row again settles nothing. */
+    .wrow .killbar { margin-top: 3px; }
+    .killbar {
+      display: block;
+      position: relative;
+      height: 4px;
+      border-radius: 2px;
+      background: #0f3460;
+      overflow: hidden;
+    }
+    .killbar::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 40%;
+      border-radius: 2px;
+      background: #e94560;
+      animation: wt-killbar 1.1s ease-in-out infinite;
+    }
+    @keyframes wt-killbar {
+      from { left: -40%; }
+      to { left: 100%; }
+    }
+    .killbar-label {
+      color: #666;
+      font-size: 12px;
+      line-height: 1;
+      margin-top: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    /* Full-width wrapper: a block child of the session's tnode (the session bar
+       spans the whole branch, not just the tab) or of a window's .wrow (a flex
+       item that takes the whole row, dot included). */
+    .killbar-row { display: block; }
+    .wrow .killbar-row { flex: 1 1 100%; }
+
+    /* The row being killed: wrap the bar onto its own line (a 100%-basis flex
+       item in a nowrap row would just squeeze the tab) and dim the tab so the
+       list reads as draining, not frozen. */
+    .wrow.killing { flex-wrap: wrap; }
+    .wrow.killing > .window-tab { opacity: 0.55; }
+    .wrow.killing > .window-tab:hover { opacity: 1; }
+
     .window-tab:hover {
       border-color: #e94560;
       color: #fff;
@@ -650,6 +706,10 @@ class WebtmuxSidebar extends LitElement {
     // read-modify-render entirely inside _cycleBadgeMode(), which calls
     // requestUpdate() itself. Keyed by window id so it survives layout refreshes.
     this._badgeMode = new Map();
+    // Kills accepted but not yet reflected in a layout push (see kill-pending.js).
+    // A live Map, replaced rather than mutated on settle — the same lit identity
+    // rule as treeCollapsed.
+    this._killing = new Map();
     // Window id currently being renamed inline ('' = none).
     this.editingWindow = '';
     // Session name currently being renamed inline ('' = none).
@@ -701,6 +761,12 @@ class WebtmuxSidebar extends LitElement {
   }
 
   updated(changedProperties) {
+    // A layout push has landed: settle any pending-kill bars whose rows it no
+    // longer draws (a kill, an unlink, or a rename — all of them remove the row,
+    // and all of them settle harmlessly). Runs after the render the bar lingered
+    // through, so a bar lives at most one push past the removal it waits for —
+    // pushes arrive in bursts, so the difference is not visible.
+    if (changedProperties.has('layout')) this._settleKills();
     // An entry just added by addCmd: open its editor as soon as the layout carrying
     // it arrives. The add and the edit cannot happen in one render — the entry does
     // not exist here until the server has stored it and pushed it back.
@@ -1188,6 +1254,7 @@ class WebtmuxSidebar extends LitElement {
   // view, so click/rename/kill/reorder/link all behave identically) plus its windows.
   renderTreeSession(node) {
     const collapsed = this._isCollapsed(node.name);
+    const killing = pendingSession(this._killing, node.name);
     return html`
       <div class="tnode">
         <div class="srow">
@@ -1228,6 +1295,11 @@ class WebtmuxSidebar extends LitElement {
             >×</span>
           </button>`}
         </div>
+        ${killing ? html`
+          <div class="killbar-row" aria-hidden="true">
+            <span class="killbar"></span>
+            <span class="killbar-label">${killing.label} — killing…</span>
+          </div>` : ''}
         ${collapsed ? '' : this.renderWindowList(node, { plus: true, indent: true })}
       </div>
     `;
@@ -1264,8 +1336,9 @@ class WebtmuxSidebar extends LitElement {
   // linked window's several homes.
   renderWindowRow(win, i, node) {
     const disabled = this._windowDisabled(win.id);
+    const killing = pendingWindow(this._killing, win.session || node.name, win.id);
     return html`
-      <div class="wrow">
+      <div class="wrow ${killing ? 'killing' : ''}">
         <span
           class="work ${workClass(this._working(win))}"
           role="img"
@@ -1314,6 +1387,11 @@ class WebtmuxSidebar extends LitElement {
           @mouseenter=${(e) => this._tip.enter(e, workBadgeTip(this._workingSince(win), this._activity(win), undefined, this._badgeMode.get(win.id)))}
           @mouseleave=${() => this._tip.leave()}
         >${this._badge(win)}</span>` : ''}
+        ${killing ? html`
+        <span class="killbar-row" aria-hidden="true">
+          <span class="killbar"></span>
+          <span class="killbar-label">${killing.label} — killing…</span>
+        </span>` : ''}
       </div>
     `;
   }
@@ -2302,7 +2380,10 @@ class WebtmuxSidebar extends LitElement {
     this._confirm.ask(anchor, {
       message: `Kill ${label}?\nThis ends its processes.`,
       yes: 'Kill',
-      onConfirm: () => this.unit?.killWindow(windowId),
+      onConfirm: () => {
+        this._noteKilling(makePending('window', windowKey(win.session || this._ownSession(), windowId), label));
+        this.unit?.killWindow(windowId);
+      },
     });
   }
 
@@ -2338,14 +2419,38 @@ class WebtmuxSidebar extends LitElement {
   killSession(sessionName, anchor) {
     const sess = (this.layout?.sessions || []).find(s => s.name === sessionName);
     if (sess?.empty) {
+      this._noteKilling(makePending('session', sessionKey(sessionName), `session “${sessionName}”`));
       this.unit?.killSession(sessionName);
       return;
     }
     this._confirm.ask(anchor, {
       message: `Kill session “${sessionName}” and all its windows?\nThis ends their processes.`,
       yes: 'Kill',
-      onConfirm: () => this.unit?.killSession(sessionName),
+      onConfirm: () => {
+        this._noteKilling(makePending('session', sessionKey(sessionName), `session “${sessionName}”`));
+        this.unit?.killSession(sessionName);
+      },
     });
+  }
+
+  // --- Pending-kill bars (see kill-pending.js) --------------------------------
+  // A kill the server accepted but whose layout push has not landed yet gets a
+  // bar on its row: without it, a row that sits untouched for seconds after a
+  // confirmed click reads as "nothing happened". Marked here, settled by
+  // _settleKills on every layout push. Replaced, never mutated — lit re-renders
+  // on identity, and settle runs between renders.
+  _noteKilling(pending) {
+    this._killing.set(pending.key, pending);
+    this.requestUpdate();
+  }
+
+  // One pass per layout push: prune what the new list no longer draws.
+  _settleKills() {
+    if (!this.layout || !this._killing.size) return;
+    const gone = prunePending(this._killing, this.layout.sessions, this.layout.allWindows || [], this._ownSession());
+    if (!gone.length) return;
+    this._killing = new Map([...this._killing.entries()].filter(([, p]) => !gone.includes(p)));
+    this.requestUpdate();
   }
 
   // The "+" at the end of a session's window list — one per session in the tree, so
