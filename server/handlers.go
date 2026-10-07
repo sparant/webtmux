@@ -421,9 +421,27 @@ func (server *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"var webtmux_build = '" + BuildCommit + "';",
 		"var webtmux_built = '" + BuildTime + "';",
 		"var webtmux_webgl = " + webgl + ";",
+		// webtmux_instance names THIS webtmux server among the several that can front
+		// one tmux server (webtmux-launch runs one per port). The shared @wt_state blob
+		// keys per-instance UI settings by it — today the preview bar's thickness.
+		"var webtmux_instance = '" + instanceID(server.options.Port) + "';",
 	}
 
 	w.Write([]byte(strings.Join(lines, "\n")))
+}
+
+// instanceID is the per-instance key served as webtmux_instance: the listen port,
+// reduced to digits so it can never break out of the JS string it is written into.
+// The port, not the base path, because --random-url makes the path change on every
+// launch and the setting it keys should survive a restart.
+func instanceID(port string) string {
+	var b strings.Builder
+	for _, r := range port {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // titleVariables merges maps in a specified order.

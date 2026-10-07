@@ -45,7 +45,8 @@ import {
   BAR, CORNERS, EDGES, CORNER_GLYPH, CORNER_NAME, EDGE_GLYPH, EDGE_NAME,
   PREVIEW_DRAG_TYPE, normalizeSlot, cornerOccupancy, freeCorner, placeWindow,
   tileControls, winsFromState, barWins, dropInBar, previewDragPayload, parsePreviewDrag,
-  carriesPreviewDrag, tileSide, tileTip,
+  carriesPreviewDrag, tileSide, tileTip, barAxis, clampBarThick, barThickFor, withBarThick,
+  dragThick, BAR_THICK_DEFAULT,
 } from '../preview-slots.js';
 import {
   PICKER_DELAY, PICKER_GRACE, REGION_PICKER_CSS, regionPickerTemplate,
@@ -57,7 +58,9 @@ import {
 } from '../content-bounds.js';
 
 const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css';
-const BAR_THICK = 200;     // px: bar height (top/bottom) or width (left/right)
+// This webtmux server's identity (its listen port, from config.js), which keys the
+// bar's persisted thickness — see "the bar's THICKNESS" in preview-slots.js.
+const INSTANCE = (typeof window !== 'undefined' && window.webtmux_instance) || '';
 const POLL_MS = 1500;      // keep previews live (server coalesces to 500ms)
 const STALE_MS = 5000;     // no fresh capture for this long => the window is gone
 
@@ -106,21 +109,31 @@ class WebtmuxPip extends LitElement {
       font-family: Menlo, Monaco, "Courier New", monospace;
     }
     .bar[edge='top'] {
-      top: var(--wt-toolbar-h, 44px); left: 0; right: 0; height: 200px;
+      top: var(--wt-toolbar-h, 44px); left: 0; right: 0; height: var(--bar-thick, 200px);
       border-width: 0 0 1px 0; flex-direction: row;
     }
     .bar[edge='bottom'] {
-      bottom: 0; left: 0; right: 0; height: 200px;
+      bottom: 0; left: 0; right: 0; height: var(--bar-thick, 200px);
       border-width: 1px 0 0 0; flex-direction: row;
     }
     .bar[edge='left'] {
-      left: 0; top: var(--wt-toolbar-h, 44px); bottom: 0; width: 200px;
+      left: 0; top: var(--wt-toolbar-h, 44px); bottom: 0; width: var(--bar-thick, 200px);
       border-width: 0 1px 0 0; flex-direction: column;
     }
     .bar[edge='right'] {
-      right: 0; top: var(--wt-toolbar-h, 44px); bottom: 0; width: 200px;
+      right: 0; top: var(--wt-toolbar-h, 44px); bottom: 0; width: var(--bar-thick, 200px);
       border-width: 0 0 0 1px; flex-direction: column;
     }
+
+    /* The resize GRIP: a thin strip along the bar's INNER edge (the one facing the
+       terminal). Drag it to set the bar's thickness; double-click to reset it. It sits
+       above the tiles so a tile's own drag (reorder / undock) never starts from it. */
+    .grip { position: absolute; z-index: 3; background: transparent; touch-action: none; }
+    .grip:hover, .grip.active { background: rgba(124, 192, 255, 0.45); }
+    .bar[edge='top'] .grip    { left: 0; right: 0; bottom: -3px; height: 7px; cursor: ns-resize; }
+    .bar[edge='bottom'] .grip { left: 0; right: 0; top: -3px; height: 7px; cursor: ns-resize; }
+    .bar[edge='left'] .grip   { top: 0; bottom: 0; right: -3px; width: 7px; cursor: ew-resize; }
+    .bar[edge='right'] .grip  { top: 0; bottom: 0; left: -3px; width: 7px; cursor: ew-resize; }
 
     /* ---- a corner PiP box: one per corner, floating over the terminal ------- */
     .pipbox { display: none; }
@@ -213,9 +226,9 @@ class WebtmuxPip extends LitElement {
     }
     /* Bar tile sizing: fixed-ish along the scroll axis, full across it. */
     .bar[edge='top'] .ptile,
-    .bar[edge='bottom'] .ptile { flex: 0 0 300px; height: 100%; }
+    .bar[edge='bottom'] .ptile { flex: 0 0 calc(var(--bar-thick, 200px) * 1.5); height: 100%; }
     .bar[edge='left'] .ptile,
-    .bar[edge='right'] .ptile { flex: 0 0 auto; height: 150px; width: 100%; }
+    .bar[edge='right'] .ptile { flex: 0 0 auto; height: calc(var(--bar-thick, 200px) * 0.75); width: 100%; }
     .ptile.current { border-color: #37d17a; }
     .pipbox .ptile.current { border: none; }
 
@@ -435,6 +448,11 @@ class WebtmuxPip extends LitElement {
     const pip = stateStore.section('pip');
     this.edge = EDGES.includes(pip.previewEdge) ? pip.previewEdge : 'bottom';
     this._preferCorner = CORNERS.includes(pip.corner) ? pip.corner : 'tr';
+    // The bar's thickness on its current axis, and the in-flight grip drag (null when
+    // none). While a drag runs the store is not consulted, so a push arriving mid-drag
+    // can't yank the edge out from under the pointer.
+    this._thick = barThickFor(pip, INSTANCE, this.edge);
+    this._resize = null;
     // How a tile's label is shaped: the recents strip's "Labels" toggles (show the
     // session, trim the name), which live in the shared 'toolbar' section. The same
     // prefs, so a window reads the same in the strip and in the bar.
@@ -443,6 +461,7 @@ class WebtmuxPip extends LitElement {
       const p = stateStore.section('pip');
       if (EDGES.includes(p.previewEdge)) this.edge = p.previewEdge;
       if (CORNERS.includes(p.corner)) this._preferCorner = p.corner;
+      if (!this._resize) this._thick = barThickFor(p, INSTANCE, this.edge);
       // The labels are imperative (see _buildTile), so a render would not reach them —
       // repaint them directly, and only when a toggle actually moved.
       const lp = labelPrefs(stateStore.section('toolbar'));
@@ -624,6 +643,9 @@ class WebtmuxPip extends LitElement {
   setEdge(e) {
     if (!EDGES.includes(e)) return;
     this.edge = e;
+    // Each axis remembers its own thickness: moving bottom → left picks up the width
+    // the side bar last had, not the bottom bar's height.
+    this._thick = barThickFor(stateStore.section('pip'), INSTANCE, e);
     stateStore.patchSection('pip', { previewEdge: e });
     // The reserved-space axis changes; re-letterbox once the bar re-lays-out.
     this.updateComplete.then(() => { this._applySpace(); this._rescaleAll(); });
@@ -659,12 +681,21 @@ class WebtmuxPip extends LitElement {
       <div
         class="bar ${bar.length ? 'on' : ''} ${this._dragId ? 'dragging' : ''}"
         edge=${this.edge}
+        style="--bar-thick: ${this._thick}px"
         @dragover=${this._onBarDragOver}
         @dragleave=${this._onBarDragLeave}
         @drop=${this._onBarDrop}
       >
         ${bar.length ? this._barChrome() : ''}
         <div class="tiles" data-slot="bar"></div>
+        ${bar.length ? html`<div
+          class="grip ${this._resize ? 'active' : ''}"
+          aria-label="Resize preview bar"
+          @pointerdown=${this._onGripDown}
+          @dblclick=${this._onGripReset}
+          @mouseenter=${(ev) => { if (!this._resize) this._tip.enter(ev, 'Drag to resize the preview bar (double-click: reset)'); }}
+          @mouseleave=${() => this._tip.leave()}
+        ></div>` : ''}
       </div>
       ${CORNERS.map((c) => html`
         <div
@@ -709,6 +740,60 @@ class WebtmuxPip extends LitElement {
         >⊘</button>
       </div>
     `;
+  }
+
+  // ---- the resize grip --------------------------------------------------------
+  //
+  // A pointer drag (not HTML5 drag-and-drop — that is the tiles' reorder/undock
+  // gesture, and the bar's dragover handlers would read a grip drag as one). The
+  // thickness is applied live — the bar, the reserved #app padding and the tiles'
+  // letterboxing follow the pointer — and persisted ONCE, on release, so a drag is a
+  // single @wt_state write rather than one per mousemove.
+
+  _onGripDown = (ev) => {
+    if (ev.button !== 0) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    this._tip.leave();
+    // Relative to where the grip was GRABBED, so pressing it never makes the edge jump
+    // to the pointer — only moving does.
+    const thick0 = this._thick;
+    const at = (e) => dragThick(this.edge, e.clientX, e.clientY, window.innerWidth, window.innerHeight, 0);
+    const grab = at(ev);
+    const grip = ev.currentTarget;
+    try { grip.setPointerCapture(ev.pointerId); } catch (e) {}
+    const move = (e) => {
+      const vp = barAxis(this.edge) === 'tb' ? window.innerHeight : window.innerWidth;
+      const px = clampBarThick(thick0 + at(e) - grab, vp);
+      if (px !== this._thick) { this._thick = px; this.requestUpdate(); }
+    };
+    const end = () => {
+      grip.removeEventListener('pointermove', move);
+      grip.removeEventListener('pointerup', end);
+      grip.removeEventListener('pointercancel', end);
+      this._resize = null;
+      this._persistThick();
+      this.requestUpdate();
+    };
+    grip.addEventListener('pointermove', move);
+    grip.addEventListener('pointerup', end);
+    grip.addEventListener('pointercancel', end);
+    this._resize = { thick0 };
+    this.requestUpdate();
+  };
+
+  _onGripReset = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    this._thick = BAR_THICK_DEFAULT;
+    this._persistThick();
+    this.requestUpdate();
+  };
+
+  _persistThick() {
+    const pip = stateStore.section('pip');
+    if (barThickFor(pip, INSTANCE, this.edge) === this._thick) return;
+    stateStore.patchSection('pip', { barSize: withBarThick(pip, INSTANCE, this.edge, this._thick) });
   }
 
   // ---- imperative tile reconciliation ----------------------------------------
@@ -1524,7 +1609,7 @@ class WebtmuxPip extends LitElement {
   // floating corner box reserves nothing — that is the difference between the two.
   _applySpace() {
     const vars = { top: '0px', bottom: '0px', left: '0px', right: '0px' };
-    if (this._on && this._wins.some((w) => w.slot === BAR)) vars[this.edge] = BAR_THICK + 'px';
+    if (this._on && this._wins.some((w) => w.slot === BAR)) vars[this.edge] = this._thick + 'px';
     try {
       const s = document.documentElement.style;
       s.setProperty('--wt-preview-top', vars.top);
