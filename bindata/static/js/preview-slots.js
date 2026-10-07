@@ -241,3 +241,63 @@ export function winsFromState(pip) {
   }
   return normalizeWins(raw);
 }
+
+// ---- the bar's THICKNESS (drag-resizable) -----------------------------------------
+//
+// The docked bar's thickness — its height on top/bottom, its width on left/right — is
+// dragged by the bar's inner edge and persisted in the shared @wt_state blob, but
+// keyed by WEBTMUX INSTANCE: several webtmux servers (different ports, see
+// webtmux-launch) can front one tmux server, and each keeps its own size. The key is
+// the instance's listen port, served in config.js as `webtmux_instance`; it is the
+// server's port, not location.port, so an ssh -L tunnel on another local port still
+// lands on the same entry. Within an instance the size is shared by every browser,
+// like the edge. Each axis remembers its own size: a good height for a bottom bar is
+// not a good width for a side bar.
+//
+//   pip.barSize = { "<instance>": { tb: <px>, lr: <px> } }
+export const BAR_THICK_DEFAULT = 200;
+export const BAR_THICK_MIN = 80;
+// The bar may take at most this share of the viewport along its axis, so a drag can
+// never bury the terminal it is previewing beside.
+export const BAR_THICK_MAX_FRAC = 0.75;
+
+export function barAxis(edge) {
+  return edge === 'left' || edge === 'right' ? 'lr' : 'tb';
+}
+
+// Clamp a thickness to [MIN, viewport * MAX_FRAC] (whole pixels). `viewport` is the
+// window's extent along the bar's axis; absent or tiny, only MIN applies.
+export function clampBarThick(px, viewport) {
+  let n = Math.round(Number(px));
+  if (!Number.isFinite(n)) n = BAR_THICK_DEFAULT;
+  const max = viewport > 0 ? Math.floor(viewport * BAR_THICK_MAX_FRAC) : Infinity;
+  return Math.max(BAR_THICK_MIN, Math.min(n, Math.max(BAR_THICK_MIN, max)));
+}
+
+// The persisted thickness for (instance, edge), or the default when none is stored.
+export function barThickFor(pip, instance, edge) {
+  const per = pip && pip.barSize && pip.barSize[instance || ''];
+  const v = per && per[barAxis(edge)];
+  return Number.isFinite(v) && v > 0 ? v : BAR_THICK_DEFAULT;
+}
+
+// The `barSize` map with (instance, edge)'s axis set to px — a new object, other
+// instances and the other axis untouched, ready for patchSection('pip', { barSize }).
+export function withBarThick(pip, instance, edge, px) {
+  const all = (pip && pip.barSize && typeof pip.barSize === 'object') ? pip.barSize : {};
+  const key = instance || '';
+  return { ...all, [key]: { ...(all[key] || {}), [barAxis(edge)]: px } };
+}
+
+// The pointer's distance from the screen edge the bar is docked to, less `start` (the
+// bar's own offset from that edge). The grip drags by the DIFFERENCE of two of these,
+// so the thickness moves with the pointer without snapping to it. Unclamped.
+export function dragThick(edge, x, y, vw, vh, start) {
+  switch (edge) {
+    case 'top': return y - start;
+    case 'bottom': return vh - y - start;
+    case 'left': return x - start;
+    case 'right': return vw - x - start;
+    default: return BAR_THICK_DEFAULT;
+  }
+}
