@@ -21,24 +21,24 @@ or run webtmux directly on the machine whose tmux you want.
 ### From your laptop — `webtmux-launch`
 
 Download the launcher for your laptop from the
-[latest GitHub release](https://github.com/sparant/webtmux/releases/latest) and put it
-on your `PATH`:
+[latest GitHub release](https://github.com/sparant/webtmux/releases/latest):
 
 ```bash
-mkdir -p ~/.local/bin
-curl -fsSL -o ~/.local/bin/webtmux-launch \
+curl -fsSL -o webtmux-launch \
   https://github.com/sparant/webtmux/releases/latest/download/webtmux-launch-darwin-arm64
-chmod +x ~/.local/bin/webtmux-launch
+chmod +x webtmux-launch
 ```
 
-Assets: `webtmux-launch-darwin-arm64` (Apple Silicon), `webtmux-launch-darwin-amd64`
-(Intel Mac), `webtmux-launch-linux-amd64`. To build it yourself instead, run
+Assets: [`webtmux-launch-darwin-arm64`](https://github.com/sparant/webtmux/releases/latest/download/webtmux-launch-darwin-arm64) (Apple Silicon),
+[`webtmux-launch-darwin-amd64`](https://github.com/sparant/webtmux/releases/latest/download/webtmux-launch-darwin-amd64) (Intel Mac),
+[`webtmux-launch-linux-amd64`](https://github.com/sparant/webtmux/releases/latest/download/webtmux-launch-linux-amd64) — or browse the
+[latest release](https://github.com/sparant/webtmux/releases/latest) page. To build it yourself instead, run
 `make launcher` in a checkout (binaries land in `builds/`).
 
 Then point it at any box you can already SSH to:
 
 ```bash
-webtmux-launch linuxbox
+./webtmux-launch linuxbox
 ```
 
 It installs webtmux on the target if needed, starts it, tunnels the port back to
