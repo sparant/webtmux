@@ -18,9 +18,10 @@ A web-based terminal with tmux-specific features. Access your tmux sessions from
 Two ways in: reach tmux on another machine from your laptop with `webtmux-launch`,
 or run webtmux directly on the machine whose tmux you want.
 
-### From your laptop — `webtmux-launch`
+### tmux on another machine — `webtmux-launch`
 
-Download the launcher for your laptop from the
+The easiest way to control tmux running on another machine, such as a server you
+reach from your laptop. Download the launcher for your laptop from the
 [latest GitHub release](https://github.com/sparant/webtmux/releases/latest):
 
 ```bash
@@ -41,8 +42,8 @@ Then point it at any box you can already SSH to:
 ./webtmux-launch linuxbox
 ```
 
-It installs webtmux on the target if needed, starts it, tunnels the port back to
-`127.0.0.1` and opens your browser. **The target needs nothing but `ssh` and
+It installs webtmux on the target if needed, starts it, tunnels it back to
+your laptop and opens your browser. **The target needs nothing but `ssh` and
 `tmux`.** If `ssh <target>` works, `webtmux-launch <target>` works.
 
 Useful flags:
@@ -59,13 +60,13 @@ Useful flags:
 See [How webtmux-launch works](#how-webtmux-launch-works) for what it connects to,
 which binary it installs, and its security model.
 
-### On the machine itself — `webtmux`
+### tmux on this machine — `webtmux`
 
 An alternative to the launcher — you don't need `webtmux-launch` at all. Put
 webtmux directly on the machine whose tmux you want and run it there. The
 trade-off: connecting to it is up to you. The launcher's tunnel, reconnects and
 secret URL are not involved, so reaching it from another machine means setting up
-your own access (for example `ssh -L 8080:127.0.0.1:8080 <host>`, then browse to
+your own access (for example `ssh -L 8080:localhost:8080 <host>`, then browse to
 <http://localhost:8080> on your laptop).
 
 Download the binary for your platform from the
@@ -77,6 +78,10 @@ curl -fsSL -o webtmux \
 chmod +x webtmux
 ./webtmux -a 127.0.0.1 -w tmux new-session -A -s main
 ```
+
+`-a 127.0.0.1` keeps webtmux reachable only from this machine (`127.0.0.1` means
+"this machine" on every computer — it is not your network IP). Drop it to listen
+on all interfaces, but the login is plain HTTP, so only on a network you trust.
 
 Then open <http://localhost:8080> on that machine (or through your tunnel). Other platforms, checksum verification and a
 full install walkthrough are under [Manual Installation](#manual-installation).
@@ -593,7 +598,7 @@ An agent lifecycle integration is then just three writes: `1` when work starts, 
 ## Manual Installation
 
 For when you want webtmux on a machine permanently rather than launched on
-demand. If you just want to reach a remote tmux from your laptop, [`webtmux-launch`](#from-your-laptop--webtmux-launch) is the shorter path.
+demand. If you just want to reach a remote tmux from your laptop, [`webtmux-launch`](#tmux-on-another-machine--webtmux-launch) is the shorter path.
 
 ### Prebuilt Binaries
 
@@ -667,8 +672,8 @@ webtmux -a 127.0.0.1 -w tmux new-session -A -s main
 
 **Bind loopback unless you mean otherwise.** The default address is `0.0.0.0`, and
 authentication here is HTTP basic auth over plain HTTP — fine over an SSH tunnel or
-on `127.0.0.1`, not something to face a LAN. `-a 127.0.0.1` plus
-`ssh -L 8080:127.0.0.1:8080 host` is the safe remote story (and is exactly what
+on loopback, not something to face a LAN. `-a 127.0.0.1` plus
+`ssh -L 8080:localhost:8080 host` is the safe remote story (and is exactly what
 `webtmux-launch` automates).
 
 Two platform notes:
@@ -943,7 +948,7 @@ your remote out from under you mid-session — `--webtmux-version` overrides.
 Binaries land content-addressed under `~/.cache/webtmux/webtmux-<sha>`, so a
 repeat launch transfers nothing and several versions coexist safely.
 
-**Security model.** Both ends bind `127.0.0.1` and the URL carries a 32-character
+**Security model.** Both ends listen only on their own machine (loopback), and the URL carries a 32-character
 secret path, so reaching the terminal needs either the SSH-authenticated tunnel
 or a local account on one of the two machines. Stated plainly: _any local user on
 either machine who learns the secret path gets a shell._ The secret is visible in
