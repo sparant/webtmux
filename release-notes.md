@@ -1,8 +1,8 @@
 # webtmux v0.3.0
 
-The first release that ships **`webtmux-launch`** as a download, and the one where
+The first release that ships **`webtmux-launch`** as a download, the one where
 the preview became a place you arrange rather than a shape the window count
-decides.
+decides, and the one where the shortcuts became tmux's own keys.
 
 Most of what is here came from watching a wall of agent windows in real use: a
 light that turned red for an agent that was only waiting on its own build, a strip
@@ -33,7 +33,7 @@ decide whether a target already has the right binary.
 
 ## Stoplights: how long, and a green that is not a turn
 
-- **A duration beside every dot**, on recents tabs and sidebar rows, so a wall of
+- **A duration beside every dot**, on recents tabs, sidebar rows and preview tiles, so a wall of
   windows answers "how long has it been like this" without hovering each one. By
   default it is the time since the window last printed anything (tmux's own
   `window_activity`, no hook needed). A hook that also sets `@wt_working_since` makes
@@ -45,6 +45,9 @@ decide whether a target already has the right binary.
   work stop being noticed. A 1 → 3 change raises no alert; dropping out of either
   green still does. Exposé's **Show** filter has its own button for it, since it is
   the window you can interrupt for free.
+- **One dot, everywhere.** Preview tiles and Exposé used to draw their own dots and
+  showed the background-work state as "not reporting"; every surface now shares one
+  stylesheet and one set of states.
 
 ## Preview: placement is per window, and the bar is yours to arrange
 
@@ -68,6 +71,8 @@ corner box, two or more **were** a docked bar.
 - Tiles hint like recents tabs: the full `session — window N: name`, labels shaped
   by the same **Recent ▾** toggles, the stoplight key on the dot, and — with the
   view split — the region picker.
+- **Escape and Enter answer any hover preview** — from a recents tab, a bar tile or
+  a region chip, not only the sidebar: Escape puts the region back, Enter switches.
 - Glancing at a thumbnail no longer leaves a selection highlight behind in your own
   region, which used to let ⌘C copy text out of a window you were only looking at.
 
@@ -114,6 +119,13 @@ already uses, so a session reached through tunnels and jump hosts needs no extra
 setup. Paths obey the same rules and allowed directories as saving a buffer, and
 transfers — downloads included — need `-w`.
 
+**The filesystem root is no longer an implicit allowed directory**, for saves or
+transfers. The pane's directory, the server's home and its working directory used to
+count as given, so any of them being `/` — a systemd service's default working
+directory, a pane sitting at `/` — put the whole filesystem on offer. They now skip
+`/`; `WEBTMUX_SAVE_DIR=/`, or choosing `/` in the dropdown, still counts, because
+those are choices.
+
 ## The link menu: the tmux settings that touch other clients
 
 The spinner on the far left now **opens**: the connection's state in longhand, and
@@ -138,9 +150,29 @@ colours a dead link in about a second instead of ten; typing into a wedged link
 turns it amber within ~2s; and a link that recovers heals itself without a reload.
 Idle probing is less frequent, and a hidden tab probes nothing.
 
+## Shortcuts are tmux's keys
+
+**Ctrl+Alt now takes the key tmux uses after its prefix**, wherever tmux has one, so
+tmux muscle memory carries straight over:
+
+| Ctrl+Alt + | Does | tmux |
+|---|---|---|
+| `0`–`9` | go to window N of this session | `0`–`9` |
+| `%`, `"` (and `⏎`) | add a split region | `%` / `"` |
+| `o` / `;` | next region / the region you were in before | `o` / `;` |
+| `&` | kill the window (asks first) | `&` |
+| `]` | paste the focused copy buffer | `]` |
+| `f` | Exposé — **was `e`** | `f` (find-window) |
+| `?` | the shortcuts list (as well as `/`) | `?` |
+
+**Exposé opens at 3×3**, and the key and the trackpad gesture now only open and
+close it; a **Grid** toggle in its header switches between 3×3 and 2×2 and is
+remembered.
+
 ## Smaller things
 
-- Exposé's trackpad gesture walks the whole ladder: spread 2×2 → 3×3, pinch back.
+- Reaching for the copy panel while it is peeking after a copy (⌃⌥= or the pill)
+  now keeps it open, from the keyboard as from the mouse.
 - The permanent white scrollbar track down the terminal's side is gone.
 - The Docker build fetches Go modules in their own cached layer, so a JS-only change
   builds without reaching the module proxy. Nothing about what is compiled changes.
@@ -186,6 +218,12 @@ and `make verify-repro REF=v0.3.0` to prove it.
 - **One previewed window is now a bar tile, not a corner box.** Ctrl+Alt+I always
   adds to the bar; use Ctrl+Alt+Shift+I for a corner. A preview saved by v0.2.0
   comes back as you left it.
+- **Exposé moved from Ctrl+Alt+E to Ctrl+Alt+F** (tmux's find-window key), and
+  pressing it again closes rather than stepping 2×2 → 3×3. Pick the grid size in
+  Exposé's header.
+- **`/` is no longer an allowed save/transfer directory unless you choose it.** If
+  webtmux runs with its working directory or home at `/`, set `WEBTMUX_SAVE_DIR` or
+  pick a directory in the ⤓ dropdown.
 - **Closing a recents tab lets the next queued window in.** To empty the strip, use
   the new clear.
 - Hooks can start sending `@wt_working 3`; older builds treat it as unknown.
