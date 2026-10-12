@@ -724,6 +724,14 @@ directory as webtmux sees it (e.g. `/data`), checks it's writable, and remembers
 it in the shared tmux UI state for every client. If it later disappears, it asks
 again. Downloading to the browser needs no directory.
 
+Saves and file transfers only ever land inside a directory that is on offer: the
+pane's own directory, one you named in the dropdown, `WEBTMUX_SAVE_DIR`, the `~` in
+force, and (outside a container) webtmux's own home and working directory. The
+filesystem root `/` counts only when you name it — set `WEBTMUX_SAVE_DIR=/` or pick
+`/` in the dropdown. A pane sitting at `/`, or webtmux started from `/` (a systemd
+service's default), does not put the whole machine on offer; a plain file name then
+saves in webtmux's home instead.
+
 To answer up front, mount a directory into the container and name it in
 `WEBTMUX_SAVE_DIR` (rather than mounting a whole home directory, which is far more
 than saving a text file needs):

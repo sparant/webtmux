@@ -303,13 +303,31 @@ func fallbackSaveDir(chosen string) string {
 	if inContainer() {
 		return ""
 	}
-	if h := serverHome(); dirExists(h) {
+	if h := serverHome(); dirExists(h) && !isFilesystemRoot(h) {
 		return h
 	}
-	if cwd, err := os.Getwd(); err == nil {
+	if cwd, err := os.Getwd(); err == nil && !isFilesystemRoot(cwd) {
 		return cwd
 	}
-	return "/"
+	// Nothing but / left. That is not a directory anybody offered — see
+	// isFilesystemRoot — so there is no default, and the dropdown asks for one.
+	return ""
+}
+
+// isFilesystemRoot reports whether dir is / (after resolving symlinks). The root
+// is never on offer by ACCIDENT: a service started with WorkingDirectory=/, a
+// home of /, or a pane that happens to sit at / would otherwise put the entire
+// filesystem on the allowlist and make containment a formality. It is still
+// allowed when somebody names it — WEBTMUX_SAVE_DIR=/ or / chosen in the dropdown.
+func isFilesystemRoot(dir string) bool {
+	if dir == "" {
+		return false
+	}
+	r := realDir(dir)
+	if r == "" {
+		r = filepath.Clean(dir)
+	}
+	return r == filepath.Dir(r)
 }
 
 // ---- the resolver -------------------------------------------------------------
@@ -333,7 +351,7 @@ func describeSaveEnv(paneDir, chosen string) SaveEnv {
 	env.Chosen, env.ChosenError = ok, why
 
 	mapped, didMap := applyPathMap(maps, paneDir)
-	if dirExists(mapped) {
+	if dirExists(mapped) && !isFilesystemRoot(mapped) {
 		env.BaseDir = mapped
 		env.PaneVisible = true
 		env.Mapped = didMap
@@ -382,17 +400,25 @@ func saveRoots(env SaveEnv) []string {
 		seen[d] = true
 		roots = append(roots, d)
 	}
+	// Roots nobody named — inherited from where the pane or the process happens to
+	// be — never include the filesystem root (see isFilesystemRoot).
+	implicit := func(d string) {
+		if !isFilesystemRoot(d) {
+			add(d)
+		}
+	}
 	// Where a relative save actually goes — the pane's own directory when webtmux
 	// can see it (possibly via WEBTMUX_PATH_MAP), else the fallback.
-	add(env.BaseDir)
+	implicit(env.BaseDir)
+	// Named on purpose, so honored even when it is /.
 	add(env.Chosen)
 	add(configuredSaveDir())
-	add(env.Home)
+	implicit(env.Home)
 	if !env.Container {
 		// Outside a container the two sides share a filesystem, so the process's own
 		// home and cwd are real places the user can reach — the historical default.
 		if cwd, err := os.Getwd(); err == nil {
-			add(cwd)
+			implicit(cwd)
 		}
 	}
 	return roots
@@ -563,6 +589,14 @@ func existsMessage(path string) string {
 // whoever deploys webtmux the one switch that turns this on — because the reader
 // of the message is often both people.
 func blockedMessage() string {
+	if !inContainer() {
+		// Outside a container the only way here is that every default was / — the
+		// pane, the home directory and the working directory — and / is never a
+		// default (see isFilesystemRoot).
+		return "webtmux has no directory to save in: the pane, the server's home and its working " +
+			"directory are all /, and / is only used when you name it. Name a directory in the save " +
+			"dropdown, download to your browser instead, or set WEBTMUX_SAVE_DIR."
+	}
 	return "webtmux does not know a directory it shares with the machine tmux runs on, so a file saved " +
 		`here could land inside the container and vanish with it. Name a mounted directory in the ` +
 		`save dropdown (webtmux checks it), download to your browser instead, or set WEBTMUX_SAVE_DIR.`
