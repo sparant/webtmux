@@ -6,10 +6,10 @@ A web-based terminal with tmux-specific features. Access your tmux sessions from
 - [Get notified with visuals](#stoplights-and-work-alerts) when your tmux windows are done working, are prompting for input or are idle waiting for more work.
   - Perfect for working with AI coding agents - know exactly when they are done/need input
   - **setup required for feature to work**
+- **Your tmux muscle memory carries straight over.** Keyboard shortcuts deliberately mirror their tmux equivalents — hold `Ctrl+Option` (`Ctrl+Alt` off a Mac) with the same key you would press after the `Ctrl+B` prefix: `Ctrl+Option+W` ⇄ `Ctrl+B, w` (window list), `Ctrl+Option+C` ⇄ `Ctrl+B, c` (new window), `Ctrl+Option+,` ⇄ `Ctrl+B, ,` (rename), `Ctrl+Option+[` ⇄ `Ctrl+B, [` (copy mode), `Ctrl+Option+=` ⇄ `Ctrl+B, =` (paste buffers). The keys you already know work here, and the habits you build here work in plain tmux. `Ctrl+Option+/` lists them all.
 - [Copy several things and paste them one at a time](#copy-buffers) - a list of copy buffers, one of which is the clipboard, that only grows when you are actually gathering.
 - [A program's "press c to copy" reaches YOUR clipboard](#a-programs-press-c-to-copy-reaches-your-clipboard) - the login URL a CLI offers on the tmux machine lands on the clipboard of the machine you are sitting at, which stock tmux silently drops.
 - Take advantage of modern UI - Use Drag and Drop, Previews on hover etc to manage your tmux state.
-- Controls mimic familiar tmux shortcuts - just with control+Option instead of the usual prefix.
 - Discoverability of all features - no more searching for shortcuts or remembering commands
 - Quickly access your most recent windows. Monitor any window, keeping it always in your view.
 
