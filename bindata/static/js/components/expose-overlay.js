@@ -18,7 +18,7 @@ import { Terminal } from '@xterm/xterm';
 import { CaptureCache, placementKey } from '../capture-cache.js';
 import { matchesWords, appendChar, backspace, phraseText } from '../search.js';
 import { stateStore } from '../state-store.js';
-import { CLOSED, growExpose, shrinkExpose, cycleExpose } from '../expose-density.js';
+import { GRID_SIZES, normalizeGrid } from '../expose-density.js';
 import {
   workClass, workLabel, workTip, WORK_LEGEND,
   STATUS_FILTERS, normalizeStatusFilter, matchesStatus,
@@ -320,8 +320,9 @@ class WebtmuxExpose extends LitElement {
   constructor() {
     super();
     this.open = false;
-    // Density (2×2 / 3×3) is a shared 'expose' pref now; seed from the store (default 2).
-    this.density = stateStore.section('expose').density || 2;
+    // Grid size (2×2 / 3×3) is a shared 'expose' pref, chosen in the header; 3×3 unless
+    // set. Stored as `grid`, not the old `density` the open key used to cycle through.
+    this.density = normalizeGrid(stateStore.section('expose').grid);
     this.cache = null; // shared CaptureCache — set by SplitManager
     this.manager = null; // SplitManager — set by SplitManager
     this._tiles = []; // { term? } live xterm instances, for disposal
@@ -356,7 +357,7 @@ class WebtmuxExpose extends LitElement {
       this._sort = readSort();
       this._searchBuffers = readSearchBuffers();
       this._statusFilter = readStatusFilter();
-      this.density = stateStore.section('expose').density || 2;
+      this.density = normalizeGrid(stateStore.section('expose').grid);
       this.requestUpdate();
       if (this.open) this._rebuild();
     });
@@ -426,6 +427,18 @@ class WebtmuxExpose extends LitElement {
             </span>
           </span>
           <span class="sort">
+            <span class="lbl">Grid</span>
+            <span class="seg">
+              ${GRID_SIZES.map((n) => html`
+                <button
+                  class=${this.density === n ? 'active' : ''}
+                  title=${`Show ${n * n} windows per screen (remembered)`}
+                  @click=${() => this.setDensity(n)}
+                >${n}×${n}</button>
+              `)}
+            </span>
+          </span>
+          <span class="sort">
             <span class="lbl">Sort</span>
             <span class="seg">
               <button class=${this._sort === 'session' ? 'active' : ''} @click=${() => this._setSort('session')}>
@@ -446,12 +459,8 @@ class WebtmuxExpose extends LitElement {
 
   // ---- open / close lifecycle -------------------------------------------------
 
-  openOverlay(density = 2) {
-    if (this.open) {
-      this.setDensity(density);
-      return;
-    }
-    this.density = density;
+  openOverlay() {
+    if (this.open) return;
     this.open = true;
     // Exposé is its own full-screen browser; a hover preview left over from the
     // toolbar/sidebar underneath it would keep a region hostage behind the overlay.
@@ -482,45 +491,22 @@ class WebtmuxExpose extends LitElement {
     this._cursor = -1;
   }
 
-  // Where the overlay sits on the size ladder: 0 when closed, else the density.
-  // The ladder itself (which rung follows which) is expose-density.js.
-  get level() {
-    return this.open ? (this.density || 2) : CLOSED;
-  }
-
-  // Move to a rung. Opening and resizing are different operations here — a resize
-  // must NOT tear the tiles down — so the ladder's three outcomes map onto the
-  // three lifecycle calls rather than onto one setter.
-  _setLevel(level) {
-    if (level === CLOSED) this.closeOverlay();
-    else if (!this.open) this.openOverlay(level);
-    else this.setDensity(level);
-  }
-
-  // Cycle the overlay: closed → 2×2 → 3×3 → closed. Each toggle (Ctrl-Alt-E)
-  // steps to the next state, growing how many tiles are visible before dismissing.
+  // Open / close. The chord and the trackpad only ever do this — the grid size is a
+  // setting in the header (setDensity), not a step on the way to closing.
   toggle() {
-    this._setLevel(cycleExpose(this.level));
-  }
-
-  // The directional half of the same ladder, for the trackpad pinch: a spread
-  // grows the grid (and opens it from closed), a pinch shrinks it (and closes it
-  // from 2×2). Both clamp rather than wrap — see expose-density.js.
-  expand() {
-    this._setLevel(growExpose(this.level));
-  }
-
-  contract() {
-    this._setLevel(shrinkExpose(this.level));
+    if (this.open) this.closeOverlay();
+    else this.openOverlay();
   }
 
   // Change how many tiles fill the screen without a teardown. The tile DOM is
   // imperative (not Lit-managed), so it survives the attribute flip; we only need
   // to re-letterbox each live xterm to its resized frame and keep the cursor in view.
   setDensity(density) {
-    if (!this.open || this.density === density) return;
+    density = normalizeGrid(density);
+    if (this.density === density) return;
     this.density = density;
-    stateStore.patchSection('expose', { density });
+    stateStore.patchSection('expose', { grid: density });
+    if (!this.open) return;
     this.updateComplete.then(() => {
       for (const rec of this._tiles) this._rescale(rec);
       this._paintCursor();

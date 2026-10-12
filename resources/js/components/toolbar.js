@@ -238,7 +238,7 @@ function spinIcon() {
 // all my windows" is already pointing — the shortcuts overlay only helps people
 // who already knew to open it. Mac-only, matching the gesture's own gating in
 // SplitManager (a ctrl+wheel on other platforms is still page zoom).
-const EXPOSE_TIP = `Exposé — a thumbnail of every window across all sessions. Shortcut: ${chord('E')}`
+const EXPOSE_TIP = `Exposé — a thumbnail of every window across all sessions. Shortcut: ${chord('F')}`
   + (IS_MAC ? '\nTrackpad: spread two fingers to open it, spread again for 9 smaller tiles;'
             + '\npinch back to 4, and pinch once more to close.' : '');
 

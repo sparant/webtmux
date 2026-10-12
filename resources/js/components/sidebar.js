@@ -2387,6 +2387,21 @@ class WebtmuxSidebar extends LitElement {
     });
   }
 
+  // The keyboard's way to the × (Ctrl+Alt+&): open the panel if it is shut, then ask
+  // at the window's own row so the question sits next to what it is about.
+  killWindowById(windowId) {
+    const win = (this.layout?.windows || []).find((w) => w.id === windowId);
+    if (!win) return;
+    const row = { ...win, session: win.session || this._ownSession() };
+    if (this.collapsed) this.collapsed = false;
+    this.updateComplete.then(() => {
+      const w = CSS.escape(windowId);
+      const el = this.renderRoot?.querySelector(`[data-win="${w}"][data-sess="${CSS.escape(row.session)}"]`)
+        || this.renderRoot?.querySelector(`[data-win="${w}"]`) || this;
+      this.killWindow(row, el);
+    });
+  }
+
   // A window is "linked elsewhere" when it belongs to more than one logical session.
   // The server-wide directory answers this for every row, including the ones in
   // sessions no pane is attached to (which carry no sessionCount of their own); the

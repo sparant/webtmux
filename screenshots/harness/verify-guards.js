@@ -96,7 +96,7 @@ async function readOnly() {
   check('…and still sees the terminal', view.screen.length > 0, JSON.stringify(view.screen.slice(0, 40)));
 
   // Captures are view-only, so Exposé must still fill.
-  await page.keyboard.press('Control+Alt+e');
+  await page.keyboard.press('Control+Alt+f');
   await sleep(3500);
   const tiles = await el('webtmux-expose')((n, rr) => rr.querySelectorAll('.tile').length);
   check('captures still arrive (Exposé fills)', tiles > 0, `${tiles} tiles`);
