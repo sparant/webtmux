@@ -201,7 +201,7 @@ Keep an eye on specific windows, even while you focus on others.
 
 ![Hover preview replayed: pointing at a recents tab paints that window full-size in the real terminal, marked as temporary; moving away restores the original view](screenshots/hover-preview.gif)
 
-- The visible preview is temporary, move the mouse away or press Escape to go back to what you were doing.
+- The visible preview is temporary: move the mouse away or press Escape to go back to what you were doing. Escape and Enter work for every preview, whether it came from a recents tab, a sidebar row, a preview tile or a region chip.
 - Commit to the new window with mouse left click or keyboard Enter.
 - Previews wait for a fresh capture at the right pane geometry before painting, so you never see a stale or mis-sized screen.
 

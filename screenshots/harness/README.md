@@ -200,6 +200,9 @@ Pieces:
   which reconnecting does NOT switch it back on. Emits the escape from a staged script
   rather than an inline `printf`, because `send-keys` types the command onto the pane and
   a base64 body echoed there would defeat the "was it painted?" assertion).
+  `verify-hover-keys.js` (Escape and Enter answer a hover preview from a recents tab and
+  from a preview-bar tile — Escape leaves tmux where it was, Enter switches it — still do
+  with focus left on a toolbar button, and with no preview up Enter reaches the shell),
   `verify-recents-clear.js` (emptying the strip: the ✕ beside the "Recent" label holds
   its space while invisible and comes out on hover, it asks before acting and No changes
   nothing, and Clear empties the tabs, the off-strip QUEUE and the entries the preview is
