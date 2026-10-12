@@ -1,6 +1,7 @@
 // Drive the real webtmux UI and capture one screenshot per README fork-feature.
 const { chromium } = require('playwright');
 const { execSync } = require('child_process');
+const { annotate, clearAnnotations, rectOf } = require('./annotate.js');
 
 const OUT = process.env.SHOT_DIR || '/src/screenshots';
 const URL = 'http://localhost:8090/';
@@ -43,10 +44,10 @@ async function closeExpose() {
 // Open Exposé with an empty filter, whatever state it was left in.
 async function openExpose() {
   await closeExpose();
-  await chord('e');
+  await chord('f');
   await sleep(600);
   let s = await exposeState();
-  if (!s.open) { await chord('e'); await sleep(600); s = await exposeState(); }
+  if (!s.open) { await chord('f'); await sleep(600); s = await exposeState(); }
   if (!s.open) throw new Error('expose did not open');
   if (s.filtering) { await page.keyboard.press('Escape'); await sleep(350); }
 }
@@ -82,6 +83,23 @@ async function shot(name, fn) {
 
 const jpg = (name) => ({ path: `${OUT}/${name}.jpg`, type: 'jpeg', quality: 90 });
 
+// A toolbar strip with room under it for call-outs: the toolbar plus a dark band.
+async function toolbarShot(name, marks) {
+  const tb = await rectOf(page, 'webtmux-toolbar', null);
+  const BAND = 92;
+  await annotate(page, marks, { band: { y: tb.y + tb.height, height: BAND } });
+  await page.screenshot({ ...jpg(name), clip: { x: 0, y: tb.y, width: tb.width, height: tb.height + BAND } });
+  await clearAnnotations(page);
+}
+// Union of every match of `sel` in the toolbar's shadow root.
+const unionRect = (sel) => page.evaluate((s) => {
+  const rs = [...document.querySelector('webtmux-toolbar').shadowRoot.querySelectorAll(s)]
+    .map((e) => e.getBoundingClientRect()).filter((r) => r.width);
+  const x = Math.min(...rs.map((r) => r.x)), y = Math.min(...rs.map((r) => r.y));
+  return { x, y, width: Math.max(...rs.map((r) => r.right)) - x, height: Math.max(...rs.map((r) => r.bottom)) - y };
+}, sel);
+
+
 (async () => {
   const browser = await chromium.launch();
   const ctx = await browser.newContext({
@@ -116,7 +134,10 @@ const jpg = (name) => ({ path: `${OUT}/${name}.jpg`, type: 'jpeg', quality: 90 }
   await sleep(1800);
 
   await shot('toolbar-recents', async () => {
-    await page.locator('webtmux-toolbar').screenshot(jpg('toolbar-recents'));
+    await toolbarShot('toolbar-recents', [
+      { rect: await unionRect('.rtab:not(.spare)'), label: 'your most recent windows' },
+      { rect: await rectOf(page, 'webtmux-toolbar', '.oflow'), label: 'needs you, no tab', anchor: 'end' },
+    ]);
   });
 
   // The sidebar defaults to hover-overlay + auto-hide (invisible until you hover
@@ -155,8 +176,7 @@ const jpg = (name) => ({ path: `${OUT}/${name}.jpg`, type: 'jpeg', quality: 90 }
 
   await shot('expose', async () => {
     // keep the split open — Exposé over a split shows region context; close split after
-    await openExpose();
-    await chord('e'); // 2x2 -> 3x3 so all 9 windows show
+    await openExpose(); // opens at 3×3, so all 9 windows show
     await sleep(1500);
     await page.screenshot(jpg('expose'));
   });
@@ -276,7 +296,10 @@ const jpg = (name) => ({ path: `${OUT}/${name}.jpg`, type: 'jpeg', quality: 90 }
   await shot('build-reliability', async () => {
     await chord('b');
     await sleep(700);
-    await page.locator('webtmux-toolbar').screenshot(jpg('build-reliability'));
+    await page.mouse.move(800, 700); await sleep(600); // no hover hint under the chip
+    await toolbarShot('build-reliability', [
+      { rect: await rectOf(page, 'webtmux-toolbar', '.build'), label: 'build id — Ctrl+Alt+B', anchor: 'start' },
+    ]);
     await chord('b');
     await sleep(400);
   });

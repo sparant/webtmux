@@ -49,11 +49,13 @@ Pieces:
   spinner), `verify-mousemode.js` (who gets a click/drag over a mouse-grabbing program),
   `verify-ux6.js` (MRU chord with an empty capture cache, Exposé's status filter, the
   mouse-capture dropdown, the paired sidebar toggles, paste-trim on rename),
-  `verify-expose-tiers.js` (the Exposé size ladder from both inputs: ⌃⌥E cycles
-  closed → 2×2 → 3×3 → closed, while a trackpad spread walks UP it — opening at 2×2,
-  then growing to 3×3, then staying there — and a pinch walks back down one rung at a
-  time before closing. Forges a Mac platform in an init script, since the gesture is
-  Mac-gated and Chromium answers `userAgentData.platform` from the real OS),
+  `verify-tmux-chords.js` (the tmux-shaped chords, each asked of tmux over its socket:
+  ⌃⌥0–9 selects window N, ⌃⌥% and ⌃⌥" add a region, ⌃⌥O / ⌃⌥; move focus between
+  regions, ⌃⌥& asks and then kills, ⌃⌥] types the focused copy buffer into the pane — and
+  Exposé: ⌃⌥F opens at 3×3 and closes on the next press, ⌃⌥E does nothing, the header's
+  Grid toggle re-lays-out the tiles and is remembered, a trackpad spread only opens and
+  a pinch only closes. Forges a Mac platform for the gesture, as Chromium answers
+  `userAgentData.platform` from the real OS),
   `verify-recents-preview.js` (a window in the preview gives up its recents tab and
   gets it back — in its old slot — when the preview hides it or lets it go, the cap
   counting drawn tabs rather than held entries, ⌃⌥N/P skipping what has no tab while
@@ -215,6 +217,8 @@ Pieces:
   the system clipboard. This is what established that stock tmux drops the raw sequence
   (`set-clipboard external`) and that tmux ≥3.3 drops the DCS one too
   (`allow-passthrough off`), leaving nothing for the browser to hear.
+- `annotate.js` — the magenta ring / arrow / label call-outs that point at the toolbar
+  control a README screenshot is about (`annotate`, `clearAnnotations`, `rectOf`).
 - `driver-features.js` — stills for the sections added after the first tour (the
   sidebar's all-windows view and new-window menu, stoplight durations, the split region
   picker, file transfer, the ⛁ and link menus). Run it with `DRIVER=driver-features.js`.

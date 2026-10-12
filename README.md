@@ -162,12 +162,13 @@ A tab flashes amber when its window has stopped working, and an arrow flashes wh
 
 ### Windows Mosaic
 
-Bring up a Mac-style Exposé view to see 4 or 9 windows at once. Syllable substring search for filtering and scroll to see additional windows. Order by most recent to quickly find what you were working on, or see status of multiple windows at once. A **Show** filter narrows the mosaic to one work status — working / needs you / idle — which turns it into a triage board when a dozen agents are running.
+Bring up a Mac-style Exposé view to see 9 (or 4) windows at once. Syllable substring search for filtering and scroll to see additional windows. Order by most recent to quickly find what you were working on, or see status of multiple windows at once. A **Show** filter narrows the mosaic to one work status — working / needs you / idle — which turns it into a triage board when a dozen agents are running.
 
-![Exposé replayed: Ctrl+Alt+E opens the mosaic, pressing again densifies 2×2 to 3×3, typing filters by name, Enter switches the focused region](screenshots/expose.gif)
+![Exposé replayed: Ctrl+Alt+F opens the mosaic at 3×3, the header's Grid toggle switches to 2×2 and back, typing filters by name, Enter switches the focused region](screenshots/expose.gif)
 
-- Ctrl+Alt+E cycles a full-screen mosaic of every window across every session: 2×2 → 3×3 → closed
-- On a Mac the same three states are a trackpad gesture: spread two fingers to open it at 2×2, spread again for 3×3; pinch back to 2×2, and pinch once more to close
+- Ctrl+Alt+F (tmux's `f`, find-window) opens a full-screen mosaic of every window across every session; press it again to close it
+- **Grid** in the header picks 3×3 (the default) or 2×2 tiles per screen, and is remembered
+- On a Mac the trackpad does the same: spread two fingers to open Exposé, pinch to close it
 - Live thumbnails and left click or arrow+Enter to start working on it
 - Type to filter by name, with an optional toggle to search captured window content too
 - Linked windows appear once; sort by session or recency
@@ -306,7 +307,7 @@ A program running on the tmux machine — a CLI printing a login URL, a token, a
 
 The file you want while you're looking at a pane is usually on the machine tmux runs on: a build artifact, a log, a tarball. You don't need a second terminal and an `scp` command to get it. The same ⤓ menu moves files and folders both ways between that machine and the one your browser runs on.
 
-<img src="screenshots/file-transfer.jpg" alt="The ⤓ menu: save the pane's buffer, then Transfer files — Upload from this browser to the machine tmux runs on (choose files or a whole folder), and Download a file or folder from that machine to this browser" width="39%">
+<img src="screenshots/file-transfer.jpg" alt="The ⤓ button (ringed) and its menu: save the pane's buffer, then Transfer files — Upload from this browser to the machine tmux runs on (choose files or a whole folder), and Download a file or folder from that machine to this browser" width="39%">
 
 - **↑ Upload:** pick files, or a whole folder, and the folder on the tmux machine to put them in. A folder arrives as a folder.
 - **↓ Download:** type a file or folder path on the tmux machine. A folder downloads as a `.zip`.
@@ -315,7 +316,7 @@ The file you want while you're looking at a pane is usually on the machine tmux 
 
 ### Scrollback buffer size
 
-<img src="screenshots/scrollback-menu.jpg" alt="The ⛁ menu: how many lines this window's buffer holds and has used, Resize this window, a New windows default with &quot;Also save it for future tmux servers&quot;, and Clear this window's scrollback" width="22%">
+<img src="screenshots/scrollback-menu.jpg" alt="The ⛁ button (ringed) and its menu: how many lines this window's buffer holds and has used, Resize this window, a New windows default with &quot;Also save it for future tmux servers&quot;, and Clear this window's scrollback" width="23%">
 
 - Toolbar ⛁ shows how many lines the focused window's panes can hold, how many
   they are holding, and a gauge that turns amber once a buffer is full — i.e.
@@ -345,12 +346,14 @@ The file you want while you're looking at a pane is usually on the machine tmux 
 
 ### Connection health & tmux settings
 
+<img src="screenshots/connection-spinner.gif" alt="The spinner replayed: blue and ticking while webtmux drives tmux, amber once tmux has been asked something and not answered, red and pulsing when the link is lost, and back to blue by itself when tmux answers again" width="41%">
+
 - The toolbar spinner on the far left is a **link light**: it advances a notch
   every time webtmux drives tmux, turns **amber** when something has been asked
   and not yet answered, and **red** — pulsing — when the link is gone. Amber is
   the state a boolean had to round to one side or the other, and it rounded to
   green; a wedged socket now colours in about two seconds instead of eleven.
-<img src="screenshots/link-menu.jpg" alt="The link menu: the connection's state in longhand, then the tmux settings — tmux status line, copy from a program to this browser, and run a command when a window is renamed — each saying who else it affects" width="22%">
+<img src="screenshots/link-menu.jpg" alt="Clicking the spinner (ringed) opens the link menu: the connection's state in longhand, then the tmux settings — tmux status line, copy from a program to this browser, and run a command when a window is renamed — each saying who else it affects" width="22%">
 
 - **Click it** for the same report in longhand, plus the settings that belong to
   **tmux** rather than to webtmux — the one place on the bar where a control
@@ -392,7 +395,28 @@ The file you want while you're looking at a pane is usually on the machine tmux 
 ![The shortcuts overlay (Ctrl+Alt+/): every global chord with modifier labels matching your OS](screenshots/keyboard-shortcuts.jpg)
 
 - A shortcuts overlay (Ctrl+Alt+/) lists every hotkey with modifier labels matching your OS (⌃⌥ on Mac).
-- Global Ctrl+Alt chords mirror tmux letters: W sidebar, P/N recents prev/next, ⇧P/⇧N walk the session's window list in index order, L alt-tab-style MRU cycle with deferred commit, comma rename, X close region, [ copy mode, = copy buffers, C new window (also ⌘⌥C on Mac), D drop current window from recents, Enter add split, E Exposé, I/H preview.
+- Global Ctrl+Alt chords use the same key tmux uses after its `Ctrl+b` prefix, wherever tmux has one:
+
+  | Keys (after Ctrl+Alt) | Does | tmux |
+  |---|---|---|
+  | `0`–`9` | go to window N of this session | `0`–`9` |
+  | `C` | new window (also ⌘⌥C on Mac) | `c` |
+  | `,` | rename the window | `,` |
+  | `&` | kill the window (asks first) | `&` |
+  | `W` | sidebar: windows & sessions | `w` |
+  | `F` | Exposé: find a window | `f` |
+  | `P` / `N` | previous / next recents tab | `p` / `n` |
+  | `⇧P` / `⇧N` | previous / next window in index order | `p` / `n` |
+  | `L` | cycle recently used windows, alt-tab style | `l` |
+  | `⏎`, `%`, `"` | add a split region | `%` / `"` |
+  | `O` / `;` | next region / the region you were in before | `o` / `;` |
+  | `X` | close the region | `x` |
+  | `[` | copy mode | `[` |
+  | `]` | paste the focused copy buffer | `]` |
+  | `=` | copy buffers panel | `=` |
+  | `/` or `?` | this shortcuts list | `?` |
+  | `I` / `⇧I` / `H` | preview: add to the bar / pin to a corner / hide | — |
+  | `D` | drop the window from recents | — |
 - Consistent custom tooltips everywhere; confirmations appear as a small popup next to the control you clicked, and only an explicit "Yes" acts.
 
 ### Terminal rendering & session plumbing

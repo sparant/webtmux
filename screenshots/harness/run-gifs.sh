@@ -64,6 +64,10 @@ cd /tmp/videos
 for f in expose split-view sidebar hover-preview preview-pip copy-scroll copy-buffers save-file state-persistence stoplights preview-bar-resize; do
   [ -f "$f.webm" ] && togif "$f.webm" "/src/screenshots/$f.gif" 3.4
 done
+# the connection spinner's states, cropped to the toolbar's top-left corner
+[ -f connection-spinner.webm ] && ffmpeg -v error -y -ss 3.4 -i connection-spinner.webm -vf \
+  "crop=520:150:0:0,fps=10,scale=780:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5" \
+  /src/screenshots/connection-spinner.gif && echo "wrote connection-spinner.gif ($(du -h /src/screenshots/connection-spinner.gif | cut -f1))"
 # flashing tabs + attention arrow, cropped to the toolbar strip
 [ -f stoplights.webm ] && ffmpeg -v error -y -ss 3.4 -i stoplights.webm -vf \
   "crop=iw:46:0:0,fps=10,scale=1100:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5" \

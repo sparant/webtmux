@@ -188,7 +188,7 @@ async function main() {
   setWork('dev:tests', '0');
   await settle();
 
-  await page.keyboard.press('Control+Alt+e');
+  await page.keyboard.press('Control+Alt+f');
   await sleep(2500);
   const pick = async (want) => {
     await expose((n, rr, w) => {

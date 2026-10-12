@@ -178,7 +178,7 @@ async function main() {
   // This is capture.go's EnumerateWindows, the listing where the session name sat
   // in field 1 of 7: a '|' there shifted the index, the PANE ID and the dimensions,
   // so the tile lost its screen as well as its label.
-  await page.keyboard.press('Control+Alt+e');
+  await page.keyboard.press('Control+Alt+f');
   await sleep(3500);
   const tiles = await expose((n, rr) => [...rr.querySelectorAll('.tile')].map((t) => t.textContent.trim()));
   check('Exposé tiles the window under its own name',

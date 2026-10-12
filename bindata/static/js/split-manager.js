@@ -60,6 +60,7 @@ import { IS_MAC } from './os.js';
 import { stateStore } from './state-store.js';
 import { clientStore } from './client-store.js';
 import { READ_ONLY_NOTICE } from './write-guard.js';
+import { copyBuffers } from './copy-buffer-store.js';
 
 export class SplitManager {
   constructor(container) {
@@ -98,7 +99,7 @@ export class SplitManager {
     this.copySidebar.manager = this;
     this.container.appendChild(this.copySidebar);
 
-    // The Exposé overlay (hidden until opened via Ctrl+Alt+E or the sidebar).
+    // The Exposé overlay (hidden until opened via Ctrl+Alt+F or the sidebar).
     this.expose = document.createElement('webtmux-expose');
     this.expose.cache = this.captureCache;
     this.expose.manager = this;
@@ -694,6 +695,7 @@ export class SplitManager {
       if (this.hover.activeUnit === unit) this.hover.commit();
       else this.hover.cancel();
     }
+    if (this.focusedUnit && this.focusedUnit !== unit) this._lastFocusedUnit = this.focusedUnit;
     this.focusedUnit = unit;
     // Compat shim: mobile-controls + any global shortcut target the focused unit.
     window.webtmux = unit;
@@ -2386,6 +2388,56 @@ export class SplitManager {
     if (this.focusedUnit && !this.focusedUnit.primary) this.removeUnit(this.focusedUnit);
   }
 
+  // Ctrl+Alt+O (tmux `o`): focus the next region, wrapping. dir = -1 walks back.
+  focusNextRegion(dir = +1) {
+    const n = this.units.length;
+    if (n < 2) return;
+    const i = this.units.indexOf(this.focusedUnit);
+    this.focus(this.units[((i + dir) % n + n) % n]);
+  }
+
+  // Ctrl+Alt+; (tmux `;`, last-pane): back to the region focused before this one, so
+  // pressing it again flips between the two. Falls back to the next region when that
+  // one has been closed.
+  focusLastRegion() {
+    const last = this._lastFocusedUnit;
+    if (last && last !== this.focusedUnit && this.units.includes(last)) this.focus(last);
+    else this.focusNextRegion(+1);
+  }
+
+  // Ctrl+Alt+0..9 (tmux `0`-`9`): the window with that INDEX in the focused pane's
+  // session. A window another region is already showing is reached by jumping to
+  // that region (goToWindow's rule), never by mirroring it into this one.
+  selectWindowIndex(index) {
+    const u = this.focusedUnit;
+    const win = (u?.layout?.windows || []).find((w) => Number(w.index) === index);
+    if (!win) { this.showNotice?.(`No window ${index} in this session`); return; }
+    if (win.id === u.layout?.activeWindowId) return;
+    this.goToWindow(win.id, this.logicalSession(u));
+  }
+
+  // Ctrl+Alt+& (tmux `&`, kill-window): the focused window, through the sidebar's ×
+  // so it is the same action with the same confirmation — and the same rule that a
+  // window linked into other sessions is unlinked from this one rather than killed.
+  killFocusedWindow() {
+    const u = this.focusedUnit;
+    const id = u?.layout?.activeWindowId;
+    if (!id || !this.sidebar) return;
+    this.sidebar.killWindowById(id);
+  }
+
+  // Ctrl+Alt+] (tmux `]`, paste-buffer): type the focused copy buffer into the focused
+  // pane — the same text ⌘V would paste, read from the ring rather than the system
+  // clipboard, so it needs no clipboard permission. Leaves copy mode first, as ⌘V does.
+  pasteFocusedBuffer() {
+    const u = this.focusedUnit;
+    const text = copyBuffers.focused?.text || '';
+    if (!u || !text) return;
+    if (u.inCopyMode) u.exitCopyMode();
+    u.sendInput(text);
+    copyBuffers.pasted(text);
+  }
+
   // Create a new tmux window in the FOCUSED pane's own session (Command+Option+C /
   // Ctrl+Option+C). The server creates it with `new-window -t <that pane's session>`
   // and tmux switches to it, so the focused pane lands on the fresh window — and,
@@ -2514,8 +2566,14 @@ export class SplitManager {
     //   [  copy-mode                          -> toggle copy/normal on the focused pane
     //   =  choose-buffer                      -> toggle the copy-buffer panel
     //   ?  list-keys                          -> the shortcuts overlay (physical '/')
+    //   0-9 select-window                     -> window N of the focused pane's session
+    //   % " split-window                      -> add a split region (as Enter does)
+    //   o  select-pane (next) / ; last-pane   -> move focus between regions
+    //   &  kill-window                        -> kill the focused window (confirms)
+    //   ]  paste-buffer                       -> paste the focused copy buffer
+    //   f  find-window                        -> Exposé
     // Split-add has no unmodified tmux letter (tmux uses % / ", both need Shift), so
-    // it keeps the intuitive Enter. Exposé ('e'), preview add ('i' = pIp, with ⇧ for a
+    // it keeps the intuitive Enter. Preview add ('i' = pIp, with ⇧ for a
     // floating corner box instead of the bar), preview hide/show ('h' = Hide) and
     // remove-current-from-recents ('d' = Dismiss) are webtmux-only, so they keep their
     // own mnemonic letters.
@@ -2533,7 +2591,7 @@ export class SplitManager {
       // chord that still acts is the one that toggles that layer itself.
       if (this.sidebar?._confirm?.open || this.copySidebar?._confirm?.open) return;
       if (this.shortcuts?.open && ev.code !== 'Slash') return;
-      if (this.expose?.open && ev.code !== 'KeyE') return;
+      if (this.expose?.open && ev.code !== 'KeyF') return;
       // New window in the focused pane's session: Command+Option+C (Mac) OR
       // Ctrl+Option+C. Handled BEFORE the ⌃⌥-only guard below so the Cmd variant
       // (metaKey, no ctrlKey) is caught too, and swallowed so xterm never sees it
@@ -2560,6 +2618,28 @@ export class SplitManager {
         return;
       }
       if (!ev.ctrlKey || !ev.altKey || ev.metaKey) return;
+      // tmux's shifted keys, matched by physical key so they work on any layout's
+      // shift row: % and " both split (webtmux has one split direction), & kills the
+      // window. Checked before the switch because Digit5/Digit7 unshifted mean
+      // "go to window 5/7".
+      if (ev.shiftKey && (ev.code === 'Digit5' || ev.code === 'Quote')) {
+        this.splitAdd();
+        ev.preventDefault(); ev.stopPropagation();
+        return;
+      }
+      if (ev.shiftKey && ev.code === 'Digit7') {
+        this.killFocusedWindow();
+        ev.preventDefault(); ev.stopPropagation();
+        return;
+      }
+      // tmux 0–9 (select-window -t :N): the window with that index in the focused
+      // pane's session.
+      const digit = /^Digit([0-9])$/.exec(ev.code);
+      if (digit && !ev.shiftKey) {
+        this.selectWindowIndex(Number(digit[1]));
+        ev.preventDefault(); ev.stopPropagation();
+        return;
+      }
       switch (ev.code) {
         case 'KeyW':                                   // tmux 'w' (choose-tree): toggle sidebar
           this.sidebar?.toggleCollapsed();
@@ -2571,8 +2651,17 @@ export class SplitManager {
         case 'Backspace':                              // legacy alias, kept for muscle memory
           this.closeFocused();
           break;
-        case 'KeyE':                                   // toggle the Exposé overlay
+        case 'KeyF':                                   // tmux 'f' (find-window): open/close Exposé
           this.expose?.toggle();
+          break;
+        case 'KeyO':                                   // tmux 'o' (select-pane -t :.+): next region
+          this.focusNextRegion(+1);
+          break;
+        case 'Semicolon':                              // tmux ';' (last-pane): previously focused region
+          this.focusLastRegion();
+          break;
+        case 'BracketRight':                           // tmux ']' (paste-buffer): paste the focused copy buffer
+          this.pasteFocusedBuffer();
           break;
         case 'KeyI':                                   // add/remove focused window in the preview (i = pIp)
           // …and with Shift, pin it to a screen CORNER instead of the bar (or unpin it).
@@ -2629,11 +2718,9 @@ export class SplitManager {
     // Mac trackpad 2-finger PINCH → Exposé. Browsers report a trackpad pinch as a
     // `wheel` event with ctrlKey set (the same signal used for pinch-zoom): deltaY
     // < 0 = spread (fingers apart / zoom-in), > 0 = pinch (fingers together). We
-    // accumulate that signal and, on a decisive SPREAD, step Exposé UP the size
-    // ladder (closed → 4 tiles → 9); a decisive pinch steps it back DOWN (9 → 4 →
-    // closed). One step per gesture (see _pinchFired), so the second spread is a
-    // second gesture — the same rhythm as tapping ⌃⌥E twice, just with a direction
-    // to it. Each such wheel is swallowed so the page never zooms. This
+    // accumulate that signal: a decisive SPREAD opens Exposé and a decisive pinch
+    // closes it, at whatever grid size its header is set to. One action per gesture
+    // (see _pinchFired). Each such wheel is swallowed so the page never zooms. This
     // ctrlKey-wheel path is the one signal every engine emits for a trackpad pinch
     // (Chrome/Edge/Firefox/Safari), so there's enough info on the Mac to do this.
     // Gated to Mac so a Ctrl+scroll on a Windows/Linux mouse still zooms as usual.
@@ -2668,10 +2755,10 @@ export class SplitManager {
         this._pinchAccum += -ev.deltaY;        // spread accumulates positive, pinch negative
         if (this._pinchAccum >= PINCH_THRESH) {
           this._pinchFired = true;
-          this.expose?.expand();
+          if (!this.expose?.open) this.expose?.toggle();
         } else if (this._pinchAccum <= -PINCH_THRESH) {
           this._pinchFired = true;
-          this.expose?.contract();
+          if (this.expose?.open) this.expose?.toggle();
         }
       }, { passive: false, capture: true });
     }

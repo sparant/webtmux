@@ -7,6 +7,7 @@
 // until viewed.
 const { chromium } = require('playwright');
 const { execSync } = require('child_process');
+const { annotate, rectOf } = require('./annotate.js');
 
 const VIDEO_DIR = process.env.VIDEO_DIR || '/tmp/videos';
 const URL = 'http://localhost:8090/';
@@ -44,10 +45,10 @@ async function closeExpose() {
 
 async function goTo(name) {
   await closeExpose();
-  await chord('e');
+  await chord('f');
   await sleep(600);
   let s = await exposeState();
-  if (!s.open) { await chord('e'); await sleep(600); s = await exposeState(); }
+  if (!s.open) { await chord('f'); await sleep(600); s = await exposeState(); }
   if (s.filtering) { await page.keyboard.press('Escape'); await sleep(350); }
   await page.keyboard.type(name, { delay: 40 });
   await sleep(500);
@@ -184,12 +185,18 @@ const clearLights = () => {
     console.log('setup done');
   }
 
-  // ---- expose.gif: open -> 2x2 -> 3x3 -> type to filter -> Enter switches ----
+  // ---- expose.gif: open (3×3) -> header Grid 2×2 -> back to 3×3 -> type to
+  // ---- filter -> Enter switches
   await scene(browser, 'expose', async () => {
-    await chord('e');
-    await sleep(1600);
-    await chord('e'); // densify to 3x3
+    await chord('f');
     await sleep(2000);
+    const grid = async (label) => {
+      const b = page.locator('webtmux-expose').getByText(label, { exact: true });
+      await b.hover(); await sleep(500); await b.click(); await sleep(1800);
+    };
+    await grid('2×2');
+    await grid('3×3');
+    await page.mouse.move(640, 500);
     await page.keyboard.type('logs', { delay: 260 });
     await sleep(1400);
     await page.keyboard.press('Enter'); // switch the focused region there
@@ -428,6 +435,54 @@ const clearLights = () => {
     await sleep(1600);
     await chord('h');              // …and bring it back, windows and placements intact
     await sleep(2200);
+  });
+
+  // ---- connection-spinner.gif (cropped to the top-left corner): the spinner ticks
+  // ---- while webtmux drives tmux, goes amber when tmux stops answering, red when
+  // ---- the link is gone, and heals by itself when tmux answers again
+  await scene(browser, 'connection-spinner', async () => {
+    const say = async (label) => {
+      const r = await rectOf(page, 'webtmux-toolbar', '.spin');
+      await annotate(page, [{ rect: r, label, anchor: 'start' }], { band: { y: 44, height: 110 } });
+    };
+    const mute = (on) => page.evaluate((on) => {
+      for (const u of window.webtmux.manager.units) {
+        if (on) {
+          u._realSend = u.ws.send.bind(u.ws); u._realOnMessage = u.ws.onmessage;
+          u.ws.send = () => {}; u.ws.onmessage = () => {};
+        } else {
+          if (u._realSend) u.ws.send = u._realSend;
+          if (u._realOnMessage) u.ws.onmessage = u._realOnMessage;
+        }
+      }
+    }, on);
+    // Label a state only once the spinner is really showing it.
+    const until = async (cls) => {
+      for (let i = 0; i < 80; i++) {
+        const c = await page.evaluate(() => document.querySelector('webtmux-toolbar')
+          .shadowRoot.querySelector('.spin').className.replace('spin', '').trim());
+        if (c === cls) return;
+        await sleep(150);
+      }
+    };
+    await say('connected: ticks each time webtmux drives tmux');
+    await sleep(800);
+    for (let i = 0; i < 4; i++) { await chord('n'); await sleep(700); }
+    await sleep(800);
+    await mute(true);                       // a wedged link: the socket stays OPEN
+    await page.keyboard.type('ls');
+    await until('slow');
+    await say('asked, no answer yet: amber');
+    await until('lost');                    // the stall deadline (8s from the ask)
+    await say('link lost: red, pulsing');
+    await sleep(3500);
+    await mute(false);
+    await page.keyboard.type(' ');
+    await until('');
+    await say('tmux answers again: back to normal by itself');
+    await sleep(3000);
+    await page.keyboard.press('Backspace'); await page.keyboard.press('Backspace');
+    await page.keyboard.press('Backspace');
   });
 
   // ---- preview-bar-resize.gif: drag the docked bar's inner edge to make the

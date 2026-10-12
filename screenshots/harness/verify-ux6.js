@@ -124,7 +124,7 @@ async function main() {
   tmux('set-option', '-t', 'dev:tests', '-w', '@wt_working', '0');
   await sleep(1500);                        // one layout push carries allWorking
 
-  await page.keyboard.press('Control+Alt+e');
+  await page.keyboard.press('Control+Alt+f');
   await sleep(2500);                        // tiles need a capture round
   const total = await expose((n) => n.cache.placementCount);
   const pickFilter = async (id) => {

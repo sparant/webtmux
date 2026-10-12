@@ -47,9 +47,9 @@ async function closeExpose() {
 }
 async function openExpose() {
   await closeExpose();
-  await chord('e');
+  await chord('f');
   await sleep(700);
-  if (!(await exposeOpen())) { await chord('e'); await sleep(700); }
+  if (!(await exposeOpen())) { await chord('f'); await sleep(700); }
   if (!(await exposeOpen())) throw new Error('expose did not open');
   // The type-ahead filter persists across close/reopen, so clear it before typing.
   for (let i = 0; i < 24; i++) await page.keyboard.press('Backspace');

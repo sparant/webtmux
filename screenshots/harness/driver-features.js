@@ -4,6 +4,7 @@
 // Run with DRIVER=driver-features.js (see run.sh); writes into SHOT_DIR.
 const { chromium } = require('playwright');
 const { execSync } = require('child_process');
+const { annotate, clearAnnotations, rectOf } = require('./annotate.js');
 
 const OUT = process.env.SHOT_DIR || '/src/screenshots';
 const URL = 'http://localhost:8090/';
@@ -25,8 +26,8 @@ async function exposeOpen() {
 }
 async function goTo(name) {
   for (let i = 0; i < 4 && await exposeOpen(); i++) { await page.keyboard.press('Escape'); await sleep(300); }
-  await chord('e'); await sleep(600);
-  if (!await exposeOpen()) { await chord('e'); await sleep(600); }
+  await chord('f'); await sleep(600);
+  if (!await exposeOpen()) { await chord('f'); await sleep(600); }
   const filtering = await page.evaluate(() => !!document.querySelector('webtmux-expose').shadowRoot.querySelector('.head .filter'));
   if (filtering) { await page.keyboard.press('Escape'); await sleep(300); }
   await page.keyboard.type(name, { delay: 40 }); await sleep(500);
@@ -54,6 +55,19 @@ async function clipOf(host, sel, pad = 8, extra = {}) {
     x: Math.max(0, r.x - pad), y: Math.max(0, r.y - pad),
     width: r.width + 2 * pad + (extra.w || 0), height: r.height + 2 * pad + (extra.h || 0),
   };
+}
+
+
+// A dropdown shot that also shows WHERE it opens from: the toolbar button is
+// ringed and the crop runs from the top of the toolbar down through the menu.
+async function menuShot(name, buttonSel, menuSel) {
+  const btn = await rectOf(page, 'webtmux-toolbar', buttonSel);
+  const menu = await rectOf(page, 'webtmux-toolbar', menuSel);
+  await annotate(page, [{ rect: btn, arrow: 'none' }]);
+  const x = Math.max(0, Math.min(btn.x, menu.x) - 12);
+  const right = Math.min(1600, Math.max(btn.x + btn.width, menu.x + menu.width) + 12);
+  await page.screenshot({ ...jpg(name), clip: { x, y: 0, width: right - x, height: menu.y + menu.height + 12 } });
+  await clearAnnotations(page);
 }
 
 const setSidebar = (collapsed, overlay) => page.evaluate(([c, o]) => {
@@ -97,7 +111,15 @@ const setSidebar = (collapsed, overlay) => page.evaluate(([c, o]) => {
   await sleep(2500);
 
   await shot('stoplight-duration', async () => {
-    await page.locator('webtmux-toolbar').screenshot(jpg('stoplight-duration'));
+    const tb = await rectOf(page, 'webtmux-toolbar', null);
+    const ages = await page.evaluate(() => [...document.querySelector('webtmux-toolbar').shadowRoot
+      .querySelectorAll('.rtab:not(.spare) .work-age')].map((e) => {
+        const r = e.getBoundingClientRect(); return { t: e.textContent.trim(), x: r.x, y: r.y, width: r.width, height: r.height };
+      }));
+    const red = ages.find((a) => a.t === '42m') || ages[ages.length - 1];
+    await annotate(page, [{ rect: red, label: 'red for 42 minutes' }], { band: { y: tb.y + tb.height, height: 92 } });
+    await page.screenshot({ ...jpg('stoplight-duration'), clip: { x: 0, y: tb.y, width: tb.width, height: tb.height + 92 } });
+    await clearAnnotations(page);
   });
 
   await shot('sidebar-newcmds', async () => {
@@ -121,7 +143,7 @@ const setSidebar = (collapsed, overlay) => page.evaluate(([c, o]) => {
     await goTo('server'); // a rolling log, so the gauge has something to show
     await page.locator('webtmux-toolbar').getByLabel('Scrollback buffer').click();
     await sleep(1800);
-    await page.screenshot({ ...jpg('scrollback-menu'), clip: await clipOf('webtmux-toolbar', '.save-wrap .save-menu, .save-menu', 10) });
+    await menuShot('scrollback-menu', 'button[aria-label="Scrollback buffer"]', '.save-menu');
     await page.keyboard.press('Escape'); await page.mouse.click(300, 600); await sleep(600);
     await goTo('editor');
   });
@@ -129,14 +151,14 @@ const setSidebar = (collapsed, overlay) => page.evaluate(([c, o]) => {
   await shot('file-transfer', async () => {
     await page.locator('webtmux-toolbar').getByText('⤓').first().click();
     await sleep(1800);
-    await page.screenshot({ ...jpg('file-transfer'), clip: await clipOf('webtmux-toolbar', '.save-menu', 10) });
+    await menuShot('file-transfer', 'button[aria-label="Save pane buffer and transfer files"]', '.save-menu');
     await page.keyboard.press('Escape'); await page.mouse.click(300, 600); await sleep(600);
   });
 
   await shot('link-menu', async () => {
     await page.evaluate(() => document.querySelector('webtmux-toolbar').shadowRoot.querySelector('.spin').click());
     await sleep(1500);
-    await page.screenshot({ ...jpg('link-menu'), clip: await clipOf('webtmux-toolbar', '.link-menu', 10) });
+    await menuShot('link-menu', '.spin', '.link-menu');
     await page.keyboard.press('Escape'); await page.mouse.click(800, 600); await sleep(600);
   });
 

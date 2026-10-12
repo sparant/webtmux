@@ -4,9 +4,9 @@
 //
 // The global chords use the Ctrl+Alt modifier (Ctrl+Option on macOS) and, where
 // tmux has a natural key after its Ctrl-b prefix, reuse that same letter so the
-// muscle memory carries over — w=choose-tree, p/n and ⇧P/⇧N=prev/next-window, x=kill-pane,
-// ?=list-keys. Split-add has no unmodified tmux letter (% / " need Shift) so it
-// keeps Enter; Exposé is webtmux-only so it keeps E.
+// muscle memory carries over — w=choose-tree, p/n and ⇧P/⇧N=prev/next-window, 0-9,
+// x=kill-pane, &=kill-window, o/;=next/last pane, ]=paste, f=find (Exposé),
+// ?=list-keys. Split-add also keeps Enter alongside tmux's shifted % and ".
 import { LitElement, html, css } from 'lit';
 import { MOD_LABEL, MOD_CHIPS, IS_MAC } from '../os.js';
 
@@ -21,15 +21,20 @@ const GROUPS = [
     title: `Global — ${MOD_LABEL}`,
     rows: [
       { keys: [...M, 'W'], desc: 'Toggle the sidebar (windows & sessions) — tmux ⌃b w' },
-      { keys: [...M, 'E'], desc: 'Exposé — every window across all sessions (press again: 2×2 → 3×3 → close)' },
+      { keys: [...M, 'F'], desc: 'Exposé — find a window among every window across all sessions; press again to close. Its header sets 2×2 or 3×3 — tmux ⌃b f' },
+      { keys: [...M, '0–9'], desc: 'Go to window 0–9 of the focused pane’s session — tmux ⌃b 0–9' },
       { keys: [...M, 'I'], desc: 'Preview — add/remove the focused window. It joins the docked edge bar, which reserves space rather than covering the terminal. A previewed window gives up its recents tab while it is in there, and gets it back when it leaves' },
       { keys: [...M, '⇧', 'I'], desc: 'Preview — pin the focused window to a free screen corner as a floating box instead (again: back to the bar). One window per corner, so up to four float at once; a tile’s hover controls aim it at a particular corner' },
       { keys: [...M, 'H'], desc: 'Preview — hide / show it (keeps its windows, and where each one is drawn)' },
       { keys: [...M, 'D'], desc: 'Recents — remove the current window from the strip & view (same as its tab ×)' },
       { keys: [...M, 'C'], desc: 'New window in the focused pane’s session (also ⌘⌥C on a Mac)' },
-      { keys: [...M, '⏎'], desc: 'Split view — add another terminal region' },
+      { keys: [...M, '⏎'], desc: 'Split view — add another terminal region (% and " work too) — tmux ⌃b % / ⌃b "' },
+      { keys: [...M, 'O'], desc: 'Focus the next region — tmux ⌃b o' },
+      { keys: [...M, ';'], desc: 'Focus the region you were in before (again: back) — tmux ⌃b ;' },
       { keys: [...M, 'X'], desc: 'Close the focused region (⌫ works too) — tmux ⌃b x' },
+      { keys: [...M, '&'], desc: 'Kill the focused window, after asking (a window linked into other sessions is only unlinked from this one) — tmux ⌃b &' },
       { keys: [...M, '['], desc: 'Toggle copy / normal (scrollback) mode — tmux ⌃b [' },
+      { keys: [...M, ']'], desc: 'Paste the focused copy buffer into the pane — tmux ⌃b ]' },
       { keys: [...M, '='], desc: 'Toggle the copy-buffer panel — the things you have copied, and which one the clipboard holds — tmux ⌃b =' },
       { keys: [...M, 'P'], desc: 'Recents — previous tab (left) — tmux ⌃b p' },
       { keys: [...M, 'N'], desc: 'Recents — next tab (right) — tmux ⌃b n' },
@@ -96,8 +101,8 @@ const GROUPS = [
   ...(IS_MAC ? [{
     title: 'Trackpad (Mac)',
     rows: [
-      { keys: ['spread'], desc: 'Spread two fingers apart to open Exposé at 2×2; spread again for 3×3' },
-      { keys: ['pinch'], desc: 'Pinch together to go back to 2×2; pinch again to close Exposé' },
+      { keys: ['spread'], desc: 'Spread two fingers apart to open Exposé' },
+      { keys: ['pinch'], desc: 'Pinch together to close Exposé' },
     ],
   }] : []),
 ];
