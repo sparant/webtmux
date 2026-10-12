@@ -133,10 +133,22 @@ async function readOnly() {
   // 4. And the UI says so rather than looking broken.
   await toolbar((n) => { n.saveOpen = true; });
   await sleep(900);
-  const saveMenu = await toolbar((n, rr) => rr.querySelector('.save-menu')?.textContent || '');
+  // The download button is named for the buffer it saves ("Download entire buffer" /
+  // "Download visible screen"); everything that would write — the save path, the
+  // upload and the file download — is replaced by a sentence saying why.
+  const saveMenu = await toolbar((n, rr) => {
+    const m = rr.querySelector('.save-menu');
+    return {
+      text: m?.textContent.replace(/\s+/g, ' ') || '',
+      download: [...(m?.querySelectorAll('.save-item') || [])].map((b) => b.textContent.trim()),
+      inputs: m?.querySelectorAll('input.save-path, input[type=file]').length ?? -1,
+      roNotes: m?.querySelectorAll('.save-ro').length ?? 0,
+    };
+  });
   check('the save dropdown offers only the browser download',
-    /read-only/i.test(saveMenu) && /Download to browser/.test(saveMenu),
-    JSON.stringify(saveMenu.replace(/\s+/g, ' ').slice(0, 120)));
+    saveMenu.download.some((t) => /Download (entire buffer|visible screen)/.test(t))
+      && saveMenu.inputs === 0 && saveMenu.roNotes >= 2 && /read-only/i.test(saveMenu.text),
+    JSON.stringify({ download: saveMenu.download, inputs: saveMenu.inputs, roNotes: saveMenu.roNotes }));
   const dim = await sidebar((n, rr) => {
     const tab = rr.querySelector('.window-tab');
     if (!tab) return null;
