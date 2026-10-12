@@ -26,6 +26,19 @@ export function workClass(working) {
     : '';
 }
 
+// Every state class workClass() can return — what paintWorkClass() clears before
+// setting the current one.
+export const WORK_CLASSES = ['on', 'off', 'wait', 'bg'];
+
+// Set a dot element's state class from a raw @wt_working value, for the surfaces
+// that paint dots imperatively instead of through a lit template. Driven by
+// WORK_CLASSES so a new state can't be forgotten by one surface (the preview and
+// Exposé once toggled on/off/wait by hand and never learned 'bg').
+export function paintWorkClass(el, working) {
+  const cls = workClass(working);
+  for (const c of WORK_CLASSES) el.classList.toggle(c, c === cls);
+}
+
 // The one-line "what is this window doing right now" answer.
 export function workLabel(working) {
   return working === '1' ? 'Working'

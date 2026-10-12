@@ -64,7 +64,7 @@ const strip = () => toolbar((n, rr) => [...rr.querySelectorAll('.rtab')].map((t)
   const cs = d ? getComputedStyle(d) : null;
   return {
     name: t.textContent.trim(),
-    cls: d ? [...d.classList].filter((c) => c !== 'work').join(' ') : null,
+    cls: d ? [...d.classList].filter((c) => c !== 'work' && c !== 'stoplight').join(' ') : null,
     active: !!t.querySelector('.tab.active'),
     fill: cs ? cs.backgroundColor : null,
     border: cs ? cs.borderTopColor : null,
