@@ -31,7 +31,7 @@ chmod +x webtmux-launch
 
 Assets: [`webtmux-launch-darwin-arm64`](https://github.com/sparant/webtmux/releases/latest/download/webtmux-launch-darwin-arm64) (Apple Silicon),
 [`webtmux-launch-darwin-amd64`](https://github.com/sparant/webtmux/releases/latest/download/webtmux-launch-darwin-amd64) (Intel Mac),
-[`webtmux-launch-linux-amd64`](https://github.com/sparant/webtmux/releases/latest/download/webtmux-launch-linux-amd64) — or browse the
+[`webtmux-launch-linux-amd64`](https://github.com/sparant/webtmux/releases/latest/download/webtmux-launch-linux-amd64) (Linux x64) — or browse the
 [latest release](https://github.com/sparant/webtmux/releases/latest) page. To build it yourself instead, run
 `make launcher` in a checkout (binaries land in `builds/`).
 
@@ -43,8 +43,7 @@ Then point it at any box you can already SSH to:
 
 It installs webtmux on the target if needed, starts it, tunnels the port back to
 `127.0.0.1` and opens your browser. **The target needs nothing but `ssh` and
-`tmux`.** The target is passed to `ssh` verbatim, so `~/.ssh/config` aliases,
-`user@host` and `ProxyJump` all work.
+`tmux`.** If `ssh <target>` works, `webtmux-launch <target>` works.
 
 Useful flags:
 
@@ -62,6 +61,13 @@ which binary it installs, and its security model.
 
 ### On the machine itself — `webtmux`
 
+An alternative to the launcher — you don't need `webtmux-launch` at all. Put
+webtmux directly on the machine whose tmux you want and run it there. The
+trade-off: connecting to it is up to you. The launcher's tunnel, reconnects and
+secret URL are not involved, so reaching it from another machine means setting up
+your own access (for example `ssh -L 8080:127.0.0.1:8080 <host>`, then browse to
+<http://localhost:8080> on your laptop).
+
 Download the binary for your platform from the
 [latest GitHub release](https://github.com/sparant/webtmux/releases/latest) and run it:
 
@@ -72,8 +78,8 @@ chmod +x webtmux
 ./webtmux -a 127.0.0.1 -w tmux new-session -A -s main
 ```
 
-Then open <http://127.0.0.1:8080>. Other platforms, checksum verification and a
-full install walkthrough are under [Installation](#installation).
+Then open <http://localhost:8080> on that machine (or through your tunnel). Other platforms, checksum verification and a
+full install walkthrough are under [Manual Installation](#manual-installation).
 
 ## Unique Features
 
@@ -516,11 +522,10 @@ For agents and long-running TUIs that report their own status, two escape hatche
 
 An agent lifecycle integration is then just three writes: `1` when work starts, `2` from a "needs your input" hook, `0` when it goes idle or exits.
 
-## Installation
+## Manual Installation
 
-Manual installation, for when you want webtmux on a machine permanently rather
-than launched on demand. If you just want to reach a remote tmux from your
-laptop, [`webtmux-launch`](#from-your-laptop--webtmux-launch) is the shorter path.
+For when you want webtmux on a machine permanently rather than launched on
+demand. If you just want to reach a remote tmux from your laptop, [`webtmux-launch`](#from-your-laptop--webtmux-launch) is the shorter path.
 
 ### Prebuilt Binaries
 
