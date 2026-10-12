@@ -274,6 +274,30 @@ async function main() {
   await sleep(AFTER_PEEK);
   check('which then closes as usual', (await state()).collapsed === true);
 
+  // ---- 9. reaching for it with the keyboard or the pill keeps it open ---------
+  // ⌃⌥= and the toolbar pill during a peek are reaching FOR the panel, like a click
+  // into it. A mouse press on the pill always ended up there (its mousedown ends the
+  // peek, its click then opens); the keyboard used to close it instead.
+  for (const [how, marker, act] of [
+    ['⌃⌥=', 'PK-KEY', () => page.keyboard.press('Control+Alt+Equal')],
+    ['the toolbar pill', 'PK-PILL', () => page.evaluate(() =>
+      document.querySelector('webtmux-toolbar').shadowRoot.querySelector('.mode').click())],
+  ]) {
+    await reset();
+    await copyMarker(marker);
+    s = await state();
+    check(`setup: a copy peeks the panel in (before ${how})`, s.peeking === true, JSON.stringify(s));
+    await act();
+    await sleep(400);
+    s = await state();
+    check(`${how} during a peek promotes it to a real open panel`,
+      s.collapsed === false && s.peeking === false && s.hasTimer === false, JSON.stringify(s));
+    await sleep(AFTER_PEEK);
+    check(`…and it is still open after the countdown (${how})`, (await state()).collapsed === false);
+    await page.keyboard.press('Control+Alt+Equal');
+    await sleep(400);
+  }
+
   await browser.close();
   const bad = results.filter((r) => !r.ok);
   console.log(`\n${results.length - bad.length}/${results.length} passed`);

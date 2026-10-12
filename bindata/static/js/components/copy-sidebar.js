@@ -526,12 +526,13 @@ class WebtmuxCopySidebar extends LitElement {
     try { document.documentElement.style.setProperty('--wt-copy-sidebar-w', w + 'px'); } catch (e) {}
   }
 
-  // ⌃⌥= and the toolbar pill. During a peek this reads as "get rid of it" — the
-  // panel is on screen, so a toggle can only sensibly mean close — rather than as
-  // "open the thing that is already open", which is what a naive flip would do
-  // once the peek's own dismissal had shut it in the same event.
+  // ⌃⌥= and the toolbar pill. During a peek this is reaching FOR the panel — the
+  // same as clicking into it — so the peek is promoted to a real open panel. It
+  // used to close instead, and that only ever held for the keyboard: a mouse press
+  // on the pill dismisses the peek on mousedown, so the click that followed opened
+  // the panel. One answer for both inputs, and it's the one the mouse gave.
   toggleCollapsed() {
-    if (this._peeking) { this._endPeek(); return; }
+    if (this._peeking) { this._promotePeek(); return; }
     this.collapsed = !this.collapsed;
   }
 
