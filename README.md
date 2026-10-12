@@ -84,6 +84,15 @@ A UI replacement for tmux Prefix+W. Lets you manage windows/sessions - create/de
 ![Sidebar browse replayed: Ctrl+Alt+W opens the panel, hovering rows previews windows live in the real terminal, Esc puts everything back, click commits](screenshots/sidebar.gif)
 
 - Toggle with Ctrl+Alt+W from anywhere.
+- **Two views of your windows.** The button at the top flips between **▤ this
+  session** (the session tabs, with the current session's windows below) and
+  **🌳 all windows**: every session with its windows beneath it, like tmux's
+  `prefix + w` tree. Use it to find a window when you've forgotten which session
+  it's in. Everything below works the same in both views. Arrow keys walk
+  straight across sessions, and ←/→ fold a session away. The choice is
+  remembered.
+
+  ![The sidebar's all-windows view: every session with its windows beneath it, each row carrying its stoplight and how long it has been that way, and each session's own "+" new-window buttons](screenshots/sidebar-tree.jpg)
 - Hover-overlay to have it come up when you need it or pin to have it always stay open.
 - Preview-before-commit browsing: arrow keys and hovering preview windows/sessions live in the real terminal.
   - Enter or click commits.
@@ -92,12 +101,19 @@ A UI replacement for tmux Prefix+W. Lets you manage windows/sessions - create/de
 - Drag windows to reorder.
 - Drag a window onto a session tab to link it there.
 - Hover × kills a window — or just unlinks it when it lives in other sessions too.
-- Double-click renames windows and sessions inline.
+  If it takes a while to die, its row shows a "killing…" progress bar, so a slow kill
+  doesn't look like a click that did nothing.
+- Double-click renames windows and sessions inline. Paste a path into the rename box
+  and you get just the file name: pasting `docs/plan-portable-deps.md` names the
+  window `plan-portable-deps`.
 - "+" creates a session or a window.
 - A session can offer **several kinds of new window**, one "+" per kind, each
   captioned with what it starts. A claude-editors session might offer `+ shell`,
   `+ secure` and `+ claude`: a host prompt, a shell inside a container, and "launch
   the next agent". With no menu configured there is just one "+", as before.
+
+  ![A session with three kinds of new window — + shell, + secure and + claude — the hovered one showing its × and the +… row for adding another](screenshots/sidebar-newcmds.jpg)
+
   - The window still belongs to you: the command is TYPED into a normal shell, so
     Ctrl-C stops it and leaves you at the prompt, up-arrow runs it again, and the
     window outlives the command.
@@ -123,6 +139,7 @@ A tab flashes amber when its window has stopped working, and an arrow flashes wh
 - The toolbar has up to 5 (configurable) most-recently-used window tabs for quick access.
   - control+Option+N/P - used to navigate to the next/previous window in your most-recent list.
   - Remove a window from your most recents with the hover-revealed close button ×
+  - The strip never scrolls sideways. In a narrow browser window, the tabs that don't fit wait in line and come back as you widen it.
   - Past the tab count, windows queue up rather than being forgotten: the strip shows the first 5 and the rest wait in line. Close a tab (or raise the count) and the next one in line slides straight back in. Only × — you saying you are done with a window — removes one for good.
   - Clear the whole strip in one go — hover the **Recent ▾** label for a ✕, or use its menu. That is the one that reaches the queue as well: because closing a tab hands its slot to the next window in line, clicking × down the strip never empties it. It asks first, and nothing is closed or killed — the windows keep running and the split regions keep their views.
   - Shape the tab labels from the **Recent ▾** menu: show the session in front of the name, and trim a name to what follows its first space ("ssh web-01" reads "web-01"). The preview's tiles are labelled the same way, so a window reads the same in both places.
@@ -164,6 +181,9 @@ Keep an eye on specific windows, even while you focus on others.
 - **Arrange the bar by hand: drag a tile where you want it.** The bar draws its tiles in the order you put them in and never reshuffles them, so the window you keep glancing at can live at the end you actually look at. A line shows the gap the tile will land in, along whichever axis the bar is docked on. Dragging a floating corner box onto the bar docks it — at the position you drop it, not at the end. The order is shared state, so it survives a reload and every other browser sees it.
 - Ctrl+Alt+I adds/removes the focused window (bar); Ctrl+Alt+Shift+I pins it to a free corner, or unpins it back to the bar.
 - Dock the bar to any edge with its own buttons: top/bottom/left/right.
+- **Resize the bar by dragging its inner edge** (the one facing the terminal). The tiles grow with it, so you can read a previewed window without opening it. Double-click the edge to go back to the default size. The bar remembers a separate size for top/bottom and left/right docking.
+
+  ![Preview bar resize replayed: dragging the docked bar's inner edge up makes its tiles bigger, dragging it back shrinks them, and a double-click resets the size](screenshots/preview-bar-resize.gif)
 - Ctrl+Alt+H hides/shows the whole preview while keeping the windows in it — and where each one was drawn.
 - Provides another way to quickly switch to high priority windows.
 - A previewed window drops out of the [recent tabs](#toolbar-and-recent-tabs) while it is in here: two ways to reach the same window, one of them showing you its screen, is one too many. Hiding the preview or taking the window out of it puts the tab back in its old slot.
@@ -184,6 +204,11 @@ Keep an eye on specific windows, even while you focus on others.
 
 - Webtmux renders a stoplight dot everywhere the window appears (recents tabs, sidebar rows, preview tiles, Exposé tiles): green = working, green ring = working in the background but free to take input, amber = prompting you, red = waiting for work, unfilled = not reporting.
 - Windows self-report status via the tmux option `@wt_working`.
+- **How long it has been like that.** Next to every dot is a short time: `42m` beside a red dot means that window has been waiting for 42 minutes. In a row of idle agents, that shows you which one has waited longest.
+  - By default it is the time since the window last printed anything. A hook that also sets `@wt_working_since` (Unix seconds when the light last changed) makes it the time in the current state instead.
+  - When both readings exist, click the badge to switch between them. Hover it to see which one you're looking at.
+
+  ![The recents strip with a duration beside each stoplight: htop amber for 3m, build green for 7m, editor green for 1h35m, server in background-green for 18m, tests red for 42m](screenshots/stoplight-duration.jpg)
 - When a window drops out of green while you're looking elsewhere, everything showing it flashes in the new color until you actually view it.
   - Alerts cover every window on the server, not just visible tabs.
 - A bash prompt-hook installer ships in the repo so ordinary shells paint their own light automatically (see below), or you can hook into your agent framework (like Claude).
@@ -197,6 +222,8 @@ Keep an eye on specific windows, even while you focus on others.
 - A draggable divider resizes regions.
 - A new region auto-picks the most-recently-used window not already on screen; two regions never show the same window (occupied windows are greyed out in every switcher).
 - **Choose which region a window opens in.** Hovering a recents tab while the view is split shows a small picture of the split — one chip per region, drawn in the regions' own proportions. Point at a chip to preview the window in that region; click it to send it there. Or just drag the tab onto the region you mean. Sending over a window the other region is already showing makes the two regions **trade** windows, so nothing is left blank and the same gesture puts them back.
+
+  ![The region picker: hovering the htop recents tab in a two-region split shows one chip per region, and pointing at the second chip previews htop in that region](screenshots/split-region-picker.jpg)
 - Secondary regions switch sessions freely without dragging the primary or the console along; a split that gets synced onto a shared session self-heals.
 - Close the focused region with Ctrl+Alt+X (the primary region can't be closed).
 
@@ -269,7 +296,20 @@ A program running on the tmux machine — a CLI printing a login URL, a token, a
 
 - Toolbar ⤓ saves the focused pane's buffer — the **entire scrollback** (the default) or just the visible screen: download to the browser, or write a file on the machine webtmux runs on — container-aware, with the save location explained up front and configurable via `WEBTMUX_SAVE_DIR` / `WEBTMUX_PATH_MAP` / `WEBTMUX_HOME` / `WEBTMUX_IN_CONTAINER` (details in the save section below).
 
+### Upload and download files
+
+The file you want while you're looking at a pane is usually on the machine tmux runs on: a build artifact, a log, a tarball. You don't need a second terminal and an `scp` command to get it. The same ⤓ menu moves files and folders both ways between that machine and the one your browser runs on.
+
+![The ⤓ menu: save the pane's buffer, then Transfer files — Upload from this browser to the machine tmux runs on (choose files or a whole folder), and Download a file or folder from that machine to this browser](screenshots/file-transfer.jpg)
+
+- **↑ Upload:** pick files, or a whole folder, and the folder on the tmux machine to put them in. A folder arrives as a folder.
+- **↓ Download:** type a file or folder path on the tmux machine. A folder downloads as a `.zip`.
+- Every label names both machines in the direction the bytes go ("from this browser to the machine tmux runs on"), so you can't confuse an upload with a download and overwrite the good copy.
+- It works over the connection you already have open, so a session reached through ssh tunnels and jump hosts needs no extra setup. Paths go through the same rules and allowed directories as saving a buffer, and transfers need the server started with `-w`.
+
 ### Scrollback buffer size
+
+![The ⛁ menu: how many lines this window's buffer holds and has used, Resize this window, a New windows default with "Also save it for future tmux servers", and Clear this window's scrollback](screenshots/scrollback-menu.jpg)
 
 - Toolbar ⛁ shows how many lines the focused window's panes can hold, how many
   they are holding, and a gauge that turns amber once a buffer is full — i.e.
@@ -304,6 +344,8 @@ A program running on the tmux machine — a CLI printing a login URL, a token, a
   and not yet answered, and **red** — pulsing — when the link is gone. Amber is
   the state a boolean had to round to one side or the other, and it rounded to
   green; a wedged socket now colours in about two seconds instead of eleven.
+![The link menu: the connection's state in longhand, then the tmux settings — tmux status line, copy from a program to this browser, and run a command when a window is renamed — each saying who else it affects](screenshots/link-menu.jpg)
+
 - **Click it** for the same report in longhand, plus the settings that belong to
   **tmux** rather than to webtmux — the one place on the bar where a control
   changes the tmux server every other client is attached to, so each row says who
@@ -356,6 +398,8 @@ A program running on the tmux machine — a CLI printing a login URL, a token, a
 - Per-connection tmux controller threading: each browser region follows its pane's real tmux client by tty+pid, fixing wrong-client switches (including cross-container pty name collisions, backed by a pts-number reservation, `WEBTMUX_PTS_FLOOR`).
 
 ### Build, server & reliability
+
+- **Watch-only mode.** Start webtmux without `-w` and the page is for watching only. You can watch the window on screen, hover-preview others and look through Exposé. Anything that would change tmux or the machine is off, and that includes switching windows, since other people attached to the session would see it move. Those controls are greyed out and say why, so nothing pretends to work and then quietly doesn't.
 
 Discover which build you are running.
 ![The hidden build-id chip (Ctrl+Alt+B) revealing the commit the running binary was built from](screenshots/build-reliability.jpg)

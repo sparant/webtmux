@@ -61,7 +61,7 @@ togif() { # in.webm out.gif trim-seconds [extra-filter]
 }
 
 cd /tmp/videos
-for f in expose split-view sidebar hover-preview preview-pip copy-scroll copy-buffers save-file state-persistence stoplights; do
+for f in expose split-view sidebar hover-preview preview-pip copy-scroll copy-buffers save-file state-persistence stoplights preview-bar-resize; do
   [ -f "$f.webm" ] && togif "$f.webm" "/src/screenshots/$f.gif" 3.4
 done
 # flashing tabs + attention arrow, cropped to the toolbar strip

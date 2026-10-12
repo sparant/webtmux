@@ -215,6 +215,9 @@ Pieces:
   the system clipboard. This is what established that stock tmux drops the raw sequence
   (`set-clipboard external`) and that tmux ≥3.3 drops the DCS one too
   (`allow-passthrough off`), leaving nothing for the browser to hear.
+- `driver-features.js` — stills for the sections added after the first tour (the
+  sidebar's all-windows view and new-window menu, stoplight durations, the split region
+  picker, file transfer, the ⛁ and link menus). Run it with `DRIVER=driver-features.js`.
 - `driver-gifs.js` — records one video per animated feature, each scene
   replaying its README section's bullets in order (split → drag divider →
   close; hover → preview → restore; lights change → tabs flash until viewed;
