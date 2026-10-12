@@ -1891,7 +1891,7 @@ export class SplitManager {
     // so their tiles show each window's stoplight in their top-right corner. One map,
     // four surfaces (strip, sidebar list, preview, Exposé) — a window's light can
     // never say different things in two places.
-    this.pip?.setWorking(workingById);
+    this.pip?.setWorking(workingById, workingSinceById, activityById);
     this.expose?.setWorking(workingById);
     // …and the same for the attention flashes: the sidebar's window rows and the
     // preview's thumbnails flash for exactly the windows the strip's tabs do. Between

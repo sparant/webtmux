@@ -37,7 +37,10 @@ import { Terminal } from '@xterm/xterm';
 import { CaptureCache, placementKey } from '../capture-cache.js';
 import { chord } from '../os.js';
 import { stateStore } from '../state-store.js';
-import { workClass, workLabel, workTip } from '../stoplight.js';
+import {
+  paintWorkClass, workLabel, workTip, workBadge, workBadgeTip, workBadgeModes, nextBadgeMode,
+} from '../stoplight.js';
+import { STOPLIGHT_CSS } from '../stoplight-dot.js';
 import { ALERT_CSS, alertClass, alertTip } from '../alert-flash.js';
 import { alertOf } from '../work-alerts.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
@@ -335,21 +338,8 @@ class WebtmuxPip extends LitElement {
        top-right" button appears on hover — so it had to let the pointer through, and
        the only place left for its colour key was the whole frame's tooltip. Down here
        it covers nothing, so it is hoverable, and the key is what hovering IT says. */
-    .pwork {
-      flex: 0 0 auto;
-      width: 9px; height: 9px;
-      border-radius: 50%;
-      border: 1px solid #5a6a8a;
-      background: transparent;
-      box-sizing: border-box;
-    }
-    .pwork.on   { background: #2ecc71; border-color: #2ecc71; box-shadow: 0 0 5px #2ecc71; }
-    .pwork.off  { background: #e74c3c; border-color: #e74c3c; }
-    /* Waiting on background work it started: green hue (it does not need you) with an
-       open centre (it is at a prompt, so you can talk to it). */
-    .pwork.bg   { background: transparent; border-color: #2ecc71; border-width: 2px; box-shadow: 0 0 5px rgba(46, 204, 113, 0.75); }
-    .pwork.wait { background: #f5c542; border-color: #f5c542; box-shadow: 0 0 6px #f5c542; animation: wt-wait 1.4s ease-in-out infinite; }
-    @keyframes wt-wait { 50% { opacity: 0.35; } }
+    /* Look and colours: .stoplight in STOPLIGHT_CSS (stoplight-dot.js). */
+    .pwork { --stoplight-size: 9px; }
 
     /* ---- the tile's hover CONTROLS — one cluster, both surfaces --------------
        Where a previewed window is drawn is a property of the window, so the controls
@@ -434,7 +424,7 @@ class WebtmuxPip extends LitElement {
        that must not fill with the alert colour — that would hide the very screen the
        flash is telling you to go and look at. Inset so the tile's own overflow can't
        clip it and its size never changes mid-pulse. */
-  `, ALERT_CSS, TIP_CSS, REGION_PICKER_CSS];
+  `, STOPLIGHT_CSS, ALERT_CSS, TIP_CSS, REGION_PICKER_CSS];
 
   constructor() {
     super();
@@ -500,6 +490,12 @@ class WebtmuxPip extends LitElement {
     // Per-window @wt_working, pushed by the SplitManager (the same map the recents
     // strip reads) so each tile can show its stoplight.
     this._working = new Map();
+    // …and the two "how long" readings the recents tab's time-in-state badge is built
+    // from (@wt_working_since, #{window_activity}), plus which reading a click on a
+    // tile's badge picked — the same per-window override the toolbar keeps.
+    this._since = new Map();
+    this._activity = new Map();
+    this._badgeMode = new Map();
     // Per-window attention flash, from the same shared registry the recents strip and
     // the sidebar read (a WorkAlerts.snapshot()). A tile in the preview is often the
     // ONLY place a window is visible at all, so a window that stops while it is sitting
@@ -904,15 +900,25 @@ class WebtmuxPip extends LitElement {
     // is the ONE place the preview explains the colours — the tile's own hint names
     // the window and says what the gestures do, as the recents tab's does.
     const work = document.createElement('span');
-    work.className = 'pwork';
+    work.className = 'pwork stoplight';
     work.setAttribute('role', 'img');
-    work.addEventListener('mouseenter', () => this._tip.enter({ currentTarget: work }, workTip(this._working.get(id) || '')));
+    work.addEventListener('mouseenter', () => this._tip.enter({ currentTarget: work },
+      workTip(this._working.get(id) || '', this._since.get(id), this._activity.get(id))));
     work.addEventListener('mouseleave', () => this._tileHint(tile, id));
+    // Time in this state, right after the dot as on the recents tab (_paintAge fills
+    // it; hidden while there is no reading). Click cycles the reading, like the tab's.
+    const age = document.createElement('span');
+    age.className = 'work-age';
+    age.hidden = true;
+    age.addEventListener('mouseenter', () => this._tip.enter({ currentTarget: age },
+      workBadgeTip(this._since.get(id), this._activity.get(id), undefined, this._badgeMode.get(id))));
+    age.addEventListener('mouseleave', () => this._tileHint(tile, id));
+    age.addEventListener('click', (e) => { e.stopPropagation(); this._cycleBadgeMode(id); });
     const idx = document.createElement('span');
     idx.className = 'idx';
     const name = document.createElement('span');
     name.className = 'name';
-    label.append(work, idx, name);
+    label.append(work, age, idx, name);
     tile.appendChild(label);
     this._paintLabel(w, tile);
 
@@ -1433,13 +1439,46 @@ class WebtmuxPip extends LitElement {
 
   // Per-window @wt_working, pushed from the SplitManager on every layout refresh.
   // Only repaints when something actually changed — this runs on the 500ms poll.
-  setWorking(map) {
+  // sinceMap/activityMap feed the time-in-state badge; its text is re-checked every
+  // call (the clock moves even when no value does) but only written when it differs.
+  setWorking(map, sinceMap, activityMap) {
     if (!map) return;
+    if (sinceMap) this._since = new Map(sinceMap);
+    if (activityMap) this._activity = new Map(activityMap);
     let changed = map.size !== this._working.size;
     if (!changed) { for (const [k, v] of map) if (this._working.get(k) !== v) { changed = true; break; } }
-    if (!changed) return;
-    this._working = new Map(map);
-    for (const w of this._wins) this._paintWork(w.windowId);
+    if (changed) this._working = new Map(map);
+    for (const w of this._wins) {
+      if (changed) this._paintWork(w.windowId);
+      else this._paintAge(w.windowId);
+    }
+  }
+
+  // The badge beside a tile's dot: the clicked-for reading if there is one, else
+  // workBadge()'s own preference — exactly what the recents tab shows.
+  _paintAge(id) {
+    const age = this._tileEl(id)?.querySelector('.plabel .work-age');
+    if (!age) return;
+    const since = this._since.get(id);
+    const activity = this._activity.get(id);
+    const text = workBadge(since, activity, undefined, this._badgeMode.get(id));
+    if (age.textContent !== text) age.textContent = text;
+    age.hidden = !text;
+    age.classList.toggle('cyclable', workBadgeModes(since, activity).length > 1);
+  }
+
+  _cycleBadgeMode(id) {
+    const since = this._since.get(id);
+    const activity = this._activity.get(id);
+    const modes = workBadgeModes(since, activity);
+    if (modes.length < 2) return;
+    const current = this._badgeMode.get(id) || modes[0];
+    this._badgeMode.set(id, nextBadgeMode(current, since, activity));
+    this._paintAge(id);
+    const age = this._tileEl(id)?.querySelector('.plabel .work-age');
+    if (age?.matches(':hover')) {
+      this._tip.enter({ currentTarget: age }, workBadgeTip(since, activity, undefined, this._badgeMode.get(id)));
+    }
   }
 
   // Per-window attention flashes, pushed on the same refresh as setWorking. Cheap
@@ -1460,11 +1499,9 @@ class WebtmuxPip extends LitElement {
     const dot = tile?.querySelector('.pwork');
     if (!dot) return;
     const v = this._working.get(id) || '';
-    const cls = workClass(v);
-    dot.classList.toggle('on', cls === 'on');
-    dot.classList.toggle('off', cls === 'off');
-    dot.classList.toggle('wait', cls === 'wait');
+    paintWorkClass(dot, v);
     dot.setAttribute('aria-label', workLabel(v));
+    this._paintAge(id);
     this._paintAlert(id, tile);
   }
 

@@ -27,6 +27,7 @@ import { chord, IS_MAC } from '../os.js';
 import { stateStore } from '../state-store.js';
 import { workClass, workLabel, workTip, workBadgeTip, workBadge, workBadgeModes, nextBadgeMode } from '../stoplight.js';
 import { ALERT_CSS, alertClass, alertTip } from '../alert-flash.js';
+import { STOPLIGHT_CSS } from '../stoplight-dot.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
 import {
   PICKER_DELAY, PICKER_GRACE, REGION_PICKER_CSS, regionPickerTemplate, windowTitle,
@@ -514,23 +515,7 @@ class WebtmuxToolbar extends LitElement {
        unfilled = not reporting. Clients drive it with: tmux set -w @wt_working
        1|3|2|0 (set -u to clear). The words live in stoplight.js — every surface that
        shows this dot says them the same way, and hovering it prints the whole key. */
-    .work {
-      flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%;
-      border: 1px solid #5a6a8a; background: transparent; box-sizing: border-box;
-    }
-    .work.on   { background: #2ecc71; border-color: #2ecc71; box-shadow: 0 0 4px #2ecc71; }
-    .work.off  { background: #e74c3c; border-color: #e74c3c; }
-    /* Waiting on background work it started. Green, because across a screenful of
-       windows the only question you are asking is "does this one need me", and the
-       answer is the same as green's. HOLLOW, because the follow-up question — can I
-       talk to it — has a different answer here: it is sitting at a prompt. Same hue,
-       so it never reads as a fourth kind of trouble; open centre, so it is still
-       findable when you are looking for the one you can interrupt. */
-    .work.bg   { background: transparent; border-color: #2ecc71; border-width: 2px; box-shadow: 0 0 4px rgba(46, 204, 113, 0.75); }
-    /* Waiting for user input — pulses, because unlike the other two states it is a
-       request: something is blocked until you go and answer it. */
-    .work.wait { background: #f5c542; border-color: #f5c542; box-shadow: 0 0 5px #f5c542; animation: wt-wait 1.4s ease-in-out infinite; }
-    @keyframes wt-wait { 50% { opacity: 0.35; } }
+    /* Look and colours: .stoplight in STOPLIGHT_CSS (stoplight-dot.js). */
 
     /* The always-visible "how long has it been like this" reading (workBadge() in
        stoplight.js) — the answer someone scanning the whole strip needs without
@@ -539,12 +524,7 @@ class WebtmuxToolbar extends LitElement {
        explains the mechanism (workBadgeTip()), same as hovering the dot explains
        the colour. The .cyclable variant (both readings exist) invites a click to
        switch between them — see _cycleBadgeMode(). */
-    .work-age {
-      flex: 0 0 auto; font-size: 11px; color: #9fb4dc; line-height: 1;
-      white-space: nowrap; letter-spacing: 0.02em; cursor: default;
-    }
-    .work-age.cyclable { cursor: pointer; }
-    .work-age.cyclable:hover { color: #cfe0ff; text-decoration: underline dotted; }
+    /* .work-age's look is in STOPLIGHT_CSS (stoplight-dot.js). */
 
     /* The attention flash itself (.wt-alert and friends) is spliced in from
        alert-flash.js — the sidebar rows and the preview tiles flash for the same
@@ -1448,7 +1428,7 @@ class WebtmuxToolbar extends LitElement {
        land. Amber, the same "waiting on you" colour the stoplight uses. */
     .link-menu .rwin .rwpend { flex: 0 0 auto; color: #ffb454; font-size: 15px; line-height: 1; }
     .link-menu .merr { color: #ff8fa3; font-size: 11px; line-height: 1.35; padding: 0 2px; }
-  `, ALERT_CSS, TIP_CSS, CONFIRM_CSS, REGION_PICKER_CSS];
+  `, STOPLIGHT_CSS, ALERT_CSS, TIP_CSS, CONFIRM_CSS, REGION_PICKER_CSS];
 
   constructor() {
     super();
@@ -2753,7 +2733,7 @@ class WebtmuxToolbar extends LitElement {
             @mouseenter=${(e) => this._tabEnter(e.currentTarget, w)}
             @mouseleave=${() => this._tabLeave()}
           ><span
-            class="work ${workClass(w.working)}"
+            class="work stoplight ${workClass(w.working)}"
             role="img"
             aria-label=${workLabel(w.working)}
             @mouseenter=${(e) => { e.stopPropagation(); this._tipEnter(e, workTip(w.working, w.workingSince, w.activity)); }}

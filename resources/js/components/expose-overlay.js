@@ -20,9 +20,10 @@ import { matchesWords, appendChar, backspace, phraseText } from '../search.js';
 import { stateStore } from '../state-store.js';
 import { CLOSED, growExpose, shrinkExpose, cycleExpose } from '../expose-density.js';
 import {
-  workClass, workLabel, workTip, WORK_LEGEND,
+  paintWorkClass, workLabel, workTip, WORK_LEGEND,
   STATUS_FILTERS, normalizeStatusFilter, matchesStatus,
 } from '../stoplight.js';
+import { STOPLIGHT_CSS } from '../stoplight-dot.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
 import { READ_ONLY_NOTICE } from '../write-guard.js';
 import {
@@ -280,20 +281,10 @@ class WebtmuxExpose extends LitElement {
     .tile-work {
       position: absolute;
       top: 6px; right: 6px;
-      width: 9px; height: 9px;
-      border-radius: 50%;
-      border: 1px solid #5a6a8a;
-      background: transparent;
-      box-sizing: border-box;
+      --stoplight-size: 9px;
       z-index: 2;
     }
-    .tile-work.on   { background: #2ecc71; border-color: #2ecc71; box-shadow: 0 0 5px #2ecc71; }
-    .tile-work.off  { background: #e74c3c; border-color: #e74c3c; }
-    /* Waiting on background work it started: green hue (it does not need you) with an
-       open centre (it is at a prompt, so you can talk to it). */
-    .tile-work.bg   { background: transparent; border-color: #2ecc71; border-width: 2px; box-shadow: 0 0 5px rgba(46, 204, 113, 0.75); }
-    .tile-work.wait { background: #f5c542; border-color: #f5c542; box-shadow: 0 0 6px #f5c542; animation: wt-wait 1.4s ease-in-out infinite; }
-    @keyframes wt-wait { 50% { opacity: 0.35; } }
+    /* Look and colours: .stoplight in STOPLIGHT_CSS (stoplight-dot.js). */
 
     .tile-label {
       flex: 0 0 auto;
@@ -315,7 +306,7 @@ class WebtmuxExpose extends LitElement {
       font: 14px Menlo, Monaco, monospace;
       margin: auto;
     }
-  `, TIP_CSS];
+  `, STOPLIGHT_CSS, TIP_CSS];
 
   constructor() {
     super();
@@ -687,7 +678,7 @@ class WebtmuxExpose extends LitElement {
 
     // Built here, before the first capture lands, so the corner never pops in late.
     const work = document.createElement('span');
-    work.className = 'tile-work';
+    work.className = 'tile-work stoplight';
     work.setAttribute('role', 'img');
     // The shared hint rather than a native `title`: this is the same dot the strip
     // and the sidebar show, and it must not answer more slowly here. _paintWork
@@ -785,10 +776,7 @@ class WebtmuxExpose extends LitElement {
     const dot = rec?.work;
     if (!dot) return;
     const v = this._working.get(rec.windowId) || '';
-    const cls = workClass(v);
-    dot.classList.toggle('on', cls === 'on');
-    dot.classList.toggle('off', cls === 'off');
-    dot.classList.toggle('wait', cls === 'wait');
+    paintWorkClass(dot, v);
     dot._tipText = workTip(v);
     dot.setAttribute('aria-label', workLabel(v));
   }

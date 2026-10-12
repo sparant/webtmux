@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import {
   workClass, workLabel, workTip, WORK_LEGEND, isBusy, formatDuration,
   workBadge, workBadgeTip, workBadgeModes, nextBadgeMode,
-  STATUS_FILTERS, normalizeStatusFilter, matchesStatus,
+  STATUS_FILTERS, normalizeStatusFilter, matchesStatus, paintWorkClass, WORK_CLASSES,
 } from '../resources/js/stoplight.js';
 
 test('the four reported states each get their own fill', () => {
@@ -265,4 +265,21 @@ test('every filter has an id, a label and a hint, and "all" leads', () => {
     assert.ok(f.id && f.label && f.hint, `incomplete filter ${JSON.stringify(f)}`);
     assert.equal(normalizeStatusFilter(f.id), f.id);
   }
+});
+
+// The preview tiles and Exposé paint their dots imperatively; they once toggled
+// on/off/wait by hand and never set 'bg', so a background-work window showed the
+// grey "not reporting" circle there while the recents tab showed the green ring.
+test('paintWorkClass sets exactly the class workClass names, for every state', () => {
+  const fakeEl = () => {
+    const set = new Set(['stoplight']);
+    return { set, classList: { toggle: (c, on) => (on ? set.add(c) : set.delete(c)) } };
+  };
+  const el = fakeEl();
+  for (const v of ['1', '0', '2', '3', '', '1']) {
+    paintWorkClass(el, v);
+    const want = workClass(v);
+    assert.deepEqual([...el.set].sort(), ['stoplight', ...(want ? [want] : [])].sort(), `value ${JSON.stringify(v)}`);
+  }
+  for (const v of ['0', '1', '2', '3']) assert.ok(WORK_CLASSES.includes(workClass(v)));
 });

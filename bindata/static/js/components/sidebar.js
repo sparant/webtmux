@@ -12,6 +12,7 @@ import {
 import { stateStore } from '../state-store.js';
 import { clientStore } from '../client-store.js';
 import { workClass, workLabel, workTip, workBadge, workBadgeTip, workBadgeModes, nextBadgeMode } from '../stoplight.js';
+import { STOPLIGHT_CSS } from '../stoplight-dot.js';
 import { ALERT_CSS, alertClass, alertTip } from '../alert-flash.js';
 import { alertOf } from '../work-alerts.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
@@ -261,20 +262,7 @@ class WebtmuxSidebar extends LitElement {
     .work, .work-gap {
       flex: 0 0 auto; width: 8px; height: 8px; box-sizing: border-box;
     }
-    .work {
-      border-radius: 50%;
-      border: 1px solid #5a6a8a;
-      background: transparent;
-    }
-    .work.on   { background: #2ecc71; border-color: #2ecc71; box-shadow: 0 0 4px #2ecc71; }
-    .work.off  { background: #e74c3c; border-color: #e74c3c; }
-    /* Waiting on background work it started: green hue (it does not need you) with an
-       open centre (it is at a prompt, so you can talk to it). */
-    .work.bg   { background: transparent; border-color: #2ecc71; border-width: 2px; box-shadow: 0 0 4px rgba(46, 204, 113, 0.75); }
-    /* Waiting for user input — pulses, because unlike the other two states it is a
-       request: something is blocked until you go and answer it. */
-    .work.wait { background: #f5c542; border-color: #f5c542; box-shadow: 0 0 5px #f5c542; animation: wt-wait 1.4s ease-in-out infinite; }
-    @keyframes wt-wait { 50% { opacity: 0.35; } }
+    /* Look and colours: .stoplight in STOPLIGHT_CSS (stoplight-dot.js). */
 
     /* The always-visible "how long has it been like this" reading (workBadge() in
        stoplight.js). Placed AFTER the tab/edit-input, not between the dot and the
@@ -287,12 +275,7 @@ class WebtmuxSidebar extends LitElement {
        .cyclable variant (both readings exist) invites a click to switch between
        them — see
        _cycleBadgeMode(). */
-    .work-age {
-      flex: 0 0 auto; font-size: 11px; color: #9fb4dc; line-height: 1;
-      white-space: nowrap; letter-spacing: 0.02em; cursor: default;
-    }
-    .work-age.cyclable { cursor: pointer; }
-    .work-age.cyclable:hover { color: #cfe0ff; text-decoration: underline dotted; }
+    /* .work-age's look is in STOPLIGHT_CSS (stoplight-dot.js). */
 
     .window-tab {
       display: block;
@@ -680,7 +663,7 @@ class WebtmuxSidebar extends LitElement {
       cursor: pointer;
     }
     .fc-clear:hover { background: #e94560; color: #fff; }
-  `, ALERT_CSS, TIP_CSS, CONFIRM_CSS];
+  `, STOPLIGHT_CSS, ALERT_CSS, TIP_CSS, CONFIRM_CSS];
 
   constructor() {
     super();
@@ -1340,7 +1323,7 @@ class WebtmuxSidebar extends LitElement {
     return html`
       <div class="wrow ${killing ? 'killing' : ''}">
         <span
-          class="work ${workClass(this._working(win))}"
+          class="work stoplight ${workClass(this._working(win))}"
           role="img"
           aria-label=${workLabel(this._working(win))}
           @mouseenter=${(e) => this._tip.enter(e, workTip(this._working(win), this._workingSince(win), this._activity(win)))}
