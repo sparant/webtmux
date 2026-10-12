@@ -38,7 +38,7 @@ const GROUPS = [
       { keys: [...M, 'L'], desc: 'Cycle most-recently-used windows — hold the chord and tap L to walk back through history (⇧L reverses); releasing the chord commits where you landed, like alt-tab' },
       { keys: [...M, ','], desc: 'Rename the current window (caret at the end, ready to add to the name) — tmux ⌃b ,' },
       { keys: [...M, 'B'], desc: 'Show / hide the build-id chip (top-left)' },
-      { keys: [...M, '/'], desc: 'Show this shortcuts list — tmux ⌃b ?' },
+      { keys: [...M, '/'], desc: 'Show this shortcuts list (? works too) — tmux ⌃b ?' },
     ],
   },
   {
@@ -46,14 +46,14 @@ const GROUPS = [
     rows: [
       { keys: ['↑'], desc: 'Preview the previous window' },
       { keys: ['↓'], desc: 'Preview the next window' },
-      { keys: ['←'], desc: 'Preview the previous session' },
-      { keys: ['→'], desc: 'Preview the next session' },
+      { keys: ['←'], desc: 'Preview the previous session (in the all-windows view: fold the session away)' },
+      { keys: ['→'], desc: 'Preview the next session (in the all-windows view: unfold it)' },
       { keys: ['⏎'], desc: 'Commit the previewed window — it becomes the region’s real window & the keyboard returns to the terminal (clicking also commits)' },
-      { keys: ['Esc'], desc: 'Discard the preview — nothing switched, so the region simply goes back to its own window' },
-      { keys: ['a–z'], desc: 'Type to find & preview a window (space = new word; a short pause resets)' },
+      { keys: ['Esc'], desc: 'Clear the filter first; pressed again, discard the preview — nothing switched, so the region simply goes back to its own window' },
+      { keys: ['a–z'], desc: 'Type to filter the list & preview the first match (space = new word). The filter stays until you clear it; ⌫ rubs out a character' },
       { keys: ['drag'], desc: 'Drag a window between rows to reorder, or onto a session to link it' },
       { keys: ['hover'], desc: 'Point at a window to preview it in a terminal region; click to switch to it' },
-      { keys: ['dbl-click'], desc: 'Rename a window (name selected, ready to replace; ⏎ commits and refocuses the terminal, Esc cancels)' },
+      { keys: ['dbl-click'], desc: 'Rename a window or session (name selected, ready to replace; ⏎ commits and refocuses the terminal, Esc cancels). Pasting a path keeps just the file name' },
     ],
   },
   {
@@ -78,7 +78,8 @@ const GROUPS = [
   {
     title: 'Terminal',
     rows: [
-      { keys: ['Drag'], desc: 'Click and drag over the pane to select text — no need to enter copy mode by hand, even over a program holding the mouse (Claude/vim/htop). Starting the selection enters copy mode for you, so dragging to the edge scrolls for more. The toolbar\'s "sel" button decides who gets a press: app / buf / auto / auto+ (the default: clicks reach the program, drags select — and clicking away leaves copy mode again)' },
+      { keys: ['Drag'], desc: 'Click and drag over the pane to select text — no need to enter copy mode by hand, even over a program holding the mouse (Claude/vim/htop). Starting the selection enters copy mode for you, so dragging to the edge scrolls for more. The toolbar\'s mouse-capture dropdown (click+drag:) decides who gets a press: app / buf / auto / auto+ (the default: clicks reach the program, drags select — and clicking away leaves copy mode again)' },
+      { keys: ['⇧', 'Click'], desc: 'Move the far end of the current selection, keeping the end you started from — fixes an overshoot without redoing the drag (works over a mouse-grabbing program too)' },
       { keys: [IS_MAC ? '⌥' : '⇧', 'Drag'], desc: 'Force a selection whatever the mode says — xterm\'s own escape hatch, still there' },
       { keys: ['⌘/⌃', 'C'], desc: 'Copy the selection; stays in copy mode so you can copy several regions in a row. Copying AGAIN before you paste keeps both — the second one becomes a new copy buffer (⌃⌥=). If that panel is shut, the copy floats it in for a couple of seconds without taking the keyboard; carry on typing and it goes away. With nothing selected, ⌃C passes through as an interrupt' },
       { keys: ['⌘/⌃', 'V'], desc: 'Paste the focused copy buffer, i.e. the clipboard (auto-exits copy mode first so the text lands at the prompt)' },
