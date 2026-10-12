@@ -98,7 +98,7 @@ A UI replacement for tmux Prefix+W. Lets you manage windows/sessions - create/de
   straight across sessions, and ←/→ fold a session away. The choice is
   remembered.
 
-  ![The sidebar's all-windows view: every session with its windows beneath it, each row carrying its stoplight and how long it has been that way, and each session's own "+" new-window buttons](screenshots/sidebar-tree.jpg)
+  <img src="screenshots/sidebar-tree.jpg" alt="The sidebar's all-windows view: every session with its windows beneath it, each row carrying its stoplight and how long it has been that way, and each session's own &quot;+&quot; new-window buttons" width="21%">
 - Hover-overlay to have it come up when you need it or pin to have it always stay open.
 - Preview-before-commit browsing: arrow keys and hovering preview windows/sessions live in the real terminal.
   - Enter or click commits.
@@ -118,7 +118,7 @@ A UI replacement for tmux Prefix+W. Lets you manage windows/sessions - create/de
   `+ secure` and `+ claude`: a host prompt, a shell inside a container, and "launch
   the next agent". With no menu configured there is just one "+", as before.
 
-  ![A session with three kinds of new window — + shell, + secure and + claude — the hovered one showing its × and the +… row for adding another](screenshots/sidebar-newcmds.jpg)
+  <img src="screenshots/sidebar-newcmds.jpg" alt="A session with three kinds of new window — + shell, + secure and + claude — the hovered one showing its × and the +… row for adding another" width="21%">
 
   - The window still belongs to you: the command is TYPED into a normal shell, so
     Ctrl-C stops it and leaves you at the prompt, up-arrow runs it again, and the
@@ -235,7 +235,7 @@ Keep an eye on specific windows, even while you focus on others.
 
 ### Capture & preview infrastructure
 
-![Live capture buffers at work: Exposé tiles painted from the shared per-window capture cache](screenshots/capture-infra.jpg)
+<img src="screenshots/capture-infra.jpg" alt="Live capture buffers at work: Exposé tiles painted from the shared per-window capture cache" width="65%">
 
 - The server keeps one deduplicated capture buffer per tmux window, shared across all connections, with freshness coalescing so overlapping UI polls never storm tmux.
 - Clients mirror it in a capture cache powering Exposé tiles, preview tiles, hover previews, and optimistic paint — switching windows paints the cached screen instantly while the live feed catches up. Captures of closed windows are pruned.
@@ -306,7 +306,7 @@ A program running on the tmux machine — a CLI printing a login URL, a token, a
 
 The file you want while you're looking at a pane is usually on the machine tmux runs on: a build artifact, a log, a tarball. You don't need a second terminal and an `scp` command to get it. The same ⤓ menu moves files and folders both ways between that machine and the one your browser runs on.
 
-![The ⤓ menu: save the pane's buffer, then Transfer files — Upload from this browser to the machine tmux runs on (choose files or a whole folder), and Download a file or folder from that machine to this browser](screenshots/file-transfer.jpg)
+<img src="screenshots/file-transfer.jpg" alt="The ⤓ menu: save the pane's buffer, then Transfer files — Upload from this browser to the machine tmux runs on (choose files or a whole folder), and Download a file or folder from that machine to this browser" width="39%">
 
 - **↑ Upload:** pick files, or a whole folder, and the folder on the tmux machine to put them in. A folder arrives as a folder.
 - **↓ Download:** type a file or folder path on the tmux machine. A folder downloads as a `.zip`.
@@ -315,7 +315,7 @@ The file you want while you're looking at a pane is usually on the machine tmux 
 
 ### Scrollback buffer size
 
-![The ⛁ menu: how many lines this window's buffer holds and has used, Resize this window, a New windows default with "Also save it for future tmux servers", and Clear this window's scrollback](screenshots/scrollback-menu.jpg)
+<img src="screenshots/scrollback-menu.jpg" alt="The ⛁ menu: how many lines this window's buffer holds and has used, Resize this window, a New windows default with &quot;Also save it for future tmux servers&quot;, and Clear this window's scrollback" width="22%">
 
 - Toolbar ⛁ shows how many lines the focused window's panes can hold, how many
   they are holding, and a gauge that turns amber once a buffer is full — i.e.
@@ -350,7 +350,7 @@ The file you want while you're looking at a pane is usually on the machine tmux 
   and not yet answered, and **red** — pulsing — when the link is gone. Amber is
   the state a boolean had to round to one side or the other, and it rounded to
   green; a wedged socket now colours in about two seconds instead of eleven.
-![The link menu: the connection's state in longhand, then the tmux settings — tmux status line, copy from a program to this browser, and run a command when a window is renamed — each saying who else it affects](screenshots/link-menu.jpg)
+<img src="screenshots/link-menu.jpg" alt="The link menu: the connection's state in longhand, then the tmux settings — tmux status line, copy from a program to this browser, and run a command when a window is renamed — each saying who else it affects" width="22%">
 
 - **Click it** for the same report in longhand, plus the settings that belong to
   **tmux** rather than to webtmux — the one place on the bar where a control
