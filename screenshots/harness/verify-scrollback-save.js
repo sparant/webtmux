@@ -25,6 +25,7 @@
 const { chromium } = require('playwright');
 const { execFileSync } = require('child_process');
 const fs = require('fs');
+const path = require('path');
 
 const URL = 'http://localhost:8090/';
 const SOCK = '/tmp/wt.sock';
@@ -68,7 +69,7 @@ async function openSaveMenu() {
   const open = await toolbar((n, rr) => !!rr.querySelector('.save-menu'));
   if (!open) {
     await toolbar((n, rr) => {
-      rr.querySelector('button[aria-label="Save pane buffer"]').click();
+      rr.querySelector('button[aria-label="Save pane buffer and transfer files"]').click();
     });
   }
   await sleep(400);
@@ -175,10 +176,13 @@ async function main() {
     reopened[0] === true && reopened[1] === false, JSON.stringify(reopened));
 
   // ---- 5. the server-side file save honors the scope too ---------------------
-  // Inside the harness webtmux's own working directory: server-side saves are
-  // allowlisted to the directories webtmux may write to, and this claim is about
-  // the SCOPE, not about the path rules (savepath_test.go owns those).
-  const target = '/tmp/pw/scope-save.txt';
+  // Inside the pane's own directory: server-side saves are allowlisted to the
+  // directories webtmux may write to, and this claim is about the SCOPE, not about
+  // the path rules (savepath_test.go owns those). Asked of tmux rather than
+  // hardcoded — this used to name /tmp/pw, which only worked because the harness
+  // happened to start webtmux there.
+  const paneDir = tmux('display-message', '-p', '-t', win, '#{pane_current_path}').trim();
+  const target = path.join(paneDir, 'scope-save.txt');
   try { fs.unlinkSync(target); } catch (e) { /* first run */ }
   await toolbar((n, rr, p) => {
     const input = rr.querySelector('.save-path');
