@@ -348,7 +348,7 @@ const clearLights = () => {
     await btn.hover(); await sleep(800);
     await btn.click();
     await sleep(2200);
-    const save = page.getByText('Save', { exact: true }).first();
+    const save = page.getByText('Save all', { exact: true }).first();
     await save.hover(); await sleep(600);
     await save.click();
     await sleep(3000); // result message names where the file landed
@@ -373,6 +373,11 @@ const clearLights = () => {
 
   // ---- stoplights.gif (toolbar-alerts.gif is a crop of the same take):
   // ---- lights change live; tabs/rows flash until the window is viewed
+  // The strip is fitted to the toolbar width, so make htop recent enough to own a
+  // tab rather than wait in the off-strip queue — off camera (recents are shared).
+  if (!ONLY.length || ONLY.includes('stoplights')) {
+    await offCamera(browser, async () => { await goTo('htop'); await goTo('editor'); });
+  }
   await scene(browser, 'stoplights', async () => {
     clearLights();
     await page.evaluate(() => {
@@ -422,6 +427,32 @@ const clearLights = () => {
     await chord('h');              // hide the preview…
     await sleep(1600);
     await chord('h');              // …and bring it back, windows and placements intact
+    await sleep(2200);
+  });
+
+  // ---- preview-bar-resize.gif: drag the docked bar's inner edge to make the
+  // ---- tiles bigger, drag it back down, double-click to reset
+  await scene(browser, 'preview-bar-resize', async () => {
+    const grip = () => page.evaluate(() => {
+      const g = document.querySelector('webtmux-pip').shadowRoot.querySelector('.bar .grip');
+      if (!g) return null;
+      const b = g.getBoundingClientRect();
+      return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+    });
+    if (!await grip()) { await goTo('htop'); await chord('i'); await sleep(800); await goTo('editor'); }
+    await sleep(2000);
+    const drag = async (dy) => {
+      const g = await grip();
+      await page.mouse.move(g.x, g.y); await sleep(600);
+      await page.mouse.down();
+      for (let i = 1; i <= 16; i++) { await page.mouse.move(g.x, g.y + (dy * i) / 16); await sleep(60); }
+      await page.mouse.up(); await sleep(2200);
+    };
+    await drag(-170);              // taller bar, bigger tiles
+    await drag(110);               // and back down
+    const g = await grip();
+    await page.mouse.move(g.x, g.y); await sleep(500);
+    await page.mouse.dblclick(g.x, g.y);   // double-click resets the default size
     await sleep(2200);
   }); // last scene: nothing after this needs a clean toolbar
 
