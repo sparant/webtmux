@@ -29,9 +29,10 @@ OUTPUT_DIR ?= ../builds
 GO_VERSION = 1.23.12
 
 VERSION ?= $(shell git describe --tags --dirty 2>/dev/null || echo "dev")
-# Filled in by Stage 0 (the GitHub fork). Until then a release build has no
-# release to fetch from and must be pointed at a local source.
-REPO_OWNER ?=
+# The GitHub fork the launcher installs webtmux from. Empty would build a
+# launcher with no release source at all, so a plain `make release` must not
+# produce one.
+REPO_OWNER ?= sparant
 REPO_NAME ?= webtmux
 WEBTMUX_VERSION ?= v0.1.0
 
