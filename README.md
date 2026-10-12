@@ -9,9 +9,9 @@ A web-based terminal with tmux-specific features. Access your tmux sessions from
 - **Your tmux muscle memory carries straight over.** Shortcuts use the same key as tmux, with `Ctrl+Option` in place of the `Ctrl+B` prefix — `Ctrl+Option+W` ⇄ `Ctrl+B, w`. [Full list](#keyboard-navigation--discoverability).
 - [Copy several things and paste them one at a time](#copy-buffers) - a list of copy buffers, one of which is the clipboard, that only grows when you are actually gathering.
 - [A program's "press c to copy" reaches YOUR clipboard](#a-programs-press-c-to-copy-reaches-your-clipboard) - the login URL a CLI offers on the tmux machine lands on the clipboard of the machine you are sitting at, which stock tmux silently drops.
-- Take advantage of modern UI - Use Drag and Drop, Previews on hover etc to manage your tmux state.
-- Discoverability of all features - no more searching for shortcuts or remembering commands
-- Quickly access your most recent windows. Monitor any window, keeping it always in your view.
+- Take advantage of modern UI - Use Drag and Drop, [Previews on hover](#hover-previews) etc to manage your tmux state.
+- [Discoverability of all features](#keyboard-navigation--discoverability) - no more searching for shortcuts or remembering commands
+- [Quickly access your most recent windows](#toolbar-and-recent-tabs). [Monitor any window](#preview-and-picture-in-picture), keeping it always in your view.
 
 ## Quick Start
 
@@ -46,18 +46,8 @@ It installs webtmux on the target if needed, starts it, tunnels it back to
 your laptop and opens your browser. **The target needs nothing but `ssh` and
 `tmux`.** If `ssh <target>` works, `webtmux-launch <target>` works.
 
-Useful flags:
-
-| Flag                               | Effect                                                                      |
-| ---------------------------------- | --------------------------------------------------------------------------- |
-| `--session <name>`                 | which tmux session to attach (default: the box's only session, else `main`) |
-| `--no-browser`                     | print the URL instead of opening it                                         |
-| `--auth`                           | keep basic auth on, for a shared multi-user box                             |
-| `--fresh` / `--adopt-only`         | ignore a running instance / refuse to start one                             |
-| `--webtmux-version vX.Y.Z\|latest` | which release to install                                                    |
-| `--verbose`                        | echo the ssh command lines and say which binary source won                  |
-
-See [How webtmux-launch works](#how-webtmux-launch-works) for what it connects to,
+See [`webtmux-launch` flags](#webtmux-launch-flags) for options, and
+[How webtmux-launch works](#how-webtmux-launch-works) for what it connects to,
 which binary it installs, and its security model.
 
 ### tmux on this machine — `webtmux`
@@ -900,6 +890,17 @@ and clicking it opens the window list on the most recent of them, previewed in a
 terminal region. Nothing switches until you press Enter or click the row; Escape
 puts everything back. Between the flashes and the arrow, "nothing is blinking"
 means "nothing needs you" — which is what makes any of it worth watching.
+
+## `webtmux-launch` flags
+
+| Flag                               | Effect                                                                      |
+| ---------------------------------- | --------------------------------------------------------------------------- |
+| `--session <name>`                 | which tmux session to attach (default: the box's only session, else `main`) |
+| `--no-browser`                     | print the URL instead of opening it                                         |
+| `--auth`                           | keep basic auth on, for a shared multi-user box                             |
+| `--fresh` / `--adopt-only`         | ignore a running instance / refuse to start one                             |
+| `--webtmux-version vX.Y.Z\|latest` | which release to install                                                    |
+| `--verbose`                        | echo the ssh command lines and say which binary source won                  |
 
 ## How webtmux-launch works
 
