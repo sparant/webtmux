@@ -87,19 +87,21 @@ A UI replacement for tmux Prefix+W: create, delete, reorder and move windows and
 - Toggle with Ctrl+Alt+W from anywhere. Hover to bring it up, or pin it open.
 - **Two views.** The top button flips between **▤ this session** (session tabs, with the current session's windows below) and **🌳 all windows** (every session with its windows, like tmux's `prefix + w` tree) for when you've forgotten which session a window is in. Arrow keys cross sessions, ←/→ fold one away, and the choice is remembered.
 
-  <img src="screenshots/sidebar-tree.jpg" alt="The sidebar's all-windows view: every session with its windows beneath it, each row carrying its stoplight and how long it has been that way, and each session's own &quot;+&quot; new-window buttons" width="21%">
+<img src="screenshots/sidebar-tree.jpg" alt="The sidebar's all-windows view: every session with its windows beneath it, each row carrying its stoplight and how long it has been that way, and each session's own &quot;+&quot; new-window buttons" width="21%">
+
 - Arrow keys or hovering preview a window live in the real terminal; Enter or click commits, Esc puts everything back.
 - Type-ahead search; drag to reorder; drag a window onto a session tab to link it there.
 - Hover × kills a window, or unlinks it if it lives in other sessions too. A slow kill shows a "killing…" progress bar.
 - Double-click renames windows and sessions inline. Pasting a path keeps just the file name (`docs/plan-portable-deps.md` → `plan-portable-deps`).
 - "+" creates a session or window. A session can offer **several kinds of new window**, one captioned "+" per kind — e.g. `+ shell`, `+ secure` and `+ claude` for a host prompt, a container shell and a new agent. With no menu configured there is a single "+".
 
-  <img src="screenshots/sidebar-newcmds.jpg" alt="A session with three kinds of new window — + shell, + secure and + claude — the hovered one showing its × and the +… row for adding another" width="21%">
-
   - The command is typed into a normal shell, so Ctrl-C leaves you at the prompt, up-arrow reruns it, and the window outlives it.
   - Double-click a "+" to edit its command, hover for the full command, × removes it, `+…` adds one.
   - The menu lives on the tmux session (`@wt_newcmds`, JSON): shared by every browser, survives reloads and restarts, and scriptable.
   - A session made with "+" inherits its parent's menu and its name with an index (`editors` → `editors (1)`).
+
+<img src="screenshots/sidebar-newcmds.jpg" alt="A session with three kinds of new window — + shell, + secure and + claude — the hovered one showing its × and the +… row for adding another" width="21%">
+
 - Session and window order persists.
 
 ### Toolbar and Recent Tabs
@@ -154,7 +156,8 @@ Keep an eye on specific windows while you work in others, and jump to them quick
 - **Drag tiles to arrange the bar.** It keeps your order and never reshuffles; dropping a corner box onto the bar docks it at that spot. The order is shared state, so it survives reloads and every browser sees it.
 - Dock the bar to any edge with its buttons. **Drag its inner edge to resize** — tiles grow with it, so you can read a window without opening it; double-click resets. Top/bottom and left/right sizes are remembered separately.
 
-  ![Preview bar resize replayed: dragging the docked bar's inner edge up makes its tiles bigger, dragging it back shrinks them, and a double-click resets the size](screenshots/preview-bar-resize.gif)
+![Preview bar resize replayed: dragging the docked bar's inner edge up makes its tiles bigger, dragging it back shrinks them, and a double-click resets the size](screenshots/preview-bar-resize.gif)
+
 - A previewed window leaves the [recent tabs](#toolbar-and-recent-tabs) while it's here, and returns to its old slot when the preview closes or hides.
 
 ### Hover Previews
@@ -176,7 +179,8 @@ Keep an eye on specific windows while you work in others, and jump to them quick
   - By default it's the time since the window last printed. A hook that also sets `@wt_working_since` (Unix seconds of the last change) makes it the time in the current state.
   - With both available, click the badge to switch; hover to see which is shown.
 
-  ![The recents strip with a duration beside each stoplight: htop amber for 3m, build green for 7m, editor green for 1h35m, server in background-green for 18m, tests red for 42m](screenshots/stoplight-duration.jpg)
+![The recents strip with a duration beside each stoplight: htop amber for 3m, build green for 7m, editor green for 1h35m, server in background-green for 18m, tests red for 42m](screenshots/stoplight-duration.jpg)
+
 - When a window drops out of green while you're looking elsewhere, everything showing it flashes in the new color until you actually view it.
   - Alerts cover every window on the server, not just visible tabs.
 - A bash prompt-hook installer ships in the repo so ordinary shells paint their own light automatically (see below), or you can hook into your agent framework (like Claude).
@@ -191,7 +195,8 @@ Keep an eye on specific windows while you work in others, and jump to them quick
 - A new region auto-picks the most-recently-used window not already on screen; two regions never show the same window (occupied windows are greyed out in every switcher).
 - **Choose which region a window opens in.** In split view, hovering a recents tab shows one chip per region, drawn in the regions' proportions: point at one to preview there, click to send it, or drag the tab onto a region. Sending a window another region is showing makes them **trade**, so nothing goes blank.
 
-  ![The region picker: hovering the htop recents tab in a two-region split shows one chip per region, and pointing at the second chip previews htop in that region](screenshots/split-region-picker.jpg)
+![The region picker: hovering the htop recents tab in a two-region split shows one chip per region, and pointing at the second chip previews htop in that region](screenshots/split-region-picker.jpg)
+
 - Secondary regions switch sessions freely without dragging the primary or the console along; a split that gets synced onto a shared session self-heals.
 - Close the focused region with Ctrl+Alt+X (the primary region can't be closed).
 
