@@ -454,21 +454,20 @@ For agents and long-running TUIs that report their own status, two escape hatche
 
 An agent lifecycle integration is then just three writes: `1` when work starts, `2` from a "needs your input" hook, `0` when it goes idle or exits.
 
-## Quick Start (Sprite)
+## Quick Start
 
-Deploy webtmux as a service on [Sprite](https://sprites.app):
+Download the prebuilt binary for your platform from the
+[latest GitHub release](https://github.com/sparant/webtmux/releases/latest) and run it:
 
 ```bash
-sudo curl -fsSL https://github.com/sparant/webtmux/releases/latest/download/webtmux-linux-amd64 \
-  -o /usr/local/bin/webtmux && \
-  sudo chmod +x /usr/local/bin/webtmux && \
-  sprite-env services create webtmux \
-    --cmd /usr/local/bin/webtmux \
-    --args '-w,tmux,new-session,-A,-s,main' \
-    --http-port 8080
+curl -fsSL -o webtmux \
+  https://github.com/sparant/webtmux/releases/latest/download/webtmux-linux-amd64
+chmod +x webtmux
+./webtmux -a 127.0.0.1 -w tmux new-session -A -s main
 ```
 
-The binary comes from the latest [GitHub release](https://github.com/sparant/webtmux/releases) of this fork (`builds/` is untracked on `local-main`, so there is no raw-URL download). To build it yourself instead: clone the fork, check out `local-main` (the default branch), and run `make cross-compile` — the binary lands at `builds/webtmux-linux-amd64`.
+Then open <http://127.0.0.1:8080>. Other platforms, checksum verification and a
+full install walkthrough are under [Installation](#installation).
 
 ## Running webtmux on another machine — `webtmux-launch`
 
@@ -612,7 +611,7 @@ you source, not a binary. The repo is public, so downloading needs no token and 
 
 ```bash
 curl -fsSL -o webtmux \
-  https://github.com/sparant/webtmux/releases/download/v0.1.0/webtmux-linux-amd64
+  https://github.com/sparant/webtmux/releases/latest/download/webtmux-linux-amd64
 chmod +x webtmux
 ./webtmux -w tmux new-session -A -s main
 ```
@@ -628,19 +627,15 @@ One asset per platform, named `webtmux-<os>-<arch>`:
 | macOS (Apple Silicon) | `webtmux-darwin-arm64`  |
 | FreeBSD (x64)         | `webtmux-freebsd-amd64` |
 
-Swap `download/v0.1.0/` for `latest/download/` to always get the newest release —
-the same redirect `webtmux-launch --webtmux-version latest` follows:
-
-```bash
-curl -fsSL -o webtmux \
-  https://github.com/sparant/webtmux/releases/latest/download/webtmux-linux-amd64
-```
+`latest/download/` always redirects to the newest release — the same redirect
+`webtmux-launch --webtmux-version latest` follows. To pin a specific version, swap it
+for `download/<tag>/` (e.g. `download/v0.2.0/`).
 
 Each release also carries a `SHA256SUMS` asset covering every binary in it. It is
 a few hundred bytes, so verifying costs nothing:
 
 ```bash
-curl -fsSL -O https://github.com/sparant/webtmux/releases/download/v0.1.0/SHA256SUMS
+curl -fsSL -O https://github.com/sparant/webtmux/releases/latest/download/SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS      # want: webtmux-linux-amd64: OK
 ```
 
@@ -659,7 +654,7 @@ tmux -V || sudo apt-get install -y tmux        # or: brew install tmux
 
 # 2. Fetch the asset for this machine, verify it, install it on PATH.
 mkdir -p ~/.local/bin && cd "$(mktemp -d)"
-BASE=https://github.com/sparant/webtmux/releases/download/v0.1.0
+BASE=https://github.com/sparant/webtmux/releases/latest/download
 curl -fsSL -O $BASE/webtmux-linux-amd64        # match your os-arch from the table
 curl -fsSL -O $BASE/SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS
@@ -670,7 +665,7 @@ case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *)
   echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc; export PATH="$HOME/.local/bin:$PATH";;
 esac
 
-# 4. Confirm what you installed — a real release says v0.1.0, not dev.
+# 4. Confirm what you installed — a real release prints its version tag, not dev.
 webtmux --version
 
 # 5. First run, bound to loopback.
