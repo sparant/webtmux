@@ -13,6 +13,13 @@ if [ ! -d /tmp/pw/node_modules/playwright ]; then
 fi
 
 chmod +x /src/screenshots/harness/*.sh /src/webtmux-test
+
+# Start tmux and webtmux from an ordinary working directory, as a user would. A
+# `docker exec` lands in /, and the save allowlist includes the server's cwd and
+# each pane's directory — so with both at / every path is "allowed" and
+# verify-guards' confinement checks cannot fail. (The npm install above used to
+# leave us in /tmp/pw by accident, which is why only a FIRST run passed.)
+mkdir -p /root/work && cd /root/work
 bash /src/screenshots/harness/boot-tmux.sh
 
 pkill -f webtmux-test 2>/dev/null || true
