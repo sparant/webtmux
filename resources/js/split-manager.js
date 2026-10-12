@@ -2388,6 +2388,21 @@ export class SplitManager {
     if (this.focusedUnit && !this.focusedUnit.primary) this.removeUnit(this.focusedUnit);
   }
 
+  // Is the keyboard somewhere that owns Escape/Enter itself — the sidebar or the
+  // copy-buffer panel (each runs its own keyboard browse), or a text field? A toolbar
+  // or preview-tile BUTTON that merely kept focus after a click does not count, or a
+  // click on ⛁ earlier would quietly disable the preview's keys. Focus inside a shadow
+  // root reads as its host, so walk down to the real element.
+  _keyboardInPanel() {
+    let el = document.activeElement;
+    const hosts = [];
+    while (el?.shadowRoot?.activeElement) { hosts.push(el.tagName); el = el.shadowRoot.activeElement; }
+    if (!el || el === document.body) return false;
+    if (el.classList?.contains('xterm-helper-textarea')) return false;
+    if (['WEBTMUX-SIDEBAR', 'WEBTMUX-COPY-SIDEBAR'].some((t) => t === el.tagName || hosts.includes(t))) return true;
+    return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable;
+  }
+
   // Ctrl+Alt+O (tmux `o`): focus the next region, wrapping. dir = -1 walks back.
   focusNextRegion(dir = +1) {
     const n = this.units.length;
@@ -2592,6 +2607,20 @@ export class SplitManager {
       if (this.sidebar?._confirm?.open || this.copySidebar?._confirm?.open) return;
       if (this.shortcuts?.open && ev.code !== 'Slash') return;
       if (this.expose?.open && ev.code !== 'KeyF') return;
+      // A hover preview on screen answers Escape (put the region back) and Enter (switch
+      // to that window) wherever it came from — a recents tab, a preview tile, a region
+      // chip — the way the sidebar's browse always did. Only while one is actually drawn,
+      // so an Enter at the prompt is never taken from the terminal, and not while the
+      // keyboard is in a panel or a field: the sidebar runs its own browse (its Escape
+      // also closes it) and a text field's Enter is its own.
+      if ((ev.key === 'Escape' || ev.key === 'Enter') && !ev.ctrlKey && !ev.altKey && !ev.metaKey
+          && !ev.shiftKey && this.hover.activeUnit && !this._keyboardInPanel()) {
+        if (ev.key === 'Escape') this.hover.cancel();
+        else this.hover.commit();
+        ev.preventDefault();
+        ev.stopPropagation();
+        return;
+      }
       // New window in the focused pane's session: Command+Option+C (Mac) OR
       // Ctrl+Option+C. Handled BEFORE the ⌃⌥-only guard below so the Cmd variant
       // (metaKey, no ctrlKey) is caught too, and swallowed so xterm never sees it

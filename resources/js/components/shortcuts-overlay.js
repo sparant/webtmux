@@ -62,6 +62,13 @@ const GROUPS = [
     ],
   },
   {
+    title: 'Hover preview (pointing at a recents tab, preview tile or region chip)',
+    rows: [
+      { keys: ['⏎'], desc: 'Switch to the window being previewed (same as clicking)' },
+      { keys: ['Esc'], desc: 'Put the region back the way it was (same as moving the pointer away)' },
+    ],
+  },
+  {
     title: 'Copy buffers (while the panel is focused)',
     rows: [
       { keys: ['↑'], desc: 'Focus the previous buffer — it goes on the clipboard as you land on it' },
