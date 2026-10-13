@@ -331,7 +331,7 @@ The file you want is usually on the tmux machine — a build artifact, a log, a 
 ![The shortcuts overlay (Ctrl+Alt+/): every global chord with modifier labels matching your OS](screenshots/keyboard-shortcuts.jpg)
 
 - A shortcuts overlay (Ctrl+Alt+/) lists every hotkey with modifier labels matching your OS (⌃⌥ on Mac).
-- **Hold Ctrl+Alt (⌃⌥) for a moment with no other key** and a help overlay dims the terminal and points at every part of the screen with a note and its keys. Each area starts as one outline; move the pointer toward it and it opens into a note per control (a recents tab's stoplight, age, ×, drag…). It follows whatever is on screen — Exposé, the sidebar, the preview bar, split regions — keys and clicks keep working while it is up, and letting go hides it. A browser's first connection shows it unasked, until Ctrl+Alt is tapped.
+- **Hold Ctrl+Alt (⌃⌥) for a moment with no other key** and a help overlay dims the terminal and points at every part of the screen with a note and its keys. Each area starts as one outline; move the pointer toward it and it opens into a note per control (a recents tab's stoplight, age, ×, drag…). It follows whatever is on screen — Exposé, the sidebar, the preview bar, split regions — keys and clicks keep working while it is up, and letting go hides it. Ctrl+Alt+? brings it up without holding (tap Ctrl+Alt to dismiss), and each new tab's first connection shows it that way unasked.
 - Global Ctrl+Alt chords use the same key tmux uses after its `Ctrl+b` prefix, wherever tmux has one:
 
   | Keys (after Ctrl+Alt) | Does | tmux |

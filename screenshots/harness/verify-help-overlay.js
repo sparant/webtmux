@@ -1,8 +1,8 @@
 // Verification driver for the hold-⌃⌥ help overlay (components/help-overlay.js).
 //
-//   1. A browser's first connection shows it unasked ('sticky'), with the intro.
+//   1. A tab's first connection shows it unasked ('sticky'), with the intro.
 //   2. Tapping the chord dismisses it, and a reload does not bring it back.
-//   3. Holding the chord alone for 1.5 s shows it ('hold'); letting go hides it.
+//   3. Holding the chord alone for 1 s shows it ('hold'); letting go hides it.
 //   4. A key pressed during the hold cancels the reveal (that was a hotkey).
 //   5. Pointing near the recents strip opens it into a note per part of a tab.
 //   6. Hotkeys still work while it is up — ⌃⌥F opens Exposé — and the notes follow
@@ -14,7 +14,8 @@
 // Screenshots land in screenshots/help-*.png for a human look.
 const { chromium } = require('playwright');
 
-const URL = 'http://localhost:8090/';
+// '#wt-help': automation skips the first-run overlay unless asked (help-overlay.js).
+const URL = 'http://localhost:8090/#wt-help';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
 function check(name, ok, detail = '') {
@@ -30,8 +31,12 @@ const help = () => page.evaluate(() => {
     return { key: n.dataset.key, unplaced: n.classList.contains('unplaced'), l: r.left, t: r.top, r: r.right, b: r.bottom };
   });
   const placed = Object.fromEntries([...el._placed.entries()].map(([k, v]) => [k, v.box]));
+  const arrows = [...el._placed.entries()].filter(([, v]) => v.arrow).map(([k, v]) => ({ id: k, ...v.arrow }));
+  const boxes = [...el._placed.entries()].map(([k, v]) => ({ id: k, ...v.box }));
+  const hot = [...el.shadowRoot.querySelectorAll('.note.hot')].map((n) => ({ key: n.dataset.key, tip: n.querySelector('.tip')?.textContent || '' }));
+  const badges = el._badges ? el._badges.size : 0;
   const sizes = Object.fromEntries(el._sizes.entries());
-  return { mode: el.mode, notes, vw: innerWidth, vh: innerHeight, placed, sizes };
+  return { mode: el.mode, notes, vw: innerWidth, vh: innerHeight, placed, sizes, arrows, boxes, hot, badges };
 });
 const ids = (h) => h.notes.map((n) => n.key.split('|')[0]);
 function geometryOk(h) {
@@ -41,6 +46,28 @@ function geometryOk(h) {
     for (const b of placed.slice(i + 1)) {
       if (a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b) return `${a.key} overlaps ${b.key} dom=${JSON.stringify([a, b])} placed=${JSON.stringify([h.placed[a.key.split('|')[0]], h.placed[b.key.split('|')[0]]])} sizes=${JSON.stringify([h.sizes[a.key], h.sizes[b.key]])}`;
     }
+  }
+  return '';
+}
+// No two arrows cross, and no arrow runs under a note other than its own.
+function arrowsOk(h) {
+  const cr = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const near = (a, b) => Math.abs(a.x - b.x) < 1 && Math.abs(a.y - b.y) < 1;
+  const segX = (p1, p2, q1, q2) => {
+    if (near(p1, q1) || near(p1, q2) || near(p2, q1) || near(p2, q2)) return false;
+    const d1 = cr(q1, q2, p1), d2 = cr(q1, q2, p2), d3 = cr(p1, p2, q1), d4 = cr(p1, p2, q2);
+    return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+  };
+  const hitsBox = (p1, p2, b) => {
+    const R = { l: b.left + 1, t: b.top + 1, r: b.right - 1, b: b.bottom - 1 };
+    const inside = (p) => p.x > R.l && p.x < R.r && p.y > R.t && p.y < R.b;
+    if (inside(p1) || inside(p2)) return true;
+    const c = [{ x: R.l, y: R.t }, { x: R.r, y: R.t }, { x: R.r, y: R.b }, { x: R.l, y: R.b }];
+    return c.some((_, i) => segX(p1, p2, c[i], c[(i + 1) % 4]));
+  };
+  for (const [i, a] of h.arrows.entries()) {
+    for (const b of h.arrows.slice(i + 1)) if (segX(a.from, a.to, b.from, b.to)) return `arrows ${a.id} and ${b.id} cross`;
+    for (const b of h.boxes) if (b.id !== a.id && hitsBox(a.from, a.to, b)) return `arrow ${a.id} runs under ${b.id}`;
   }
   return '';
 }
@@ -76,6 +103,12 @@ setTimeout(() => { console.log('FAIL  driver timed out'); process.exit(3); }, 48
   check('tapping the chord dismisses first-run', h.mode === null, `mode=${h.mode}`);
   await page.reload(); await sleep(3500);
   check('reload does not show it again', (await help()).mode === null);
+  // …but a NEW tab is a first connection of its own.
+  const tab2 = await ctx.newPage();
+  await tab2.goto(URL.replace('http://', 'http://wt:wt@')); await sleep(3500);
+  const m2 = await tab2.evaluate(() => document.querySelector('webtmux-help').mode);
+  check('a new tab shows it again', m2 === 'sticky', `mode=${m2}`);
+  await tab2.close();
 
   // Visit a few windows so the recents strip has tabs to explain.
   for (let i = 0; i < 3; i++) {
@@ -91,11 +124,11 @@ setTimeout(() => { console.log('FAIL  driver timed out'); process.exit(3); }, 48
 
   // Hold to reveal.
   await page.mouse.move(700, 600);
-  await holdChord(); await sleep(800);
-  check('not yet after 0.8 s', (await help()).mode === null);
-  await sleep(1100);
+  await holdChord(); await sleep(600);
+  check('not yet after 0.6 s', (await help()).mode === null);
+  await sleep(700);
   h = await help();
-  check('hold 1.9 s shows it', h.mode === 'hold', `mode=${h.mode}`);
+  check('hold 1.3 s shows it', h.mode === 'hold', `mode=${h.mode}`);
   check('hold geometry clean', !geometryOk(h), geometryOk(h));
   await page.screenshot({ path: '/src/screenshots/help-hold.png' });
 
@@ -108,8 +141,9 @@ setTimeout(() => { console.log('FAIL  driver timed out'); process.exit(3); }, 48
   h = await help();
   const det = ids(h).filter((x) => x.startsWith('recents.'));
   check('near the strip: tab parts explained', det.includes('recents.tab') && det.includes('recents.light'), det.join(','));
-  check('other sections went compact', h.notes.some((n) => n.key.startsWith('tools|') && n.key.endsWith('|1|hold')));
+  check('other sections are hidden while one is open', !ids(h).includes('tools') && !ids(h).includes('sidebar') && !ids(h).includes('term'), ids(h).join(','));
   check('recents detail geometry clean', !geometryOk(h), geometryOk(h));
+  check('recents arrows never cross', !arrowsOk(h), arrowsOk(h));
   await page.screenshot({ path: '/src/screenshots/help-recents.png' });
 
   // Near the right-hand tools.
@@ -121,6 +155,13 @@ setTimeout(() => { console.log('FAIL  driver timed out'); process.exit(3); }, 48
   h = await help();
   check('near the tools: each button explained', ids(h).filter((x) => x.startsWith('tools.')).length >= 6, ids(h).filter((x) => x.startsWith('tools.')).join(','));
   check('tools geometry clean', !geometryOk(h), geometryOk(h));
+  check('tools arrows never cross', !arrowsOk(h), `${arrowsOk(h)} (badges ${h.badges})`);
+  // Resting on a button: its note goes hot and carries the app's own hint.
+  await sleep(900);
+  h = await help();
+  check('hovered control: its note is emphasised with the tooltip text', h.hot.length === 1 && h.hot[0].tip.length > 20, JSON.stringify(h.hot).slice(0, 160));
+  check('hot geometry clean', !geometryOk(h) && !arrowsOk(h), geometryOk(h) + arrowsOk(h));
+  await page.screenshot({ path: '/src/screenshots/help-hot.png' });
   await page.screenshot({ path: '/src/screenshots/help-tools.png' });
 
   // Hotkey while up: Exposé.
@@ -152,6 +193,7 @@ setTimeout(() => { console.log('FAIL  driver timed out'); process.exit(3); }, 48
     h = await help();
     check('near the sidebar: its parts explained', ids(h).filter((x) => x.startsWith('sb.')).length >= 4, ids(h).filter((x) => x.startsWith('sb.')).join(','));
     check('sidebar geometry clean', !geometryOk(h), geometryOk(h));
+    check('sidebar arrows never cross', !arrowsOk(h), `${arrowsOk(h)} (badges ${h.badges})`);
     await page.screenshot({ path: '/src/screenshots/help-sidebar.png' });
   }
 
@@ -197,10 +239,19 @@ setTimeout(() => { console.log('FAIL  driver timed out'); process.exit(3); }, 48
   check('letting go hides it', (await help()).mode === null);
 
   // A key during the hold cancels.
-  await holdChord(); await sleep(400); await page.keyboard.press('b'); await sleep(1600);
+  await holdChord(); await sleep(300); await page.keyboard.press('b'); await sleep(1300);
   check('a hotkey during the hold cancels the reveal', (await help()).mode === null);
   await releaseChord();
   await page.keyboard.press('Control+Alt+b');
+
+  // ⌃⌥? : up without holding, tapped away.
+  await page.keyboard.press('Control+Alt+Shift+Slash'); await sleep(500);
+  check('⌃⌥? shows it without holding', (await help()).mode === 'sticky');
+  await sleep(1200);
+  check('…and it stays after the keys are let go', (await help()).mode === 'sticky');
+  await holdChord(); await sleep(100); await releaseChord(); await sleep(300);
+  check('a tap of ⌃⌥ dismisses it', (await help()).mode === null);
+  check('the shortcuts list did not open with it', !(await page.evaluate(() => window.splitManager.shortcuts.open)));
 
   check('no page errors', errors.length === 0, errors.join(' | '));
   await browser.close();

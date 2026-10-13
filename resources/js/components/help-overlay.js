@@ -21,7 +21,7 @@
 // without measuring is how notes end up on top of each other.
 import { LitElement, html, svg, css } from 'lit';
 import { HelpHold } from '../help-hold.js';
-import { placeCallouts, nearestSection, union } from '../help-layout.js';
+import { placeBestOrder, nearestSection, union, facing } from '../help-layout.js';
 import { helpSections } from '../help-spots.js';
 import { MOD_CHIPS, MOD_LABEL } from '../os.js';
 
@@ -29,11 +29,14 @@ const SEEN_KEY = 'webtmux-help-seen';
 const REFRESH_MS = 250;          // re-read the UI this often while up (it changes under us)
 const OUTLINE_PAD = 3;
 
+// Seen-ness is per TAB (sessionStorage): every tab's first connection shows the
+// help — closing a tab and opening webtmux again is a fresh start — while a
+// reload or reconnect of the same tab does not nag again.
 function seenBefore() {
-  try { return localStorage.getItem(SEEN_KEY) === '1'; } catch (e) { return false; }
+  try { return sessionStorage.getItem(SEEN_KEY) === '1'; } catch (e) { return false; }
 }
 function markSeen() {
-  try { localStorage.setItem(SEEN_KEY, '1'); } catch (e) { /* private mode: shown again next time */ }
+  try { sessionStorage.setItem(SEEN_KEY, '1'); } catch (e) { /* storage blocked: shown again next time */ }
 }
 
 // A menu's click-away backdrop covers the whole screen but draws nothing; looking
@@ -102,6 +105,28 @@ function spotRect(spot, m) {
   return pick(spot.find) || pick(spot.alt);
 }
 
+// What counts as "a control" when the pointer is over something: the nearest of
+// these from the element under the pointer, upward. Whole panels are not controls.
+const CONTROL = [
+  'button', 'a[href]', 'input', 'select', 'label', '[role=button]', '[role=img]',
+  '.tab', '.rtab', '.work', '.stoplight', '.work-age', '.close', '.kill', '.window-tab',
+  '.session-tab', '.ptile', '.tile', '.buf', '.clip', '.bbtn', '.grip', '.twisty',
+  '.oflow', '.divider', '.filter-chip', '.seg',
+].join(',');
+function controlAt(x, y) {
+  let n = deepHit(x, y);
+  for (let i = 0; n && i < 8; i++, n = n.parentNode || n.host) {
+    if (n.nodeType === 1 && n.matches?.(CONTROL)) {
+      const r = n.getBoundingClientRect();
+      if (r.width * r.height > window.innerWidth * window.innerHeight * 0.25) return null;
+      return n;
+    }
+  }
+  return null;
+}
+const area = (r) => (r.right - r.left) * (r.bottom - r.top);
+const contains = (o, i) => o.left <= i.left + 1 && o.top <= i.top + 1 && o.right >= i.right - 1 && o.bottom >= i.bottom - 1;
+
 const pad = (r, p) => ({ left: r.left - p, top: r.top - p, right: r.right + p, bottom: r.bottom + p });
 
 class WebtmuxHelp extends LitElement {
@@ -127,6 +152,29 @@ class WebtmuxHelp extends LitElement {
     .outline.open { stroke-width: 2; stroke-dasharray: none; }
     .arrow { stroke: var(--hl); stroke-width: 1.5; fill: none; }
     .head { fill: var(--hl); }
+    .arrow.hot { stroke: #fff3d1; stroke-width: 2.5; }
+    .outline.hotline { stroke: #fff3d1; stroke-width: 3; stroke-dasharray: none; }
+    .tbadge circle { fill: var(--hl); }
+    .tbadge text { fill: #1a1a2e; font: 700 10px -apple-system, "Segoe UI", sans-serif; }
+    .badge {
+      display: inline-block; min-width: 16px; height: 16px; margin-right: 6px; border-radius: 8px;
+      background: var(--hl); color: #1a1a2e; font-size: 10px; font-weight: 700;
+      text-align: center; line-height: 16px; vertical-align: 1px;
+    }
+    /* The note for the control under the pointer: heavier, brighter, wider — and
+       carrying the app's own hover hint, which this layer otherwise hides. */
+    .note.hot {
+      width: 320px; border: 2px solid #fff3d1; background: #111a33;
+      box-shadow: 0 0 0 3px rgba(255, 212, 121, 0.25), 0 8px 24px rgba(0, 0, 0, 0.6);
+      z-index: 2;
+    }
+    .note.hot .title { color: #fff3d1; font-size: 13.5px; }
+    .note.hot .text { color: #dfe6f5; }
+    .tip {
+      margin-top: 6px; padding-top: 6px; border-top: 1px solid #2c4f86;
+      color: #e8eefc; white-space: pre-line; overflow-wrap: anywhere;
+      font: 11.5px/1.45 Menlo, Monaco, "Courier New", monospace;
+    }
 
     .note {
       position: absolute;
@@ -221,10 +269,19 @@ class WebtmuxHelp extends LitElement {
     clearInterval(this._tick);
   }
 
-  // First connection from this browser: up until the chord is tapped.
+  // First connection of this tab: up until the chord is tapped.
   showFirstRun() {
     if (seenBefore()) return;
+    // A browser under automation (the screenshot/gif harness) would get it on
+    // every fresh context and photobomb each still; '#wt-help' asks for it anyway.
+    if (navigator.webdriver && !location.hash.includes('wt-help')) return;
     this.hold.showSticky();
+  }
+
+  // ⌃⌥?: the overlay without holding — the same first-run mode — or away again.
+  toggleSticky() {
+    if (this.mode) this.hold.hide();
+    else this.hold.showSticky();
   }
 
   _setMode(mode) {
@@ -282,17 +339,23 @@ class WebtmuxHelp extends LitElement {
     }
     for (const s of sections) {
       const isOpen = s.spot.id === openId;
+      // While one section is open the others are not drawn at all — no note, no
+      // outline, no cut-out: the screen is about the part the pointer asked about.
+      // They come back the moment the pointer moves away.
+      if (openId && !isOpen) continue;
       items.push({
         id: s.spot.id,
         kind: isOpen ? 'open' : (s.spot.inside ? 'inside' : 'section'),
         spot: s.spot,
         rect: s.rect,
         inside: !!s.spot.inside,
-        // While one section is open the rest shrink to their titles: the room
-        // goes to the part of the screen the user is asking about.
-        compact: !!openId && !isOpen,
+        compact: false,
       });
     }
+    this._hoverExtras(items, m);
+    this._openGroup = open
+      ? { ids: items.filter((it) => it.kind === 'detail').map((it) => it.id), side: facing(open.rect, { width: window.innerWidth, height: window.innerHeight }) }
+      : null;
     // The open section's own note goes right after its details so it is placed
     // near them; inside notes (the terminal) take whatever room is left.
     items.sort((a, b) => rank(a) - rank(b));
@@ -305,16 +368,66 @@ class WebtmuxHelp extends LitElement {
     this._layout();
   }
 
+  // The control under the pointer is emphasised: its note (if it has one of its
+  // own) is drawn heavier and grows the text of the app's own hover hint — which
+  // the overlay would otherwise hide, since every component's hint renders BELOW
+  // this layer. A control with no note of its own gets one, made of that hint.
+  _hoverExtras(items, m) {
+    this._hot = null;
+    const p = this._pointer;
+    const el = p && controlAt(p.x, p.y);
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const hov = { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+    let tip = '';
+    for (const host of [m.toolbar, m.sidebar, m.copySidebar, m.expose, m.pip]) {
+      const t = (host?.renderRoot || host?.shadowRoot)?.querySelector('.wt-tip.show');
+      if (t && t.textContent.trim()) { tip = t.textContent.trim(); break; }
+    }
+    if (!tip) tip = (el.getAttribute('title') || '').trim();
+    this._hot = { rect: hov };
+    // Its note: the smallest one about (roughly) this very control — not a whole
+    // section that merely contains it.
+    let hot = null;
+    for (const it of items) {
+      if (it.kind === 'intro' || it.inside || !contains(it.rect, hov)) continue;
+      if (area(it.rect) > Math.max(area(hov) * 4, 2500)) continue;
+      if (!hot || area(it.rect) < area(hot.rect)) hot = it;
+    }
+    if (hot) {
+      hot.hot = true;
+      hot.compact = false;
+      hot.tip = tip && tip !== hot.spot?.text ? tip : '';
+      return;
+    }
+    const label = (el.getAttribute('aria-label') || '').trim();
+    if (!tip && !label) return;
+    items.push({ id: 'hover', kind: 'hover', hot: true, rect: hov, tip, label });
+  }
+
   _layout() {
     this._measure();
     const vp = { width: window.innerWidth, height: window.innerHeight };
     const obstacles = this._items.filter((it) => !it.inside).map((it) => pad(it.rect, OUTLINE_PAD));
     const ready = this._items.filter((it) => this._sizes.has(this._sizeKey(it)));
-    const placed = placeCallouts(ready.map((it) => ({
+    const input = ready.map((it) => ({
       id: it.id, target: it.rect, inside: it.inside, size: this._sizes.get(this._sizeKey(it)),
-    })), obstacles, vp);
+    }));
+    // Placing is the expensive part (every candidate is checked against every
+    // arrow), and the UI usually has not moved since the last refresh.
+    const inKey = JSON.stringify([vp, this._openGroup, input.map((i) => [i.id, i.inside,
+      Math.round(i.target.left), Math.round(i.target.top), Math.round(i.target.right), Math.round(i.target.bottom),
+      i.size.width, i.size.height])]);
+    const placed = inKey === this._inKey ? this._placedRaw : (this._openGroup
+      ? placeBestOrder(input, this._openGroup.ids, this._openGroup.side, obstacles, vp)
+      : placeBestOrder(input, [], 'below', obstacles, vp));
+    this._inKey = inKey;
+    this._placedRaw = placed;
+    // Notes that had to give up their arrow are paired with their target by number.
+    this._badges = placed.numbers || new Map();
     const sig = JSON.stringify([...placed.entries()].map(([k, v]) => [k, Math.round(v.box.left), Math.round(v.box.top)]))
-      + JSON.stringify(this._items.map((it) => [it.id, it.kind, it.compact, Math.round(it.rect.left), Math.round(it.rect.top), Math.round(it.rect.right), Math.round(it.rect.bottom)]));
+      + JSON.stringify(this._hot?.rect || null)
+      + JSON.stringify(this._items.map((it) => [it.id, it.kind, it.compact, it.hot, it.tip, Math.round(it.rect.left), Math.round(it.rect.top), Math.round(it.rect.right), Math.round(it.rect.bottom)]));
     // Nowhere free for a note: shrink it rather than let it cover another (it
     // is re-measured on the next render, and placed again).
     for (const it of this._items) {
@@ -329,7 +442,7 @@ class WebtmuxHelp extends LitElement {
     this.requestUpdate();
   }
 
-  _sizeKey(it) { return `${it.id}|${it.kind}|${it.compact ? 1 : 0}|${this.mode}`; }
+  _sizeKey(it) { return `${it.id}|${it.kind}|${it.compact ? 1 : 0}|${this.mode}|${it.hot ? 1 : 0}|${(it.tip || '').length}`; }
 
   // A size change re-places on the next frame, never synchronously: lit chains
   // updates as microtasks, so a layout that kept changing sizes would otherwise
@@ -365,17 +478,25 @@ class WebtmuxHelp extends LitElement {
     const p = this._placed.get(it.id);
     const key = this._sizeKey(it);
     const pos = p ? `left:${p.box.left}px;top:${p.box.top}px` : '';
-    const cls = `note ${it.kind === 'detail' ? 'detail' : ''} ${it.compact ? 'compact' : ''} ${it.kind === 'intro' ? 'intro' : ''} ${p ? '' : 'unplaced'}`;
+    const cls = `note ${it.kind === 'detail' ? 'detail' : ''} ${it.compact ? 'compact' : ''} ${it.kind === 'intro' ? 'intro' : ''} ${it.hot ? 'hot' : ''} ${p ? '' : 'unplaced'}`;
     if (it.kind === 'intro') return this._intro(cls, key, pos, it.compact);
+    const badge = this._badges?.get(it.id);
+    const num = badge ? html`<span class="badge">${badge}</span>` : '';
+    const tip = it.tip ? html`<div class="tip">${it.tip}</div>` : '';
+    if (it.kind === 'hover') {
+      return html`<div class=${cls} data-key=${key} style=${pos}>
+        ${it.label ? html`<div class="title">${it.label}</div>` : ''}${tip}</div>`;
+    }
     const s = it.spot;
     if (it.compact) {
       const tail = s.brief || (s.details?.length || s.inside ? 'point here' : '');
-      return html`<div class=${cls} data-key=${key} style=${pos}><span class="title">${s.title}</span>${tail ? html`<span class="more"> · ${tail}</span>` : ''}</div>`;
+      return html`<div class=${cls} data-key=${key} style=${pos}>${num}<span class="title">${s.title}</span>${tail ? html`<span class="more"> · ${tail}</span>` : ''}</div>`;
     }
     return html`<div class=${cls} data-key=${key} style=${pos}>
-      <div class="title">${s.title}</div>
+      <div class="title">${num}${s.title}</div>
       ${s.text ? html`<div class="text">${s.text}</div>` : ''}
-      ${it.kind === 'section' && s.details?.length ? '' : this._keys(s.keys)}
+      ${it.kind === 'section' && s.details?.length && !it.hot ? '' : this._keys(s.keys)}
+      ${tip}
       ${s.details?.length && it.kind !== 'open' ? html`<div class="more">Move the pointer here for each part.</div>` : ''}
     </div>`;
   }
@@ -393,7 +514,7 @@ class WebtmuxHelp extends LitElement {
         : html`<p>Showing while ${mods} is held. Let go to hide.</p>`}
       <p>Move the pointer toward any outlined part of the screen to see what each piece does and its keys.</p>
       <p>Keys and clicks still work while this is up — try ${MOD_CHIPS.map((c) => html`<kbd>${c}</kbd>`)}<kbd>F</kbd>.</p>
-      <p>Every shortcut, listed: ${MOD_CHIPS.map((c) => html`<kbd>${c}</kbd>`)}<kbd>/</kbd></p>
+      <p>Every shortcut, listed: ${MOD_CHIPS.map((c) => html`<kbd>${c}</kbd>`)}<kbd>/</kbd> · this help without holding: ${MOD_CHIPS.map((c) => html`<kbd>${c}</kbd>`)}<kbd>?</kbd></p>
       ${sticky ? html`<div class="dismiss">Tap ${mods} to dismiss <button @click=${() => this._dismiss()} aria-label="Dismiss help (or tap ${MOD_LABEL})">Got it</button></div>` : ''}
     </div>`;
   }
@@ -402,7 +523,11 @@ class WebtmuxHelp extends LitElement {
     const vw = window.innerWidth, vh = window.innerHeight;
     const holes = this._items.filter((it) => it.kind !== 'intro' && !it.inside).map((it) => pad(it.rect, OUTLINE_PAD));
     const outlines = this._items.filter((it) => it.kind !== 'intro' && !it.inside);
-    const arrows = this._items.map((it) => this._placed.get(it.id)?.arrow).filter(Boolean);
+    const arrows = this._items.map((it) => ({ a: this._placed.get(it.id)?.arrow, hot: it.hot })).filter((x) => x.a);
+    const hot = this._hot ? pad(this._hot.rect, OUTLINE_PAD + 1) : null;
+    if (hot) holes.push(hot);
+    const badges = this._items.filter((it) => this._badges?.has(it.id) && this._placed.has(it.id))
+      .map((it) => ({ n: this._badges.get(it.id), x: it.rect.left - 2, y: it.rect.top - 2 }));
     return html`<svg class="layer" viewBox="0 0 ${vw} ${vh}" preserveAspectRatio="none">
       ${svg`
         <defs>
@@ -416,7 +541,9 @@ class WebtmuxHelp extends LitElement {
         </defs>
         <rect class="dim" x="0" y="0" width=${vw} height=${vh} mask="url(#cut)"></rect>
         ${outlines.map((it) => { const r = pad(it.rect, OUTLINE_PAD); return svg`<rect class="outline ${it.kind === 'section' || it.kind === 'open' ? 'sec' : ''} ${it.kind === 'open' ? 'open' : ''}" x=${r.left} y=${r.top} width=${r.right - r.left} height=${r.bottom - r.top} rx="4"></rect>`; })}
-        ${arrows.map((a) => svg`<path class="arrow" d=${curve(a)} marker-end="url(#tip)"></path>`)}
+        ${arrows.map(({ a, hot: h }) => svg`<path class="arrow ${h ? 'hot' : ''}" d=${curve(a)} marker-end="url(#tip)"></path>`)}
+        ${hot ? svg`<rect class="outline hotline" x=${hot.left} y=${hot.top} width=${hot.right - hot.left} height=${hot.bottom - hot.top} rx="5"></rect>` : ''}
+        ${badges.map((b) => svg`<g class="tbadge"><circle cx=${b.x} cy=${b.y} r="8"></circle><text x=${b.x} y=${b.y + 3.5} text-anchor="middle">${b.n}</text></g>`)}
       `}
     </svg>`;
   }
@@ -430,6 +557,7 @@ class WebtmuxHelp extends LitElement {
 // Placement order: intro, the open section's details, the open section, the other
 // sections, then the notes that live inside the terminal.
 function rank(it) {
+  if (it.hot && it.kind !== 'intro') return 0.5;
   return { intro: 0, detail: 1, open: 2, section: 3, inside: 4 }[it.kind] ?? 5;
 }
 
