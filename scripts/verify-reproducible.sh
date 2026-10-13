@@ -36,7 +36,8 @@ git -C "$REPO" rev-parse --verify --quiet "$REF" >/dev/null || {
 # would be testing itself rather than the build.
 GO_VERSION="$(awk -F'= *' '/^GO_VERSION *=/{print $2; exit}' "$REPO/Makefile")"
 VERSION="$(git -C "$REPO" describe --tags "$REF" 2>/dev/null || echo dev)"
-COMMIT="$(git -C "$REPO" rev-parse --short "$REF")"
+# ^{commit}, as in the Makefile: an annotated tag's own id is not the commit.
+COMMIT="$(git -C "$REPO" rev-parse --short "$REF^{commit}")"
 BUILD_TIME="$(TZ=UTC0 git -C "$REPO" log -1 --format=%cd \
 	--date=format-local:'%Y-%m-%d_%H:%M:%S' "$REF")"
 

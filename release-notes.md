@@ -225,6 +225,9 @@ sha256sum --check --ignore-missing SHA256SUMS SHA256SUMS.launcher
 
 Reproducible from the tag, as since v0.2.0: `make release-from-commit REF=v0.3.0`,
 and `make verify-repro REF=v0.3.0` to prove it.
+The build id the binaries carry (the toolbar's hidden build chip, Ctrl+Alt+B) is
+now the tagged **commit**; v0.2.0's carried the id of its annotated tag object
+instead, which appears in no commit log.
 
 ## Upgrading from v0.2.0
 

@@ -48,7 +48,9 @@ BUILD_TIME ?= $(shell TZ=UTC0 git log -1 --format=%cd --date=format-local:'%Y-%m
 # the checkout: no --dirty (a ref cannot be dirty) and no dependence on which
 # branch or worktree happens to be checked out here.
 REF_VERSION = $(shell git describe --tags $(REF) 2>/dev/null || echo "dev")
-REF_COMMIT  = $(shell git rev-parse --short $(REF) 2>/dev/null || echo "unknown")
+# ^{commit}: for an annotated tag, plain rev-parse names the TAG OBJECT, not the
+# commit — v0.2.0 and the first v0.3.0 were stamped with the tag's id that way.
+REF_COMMIT  = $(shell git rev-parse --short '$(REF)^{commit}' 2>/dev/null || echo "unknown")
 REF_TIME    = $(shell TZ=UTC0 git log -1 --format=%cd --date=format-local:'%Y-%m-%d_%H:%M:%S' $(REF) 2>/dev/null || echo "unknown")
 
 # No -X main.GitCommit: package main has only Version (version.go), so that flag

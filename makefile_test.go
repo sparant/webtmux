@@ -117,3 +117,17 @@ func TestReleaseBuildsFromACommit(t *testing.T) {
 		}
 	}
 }
+
+// An annotated tag is an object of its own: `git rev-parse <tag>` names the TAG,
+// not the commit, so a commit stamp computed that way records an id that is in
+// no commit log. Both places that compute the release's commit stamp must peel
+// the ref to its commit. (v0.2.0 shipped stamped with its tag object's id.)
+func TestReleaseCommitStampPeelsTagsToTheCommit(t *testing.T) {
+	mk := read(t, "Makefile")
+	if !strings.Contains(mk, "REF_COMMIT  = $(shell git rev-parse --short '$(REF)^{commit}'") {
+		t.Error("REF_COMMIT must be rev-parse of $(REF)^{commit}, not of $(REF)")
+	}
+	if sh := read(t, "scripts/verify-reproducible.sh"); !strings.Contains(sh, `rev-parse --short "$REF^{commit}"`) {
+		t.Error("verify-reproducible.sh must stamp the same commit id the release build does")
+	}
+}
