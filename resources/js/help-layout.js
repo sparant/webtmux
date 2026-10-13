@@ -337,10 +337,15 @@ export function placeBestOrder(items, group, side, obstacles, viewport) {
   const numbers = new Map(fwd.map((it, i) => [it.id, i + 1]));
   // Laid out as a grid in number order when one fits beside the group; otherwise
   // each numbered note simply takes the nearest free spot.
-  const grid = legendGrid(fwd, side, obstacles, viewport);
+  // Whatever comes before the group (the intro card) keeps its spot — it is placed
+  // first in every layout, so it never moves — and the grid works around it.
+  const firstAt = items.findIndex((it) => inGroup.has(it.id));
+  const lead = items.slice(0, firstAt);
+  const leadBoxes = [...placeCallouts(lead, obstacles, viewport).values()].map((p) => p.box);
+  const grid = legendGrid(fwd, side, [...obstacles, ...leadBoxes], viewport);
   const legend = grid
-    ? placeCallouts([...fwd.map((it, i) => ({ ...it, badge: true, at: grid[i] })),
-      ...items.filter((it) => !inGroup.has(it.id))], obstacles, viewport)
+    ? placeCallouts([...lead, ...fwd.map((it, i) => ({ ...it, badge: true, at: grid[i] })),
+      ...items.slice(firstAt).filter((it) => !inGroup.has(it.id))], obstacles, viewport)
     : placeCallouts(build(fwd.map((it) => ({ ...it, badge: true }))), obstacles, viewport);
   legend.numbers = numbers;
   return legend;

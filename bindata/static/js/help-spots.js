@@ -192,7 +192,7 @@ const EXPOSE = [
   {
     id: 'ex.head',
     title: 'Exposé controls',
-    text: 'Filter, status, search scope, grid size and sort. Point here for each.',
+    text: 'Filter, status, search scope, grid size and sort.',
     keys: [C('F', 'close'), R('a–z', 'filter'), R('Esc', 'clear, then close')],
     find: ex('.head'),
     details: [
@@ -206,7 +206,7 @@ const EXPOSE = [
   {
     id: 'ex.grid',
     title: 'Every window',
-    text: 'Live tiles of every window in every session. Point here for a tile’s parts.',
+    text: 'Live tiles of every window in every session. Point at the first tile for its parts.',
     keys: [R(['←', '→', '↑', '↓'], 'move'), R('⏎', 'switch'), R('click', 'switch')],
     find: ex('.grid'),
     // The grid IS the screen while Exposé is up: its note sits on the (dimmed)

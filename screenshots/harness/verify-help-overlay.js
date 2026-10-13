@@ -145,6 +145,8 @@ setTimeout(() => { console.log('FAIL  driver timed out'); process.exit(3); }, 48
   check('recents detail geometry clean', !geometryOk(h), geometryOk(h));
   check('recents arrows never cross', !arrowsOk(h), arrowsOk(h));
   await page.screenshot({ path: '/src/screenshots/help-recents.png' });
+  // The README's picture of the overlay in action (kept: screenshots/help-overlay.jpg).
+  await page.screenshot({ path: '/src/screenshots/help-overlay.jpg', type: 'jpeg', quality: 90 });
 
   // Near the right-hand tools.
   const toolBox = await page.evaluate(() => {
@@ -171,7 +173,15 @@ setTimeout(() => { console.log('FAIL  driver timed out'); process.exit(3); }, 48
   check('⌃⌥F still opens Exposé under the overlay', exOpen);
   check('overlay stays up through the hotkey', h.mode === 'hold');
   check('Exposé controls explained', ids(h).includes('ex.head') && !ids(h).includes('recents'), ids(h).join(','));
+  // Pointer out over the tiles (not the first one): the header must still be
+  // outlined and invite a look, the way the toolbar does on the main screen.
+  await page.mouse.move(900, 600, { steps: 4 }); await sleep(600);
+  h = await help();
+  check('Exposé header invites a look while the pointer is on the tiles', ids(h).includes('ex.head') && !ids(h).some((x) => ['ex.show', 'ex.sort'].includes(x)), ids(h).join(','));
+  await page.screenshot({ path: '/src/screenshots/help-expose-idle.png' });
   await page.mouse.move(500, 60, { steps: 4 }); await sleep(500);
+  h = await help();
+  check('pointing at the header opens it', ids(h).includes('ex.show') && ids(h).includes('ex.sort'), ids(h).join(','));
   await page.screenshot({ path: '/src/screenshots/help-expose.png' });
   await page.keyboard.press('f'); await sleep(600);
 
@@ -252,6 +262,40 @@ setTimeout(() => { console.log('FAIL  driver timed out'); process.exit(3); }, 48
   await holdChord(); await sleep(100); await releaseChord(); await sleep(300);
   check('a tap of ⌃⌥ dismisses it', (await help()).mode === null);
   check('the shortcuts list did not open with it', !(await page.evaluate(() => window.splitManager.shortcuts.open)));
+
+  // Enter / Escape close the unasked overlay, and are spent doing it.
+  for (const key of ['Escape', 'Enter']) {
+    await page.keyboard.press('Control+Alt+Shift+Slash'); await sleep(500);
+    // Anything past the window's capture phase (the terminal's textarea included)
+    // would show up on document first.
+    await page.evaluate((k) => {
+      window.__leaked = 0;
+      document.addEventListener('keydown', (e) => { if (e.key === k) window.__leaked++; }, { capture: true, once: true });
+    }, key);
+    await page.keyboard.press(key); await sleep(500);
+    check(`${key} dismisses the unasked overlay`, (await help()).mode === null);
+    check(`…and that ${key} never reached the page`, (await page.evaluate(() => window.__leaked)) === 0);
+  }
+
+  // "Got it" holds still while the pointer travels to it, and the click lands.
+  await page.keyboard.press('Control+Alt+Shift+Slash'); await sleep(800);
+  const btnAt = () => page.evaluate(() => {
+    const b = document.querySelector('webtmux-help').shadowRoot.querySelector('.intro button');
+    if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  });
+  const b0 = await btnAt();
+  let moved = 0;
+  if (b0) {
+    // Approach from the toolbar side, through the sections' reach.
+    for (let i = 0; i <= 10; i++) {
+      await page.mouse.move(b0.x + (1 - i / 10) * 300, b0.y - (1 - i / 10) * 350); await sleep(150);
+      const b = await btnAt();
+      if (!b || Math.abs(b.x - b0.x) > 1 || Math.abs(b.y - b0.y) > 1) moved++;
+    }
+  }
+  check('"Got it" stays put while the pointer approaches it', b0 && moved === 0, `moved ${moved}/11`);
+  if (b0) await page.mouse.click(b0.x, b0.y); await sleep(400);
+  check('clicking "Got it" dismisses it', (await help()).mode === null);
 
   check('no page errors', errors.length === 0, errors.join(' | '));
   await browser.close();
