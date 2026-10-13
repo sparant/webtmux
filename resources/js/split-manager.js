@@ -105,7 +105,7 @@ export class SplitManager {
     this.expose.manager = this;
     this.container.appendChild(this.expose);
 
-    // The keyboard-shortcuts overlay (hidden until opened via Ctrl+Alt+/ or the
+    // The keyboard-shortcuts overlay (hidden until opened via Ctrl+Alt+K or the
     // sidebar's "Keyboard shortcuts" button — makes the hotkeys discoverable).
     this.shortcuts = document.createElement('webtmux-shortcuts');
     this.container.appendChild(this.shortcuts);
@@ -2593,8 +2593,9 @@ export class SplitManager {
     //   x  kill-pane                          -> close the focused region
     //   [  copy-mode                          -> toggle copy/normal on the focused pane
     //   =  choose-buffer                      -> toggle the copy-buffer panel
-    //   ?  list-keys                          -> the shortcuts overlay (physical '/');
-    //                                            with Shift (⌃⌥?) the help overlay
+    //   ?  list-keys                          -> the help overlay, up without holding
+    //                                            (physical '/', Shift or not); the
+    //                                            plain shortcut list moved to K (keys)
     //   0-9 select-window                     -> window N of the focused pane's session
     //   % " split-window                      -> add a split region (as Enter does)
     //   o  select-pane (next) / ; last-pane   -> move focus between regions
@@ -2619,7 +2620,7 @@ export class SplitManager {
       // while a confirm question, the shortcuts overlay, or Exposé is up, the only
       // chord that still acts is the one that toggles that layer itself.
       if (this.sidebar?._confirm?.open || this.copySidebar?._confirm?.open) return;
-      if (this.shortcuts?.open && ev.code !== 'Slash') return;
+      if (this.shortcuts?.open && ev.code !== 'KeyK') return;
       if (this.expose?.open && ev.code !== 'KeyF') return;
       // A hover preview on screen answers Escape (put the region back) and Enter (switch
       // to that window) wherever it came from — a recents tab, a preview tile, a region
@@ -2728,11 +2729,14 @@ export class SplitManager {
         case 'KeyL':                                   // hold ⌃⌥ + tap L: cycle MRU windows (⇧ reverses)
           if (!ev.repeat) this.navigateMru(ev.shiftKey ? -1 : +1);  // deliberate taps, not key-repeat runaway
           break;
-        case 'Slash':                                  // tmux '?' (list-keys): shortcuts overlay
-          // …and with Shift — i.e. ⌃⌥? — the help overlay, up without holding
-          // (as on a tab's first connection) until the chord is tapped or ⌃⌥? again.
-          if (ev.shiftKey) this.help?.toggleSticky();
-          else this.shortcuts?.toggle();
+        case 'Slash':                                  // tmux '?' (list-keys): the help overlay
+          // Up without holding (as on a tab's first connection) until the chord is
+          // tapped, Enter/Esc, or ⌃⌥? again. Shift or not: it is the ?-key either
+          // way, and a Mac's Option layer makes "did they hold Shift" a guess.
+          this.help?.toggleSticky();
+          break;
+        case 'KeyK':                                   // the full shortcut list (k = keys)
+          this.shortcuts?.toggle();
           break;
         case 'Comma':                                  // tmux ',' (rename-window): rename current
           this.renameActiveWindow();

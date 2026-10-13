@@ -536,7 +536,7 @@ class WebtmuxHelp extends LitElement {
     const sticky = this.mode === 'sticky';
     if (compact) {
       return html`<div class=${cls} data-key=${key} style=${pos}><span class="title">webtmux help</span>
-        <span class="more"> · ${sticky ? html`tap ${mods} to dismiss` : html`let go of ${mods} to hide`} · all keys ${mods}<kbd>/</kbd></span></div>`;
+        <span class="more"> · ${sticky ? html`tap ${mods} to dismiss` : html`let go of ${mods} to hide`} · all keys ${mods}<kbd>K</kbd></span></div>`;
     }
     return html`<div class=${cls} data-key=${key} style=${pos}>
       <h2>webtmux help</h2>
@@ -544,7 +544,7 @@ class WebtmuxHelp extends LitElement {
         : html`<p>Showing while ${mods} is held. Let go to hide.</p>`}
       <p>Move the pointer toward any outlined part of the screen to see what each piece does and its keys.</p>
       <p>Keys and clicks still work while this is up — try ${MOD_CHIPS.map((c) => html`<kbd>${c}</kbd>`)}<kbd>F</kbd>.</p>
-      <p>Every shortcut, listed: ${MOD_CHIPS.map((c) => html`<kbd>${c}</kbd>`)}<kbd>/</kbd> · this help without holding: ${MOD_CHIPS.map((c) => html`<kbd>${c}</kbd>`)}<kbd>?</kbd></p>
+      <p>Every shortcut, listed: ${MOD_CHIPS.map((c) => html`<kbd>${c}</kbd>`)}<kbd>K</kbd> · this help without holding: ${MOD_CHIPS.map((c) => html`<kbd>${c}</kbd>`)}<kbd>?</kbd></p>
       ${sticky ? html`<div class="dismiss">Tap ${mods} to dismiss <button @click=${() => this._dismiss()} aria-label="Dismiss help (or tap ${MOD_LABEL})">Got it</button></div>` : ''}
     </div>`;
   }

@@ -56,7 +56,7 @@ const TOOLBAR = [
     id: 'shortcuts',
     title: 'Every shortcut',
     text: 'The full keyboard list.',
-    keys: [C('/', 'open / close'), R('Esc', 'close'), C('?', 'this help, no holding')],
+    keys: [C('K', 'open / close'), R('Esc', 'close'), C('?', 'this help, no holding')],
     find: tb('.tbtn[aria-label="Keyboard shortcuts"]'),
   },
   {
@@ -256,7 +256,7 @@ const SHORTCUTS_LIST = {
   id: 'kbd.list',
   title: 'Shortcut list',
   text: 'Every key, grouped by where it works.',
-  keys: [R('Esc', 'close'), C('/', 'close')],
+  keys: [R('Esc', 'close'), C('K', 'close')],
   find: (m) => (m.shortcuts?.open ? q(m.shortcuts, '.card') : null),
 };
 

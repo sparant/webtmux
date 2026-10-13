@@ -3223,7 +3223,7 @@ class WebtmuxToolbar extends LitElement {
       <button
         class="tbtn"
         aria-label="Keyboard shortcuts"
-        @mouseenter=${(e) => this._tipEnter(e, `Keyboard shortcuts. Shortcut: ${chord('/')}`)}
+        @mouseenter=${(e) => this._tipEnter(e, `Keyboard shortcuts. Shortcut: ${chord('K')}  ·  ${chord('?')}: the help overlay`)}
         @mouseleave=${() => this._tipLeave()}
         @click=${() => { this._tipLeave(); this.manager?.shortcuts?.toggle(); }}
       >⌨</button>
