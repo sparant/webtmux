@@ -2,7 +2,7 @@
 //
 //   1. A tab's first connection shows it unasked ('sticky'), with the intro.
 //   2. Tapping the chord dismisses it, and a reload does not bring it back.
-//   3. Holding the chord alone for 1 s shows it ('hold'); letting go hides it.
+//   3. Holding the chord alone for 0.75 s shows it ('hold'); letting go hides it.
 //   4. A key pressed during the hold cancels the reveal (that was a hotkey).
 //   5. Pointing near the recents strip opens it into a note per part of a tab.
 //   6. Hotkeys still work while it is up — ⌃⌥F opens Exposé — and the notes follow
@@ -124,11 +124,11 @@ setTimeout(() => { console.log('FAIL  driver timed out'); process.exit(3); }, 48
 
   // Hold to reveal.
   await page.mouse.move(700, 600);
-  await holdChord(); await sleep(600);
-  check('not yet after 0.6 s', (await help()).mode === null);
+  await holdChord(); await sleep(400);
+  check('not yet after 0.4 s', (await help()).mode === null);
   await sleep(700);
   h = await help();
-  check('hold 1.3 s shows it', h.mode === 'hold', `mode=${h.mode}`);
+  check('hold 1.1 s shows it', h.mode === 'hold', `mode=${h.mode}`);
   check('hold geometry clean', !geometryOk(h), geometryOk(h));
   await page.screenshot({ path: '/src/screenshots/help-hold.png' });
 
@@ -178,6 +178,12 @@ setTimeout(() => { console.log('FAIL  driver timed out'); process.exit(3); }, 48
   await page.mouse.move(900, 600, { steps: 4 }); await sleep(600);
   h = await help();
   check('Exposé header invites a look while the pointer is on the tiles', ids(h).includes('ex.head') && !ids(h).some((x) => ['ex.show', 'ex.sort'].includes(x)), ids(h).join(','));
+  const gridNote = await page.evaluate(() => {
+    const el = document.querySelector('webtmux-help');
+    const it = el._items.find((i) => i.id === 'ex.grid');
+    return it && { kind: it.kind, arrow: !!el._placed.get('ex.grid')?.arrow, w: it.rect.right - it.rect.left };
+  });
+  check('…and so does the first tile (outlined, with an arrow)', gridNote && gridNote.kind === 'section' && gridNote.arrow && gridNote.w < 700, JSON.stringify(gridNote));
   await page.screenshot({ path: '/src/screenshots/help-expose-idle.png' });
   await page.mouse.move(500, 60, { steps: 4 }); await sleep(500);
   h = await help();

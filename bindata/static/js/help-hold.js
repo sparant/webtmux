@@ -18,7 +18,7 @@
 // DOM-free on purpose (events are plain objects with key/ctrlKey/altKey/…) so the
 // timing rules are testable under node — see test/help-hold.test.mjs.
 
-export const HOLD_DELAY = 1000;
+export const HOLD_DELAY = 750;
 
 const isChordMod = (key) => key === 'Control' || key === 'Alt';
 
