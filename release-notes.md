@@ -2,7 +2,8 @@
 
 The first release that ships **`webtmux-launch`** as a download, the one where
 the preview became a place you arrange rather than a shape the window count
-decides, and the one where the shortcuts became tmux's own keys.
+decides, the one where the shortcuts became tmux's own keys — and the one that
+explains itself: hold Ctrl+Alt and the screen tells you what everything does.
 
 Most of what is here came from watching a wall of agent windows in real use: a
 light that turned red for an agent that was only waiting on its own build, a strip
@@ -51,6 +52,26 @@ Changes to the launcher itself in this release:
   `ssh` keeps running on a dead connection.
 - **Plainer output.** Lines that need no action say they are informational; the
   login is printed as the user and password to type at the browser's prompt.
+
+## Hold Ctrl+Alt: the screen explains itself
+
+**Hold Ctrl+Alt (⌃⌥ on a Mac) for a moment, with no other key**, and webtmux dims
+the terminal and points at every part of its UI with an outline, an arrow, a short
+note and the keys that drive it.
+
+- **Nothing is hidden.** Every control is either explained up front or belongs to
+  an outlined section; move the pointer toward a section — the recents strip, the
+  toolbar, the sidebar, the preview bar, Exposé's header — and it opens into a note
+  per control. A dense group (the toolbar buttons, the sidebar's rows) becomes a
+  numbered legend instead of a tangle of arrows, and arrows never cross.
+- **Point at anything for the full story:** the control under the pointer is
+  outlined boldly and its note grows that control's own tooltip.
+- **It never gets in the way.** Keys and clicks keep working while it is up, and
+  the notes follow what is on screen — open Exposé with it showing and it explains
+  Exposé. Let go and it is gone.
+- **It introduces itself.** Each new browser tab shows it once on connecting, until
+  you tap Ctrl+Alt, press Enter or Esc, or click *Got it*. **Ctrl+Alt+?** brings it
+  back the same way without holding.
 
 ## Stoplights: how long, and a green that is not a turn
 
@@ -184,7 +205,8 @@ tmux muscle memory carries straight over:
 | `&` | kill the window (asks first) | `&` |
 | `]` | paste the focused copy buffer | `]` |
 | `f` | Exposé — **was `e`** | `f` (find-window) |
-| `?` | the shortcuts list (as well as `/`) | `?` |
+| `?` (Shift optional) | the help overlay, without holding | `?` |
+| `k` | the full shortcuts list | — |
 
 **Exposé opens at 3×3**, and the key and the trackpad gesture now only open and
 close it; a **Grid** toggle in its header switches between 3×3 and 2×2 and is
@@ -192,6 +214,8 @@ remembered.
 
 ## Smaller things
 
+- Every toolbar tooltip reads the same way: one line saying what it is, then each
+  further point as its own paragraph, ending with the click or key that drives it.
 - Reaching for the copy panel while it is peeking after a copy (⌃⌥= or the pill)
   now keeps it open, from the keyboard as from the mouse.
 - The permanent white scrollbar track down the terminal's side is gone.
@@ -242,6 +266,10 @@ instead, which appears in no commit log.
 - **One previewed window is now a bar tile, not a corner box.** Ctrl+Alt+I always
   adds to the bar; use Ctrl+Alt+Shift+I for a corner. A preview saved by v0.2.0
   comes back as you left it.
+- **The shortcut list moved to Ctrl+Alt+K.** Ctrl+Alt+? (with or without Shift,
+  so also Ctrl+Alt+/) now opens the help overlay instead.
+- **Each new browser tab shows the help overlay once on connecting.** Tap
+  Ctrl+Alt, press Enter or Esc, or click *Got it* to dismiss it.
 - **Exposé moved from Ctrl+Alt+E to Ctrl+Alt+F** (tmux's find-window key), and
   pressing it again closes rather than stepping 2×2 → 3×3. Pick the grid size in
   Exposé's header.
