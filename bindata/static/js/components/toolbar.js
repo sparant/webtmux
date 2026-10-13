@@ -93,18 +93,22 @@ const MOUSE_META = {
 // stored mode falls back to the default rather than rendering `undefined`.
 const modeName = (metaMap, cur) => (metaMap[cur] || metaMap['adaptive-probe']).name;
 
-// Hovering the closed button explains BOTH axes — which is the one thing the two
-// separate buttons could do that a single closed button cannot, so it is kept.
-const mouseCaptureTooltip = (mouseCur, scrollCur) => [
-  'Mouse capture — who gets your gestures, the program or webtmux.',
-  'Click for both lists.',
-  '',
-  'click+drag:',
-  ...MOUSE_ORDER.map((m) => `${m === mouseCur ? '▸' : ' '} ${MOUSE_META[m].name} — ${MOUSE_META[m].hint}`),
-  '',
-  'copymode on scroll:',
-  ...SCROLL_ORDER.map((m) => `${m === scrollCur ? '▸' : ' '} ${SCROLL_META[m].name} — ${SCROLL_META[m].hint}`),
-].join('\n');
+// Hovering the closed button says what is in force NOW, on both axes — one line
+// each — and that a click offers the alternatives. Every mode's description lives
+// in the dropdown, where it sits beside the choice it describes; repeating all
+// eight here made a wall of text to read past the two lines that mattered.
+const mouseCaptureTooltip = (mouseCur, scrollCur) => {
+  const m = MOUSE_META[mouseCur] || MOUSE_META['adaptive-probe'];
+  const w = SCROLL_META[scrollCur] || SCROLL_META['adaptive-probe'];
+  return [
+    'Mouse capture — who gets your gestures, the program or webtmux.',
+    '',
+    `click+drag: ${m.name} — ${m.hint}`,
+    `scroll wheel: ${w.name} — ${w.hint}`,
+    '',
+    'Click to change either (▾).',
+  ].join('\n');
+};
 
 // The Exposé button's icon. It used to be ▦ — a grid glyph that, next to the
 // split button's ⊞, read as "another box" and said nothing about windows. Four

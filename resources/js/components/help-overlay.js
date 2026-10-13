@@ -236,7 +236,19 @@ class WebtmuxHelp extends LitElement {
     this._setKey = '';
     this._squeezed = new Set();
     this.hold = new HelpHold((mode) => this._setMode(mode));
-    this._onKeyDown = (e) => this.hold.keydown(e);
+    this._onKeyDown = (e) => {
+      // The unasked (first-run / ⌃⌥?) overlay also goes on a plain Enter or Escape —
+      // the keys anyone tries first to close something. That key is spent closing
+      // it: it never reaches the terminal (this listener runs before every other).
+      if (this.mode === 'sticky' && (e.key === 'Enter' || e.key === 'Escape')
+          && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        this._dismiss();
+        return;
+      }
+      this.hold.keydown(e);
+    };
     this._onKeyUp = (e) => this.hold.keyup(e);
     this._onPointerDown = (e) => this.hold.pointerdown(e);
     this._onPointerMove = (e) => {
@@ -320,8 +332,22 @@ class WebtmuxHelp extends LitElement {
       const rect = union([spotRect(s, m), ...(s.details || []).map((d) => spotRect(d, m))]);
       if (rect) sections.push({ spot: s, rect });
     }
-    const open = nearestSection(
-      sections.filter((s) => s.spot.details?.length).map((s) => ({ ...s, id: s.spot.id })),
+    // A pointer on (or heading for) the intro card is going for the card — its
+    // "Got it" button, say — so nothing opens or lights up under it: opening a
+    // section would shrink the card to one line and pull the button away.
+    const ib = this._placed.get('intro')?.box;
+    const p = this._pointer;
+    const onIntro = !!(ib && p && p.x > ib.left - 40 && p.x < ib.right + 40 && p.y > ib.top - 40 && p.y < ib.bottom + 40);
+    this._pointerFree = onIntro ? null : p;
+    // An inside section (Exposé's tile grid) is most of the screen, so the pointer
+    // is nearly always "in" it; opening it on that would hide every other section
+    // for good — Exposé's header controls would never get their invitation. It
+    // opens only near its own details (the first tile) instead.
+    const reach = (s) => (s.spot.inside
+      ? union((s.spot.details || []).map((d) => spotRect(d, m)))
+      : s.rect);
+    const open = onIntro ? null : nearestSection(
+      sections.filter((s) => s.spot.details?.length).map((s) => ({ ...s, id: s.spot.id, rect: reach(s) })),
       this._pointer);
     const openId = open?.spot.id || null;
 
@@ -330,7 +356,11 @@ class WebtmuxHelp extends LitElement {
       || { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
     // The intro shrinks to one line while a section is open: the room goes to the
     // notes the pointer asked for.
-    items.push({ id: 'intro', kind: 'intro', rect: terminalArea, inside: true, compact: !!openId });
+    // Not in the unasked (sticky) mode, though: there the card carries the way to
+    // close it ("Got it"), and a card that changes shape as the pointer heads for
+    // its button is a button you cannot catch. Placed first, at full size, it sits
+    // in the same spot whatever else opens around it.
+    items.push({ id: 'intro', kind: 'intro', rect: terminalArea, inside: true, compact: !!openId && this.mode !== 'sticky' });
     if (open) {
       for (const d of open.spot.details) {
         const rect = spotRect(d, m);
@@ -374,7 +404,7 @@ class WebtmuxHelp extends LitElement {
   // this layer. A control with no note of its own gets one, made of that hint.
   _hoverExtras(items, m) {
     this._hot = null;
-    const p = this._pointer;
+    const p = this._pointerFree;
     const el = p && controlAt(p.x, p.y);
     if (!el) return;
     const r = el.getBoundingClientRect();

@@ -2,6 +2,7 @@
 
 A web-based terminal with tmux-specific features. Access your tmux sessions from any browser with a visual pane layout, touch-friendly controls, and automatic scroll-to-copy-mode. Most importantly, see at a glance which of your windows are working and which are idle. Get notified when a window is ready for more work!
 
+- **[Every feature explains itself](#help-overlay--discover-everything).** Hold `Ctrl+Option` for a second and a help overlay points at every part of the screen — what it does and its keys — opening up into more detail wherever you move the mouse. No manual to read, no shortcuts to memorise.
 - Multiple ways ([Exposé](#windows-mosaic), [Corner PiP, Preview Bar](#preview-and-picture-in-picture), [Sidebar](#windows-view-in-sidebar), [Recents Tabs](#toolbar-and-recent-tabs)) to [quickly monitor](#hover-previews) and access your tmux windows.
 - [Get notified with visuals](#stoplights-and-work-alerts) when your tmux windows are done working, are prompting for input or are idle waiting for more work.
   - Perfect for working with AI coding agents - know exactly when they are done/need input
@@ -10,7 +11,6 @@ A web-based terminal with tmux-specific features. Access your tmux sessions from
 - [Copy several things and paste them one at a time](#copy-buffers) - a list of copy buffers, one of which is the clipboard, that only grows when you are actually gathering.
 - [A program's "press c to copy" reaches YOUR clipboard](#a-programs-press-c-to-copy-reaches-your-clipboard) - the login URL a CLI offers on the tmux machine lands on the clipboard of the machine you are sitting at, which stock tmux silently drops.
 - Take advantage of modern UI - Use Drag and Drop, [Previews on hover](#hover-previews) etc to manage your tmux state.
-- [Discoverability of all features](#keyboard-navigation--discoverability) - no more searching for shortcuts or remembering commands
 - [Quickly access your most recent windows](#toolbar-and-recent-tabs). [Monitor any window](#preview-and-picture-in-picture), keeping it always in your view.
 
 ## Quick Start
@@ -104,6 +104,17 @@ Then open <http://localhost:8080> on that machine (or through your tunnel). Othe
 full install walkthrough are under [Manual Installation](#manual-installation).
 
 ## Unique Features
+
+### Help Overlay — Discover Everything
+
+Hold `Ctrl+Option` (`Ctrl+Alt` off a Mac) for a second, with no other key, and webtmux dims the terminal and points at every part of its UI with an arrow, a short note and the keys that drive it.
+
+![The help overlay in action: the terminal dimmed, the recents strip outlined, and arrows from notes to each part of a tab — the options menu, stoplight, time in state, the tab itself and its hover ×, each with its keys](screenshots/help-overlay.jpg)
+
+- **Nothing is hidden.** Every control is either explained up front or belongs to an outlined section. Move the mouse toward a section (the recents strip, the toolbar's tools, the sidebar, the preview bar, Exposé's header) and it opens into a note per control, while everything else steps back out of the way. A dense group, like the toolbar buttons or the sidebar's rows, becomes a numbered legend instead of a tangle of arrows.
+- **Point at anything for the full story.** The control under the mouse is outlined boldly, and its note grows that control's own tooltip text.
+- **It never gets in the way.** Keys and clicks keep working while it is up, and the notes follow what is on screen: press `Ctrl+Option+F` with it showing and it switches to explaining Exposé. Let go of the keys and it is gone.
+- **It introduces itself.** Every new browser tab shows it once on connecting, until you tap `Ctrl+Option`, press Enter or Esc, or click *Got it*. `Ctrl+Option+?` brings it back the same way without holding.
 
 ### Windows View in Sidebar
 
