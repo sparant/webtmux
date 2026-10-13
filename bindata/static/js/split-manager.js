@@ -114,7 +114,7 @@ export class SplitManager {
     // no key and it points at every part of the UI. It only ever listens — every
     // event still reaches the handlers below — and it reads the live UI through this
     // manager, so it is created here, ahead of _installControls, and on <body> so no
-    // panel's stacking can cover it. First connection from a browser shows it once.
+    // panel's stacking can cover it. A tab's first connection shows it once.
     this.help = document.createElement('webtmux-help');
     this.help.manager = this;
     document.body.appendChild(this.help);
@@ -2593,7 +2593,8 @@ export class SplitManager {
     //   x  kill-pane                          -> close the focused region
     //   [  copy-mode                          -> toggle copy/normal on the focused pane
     //   =  choose-buffer                      -> toggle the copy-buffer panel
-    //   ?  list-keys                          -> the shortcuts overlay (physical '/')
+    //   ?  list-keys                          -> the shortcuts overlay (physical '/');
+    //                                            with Shift (⌃⌥?) the help overlay
     //   0-9 select-window                     -> window N of the focused pane's session
     //   % " split-window                      -> add a split region (as Enter does)
     //   o  select-pane (next) / ; last-pane   -> move focus between regions
@@ -2728,7 +2729,10 @@ export class SplitManager {
           if (!ev.repeat) this.navigateMru(ev.shiftKey ? -1 : +1);  // deliberate taps, not key-repeat runaway
           break;
         case 'Slash':                                  // tmux '?' (list-keys): shortcuts overlay
-          this.shortcuts?.toggle();
+          // …and with Shift — i.e. ⌃⌥? — the help overlay, up without holding
+          // (as on a tab's first connection) until the chord is tapped or ⌃⌥? again.
+          if (ev.shiftKey) this.help?.toggleSticky();
+          else this.shortcuts?.toggle();
           break;
         case 'Comma':                                  // tmux ',' (rename-window): rename current
           this.renameActiveWindow();

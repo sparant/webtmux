@@ -56,7 +56,7 @@ const TOOLBAR = [
     id: 'shortcuts',
     title: 'Every shortcut',
     text: 'The full keyboard list.',
-    keys: [C('/', 'open / close'), R('Esc', 'close')],
+    keys: [C('/', 'open / close'), R('Esc', 'close'), C('?', 'this help, no holding')],
     find: tb('.tbtn[aria-label="Keyboard shortcuts"]'),
   },
   {

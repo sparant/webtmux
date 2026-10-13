@@ -10,7 +10,7 @@
 // key that does NOT cancel it: ⇧ is half of several chords (⇧I, ⇧N), and a user
 // reaching for one of those is exactly the user the overlay is for.
 //
-// THE FIRST-RUN MODE ('sticky'): on a browser's first connection the overlay is
+// THE FIRST-RUN MODE ('sticky'): on a tab's first connection the overlay is
 // shown without a hold, and stays until the chord is TAPPED — both modifiers down
 // and up again with nothing pressed in between. That tap is also the lesson: the
 // same two keys, held, bring it back.
@@ -18,7 +18,7 @@
 // DOM-free on purpose (events are plain objects with key/ctrlKey/altKey/…) so the
 // timing rules are testable under node — see test/help-hold.test.mjs.
 
-export const HOLD_DELAY = 1500;
+export const HOLD_DELAY = 1000;
 
 const isChordMod = (key) => key === 'Control' || key === 'Alt';
 
