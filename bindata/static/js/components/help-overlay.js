@@ -373,12 +373,16 @@ class WebtmuxHelp extends LitElement {
       // outline, no cut-out: the screen is about the part the pointer asked about.
       // They come back the moment the pointer moves away.
       if (openId && !isOpen) continue;
+      // A closed inside section that has details (Exposé's grid) invites a look
+      // the way any section does — an outline and an arrow — but at the place
+      // that opens it (its first tile), not at the whole screen it covers.
+      const invite = !isOpen && s.spot.inside && s.spot.details?.length ? reach(s) : null;
       items.push({
         id: s.spot.id,
-        kind: isOpen ? 'open' : (s.spot.inside ? 'inside' : 'section'),
+        kind: isOpen ? 'open' : (s.spot.inside && !invite ? 'inside' : 'section'),
         spot: s.spot,
-        rect: s.rect,
-        inside: !!s.spot.inside,
+        rect: invite || s.rect,
+        inside: !!s.spot.inside && !invite,
         compact: false,
       });
     }

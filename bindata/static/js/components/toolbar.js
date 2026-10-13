@@ -104,6 +104,7 @@ const mouseCaptureTooltip = (mouseCur, scrollCur) => {
     'Mouse capture — who gets your gestures, the program or webtmux.',
     '',
     `click+drag: ${m.name} — ${m.hint}`,
+    '',
     `scroll wheel: ${w.name} — ${w.hint}`,
     '',
     'Click to change either (▾).',
@@ -127,6 +128,8 @@ const SCROLLBACK_TIP = [
   'only affects NEW windows. Resizing one that already exists means rebuilding its',
   'panes, which restarts them (the scrollback comes along). Both are in here, kept',
   'apart \u2014 plus saving the default into your tmux config, so it survives a restart.',
+  '',
+  'Click for this window\'s sizes, resizing, and the default for new windows.',
 ].join('\n');
 
 // The scrollback button's icon: a buffer with a fill level.
@@ -243,9 +246,10 @@ function spinIcon() {
 // all my windows" is already pointing — the shortcuts overlay only helps people
 // who already knew to open it. Mac-only, matching the gesture's own gating in
 // SplitManager (a ctrl+wheel on other platforms is still page zoom).
-const EXPOSE_TIP = `Exposé — a thumbnail of every window across all sessions. Shortcut: ${chord('F')}`
-  + (IS_MAC ? '\nTrackpad: spread two fingers to open it, spread again for 9 smaller tiles;'
-            + '\npinch back to 4, and pinch once more to close.' : '');
+const EXPOSE_TIP = 'Exposé — a thumbnail of every window across all sessions.'
+  + (IS_MAC ? '\n\nTrackpad: spread two fingers to open it, spread again for 9 smaller tiles;'
+            + '\npinch back to 4, and pinch once more to close.' : '')
+  + `\n\nShortcut: ${chord('F')}`;
 
 // The spinner's hover hint ends with what clicking it does. It is a separate
 // constant because the sentences ABOVE it are the link's own report, shared
@@ -257,7 +261,7 @@ const LINK_MENU_HINT = '\n\nClick for the connection in full, and for tmux\'s ow
 // NEXT tab's ×, and re-hinting it with the tab's own text would describe a control
 // the pointer isn't on.
 const CLOSE_TAB_TIP =
-  'Remove this tab from Recent — the window keeps running (this does not close or kill it)';
+  'Remove this tab from Recent.\n\nThe window keeps running — this does not close or kill it.';
 
 class WebtmuxToolbar extends LitElement {
   static properties = {
@@ -2315,10 +2319,12 @@ class WebtmuxToolbar extends LitElement {
     const aim = this._splitView()
       ? ' · drop it on a pane, or use the region picker, to choose which one'
       : '';
+    // One-line name, blank line, what it does — the toolbar's tooltip layout. The
+    // alert line (it starts with its own newline) gets a blank line of its own too.
     return (w.disabled
-      ? `${full}\nAlready open in another region — click to jump there · drag to reorder${aim}`
-      : `${full}\nHover to preview it in a terminal region · click to switch there · drag to reorder${aim}`)
-      + alertTip(w.alert);
+      ? `${full}\n\nAlready open in another region — click to jump there · drag to reorder${aim}`
+      : `${full}\n\nHover to preview it in a terminal region · click to switch there · drag to reorder${aim}`)
+      + (w.alert ? '\n' + alertTip(w.alert) : '');
   }
 
   // Re-read what the pointer is on after a render, and re-point the preview when the
@@ -2654,8 +2660,8 @@ class WebtmuxToolbar extends LitElement {
         aria-label="Clear the recents strip"
         @mouseenter=${(e) => this._tipEnter(e, `Clear the recents strip — all ${n} remembered ${n === 1 ? 'window' : 'windows'}`
           + (hidden ? `, including the ${hidden} with no tab right now (waiting behind the last tab, or held by the preview)` : '')
-          + `.\nThis is the one that empties it: × on a tab frees a slot, and the next window in line immediately takes it.`
-          + `\nNothing is closed or killed — the windows keep running and the split regions keep their views.`)}
+          + `.\n\nThis is the one that empties it: × on a tab frees a slot, and the next window in line immediately takes it.`
+          + `\n\nNothing is closed or killed — the windows keep running and the split regions keep their views.`)}
         @mouseleave=${() => this._tipLeave()}
         @click=${(e) => { this._tipLeave(); this._askClearRecents(e.currentTarget); }}
       >✕</button>
@@ -3194,7 +3200,7 @@ class WebtmuxToolbar extends LitElement {
           style="transform: rotate(${this.activity * SPIN_STEP_DEG}deg)"
           aria-label=${this._linkDetail().head + ' — connection details and tmux settings'}
           aria-expanded=${this.linkMenuOpen ? 'true' : 'false'}
-          @mouseenter=${(e) => this._tipEnter(e, this._linkDetail().body + LINK_MENU_HINT)}
+          @mouseenter=${(e) => { const d = this._linkDetail(); this._tipEnter(e, `${d.head}\n\n${d.body}${LINK_MENU_HINT}`); }}
           @mouseleave=${() => this._tipLeave()}
           @click=${() => { this._tipLeave(); this._toggleLinkMenu(); }}
         >${spinIcon()}</button>
@@ -3204,7 +3210,7 @@ class WebtmuxToolbar extends LitElement {
         <button
           class="build"
           aria-label="webtmux build ${this.build} — click to copy"
-          @mouseenter=${(e) => this._tipEnter(e, `webtmux build ${this.build}${this.built ? ' — built ' + this.built : ''}\nClick to copy it (it is also copied whenever you reveal this chip). Hide with ${chord('B')}.`)}
+          @mouseenter=${(e) => this._tipEnter(e, `webtmux build ${this.build}${this.built ? ' — built ' + this.built : ''}\n\nClick to copy it (it is also copied whenever you reveal this chip).\n\nHide with ${chord('B')}.`)}
           @mouseleave=${() => this._tipLeave()}
           @click=${() => this._copyBuild()}
         >⬢ ${this.build}</button>
@@ -3215,7 +3221,7 @@ class WebtmuxToolbar extends LitElement {
           role="img"
           aria-label="Read-only server"
           @mouseenter=${(e) => this._tipEnter(e, READ_ONLY_NOTICE
-            + '\nWatching, capture, hover previews and the save-to-browser download all still work.')}
+            + '\n\nWatching, capture, hover previews and the save-to-browser download all still work.')}
           @mouseleave=${() => this._tipLeave()}
         >READ-ONLY</span>
       ` : ''}
@@ -3223,7 +3229,7 @@ class WebtmuxToolbar extends LitElement {
       <button
         class="tbtn"
         aria-label="Keyboard shortcuts"
-        @mouseenter=${(e) => this._tipEnter(e, `Keyboard shortcuts. Shortcut: ${chord('K')}  ·  ${chord('?')}: the help overlay`)}
+        @mouseenter=${(e) => this._tipEnter(e, `Keyboard shortcuts — every key, listed.\n\n${chord('?')} instead: the help overlay — notes and arrows on every part of the screen.\n\nShortcut: ${chord('K')}`)}
         @mouseleave=${() => this._tipLeave()}
         @click=${() => { this._tipLeave(); this.manager?.shortcuts?.toggle(); }}
       >⌨</button>
@@ -3232,13 +3238,14 @@ class WebtmuxToolbar extends LitElement {
         <button
           class="label"
           aria-label="Recent tab options"
-          @mouseenter=${(e) => this._tipEnter(e, `Recent windows — click for options: how many tabs to keep (now ${this.recentMax}), and their labels (show the session, trim the window name). Drag tabs to reorder them.`
+          @mouseenter=${(e) => this._tipEnter(e, `Recent windows — the strip's options.\n\nHow many tabs to keep (now ${this.recentMax}), and their labels (show the session, trim the window name). Drag tabs to reorder them.`
             + (this.recentHeld
-              ? `\n${this.recentHeld} recent ${this.recentHeld === 1 ? 'window is' : 'windows are'} in the preview right now, so ${this.recentHeld === 1 ? 'its tab is' : 'their tabs are'} hidden — already on screen there. Close the preview and ${this.recentHeld === 1 ? 'it comes' : 'they come'} back.`
+              ? `\n\n${this.recentHeld} recent ${this.recentHeld === 1 ? 'window is' : 'windows are'} in the preview right now, so ${this.recentHeld === 1 ? 'its tab is' : 'their tabs are'} hidden — already on screen there. Close the preview and ${this.recentHeld === 1 ? 'it comes' : 'they come'} back.`
               : '')
             + (this.recentQueued
-              ? `\n${this.recentQueued} more ${this.recentQueued === 1 ? 'window is' : 'windows are'} waiting behind the last tab. Close a tab (×) or keep more tabs and ${this.recentQueued === 1 ? 'it slides' : 'they slide'} back in.`
-              : ''))}
+              ? `\n\n${this.recentQueued} more ${this.recentQueued === 1 ? 'window is' : 'windows are'} waiting behind the last tab. Close a tab (×) or keep more tabs and ${this.recentQueued === 1 ? 'it slides' : 'they slide'} back in.`
+              : '')
+            + '\n\nClick for the options (▾).')}
           @mouseleave=${() => this._tipLeave()}
           @click=${() => { this._tipLeave(); this.labelMenuOpen = !this.labelMenuOpen; }}
         >Recent ▾</button>
@@ -3261,7 +3268,7 @@ class WebtmuxToolbar extends LitElement {
       <button
         class="tbtn"
         aria-label="Split view — add a terminal region"
-        @mouseenter=${(e) => this._tipEnter(e, `Split view — add another terminal region. Shortcut: ${chord('⏎ Enter')}`)}
+        @mouseenter=${(e) => this._tipEnter(e, `Split view — add another terminal region.\n\nShortcut: ${chord('⏎ Enter')}`)}
         @mouseleave=${() => this._tipLeave()}
         @click=${() => { this._tipLeave(); this.manager?.splitAdd(); }}
       >⊞</button>
@@ -3276,8 +3283,10 @@ class WebtmuxToolbar extends LitElement {
         <button
           class="tbtn ${this.saveOpen ? 'on' : ''}"
           aria-label="Save pane buffer and transfer files"
-          @mouseenter=${(e) => this._tipEnter(e, `Save the focused pane's buffer — the whole scrollback (default) or just the visible screen; download it to your browser, or write it to a file on the machine tmux runs on.\n`
-            + `Also transfers whole files and folders between this browser's machine and the machine tmux runs on — the thing you would otherwise open a second terminal and type scp for.`)}
+          @mouseenter=${(e) => this._tipEnter(e, `Save & transfer — the focused pane's buffer, and whole files.\n\n`
+            + `Save the whole scrollback (default) or just the visible screen: download it to your browser, or write it to a file on the machine tmux runs on.\n\n`
+            + `Transfer whole files and folders between this browser's machine and the machine tmux runs on — the thing you would otherwise open a second terminal and type scp for.\n\n`
+            + `Click for both (▾).`)}
           @mouseleave=${() => this._tipLeave()}
           @click=${() => { this._tipLeave(); this._toggleSaveMenu(); }}
         >⤓</button>
@@ -3346,7 +3355,7 @@ class WebtmuxToolbar extends LitElement {
       ${this.panes.length > 1 ? html`
         <div
           class="dots"
-          @mouseenter=${(e) => this._tipEnter(e, `Split panes — one dot per open terminal region (${this.panes.length} open); green is the focused pane. Drag a divider to resize. ${chord('X')} closes the focused region — but the first (leftmost) pane is the original and can't be closed; only added panes can.`)}
+          @mouseenter=${(e) => this._tipEnter(e, `Split panes — one dot per open terminal region (${this.panes.length} open).\n\nGreen is the focused pane. Drag a divider to resize.\n\n${chord('X')} closes the focused region — but the first (leftmost) pane is the original and can't be closed; only added panes can.`)}
           @mouseleave=${() => this._tipLeave()}
         >
           ${this.panes.map((focused) => html`<span class="dot ${focused ? 'focused' : ''}"></span>`)}
@@ -3355,10 +3364,10 @@ class WebtmuxToolbar extends LitElement {
       <button
         class="mode ${this.copyMode ? 'copy' : ''}"
         aria-label="Copy buffers and copy mode"
-        @mouseenter=${(e) => this._tipEnter(e, `Copy — the focused pane is in ${this.copyMode ? 'COPY (scrollback)' : 'NORMAL (input)'} mode.\n`
-          + `Click to open the copy-buffer panel (${chord('=')}, tmux ⌃b =): the buffers you have copied, one of them on the clipboard, and the button that flips this mode.\n`
-          + `${this.bufferCount > 1 ? `${this.bufferCount} buffers held — click a row to choose which one ⌘V pastes.\n` : ''}`
-          + `To flip the mode without opening anything: ${chord('[')} (tmux ⌃b [).`)}
+        @mouseenter=${(e) => this._tipEnter(e, `Copy — the focused pane is in ${this.copyMode ? 'COPY (scrollback)' : 'NORMAL (input)'} mode.\n\n`
+          + `${this.bufferCount > 1 ? `${this.bufferCount} buffers held — click a row in the panel to choose which one ⌘V pastes.\n\n` : ''}`
+          + `To flip the mode without opening anything: ${chord('[')} (tmux ⌃b [).\n\n`
+          + `Click to open the copy-buffer panel (${chord('=')}, tmux ⌃b =): the buffers you have copied, one of them on the clipboard, and the button that flips this mode.`)}
         @mouseleave=${() => this._tipLeave()}
         @click=${() => { this._tipLeave(); this.manager?.copySidebar?.toggleCollapsed(); }}
       ><span class="mdot"></span>${this.copyMode ? 'COPY' : 'NORMAL'}${
@@ -3366,7 +3375,7 @@ class WebtmuxToolbar extends LitElement {
       <button
         class="pip-toggle ${this.previewHasFocused ? 'on' : ''}"
         aria-label="Add focused window to preview"
-        @mouseenter=${(e) => this._tipEnter(e, `${this.previewHasFocused ? 'Remove the focused window from' : 'Add the focused window to'} the live preview (${chord('I')}). It joins the docked edge bar, which reserves its own space rather than covering the terminal.\nHover a preview tile to pin it to a screen corner as a floating box instead — one window per corner, four at once — or ${chord('Shift+I')} to pin the focused one straight away.${this.previewCount ? `\n\n${this.previewCount} window${this.previewCount === 1 ? '' : 's'} in preview.` : ''}`)}
+        @mouseenter=${(e) => this._tipEnter(e, `${this.previewHasFocused ? 'Remove the focused window from' : 'Add the focused window to'} the live preview.\n\nIt joins the docked edge bar, which reserves its own space rather than covering the terminal.\n\nHover a preview tile to pin it to a screen corner as a floating box instead — one window per corner, four at once — or ${chord('Shift+I')} to pin the focused one straight away.${this.previewCount ? `\n\n${this.previewCount} window${this.previewCount === 1 ? '' : 's'} in preview.` : ''}\n\nShortcut: ${chord('I')}`)}
         @mouseleave=${() => this._tipLeave()}
         @click=${() => { this._tipLeave(); this.manager?.toggleFocusedInPreview(); }}
       >◳</button>
@@ -3374,7 +3383,7 @@ class WebtmuxToolbar extends LitElement {
         <button
           class="pip-toggle ${this.previewHidden ? '' : 'on'}"
           aria-label="Show or hide the preview"
-          @mouseenter=${(e) => this._tipEnter(e, `${this.previewHidden ? 'Show' : 'Hide'} the preview (keeps its ${this.previewCount} window${this.previewCount === 1 ? '' : 's'}).`)}
+          @mouseenter=${(e) => this._tipEnter(e, `${this.previewHidden ? 'Show' : 'Hide'} the preview.\n\nIt keeps its ${this.previewCount} window${this.previewCount === 1 ? '' : 's'}, and where each one is drawn.\n\nShortcut: ${chord('H')}`)}
           @mouseleave=${() => this._tipLeave()}
           @click=${() => { this._tipLeave(); this.manager?.togglePreviewHidden(); }}
         >${this.previewHidden ? '🙈' : '👁'}</button>
@@ -3382,7 +3391,7 @@ class WebtmuxToolbar extends LitElement {
       <button
         class="sidebar-toggle"
         aria-label="Toggle sidebar"
-        @mouseenter=${(e) => this._tipEnter(e, `Toggle the windows & sessions sidebar. Shortcut: ${chord('W')}`)}
+        @mouseenter=${(e) => this._tipEnter(e, `Toggle the windows & sessions sidebar.\n\nShortcut: ${chord('W')}`)}
         @mouseleave=${() => this._tipLeave()}
         @click=${() => { this._tipLeave(); this.manager?.sidebar?.toggleCollapsed(); }}
       >${this.collapsed ? '☰' : '✕'}</button>
