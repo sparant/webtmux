@@ -44,6 +44,7 @@ const GROUPS = [
       { keys: [...M, ','], desc: 'Rename the current window (caret at the end, ready to add to the name) — tmux ⌃b ,' },
       { keys: [...M, 'B'], desc: 'Show / hide the build-id chip (top-left)' },
       { keys: [...M, '/'], desc: 'Show this shortcuts list (? works too) — tmux ⌃b ?' },
+      { keys: [...M, 'hold'], desc: 'Hold just the two keys for a moment (no other key): the help overlay — notes and arrows on every part of the screen, with their keys. Point toward a part for more detail; keys and clicks keep working; let go to hide' },
     ],
   },
   {

@@ -110,6 +110,15 @@ export class SplitManager {
     this.shortcuts = document.createElement('webtmux-shortcuts');
     this.container.appendChild(this.shortcuts);
 
+    // The help overlay (components/help-overlay.js): hold the chord's modifiers with
+    // no key and it points at every part of the UI. It only ever listens — every
+    // event still reaches the handlers below — and it reads the live UI through this
+    // manager, so it is created here, ahead of _installControls, and on <body> so no
+    // panel's stacking can cover it. First connection from a browser shows it once.
+    this.help = document.createElement('webtmux-help');
+    this.help.manager = this;
+    document.body.appendChild(this.help);
+
     // The live Preview: a docked edge bar plus up to four floating corner boxes, with
     // each previewed window carrying which of the two it is drawn on (see
     // preview-slots.js). Hidden until a window is added via Ctrl+Alt+I or the toolbar
@@ -202,6 +211,10 @@ export class SplitManager {
     this.pip.restoreState();
     this._restoreRecents();
     this._restoreSplitState();
+
+    // After the first layout push has had a moment to draw the toolbar and strip,
+    // so the first-run help has something to point at.
+    setTimeout(() => this.help?.showFirstRun(), 1200);
   }
 
   // --- write authority ----------------------------------------------------------
