@@ -148,7 +148,13 @@ func (i *instance) report(buildMatch string) []string {
 	// it is the in-container bind and says nothing about host exposure.
 	if i.Address == "0.0.0.0" || i.Address == "::" {
 		if i.Containerized {
-			lines = append(lines, "  note: bind "+i.Address+" is container-relative; host exposure depends on the port mapping")
+			// Informational: the launcher reaches it through the SSH tunnel either
+			// way, and cannot see how docker published the port, so all it can
+			// honestly do is say where that question is answered.
+			lines = append(lines,
+				"  network: informational — it listens on all interfaces INSIDE its container;",
+				"           how the container publishes the port decides who else can reach it.",
+				"           Nothing to do: this connection goes through SSH.")
 		} else {
 			lines = append(lines, "  WARNING: bound to "+i.Address+" — reachable from the box's network, not just loopback")
 		}
@@ -158,10 +164,10 @@ func (i *instance) report(buildMatch string) []string {
 	}
 	if i.needsCredential() {
 		if i.credentialRecoverable() {
-			lines = append(lines, "  auth: basic — "+i.Credential+" (paste it; browsers no longer accept user:pass@host URLs)")
+			lines = append(lines, "  login: "+loginLine(i.Credential))
 		} else {
-			lines = append(lines, "  auth: basic, password NOT recoverable (it was generated in-process and printed to that instance's stdout)")
-			lines = append(lines, "        the browser will prompt; find the password in the terminal that started it, or use --fresh")
+			lines = append(lines, "  login: the browser will ask for a password this launcher cannot read —")
+			lines = append(lines, "         it was printed by the terminal that started that webtmux (or use --fresh)")
 		}
 	}
 	return lines
@@ -194,4 +200,14 @@ func describeInstances(insts []instance) string {
 		parts = append(parts, fmt.Sprintf("pid %d port %d", i.PID, i.Port))
 	}
 	return strings.Join(parts, ", ")
+}
+
+// loginLine renders a basic-auth "user:pass" as what to type at the browser's
+// prompt. Split on the FIRST colon: a password may contain one, a user may not.
+func loginLine(cred string) string {
+	user, pass, ok := strings.Cut(cred, ":")
+	if !ok {
+		return "password " + cred
+	}
+	return "user " + user + ", password " + pass
 }

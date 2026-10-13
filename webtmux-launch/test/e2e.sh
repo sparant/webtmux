@@ -323,7 +323,7 @@ kill_launcher "$pid"
 rsh "pkill '^webtmux'; sleep 1" >/dev/null 2>&1
 hand_start 8125 /authed/
 out=$(timeout 40 "$LAUNCH" --no-browser "$TARGET" 2>&1 | head -20)
-echo "$out" | grep -q 'NOT recoverable' && ok "says the password is unrecoverable" || no "credential limits not reported: $out"
+echo "$out" | grep -q 'password this launcher cannot read' && ok "says the password is unrecoverable" || no "credential limits not reported: $out"
 rsh "pkill '^webtmux'; true" >/dev/null 2>&1
 
 # ---------------------------------------------------------------------------
@@ -346,8 +346,8 @@ reset_target
 pid=$(launch_bg /tmp/auth.log --auth)
 if wait_for /tmp/auth.log 'ready: http' 60; then
   UAU=$(url_from /tmp/auth.log)
-  PW=$(grep -oE 'webtmux:[A-Za-z0-9]+' /tmp/auth.log | head -1)
-  [ -n "$PW" ] && ok "prints the credential (browsers no longer accept user:pass@host)" \
+  PW=$(sed -nE 's/.*login: user (webtmux), password ([A-Za-z0-9]+).*/\1:\2/p' /tmp/auth.log | head -1)
+  [ -n "$PW" ] && ok "prints the user and password to type at the browser's prompt" \
                 || no "no credential printed — the user could not get in"
   code=$(curl -s -o /dev/null -w '%{http_code}' "$UAU")
   [ "$code" = 401 ] && ok "unauthenticated request is refused (401)" || no "expected 401, got $code"

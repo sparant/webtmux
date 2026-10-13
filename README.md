@@ -46,6 +46,33 @@ It installs webtmux on the target if needed, starts it, tunnels it back to
 your laptop and opens your browser. **The target needs nothing but `ssh` and
 `tmux`.** If `ssh <target>` works, `webtmux-launch <target>` works.
 
+**Naming the target.** The target is handed to `ssh` exactly as you type it, so
+anything `ssh` accepts as a destination works:
+
+| You have | Run |
+|---|---|
+| a host on port 22 | `./webtmux-launch linuxbox` or `./webtmux-launch you@203.0.113.10` |
+| SSH on another port | `./webtmux-launch ssh://you@203.0.113.10:38242` |
+| an IPv6 address | `./webtmux-launch ssh://you@[2001:db8::5]:38242` |
+| a `~/.ssh/config` entry | `./webtmux-launch mybox` |
+
+`user@host:port` does **not** work — `ssh` reads that as a host literally named
+`host:port`. A port goes either in an `ssh://` URL, as above, or in
+`~/.ssh/config`, which is also where a jump host, a key file or anything else you
+would pass to `ssh` as a flag belongs:
+
+```
+Host mybox
+    HostName 203.0.113.10
+    Port 38242
+    User you
+    # ProxyJump bastion.example.com
+```
+
+A short alias also names the launcher's saved settings for that machine
+(`~/.config/webtmux-launch/mybox.json`), so `ssh mybox` and
+`webtmux-launch mybox` stay the same thing.
+
 See [`webtmux-launch` flags](#webtmux-launch-flags) for options, and
 [How webtmux-launch works](#how-webtmux-launch-works) for what it connects to,
 which binary it installs, and its security model.
@@ -766,6 +793,10 @@ switches, Escape puts everything back. So "nothing is blinking" means "nothing
 needs you".
 
 ## `webtmux-launch` flags
+
+`webtmux-launch [flags] <target>` — the target is anything `ssh` accepts; see
+[Naming the target](#tmux-on-another-machine--webtmux-launch) for ports, IPv6 and
+`~/.ssh/config` aliases.
 
 | Flag                               | Effect                                                                      |
 | ---------------------------------- | --------------------------------------------------------------------------- |

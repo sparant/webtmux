@@ -38,6 +38,11 @@ type supervisor struct {
 	// opened is touched by one goroutine per connection attempt, so it is
 	// atomic: only the first success may open a browser tab.
 	opened atomic.Bool
+
+	// Health check through the forward, after the attempt has answered once.
+	// Zero values mean the defaults below; tests shorten them.
+	healthEvery time.Duration
+	healthFails int
 }
 
 // backoff bounds: start at 1s so a transient blip recovers almost instantly,
@@ -47,6 +52,13 @@ const (
 	backoffMin = 1 * time.Second
 	backoffMax = 30 * time.Second
 	resetAfter = 60 * time.Second
+
+	// A tunnel that answered and then fails this many checks in a row is
+	// bounced. ~15s, in step with the ssh keepalive: whichever notices first
+	// wins, and this one also catches what keepalives cannot — a connection the
+	// server still answers while the forward behind it is wedged.
+	defaultHealthEvery = 5 * time.Second
+	defaultHealthFails = 3
 )
 
 // run is the supervisor loop. It returns when ctx is cancelled (Ctrl-C).
@@ -96,9 +108,19 @@ func (s *supervisor) run(ctx context.Context) error {
 		}
 		// The readiness poll runs against every attempt but opens the browser
 		// only on the FIRST success — otherwise every network blip spawns a tab.
-		go s.awaitReady(ctx)
+		// It then keeps checking for as long as this attempt lives, and kills
+		// the ssh if the forward stops answering: after a network switch ssh can
+		// sit on a dead connection until its keepalives give up, and a
+		// supervisor that only waits on the process waits that long too.
+		attemptCtx, endAttempt := context.WithCancel(ctx)
+		bounced := make(chan struct{}, 1)
+		go s.watch(attemptCtx, attempt > 0, func() {
+			bounced <- struct{}{}
+			_ = cmd.Process.Kill()
+		})
 
 		err := cmd.Wait()
+		endAttempt()
 		if ctx.Err() != nil {
 			return nil // Ctrl-C: the child is already going away with the context
 		}
@@ -118,8 +140,13 @@ func (s *supervisor) run(ctx context.Context) error {
 			attempt = 0
 		}
 		attempt++
-		if err != nil && attempt == 1 {
-			fmt.Fprintf(s.out, "connection ended: %v\n", err)
+		select {
+		case <-bounced:
+			fmt.Fprintf(s.out, "\rtunnel stopped answering; reconnecting\n")
+		default:
+			if err != nil && attempt == 1 {
+				fmt.Fprintf(s.out, "\rconnection ended: %v\n", err)
+			}
 		}
 		// A single updating line, not a scrolling log: the user's browser is
 		// already showing a frozen terminal, and the launcher's job is to say
@@ -132,10 +159,6 @@ func (s *supervisor) run(ctx context.Context) error {
 		case <-time.After(delay):
 		}
 		fmt.Fprintf(s.out, "\r%s\r", strings.Repeat(" ", 48))
-		// A dead master can leave a stale control socket behind; without
-		// clearing it the reconnect hangs on a dead mux instead of establishing
-		// a fresh connection.
-		s.ssh.ClearStaleMaster(ctx)
 		if delay < backoffMax {
 			delay *= 2
 			if delay > backoffMax {
@@ -145,42 +168,90 @@ func (s *supervisor) run(ctx context.Context) error {
 	}
 }
 
-// awaitReady polls the forwarded port until webtmux answers, then opens the
-// browser — once, ever.
-func (s *supervisor) awaitReady(ctx context.Context) {
-	deadline := time.Now().Add(30 * time.Second)
-	client := &http.Client{Timeout: 2 * time.Second}
-	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(150 * time.Millisecond):
+// watch polls the forwarded port until webtmux answers — opening the browser
+// on the first success ever — and then keeps polling for the life of this
+// attempt, calling dead once the forward has failed healthFails checks in a
+// row. Failures before the first answer never count: a slow start is the
+// readiness timeout's business, not a reason to kill a connection mid-setup.
+func (s *supervisor) watch(ctx context.Context, reconnect bool, dead func()) {
+	client := &http.Client{Timeout: 3 * time.Second}
+	if !s.awaitAnswer(ctx, client) {
+		if ctx.Err() == nil && !s.opened.Load() {
+			fmt.Fprintf(s.out, "warning: %s did not answer within 30s\n", s.url)
 		}
-		resp, err := client.Get(s.url)
-		if err != nil {
-			continue
-		}
-		code := resp.StatusCode
-		resp.Body.Close()
-		// 401 means it is up and asking for basic auth — an adopted instance
-		// whose credentials we could not recover. Still "ready".
-		if code != http.StatusOK && code != http.StatusUnauthorized {
-			continue
-		}
-		if !s.opened.CompareAndSwap(false, true) {
-			return
-		}
+		return
+	}
+	if s.opened.CompareAndSwap(false, true) {
 		fmt.Fprintf(s.out, "ready: %s\n", s.url)
 		if !s.noBrowser {
 			if err := openBrowser(s.url); err != nil {
 				fmt.Fprintf(s.out, "(could not open a browser: %v)\n", err)
 			}
 		}
-		return
+	} else if reconnect {
+		fmt.Fprintf(s.out, "\rreconnected: %s        \n", s.url)
 	}
-	if !s.opened.Load() {
-		fmt.Fprintf(s.out, "warning: %s did not answer within 30s\n", s.url)
+	every, limit := s.healthEvery, s.healthFails
+	if every == 0 {
+		every = defaultHealthEvery
 	}
+	if limit == 0 {
+		limit = defaultHealthFails
+	}
+	if watchHealth(ctx, client, s.url, every, limit) {
+		dead()
+	}
+}
+
+// awaitAnswer polls until the URL answers or 30s pass.
+func (s *supervisor) awaitAnswer(ctx context.Context, client *http.Client) bool {
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(150 * time.Millisecond):
+		}
+		if answers(client, s.url) {
+			return true
+		}
+	}
+	return false
+}
+
+// watchHealth returns true once url has failed limit consecutive checks, or
+// false when ctx ends first.
+func watchHealth(ctx context.Context, client *http.Client, url string, every time.Duration, limit int) bool {
+	fails := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(every):
+		}
+		if answers(client, url) {
+			fails = 0
+			continue
+		}
+		if ctx.Err() != nil {
+			return false // the attempt ended under the request; not a verdict
+		}
+		if fails++; fails >= limit {
+			return true
+		}
+	}
+}
+
+// answers reports whether webtmux is reachable through the forward. 401 counts:
+// it is up and asking for basic auth — an adopted instance whose credentials
+// we could not recover.
+func answers(client *http.Client, url string) bool {
+	resp, err := client.Get(url)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusUnauthorized
 }
 
 func openBrowser(url string) error {

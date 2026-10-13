@@ -69,7 +69,18 @@ type options struct {
 func usage(fs *flag.FlagSet) func() {
 	return func() {
 		fmt.Fprintf(fs.Output(), "usage: webtmux-launch [flags] <ssh-target> [-- tmux args…]\n\n")
-		fmt.Fprintf(fs.Output(), "<ssh-target> is passed verbatim to ssh, so ~/.ssh/config aliases,\nuser@host forms and ProxyJump bastions all work.\n\n")
+		fmt.Fprint(fs.Output(), `<ssh-target> is passed to ssh exactly as typed — anything ssh accepts works:
+
+  linuxbox                         a host, or a ~/.ssh/config alias
+  you@203.0.113.10                 user@host, port 22
+  ssh://you@203.0.113.10:38242     another SSH port (an ssh:// URL)
+  ssh://you@[2001:db8::5]:38242    IPv6 with a port
+
+user@host:port does NOT work: ssh reads it as a host named "host:port". For a
+port, use the ssh:// form or put Port in ~/.ssh/config, which is also where a
+jump host (ProxyJump), a key file or any other ssh option belongs.
+
+`)
 		fs.PrintDefaults()
 	}
 }
@@ -149,8 +160,7 @@ func run(ctx context.Context, o *options) error {
 	}
 
 	ssh := newSSHRunner(o.target, o.verbose)
-	// Shutdown, not ClearStaleMaster: the mux master owns the forward, and
-	// leaving it persisting would hold the local port past our exit.
+	// Close the setup mux on exit rather than leaving it to ControlPersist.
 	defer ssh.Shutdown(context.Background())
 
 	cfg := loadTargetConfig(o.target)
@@ -317,7 +327,7 @@ func launch(ctx context.Context, o *options, ssh *sshRunner, p *probe, cfg *targ
 	if o.auth {
 		// Chrome dropped http://user:pass@host URLs, so the credential cannot
 		// ride in the link — it has to be printed for the user to paste.
-		fmt.Printf("auth: basic — webtmux:%s\n", cfg.Password)
+		fmt.Printf("login: %s\n", loginLine("webtmux:"+cfg.Password))
 	}
 	return sup.run(ctx)
 }
@@ -418,10 +428,9 @@ func adopt(ctx context.Context, o *options, ssh *sshRunner, p *probe, cfg *targe
 	case inst.ExeSHA == digest:
 		match = "matches " + srcDesc + " " + short12(digest)
 	case inst.Containerized:
-		match = "differs from " + srcDesc + " " + short12(digest) + " — expected: /proc/<pid>/exe is the container's binary"
+		match = "not the " + srcDesc + " binary (" + short12(digest) + "), as expected for a container's own build — informational, nothing to do"
 	default:
-		match = "differs from " + srcDesc + " " + short12(digest) +
-			" — adopting a webtmux that is not the build this launcher would install"
+		match = "not the " + srcDesc + " binary (" + short12(digest) + ") — informational; it is connected to as-is (--fresh starts the release build instead)"
 	}
 	for _, line := range inst.report(match) {
 		fmt.Println(line)
@@ -444,8 +453,9 @@ func adopt(ctx context.Context, o *options, ssh *sshRunner, p *probe, cfg *targe
 		url:       url,
 		out:       os.Stdout,
 		noBrowser: o.noBrowser || (inst.needsCredential() && !inst.credentialRecoverable()),
-		// nil remoteCmd => a bare `ssh -N -L …` forward. The adopted webtmux is
-		// the user's long-lived process and must outlive us.
+		// nil remoteCmd => a bare `ssh -N -L …` forward on the tunnel's own
+		// connection. The adopted webtmux is the user's long-lived process and
+		// must outlive us, so nothing runs on the remote side at all.
 		remoteCmd: nil,
 	}
 	if sup.noBrowser && inst.needsCredential() && !inst.credentialRecoverable() {

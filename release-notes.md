@@ -31,6 +31,27 @@ launcher's checksums are in their own file, `SHA256SUMS.launcher`; `SHA256SUMS`
 stays exactly the webtmux binaries, because it is the file the launcher reads to
 decide whether a target already has the right binary.
 
+The target is anything `ssh` accepts — a host, `user@host`, a `~/.ssh/config`
+alias, or `ssh://user@host:2222` for SSH on another port (`user@host:port` does
+not work: `ssh` reads it as a host name). `webtmux-launch --help` and the README
+list the forms.
+
+Changes to the launcher itself in this release:
+
+- **The tunnel has its own SSH connection.** It used to ride the connection the
+  setup steps share, and when the launcher attached to an already-running webtmux
+  that made it print "reconnecting…" forever while the page worked — and left the
+  forward depending on a connection that closes itself after 60 idle seconds. Setup
+  still shares one connection (one password prompt); the tunnel is a separate one,
+  so the process the launcher watches is the tunnel. With a password or 2FA login
+  that is one extra prompt when the tunnel starts.
+- **A dead tunnel is noticed in ~15–20 seconds, not ~45**, and reconnected without
+  you: keepalives every 5s, plus a check through the forward every 5s that bounces
+  the tunnel after three misses. That covers a laptop switching networks, where
+  `ssh` keeps running on a dead connection.
+- **Plainer output.** Lines that need no action say they are informational; the
+  login is printed as the user and password to type at the browser's prompt.
+
 ## Stoplights: how long, and a green that is not a turn
 
 - **A duration beside every dot**, on recents tabs, sidebar rows and preview tiles, so a wall of

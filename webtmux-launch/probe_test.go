@@ -136,7 +136,7 @@ func TestContainerizedInstanceSoftensReporting(t *testing.T) {
 	if strings.Contains(report, "WARNING: bound to") {
 		t.Errorf("container-relative bind must not raise the exposure warning:\n%s", report)
 	}
-	if !strings.Contains(report, "container-relative") {
+	if !strings.Contains(report, "INSIDE its container") {
 		t.Errorf("report should explain the softening:\n%s", report)
 	}
 }
@@ -176,5 +176,18 @@ func TestProbeFindsTmuxOffTheBarePath(t *testing.T) {
 	// launcher would report "creating session" over an existing one.
 	if !strings.Contains(probeScript, `"$wtl_tmux" list-sessions`) {
 		t.Error("the session list still calls bare tmux")
+	}
+}
+
+func TestLoginLineSplitsOnFirstColon(t *testing.T) {
+	cases := map[string]string{
+		"admin:altctl254": "user admin, password altctl254",
+		"webtmux:a:b":     "user webtmux, password a:b",
+		"justapassword":   "password justapassword",
+	}
+	for in, want := range cases {
+		if got := loginLine(in); got != want {
+			t.Errorf("loginLine(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

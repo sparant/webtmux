@@ -26,7 +26,9 @@ type sshRunner struct {
 }
 
 // newSSHRunner sets up connection multiplexing so ONE password/2FA prompt
-// covers the probe, the copy and the tunnel instead of three.
+// covers the whole setup phase — probe, copy, session checks — instead of one
+// per step. The long-lived tunnel deliberately does NOT ride it; see
+// TunnelCommand.
 //
 // Deviation from the plan, deliberate: the plan suggested ControlPath
 // ~/.ssh/cm-webtmux-%C. We hash the target ourselves instead, because after a
@@ -53,27 +55,63 @@ func homeDir() string {
 	return os.Getenv("HOME")
 }
 
-// baseArgs is passed on EVERY ssh invocation, identically.
+// baseArgs is passed on every SETUP ssh invocation (Run, RunWithStdin, the mux
+// control commands), identically.
 //
-// The mux gotcha that makes this non-negotiable: keepalive options set on a mux
-// *client* are ignored — only the connection that becomes master owns the TCP
-// link and its ServerAlive* behaviour. So keepalives cannot be "the supervised
-// command's concern" and mux options "the probe's". With ControlMaster=auto,
+// The mux gotcha that makes "identically" non-negotiable: keepalive options set
+// on a mux *client* are ignored — only the connection that becomes master owns
+// the TCP link and its ServerAlive* behaviour. With ControlMaster=auto,
 // whichever call runs first becomes master and carries the keepalives;
 // everything later rides it.
+func (r *sshRunner) baseArgs() []string {
+	return append([]string{
+		"-o", "ControlMaster=auto",
+		"-o", "ControlPath=" + r.controlPath,
+		"-o", "ControlPersist=60s",
+	}, keepaliveArgs...)
+}
+
+// keepaliveArgs: a dead link is declared after ~15s (5s x 3) rather than ~45s.
+// The launcher's typical client is a laptop that sleeps and changes networks,
+// and after a network switch ssh stays alive on a dead TCP connection until
+// these give up — 15s is the difference between "it reconnected" and "it is
+// broken, I will restart it". The same values scripts that kept tunnels up for
+// a long time settled on.
 //
 // ServerAliveInterval does double duty: it detects a dead link, AND it prevents
 // the most common cause of perceived flakiness outright — NAT/firewall idle
 // timeouts — by keeping traffic flowing.
-func (r *sshRunner) baseArgs() []string {
-	return []string{
-		"-o", "ControlMaster=auto",
-		"-o", "ControlPath=" + r.controlPath,
-		"-o", "ControlPersist=60s",
-		"-o", "ServerAliveInterval=15",
-		"-o", "ServerAliveCountMax=3",
-		"-o", "ConnectTimeout=10",
-	}
+var keepaliveArgs = []string{
+	"-o", "ServerAliveInterval=5",
+	"-o", "ServerAliveCountMax=3",
+	"-o", "ConnectTimeout=10",
+}
+
+// tunnelArgs is the long-lived tunnel's own option set: its OWN TCP connection,
+// never a client of the setup mux.
+//
+// It used to ride the mux, and every tunnel bug came from that. Under a live
+// master, `ssh -N -L` hands its forward to the master and exits 0 at once, so
+// the supervisor watched a process that had nothing to do with the tunnel and
+// "reconnected" forever; the forward then lived only as long as the master's
+// ControlPersist, kept alive by those spurious reconnects; and a master killed
+// by a network drop left a stale socket every reconnect had to clear first.
+// With its own connection, the process the supervisor waits on IS the link: it
+// exits exactly when the tunnel is gone, and nothing else can take it down.
+//
+// Cost: one more authentication when the tunnel starts and on each reconnect —
+// nothing with a key or agent; one prompt for password/2FA users, who already
+// re-authenticated on any reconnect whose master had died.
+//
+// ControlPath=none disables multiplexing outright, whatever ~/.ssh/config says.
+// ssh takes the FIRST value it sees for an option, so this must never be
+// combined with baseArgs.
+func tunnelArgs() []string {
+	return append([]string{
+		"-o", "ControlMaster=no",
+		"-o", "ControlPath=none",
+		"-o", "ExitOnForwardFailure=yes",
+	}, keepaliveArgs...)
 }
 
 func (r *sshRunner) logArgs(args []string) {
@@ -113,15 +151,15 @@ func (r *sshRunner) RunWithStdin(ctx context.Context, remote string, stdin io.Re
 }
 
 // TunnelCommand builds the one supervised subprocess: a local forward and the
-// remote process in a single ssh invocation. When remote is empty this is a
-// bare forward (-N), which is what adopt mode wants — there the remote webtmux
-// is the user's own long-lived process and must not die with our connection.
+// remote process in a single ssh invocation, on its own connection (see
+// tunnelArgs). When remote is empty this is a bare forward (-N), which is what
+// adopt mode wants — there the remote webtmux is the user's own long-lived
+// process and must not die with our connection.
 //
 // ExitOnForwardFailure turns a port collision into a clean failure instead of a
 // tunnel-less session that looks fine until the browser cannot connect.
 func (r *sshRunner) TunnelCommand(ctx context.Context, localPort, remotePort int, remote string) *exec.Cmd {
-	args := append(r.baseArgs(),
-		"-o", "ExitOnForwardFailure=yes",
+	args := append(tunnelArgs(),
 		"-L", fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", localPort, remotePort),
 	)
 	if remote == "" {
@@ -135,32 +173,15 @@ func (r *sshRunner) TunnelCommand(ctx context.Context, localPort, remotePort int
 	return cmd
 }
 
-// Shutdown tears the mux master down on exit.
-//
-// This is not tidiness: the master owns the -L forward, so with
-// ControlPersist=60s it keeps the LOCAL port bound for a minute after the
-// launcher exits. The next run would then find its stored port taken and
-// allocate a different one — silently breaking the URL stability that the
-// per-target config exists to provide. Our tunnel must not outlive us.
+// Shutdown tears the setup mux master down on exit, rather than leaving it to
+// ControlPersist. The tunnel no longer rides it, but a master left by an OLDER
+// launcher may still own a -L forward — holding our stored local port, so the
+// next run would silently move to a new URL. main calls this when it finds its
+// stored port busy for exactly that reason.
 func (r *sshRunner) Shutdown(ctx context.Context) {
 	args := append(r.baseArgs(), "-O", "exit", r.target)
 	_ = exec.CommandContext(ctx, "ssh", args...).Run()
 	_ = os.Remove(r.controlPath)
-}
-
-// ClearStaleMaster drops a dead mux master between reconnect attempts. Without
-// this a reconnect hangs on a socket whose connection is gone instead of
-// establishing a fresh one. Unlike Shutdown it leaves a LIVE master alone —
-// that master is what makes the reconnect a single handshake.
-func (r *sshRunner) ClearStaleMaster(ctx context.Context) {
-	args := append(r.baseArgs(), "-O", "check", r.target)
-	if err := exec.CommandContext(ctx, "ssh", args...).Run(); err == nil {
-		return // master alive — leave it
-	}
-	// -O exit fails too when the master is already gone; the socket file can
-	// survive that, and ssh will try to use it. Remove it ourselves — the
-	// reason this type owns an explicit ControlPath.
-	r.Shutdown(ctx)
 }
 
 // shellQuote wraps a string for safe interpolation into a remote sh command.
