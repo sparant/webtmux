@@ -1,5 +1,5 @@
 // Keyboard-shortcuts overlay: a discoverable cheat-sheet of every webtmux hotkey.
-// Opened from the sidebar's "Keyboard shortcuts" button or Ctrl+Alt+/ (tmux's
+// Opened from the toolbar's ⌨ button or Ctrl+Alt+K (k = keys; tmux's
 // `?`/list-keys), and dismissed with Esc, the same key, or a backdrop click.
 //
 // The global chords use the Ctrl+Alt modifier (Ctrl+Option on macOS) and, where
@@ -43,8 +43,8 @@ const GROUPS = [
       { keys: [...M, 'L'], desc: 'Cycle most-recently-used windows — hold the chord and tap L to walk back through history (⇧L reverses); releasing the chord commits where you landed, like alt-tab' },
       { keys: [...M, ','], desc: 'Rename the current window (caret at the end, ready to add to the name) — tmux ⌃b ,' },
       { keys: [...M, 'B'], desc: 'Show / hide the build-id chip (top-left)' },
-      { keys: [...M, '/'], desc: 'Show this shortcuts list — tmux ⌃b ?' },
-      { keys: [...M, '?'], desc: 'The help overlay, staying up without holding (tap the two keys, or ? again, to close it)' },
+      { keys: [...M, 'K'], desc: 'Show this shortcuts list (k = keys)' },
+      { keys: [...M, '?'], desc: 'The help overlay, staying up without holding — arrows and notes on every part of the screen (tap the two keys, Enter or Esc to close it) — tmux ⌃b ?' },
       { keys: [...M, 'hold'], desc: 'Hold just the two keys for a moment (no other key): the help overlay — notes and arrows on every part of the screen, with their keys. Point toward a part for more detail; keys and clicks keep working; let go to hide' },
     ],
   },
@@ -254,7 +254,7 @@ class WebtmuxShortcuts extends LitElement {
     else this.openOverlay();
   }
 
-  // While open, Escape closes. (Ctrl+Alt+/ re-toggle is handled globally by the
+  // While open, Escape closes. (Ctrl+Alt+K re-toggle is handled globally by the
   // SplitManager, which calls toggle() and closes us.)
   _onKey(e) {
     if (!this.open) return;

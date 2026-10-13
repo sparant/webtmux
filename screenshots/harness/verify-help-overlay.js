@@ -254,7 +254,16 @@ setTimeout(() => { console.log('FAIL  driver timed out'); process.exit(3); }, 48
   await releaseChord();
   await page.keyboard.press('Control+Alt+b');
 
-  // ⌃⌥? : up without holding, tapped away.
+  // ⌃⌥? : up without holding, tapped away — with Shift or without (the ?-key).
+  await page.keyboard.press('Control+Alt+Slash'); await sleep(500);
+  check('⌃⌥/ (the ?-key, no Shift) shows it without holding', (await help()).mode === 'sticky');
+  check('…not the shortcut list', !(await page.evaluate(() => window.splitManager.shortcuts.open)));
+  await page.keyboard.press('Control+Alt+Slash'); await sleep(400);
+  check('the same key again closes it', (await help()).mode === null);
+  await page.keyboard.press('Control+Alt+k'); await sleep(500);
+  check('⌃⌥K opens the shortcut list', await page.evaluate(() => window.splitManager.shortcuts.open));
+  await page.keyboard.press('Control+Alt+k'); await sleep(400);
+  check('⌃⌥K again closes it', !(await page.evaluate(() => window.splitManager.shortcuts.open)));
   await page.keyboard.press('Control+Alt+Shift+Slash'); await sleep(500);
   check('⌃⌥? shows it without holding', (await help()).mode === 'sticky');
   await sleep(1200);

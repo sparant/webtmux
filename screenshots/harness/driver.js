@@ -280,7 +280,7 @@ const unionRect = (sel) => page.evaluate((s) => {
   });
 
   await shot('keyboard-shortcuts', async () => {
-    await chord('/');
+    await chord('k');
     await sleep(1000);
     await page.screenshot(jpg('keyboard-shortcuts'));
     await page.keyboard.press('Escape');
