@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -215,7 +216,7 @@ func TestConfigPathSanitisesTarget(t *testing.T) {
 
 func TestTargetConfigReusesStoredValues(t *testing.T) {
 	c := &targetConfig{path: filepath.Join(t.TempDir(), "t.json")}
-	if err := c.ensure(0, 0); err != nil {
+	if _, err := c.ensure(0); err != nil {
 		t.Fatal(err)
 	}
 	first := *c
@@ -235,7 +236,7 @@ func TestTargetConfigReusesStoredValues(t *testing.T) {
 	// A second run must reuse the URL, so an already-open browser tab revives
 	// through its own --reconnect loop.
 	c2 := loadTargetConfigFrom(c.path)
-	if err := c2.ensure(0, 0); err != nil {
+	if _, err := c2.ensure(0); err != nil {
 		t.Fatal(err)
 	}
 	if c2.Secret != first.Secret || c2.RemotePort != first.RemotePort {
@@ -337,5 +338,40 @@ func TestConsoleSaysWhatRunsAndHowItIsKeptUp(t *testing.T) {
 		if !strings.Contains(tl, want) {
 			t.Errorf("tunnel line lacks %q: %s", want, tl)
 		}
+	}
+}
+
+// The saved remote port is the launcher's OWN. A value outside its range that
+// the user did not ask for is the leftover of adopt mode once saving the
+// adopted instance's port (8090, a container's) — replaced, with a note. A port
+// the user asked for with --remote-port is kept, whatever it is.
+func TestEnsureRepairsAnAdoptedRemotePortButKeepsAChosenOne(t *testing.T) {
+	dir := t.TempDir()
+
+	leftover := &targetConfig{path: filepath.Join(dir, "a.json"), RemotePort: 8090}
+	note, err := leftover.ensure(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inRandomRange(leftover.RemotePort) {
+		t.Errorf("8090 left over from an adopt must be replaced, got %d", leftover.RemotePort)
+	}
+	if !strings.Contains(note, "8090") || !strings.Contains(note, fmt.Sprint(leftover.RemotePort)) {
+		t.Errorf("the replacement must be reported with both ports: %q", note)
+	}
+
+	own := &targetConfig{path: filepath.Join(dir, "b.json"), RemotePort: 41234}
+	if note, _ := own.ensure(0); own.RemotePort != 41234 || note != "" {
+		t.Errorf("a port the launcher picked must be kept silently: %d %q", own.RemotePort, note)
+	}
+
+	chosen := &targetConfig{path: filepath.Join(dir, "c.json")}
+	chosen.useRemotePort(8090)
+	if note, _ := chosen.ensure(0); chosen.RemotePort != 8090 || note != "" {
+		t.Errorf("a --remote-port the user chose must be kept: %d %q", chosen.RemotePort, note)
+	}
+	chosen.save()
+	if again := loadTargetConfigFrom(chosen.path); !again.RemotePortChosen {
+		t.Error("the choice must survive a save/load, or the next run would 'repair' it away")
 	}
 }

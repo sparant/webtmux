@@ -20,9 +20,20 @@ import (
 )
 
 type targetConfig struct {
-	LocalPort  int    `json:"local_port"`
-	RemotePort int    `json:"remote_port"`
-	Secret     string `json:"secret"`
+	LocalPort int `json:"local_port"`
+	// RemotePort is the port the launcher's OWN webtmux listens on, on the
+	// target. Never the port of a webtmux it adopted: that one is used for the
+	// run and not saved (see adopt). It once was saved, and the next launch
+	// then started its own webtmux on the adopted instance's port — e.g. 8090,
+	// where a containerised webtmux publishes — blocking that instance's
+	// restart for as long as the launcher ran.
+	RemotePort int `json:"remote_port"`
+	// RemotePortChosen marks a RemotePort the user asked for with
+	// --remote-port while launching, which is kept whatever its value.
+	// Unmarked values outside the launcher's own range are treated as the
+	// leftover of that old bug and replaced (see ensure).
+	RemotePortChosen bool   `json:"remote_port_chosen,omitempty"`
+	Secret           string `json:"secret"`
 	// Password is only used by --auth. It is deliberately NOT the secret path:
 	// reusing that would mean anyone who learned the URL already had the
 	// password, so basic auth would add nothing on the shared box it exists for.
@@ -80,42 +91,62 @@ func (c *targetConfig) save() error {
 
 // ensure fills in whatever is missing and validates what was stored. A stored
 // local port that has since been taken falls back to a fresh allocation.
-func (c *targetConfig) ensure(localOverride, remoteOverride int) error {
+//
+// --remote-port is deliberately NOT applied here: in adopt mode it selects
+// which running instance to connect to, and saving it would make that
+// instance's port the launcher's own. launch applies it (useRemotePort).
+//
+// It returns a note when it replaced a saved remote port, for the caller to
+// show when it starts its own webtmux.
+func (c *targetConfig) ensure(localOverride int) (note string, err error) {
 	if localOverride > 0 {
 		c.LocalPort = localOverride
-	}
-	if remoteOverride > 0 {
-		c.RemotePort = remoteOverride
 	}
 	if c.LocalPort == 0 || !localPortFree(c.LocalPort) {
 		p, err := freeLocalPort()
 		if err != nil {
-			return err
+			return "", err
 		}
 		c.LocalPort = p
+	}
+	if c.RemotePort != 0 && !c.RemotePortChosen && !inRandomRange(c.RemotePort) {
+		note = fmt.Sprintf("remote port %d in %s was not one this launcher picked or you asked for "+
+			"(most likely saved from a webtmux it connected to); replacing it", c.RemotePort, c.path)
+		c.RemotePort = 0
 	}
 	if c.RemotePort == 0 {
 		p, err := randomHighPort()
 		if err != nil {
-			return err
+			return "", err
 		}
 		c.RemotePort = p
+		if note != "" {
+			note += fmt.Sprintf(" with %d", p)
+		}
 	}
 	if c.Secret == "" {
 		s, err := randomSecret(32)
 		if err != nil {
-			return err
+			return "", err
 		}
 		c.Secret = s
 	}
 	if c.Password == "" {
 		pw, err := randomSecret(20)
 		if err != nil {
-			return err
+			return "", err
 		}
 		c.Password = pw
 	}
-	return nil
+	return note, nil
+}
+
+// useRemotePort applies an explicit --remote-port when the launcher starts its
+// own webtmux, and marks it as chosen so ensure never replaces it.
+func (c *targetConfig) useRemotePort(p int) {
+	if p > 0 {
+		c.RemotePort, c.RemotePortChosen = p, true
+	}
 }
 
 // freeLocalPort asks the kernel for one: bind 127.0.0.1:0, read the port, close.
@@ -141,13 +172,23 @@ func localPortFree(p int) bool {
 // cannot bind on the far side to find out. A collision is handled where it
 // surfaces: the supervisor sees the child die with "address already in use" and
 // reallocates.
+// The launcher's own remote ports come from [randomPortLow, randomPortLow+
+// randomPortSpan): high enough to stay clear of ports software conventionally
+// claims (8080, 8090, …), below the usual ephemeral range.
+const (
+	randomPortLow  = 30000
+	randomPortSpan = 20000
+)
+
 func randomHighPort() (int, error) {
-	n, err := rand.Int(rand.Reader, big.NewInt(20000))
+	n, err := rand.Int(rand.Reader, big.NewInt(randomPortSpan))
 	if err != nil {
 		return 0, err
 	}
-	return 30000 + int(n.Int64()), nil
+	return randomPortLow + int(n.Int64()), nil
 }
+
+func inRandomRange(p int) bool { return p >= randomPortLow && p < randomPortLow+randomPortSpan }
 
 const secretAlphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 

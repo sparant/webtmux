@@ -281,6 +281,11 @@ if wait_for /tmp/adopt1.log 'ready: http' 45; then
   grep -q 'build: matches' /tmp/adopt1.log && ok "reports a matching build" || skip "build match line: $(grep '  build:' /tmp/adopt1.log)"
   grep -q '^deployed:' /tmp/adopt1.log && no "adopt mode deployed a binary" || ok "adopt mode deployed nothing"
   grep -qE 'creating session|attaching to existing' /tmp/adopt1.log && no "adopt mode touched sessions" || ok "adopt mode created no session"
+  # The adopted instance's port is used for the run, never saved as the
+  # launcher's own — or the next launch would start its webtmux on 8123.
+  SAVED=$(sed -n 's/.*"remote_port": *\([0-9]*\).*/\1/p' ~/.config/webtmux-launch/*.json 2>/dev/null | head -1)
+  [ "$SAVED" != 8123 ] && ok "adopt mode did not save the adopted port as its own (saved: ${SAVED:-none})" \
+                       || no "adopt mode saved the adopted port 8123 as the launcher's own remote port"
   N=$(wt_count)
   [ "$N" = 1 ] && ok "still exactly one webtmux running" || no "$N webtmux processes running"
   UA=$(url_from /tmp/adopt1.log)

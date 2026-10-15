@@ -57,6 +57,12 @@ Changes to the launcher itself in this release:
   kept up. webtmux's own output goes to that log instead of filling the console.
   Lines that need no action say they are informational; the login is printed as
   the user and password to type at the browser's prompt.
+- **Its own webtmux never takes another webtmux's port.** Connecting to an
+  already-running webtmux (say a container's on 8090) used to save that port as
+  the launcher's own, so a later launch started its webtmux on 8090 and blocked
+  the container from restarting. The adopted port is now used only for that
+  connection; a launcher file that already holds such a port is repaired on the
+  next launch (it says so), and a port you pass with `--remote-port` is kept.
 - **Several tmux sessions: it picks the one `tmux attach` would** — a session
   nobody is attached to, most recently used first — and says so, instead of
   asking. `--session <name>` picks another.

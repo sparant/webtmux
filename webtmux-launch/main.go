@@ -184,7 +184,8 @@ func run(ctx context.Context, o *options) error {
 		fmt.Printf("target: %s %s (%s), tmux %s, home %s\n", p.OS, p.Arch, p.Platform,
 			strings.TrimPrefix(p.TmuxVer, "tmux "), p.Home)
 	}
-	if err := cfg.ensure(o.localPort, o.remotePort); err != nil {
+	portNote, err := cfg.ensure(o.localPort)
+	if err != nil {
 		return err
 	}
 
@@ -221,6 +222,11 @@ func run(ctx context.Context, o *options) error {
 	}
 
 	// --- step 4: and only now does a binary matter.
+	if o.remotePort > 0 {
+		cfg.useRemotePort(o.remotePort)
+	} else if portNote != "" {
+		fmt.Println(portNote)
+	}
 	return launch(ctx, o, ssh, p, cfg, session)
 }
 
@@ -341,7 +347,7 @@ func launch(ctx context.Context, o *options, ssh *sshRunner, p *probe, cfg *targ
 			if err != nil {
 				return 0
 			}
-			cfg.RemotePort = p
+			cfg.RemotePort, cfg.RemotePortChosen = p, false
 			_ = cfg.save()
 			return p
 		},
@@ -498,19 +504,23 @@ func adopt(ctx context.Context, o *options, ssh *sshRunner, p *probe, cfg *targe
 	if inst.Port == 0 {
 		return fmt.Errorf("could not read the running webtmux's port from /proc/%d/cmdline\n(use --fresh to start our own)", inst.PID)
 	}
-	cfg.RemotePort = inst.Port
+	// The tunnel aims at the ADOPTED instance's port, for this run only. It is
+	// not written to cfg: RemotePort is the port the launcher's own webtmux
+	// uses, and saving an adopted one made the next launch start webtmux on,
+	// say, a container's 8090.
+	remotePort := inst.Port
 	url := fmt.Sprintf("http://127.0.0.1:%d%s", cfg.LocalPort, inst.secretPath())
 	if err := cfg.save(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not persist ports for %s: %v\n", o.target, err)
 	}
 	fmt.Printf("run: nothing started — using the webtmux already running (pid %d), which keeps running after the launcher exits\n", inst.PID)
-	fmt.Println(tunnelLine(cfg.LocalPort, cfg.RemotePort, "if it drops, the launcher reconnects"))
+	fmt.Println(tunnelLine(cfg.LocalPort, remotePort, "if it drops, the launcher reconnects"))
 	fmt.Printf("url: %s\n", url)
 
 	sup := &supervisor{
 		ssh:       ssh,
 		local:     cfg.LocalPort,
-		remote:    cfg.RemotePort,
+		remote:    remotePort,
 		url:       url,
 		out:       os.Stdout,
 		noBrowser: o.noBrowser || (inst.needsCredential() && !inst.credentialRecoverable()),
