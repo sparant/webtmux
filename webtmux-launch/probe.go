@@ -32,13 +32,17 @@ type probe struct {
 	WebtmuxVer  string
 	Downloader  string // "curl" | "wget" | "" — can the target fetch its own binary?
 	Sessions    []string
-	// SessionLabels[name] is a human line for the "which session?" prompt.
+	// SessionLabels[name] is a human line describing the session.
 	SessionLabels map[string]string
-	CacheDirs     []string // ~/.cache/webtmux entries, newest first
-	Linger        string   // loginctl Linger
-	KillUser      string   // logind.conf KillUserProcesses line, if set
-	SelfPIDNS     string
-	Instances     []instance
+	// SessionActivity / SessionAttached feed the same choice `tmux attach`
+	// makes with no target (see pickSession).
+	SessionActivity map[string]int64
+	SessionAttached map[string]bool
+	CacheDirs       []string // ~/.cache/webtmux entries, newest first
+	Linger          string   // loginctl Linger
+	KillUser        string   // logind.conf KillUserProcesses line, if set
+	SelfPIDNS       string
+	Instances       []instance
 }
 
 // probeScript is deliberately POSIX sh and tolerant of a missing /proc, missing
@@ -93,7 +97,7 @@ elif command -v wget >/dev/null 2>&1; then p DOWNLOADER wget
 else p DOWNLOADER ""; fi
 for f in $(ls -t "$HOME/.cache/webtmux" 2>/dev/null); do p CACHE "$f"; done
 if [ -n "$wtl_tmux" ]; then
-  "$wtl_tmux" list-sessions -F '#{session_windows} #{session_attached} #{session_name}' 2>/dev/null \
+  "$wtl_tmux" list-sessions -F '#{session_windows} #{session_attached} #{session_activity} #{session_name}' 2>/dev/null \
     | while read -r s; do p SESSION "$s"; done
 fi
 p LINGER "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || true)"
@@ -216,14 +220,18 @@ func parseProbe(out string) *probe {
 				p.CacheDirs = append(p.CacheDirs, val)
 			}
 		case "SESSION":
-			// "<windows> <attached> <name>" — name last because it is the field
-			// that can contain spaces.
-			if name, label, ok := parseSessionLine(val); ok {
-				p.Sessions = append(p.Sessions, name)
+			// "<windows> <attached> <activity> <name>" — name last because it is
+			// the field that can contain spaces.
+			if s, ok := parseSessionLine(val); ok {
+				p.Sessions = append(p.Sessions, s.name)
 				if p.SessionLabels == nil {
 					p.SessionLabels = map[string]string{}
+					p.SessionActivity = map[string]int64{}
+					p.SessionAttached = map[string]bool{}
 				}
-				p.SessionLabels[name] = label
+				p.SessionLabels[s.name] = s.label
+				p.SessionActivity[s.name] = s.activity
+				p.SessionAttached[s.name] = s.attached
 			}
 		case "LINGER":
 			p.Linger = val
@@ -278,27 +286,35 @@ func parseProbe(out string) *probe {
 // parseSessionLine splits "<windows> <attached> <name>" and builds the label the
 // chooser shows. Tolerates the older name-only form, so a probe that predates
 // this format still yields a usable session list rather than nothing.
-func parseSessionLine(v string) (name, label string, ok bool) {
+type sessionLine struct {
+	name, label string
+	activity    int64
+	attached    bool
+}
+
+func parseSessionLine(v string) (sessionLine, bool) {
 	if v == "" {
-		return "", "", false
+		return sessionLine{}, false
 	}
-	fields := strings.SplitN(v, " ", 3)
-	if len(fields) < 3 {
-		return v, v, true
+	fields := strings.SplitN(v, " ", 4)
+	if len(fields) < 4 {
+		return sessionLine{name: v, label: v}, true
 	}
-	windows, attached, name := fields[0], fields[1], fields[2]
+	windows, attached, activity, name := fields[0], fields[1], fields[2], fields[3]
 	if name == "" {
-		return "", "", false
+		return sessionLine{}, false
 	}
-	label = fmt.Sprintf("%s (%s window", name, windows)
+	s := sessionLine{name: name, attached: attached != "0"}
+	s.activity, _ = strconv.ParseInt(activity, 10, 64)
+	s.label = fmt.Sprintf("%s (%s window", name, windows)
 	if windows != "1" {
-		label += "s"
+		s.label += "s"
 	}
-	label += ")"
-	if attached != "0" {
-		label += " — attached"
+	s.label += ")"
+	if s.attached {
+		s.label += " — attached"
 	}
-	return name, label, true
+	return s, true
 }
 
 func parseEnvList(s string) map[string]string {

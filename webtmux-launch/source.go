@@ -364,6 +364,99 @@ func (r *releaseSource) Open(platform string) (io.ReadCloser, error) {
 	return os.Open(cached)
 }
 
+// republishedError: a pinned release's asset no longer matches the checksums
+// this launcher cached the first time it used that release, AND the release's
+// current SHA256SUMS agrees with what was downloaded — the release was
+// republished (or its files replaced) since. Never accepted silently: pinning
+// on first use is what makes a swapped release visible at all. The caller may
+// offer to trust the release as it is now (trust).
+type republishedError struct {
+	src                  *releaseSource
+	asset                string
+	cachedSum, servedSum string
+	cachedAt             time.Time
+	fresh                []byte // the release's current SHA256SUMS, as served
+}
+
+func (e *republishedError) Error() string {
+	when := "earlier"
+	if !e.cachedAt.IsZero() {
+		when = "on " + e.cachedAt.Format("2006-01-02")
+	}
+	return fmt.Sprintf(`the webtmux %s release on GitHub has changed since this launcher first used it:
+  %s  checksum cached %s: %s
+  %s  checksum GitHub serves now:  %s  (the download matches this)
+That happens when a release is republished — or when someone replaces its files.
+This launcher pins a release's checksums the first time it uses it, so a change
+is never accepted silently.`,
+		e.src.version, e.asset, when, short12(e.cachedSum), strings.Repeat(" ", len(e.asset)), short12(e.servedSum))
+}
+
+// trust replaces everything cached for this version — the pinned sums AND any
+// binaries downloaded under them — with the release as GitHub serves it now.
+func (e *republishedError) trust() error {
+	r := e.src
+	if err := os.RemoveAll(r.cacheDir); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(r.cacheDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(r.cacheDir, "SHA256SUMS"), e.fresh, 0o644); err != nil {
+		return err
+	}
+	r.sums = parseSums(string(e.fresh))
+	return nil
+}
+
+// diagnoseMismatch is asked after a download hashed to got instead of the
+// cached digest. It re-reads the release's SHA256SUMS from GitHub, bypassing
+// the cache, to tell the two very different causes apart:
+//
+//   - GitHub's current sums name got: the release was republished since this
+//     launcher cached it -> *republishedError, which the caller can offer to
+//     accept.
+//   - GitHub's current sums still name the cached digest: the bytes that
+//     arrived are not what the release publishes — corrupted or tampered with in
+//     transit. Refused, with no offer.
+//
+// nil means it could not tell (no network, a "latest" source whose sums are
+// never cached, an asset missing from the fresh sums): the caller keeps its own
+// error.
+func (r *releaseSource) diagnoseMismatch(platform, got string) error {
+	if r.version == "latest" || r.sums == nil {
+		return nil
+	}
+	asset := assetName(platform)
+	cached := r.sums[asset]
+	rc, err := r.get("SHA256SUMS")
+	if err != nil {
+		return nil
+	}
+	defer rc.Close()
+	raw, err := io.ReadAll(io.LimitReader(rc, 1<<20))
+	if err != nil {
+		return nil
+	}
+	served, ok := parseSums(string(raw))[asset]
+	switch {
+	case !ok:
+		return nil
+	case served == got && served != cached:
+		e := &republishedError{src: r, asset: asset, cachedSum: cached, servedSum: served, fresh: raw}
+		if st, err := os.Stat(filepath.Join(r.cacheDir, "SHA256SUMS")); err == nil {
+			e.cachedAt = st.ModTime()
+		}
+		return e
+	case served == cached:
+		return fmt.Errorf("the %s that arrived does not match the release's own checksum:\n"+
+			"  the release publishes %s, the download hashed to %s\n"+
+			"corrupted or altered in transit — nothing was installed. Re-run; if it persists, do not trust that network path.",
+			asset, short12(served), short12(got))
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // resolution
 // ---------------------------------------------------------------------------

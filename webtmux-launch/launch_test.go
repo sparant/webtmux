@@ -21,7 +21,7 @@ func TestRemoteCommandShape(t *testing.T) {
 	}
 	// The command must be the attach script, never tmux directly — split-view
 	// depends on the wrapper reading HTTP_WEBTMUX_SESSION.
-	if !strings.Contains(cmd, "'"+dep.AttachPath+"' &") {
+	if !strings.Contains(cmd, "'"+dep.AttachPath+"' >") {
 		t.Errorf("webtmux's command must be the attach script: %s", cmd)
 	}
 	// And the whole thing must be tied to the connection: without the stdin
@@ -82,7 +82,7 @@ func TestTrailingArgsReachTheAttachScript(t *testing.T) {
 	dep := planDeploy(&probe{Home: "/h"}, strings.Repeat("c", 64))
 	cfg := &targetConfig{Secret: "x"}
 	cmd := remoteCommand(dep, cfg, "main", "/usr/bin/tmux", &options{tmuxArgs: []string{"htop", "-d", "5"}})
-	if !strings.Contains(cmd, "'htop' '-d' '5' &") {
+	if !strings.Contains(cmd, "'htop' '-d' '5' >") {
 		t.Errorf("trailing args lost: %s", cmd)
 	}
 }
@@ -300,5 +300,42 @@ func TestSkipBinaryStillNeedsTheAttachScript(t *testing.T) {
 	}
 	if !strings.Contains(cmd, dep.AttachPath) {
 		t.Errorf("should still run our attach script: %s", cmd)
+	}
+}
+
+// webtmux's own output goes to a per-port log beside the binary, not back over
+// the connection; a non-zero exit (other than the SIGTERM the launcher sends on
+// its way out) replays the log's tail on stderr, which is what the supervisor's
+// port-collision check reads.
+func TestRemoteOutputGoesToALogWhoseTailSurfacesOnFailure(t *testing.T) {
+	dep := planDeploy(&probe{Home: "/h"}, strings.Repeat("d", 64))
+	cfg := &targetConfig{Secret: "x", RemotePort: 4242}
+	cmd := remoteCommand(dep, cfg, "main", "/usr/bin/tmux", &options{})
+	log := "'/h/.cache/webtmux/logs/webtmux-4242.log'"
+	if !strings.Contains(cmd, "> "+log+" 2>&1 &") && !strings.Contains(cmd, ">"+log+" 2>&1 &") {
+		t.Errorf("webtmux output must go to %s: %s", log, cmd)
+	}
+	if !strings.Contains(cmd, "[ $ec -eq 143 ] || tail -n 20 "+log+" >&2") {
+		t.Errorf("a failed start must replay the log on stderr: %s", cmd)
+	}
+}
+
+// The console names the exact command (and never a credential), and both modes
+// say how the tunnel is kept up.
+func TestConsoleSaysWhatRunsAndHowItIsKeptUp(t *testing.T) {
+	dep := planDeploy(&probe{Home: "/h"}, strings.Repeat("e", 64))
+	cfg := &targetConfig{Secret: "s3", RemotePort: 4242, Password: "hunter2"}
+	got := displayCommand(dep, cfg, &options{auth: true})
+	if !strings.HasPrefix(got, dep.BinaryPath+" -w -a 127.0.0.1 -p 4242 --path /s3/") || !strings.HasSuffix(got, dep.AttachPath) {
+		t.Errorf("run line: %s", got)
+	}
+	if strings.Contains(got, "hunter2") || strings.Contains(got, "--no-auth") {
+		t.Errorf("run line must not carry the credential, nor --no-auth under --auth: %s", got)
+	}
+	tl := tunnelLine(1111, 4242, "reconnects")
+	for _, want := range []string{"127.0.0.1:1111 on this machine", "127.0.0.1:4242 on the target", "its own SSH connection", "every 5s"} {
+		if !strings.Contains(tl, want) {
+			t.Errorf("tunnel line lacks %q: %s", want, tl)
+		}
 	}
 }

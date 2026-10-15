@@ -50,8 +50,24 @@ Changes to the launcher itself in this release:
   you: keepalives every 5s, plus a check through the forward every 5s that bounces
   the tunnel after three misses. That covers a laptop switching networks, where
   `ssh` keeps running on a dead connection.
-- **Plainer output.** Lines that need no action say they are informational; the
-  login is printed as the user and password to type at the browser's prompt.
+- **It says what it is doing.** Where the binary comes from, where it lands on
+  the target (and whether it was downloaded there, pushed over SSH, or already
+  present), the exact command it runs, that webtmux stops with the launcher while
+  tmux keeps running, where webtmux's log is on the target, and how the tunnel is
+  kept up. webtmux's own output goes to that log instead of filling the console.
+  Lines that need no action say they are informational; the login is printed as
+  the user and password to type at the browser's prompt.
+- **Several tmux sessions: it picks the one `tmux attach` would** — a session
+  nobody is attached to, most recently used first — and says so, instead of
+  asking. `--session <name>` picks another.
+- **A republished release is recognised, not misreported.** The launcher pins a
+  release's checksums the first time it uses it, so a release whose files change
+  is never accepted silently. When they do change, it now checks the release's
+  current checksums: if they match the download, it explains that the release was
+  republished, shows both checksums, and on a terminal offers to update its cache
+  and carry on (without a terminal it prints the one command that does). If they
+  do not match, the download is refused as corrupt or altered. It no longer falls
+  back to a second download over SSH that could only fail the same way.
 
 ## Hold Ctrl+Alt: the screen explains itself
 

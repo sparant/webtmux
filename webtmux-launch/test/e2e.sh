@@ -379,23 +379,23 @@ if wait_for /tmp/prio-session.log 'ready: http' 60; then
 fi
 kill_launcher "$pid"
 
-# Step 3, ambiguous: several sessions and no --session must ASK, and with no
-# terminal that means failing while naming --session rather than guessing.
+# Step 3, several sessions and no --session: the choice `tmux attach` makes
+# (unattached first, then most recent activity) — no prompt, terminal or not.
+# "second" was created last, so it is the most recently used.
 rsh 'tmux new-session -d -s second' >/dev/null 2>&1
 out=$(timeout 25 "$LAUNCH" --no-browser "$TARGET" < /dev/null 2>&1)
-if echo "$out" | grep -q -- '--session' && echo "$out" | grep -qi 'no terminal'; then
-  ok "several sessions with no tty: refuses and names --session"
+if echo "$out" | grep -q 'attaching to existing session "second" — the most recently used'; then
+  ok "several sessions: picks the most recently used, like tmux attach"
 else
-  no "ambiguous sessions not handled: $out"
+  no "several sessions not resolved like tmux attach: $(echo "$out" | grep -E 'attaching|creating|session')"
 fi
-# (Answering the prompt is unit-tested. It cannot be driven from here: a pipe is
-# correctly not a terminal, which is the whole point of the refusal above.)
-# An explicit --session still resolves it without a terminal.
+# An explicit --session overrides it — aimed at the session the pick would NOT
+# choose, so the check cannot pass by coincidence.
 # No head: --verbose echoes the whole probe script, so the interesting lines are
 # a long way down.
-out=$(timeout 25 "$LAUNCH" --no-browser --verbose --session second "$TARGET" < /dev/null 2>&1)
-echo "$out" | grep -q 'attaching to existing session "second"' \
-  && ok "--session resolves the ambiguity non-interactively" || no "--session ignored: $out"
+out=$(timeout 25 "$LAUNCH" --no-browser --verbose --session onlyone "$TARGET" < /dev/null 2>&1)
+echo "$out" | grep -q 'attaching to existing session "onlyone"' \
+  && ok "--session overrides the pick" || no "--session ignored: $out"
 
 # Step 1 beats step 3: with a webtmux running, sessions are never consulted.
 reset_target

@@ -23,6 +23,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"regexp"
 	"strings"
 )
 
@@ -83,9 +84,18 @@ func (d *deployment) run(ctx context.Context, r *sshRunner, p *probe, src Source
 		// as a capability, even though it is no longer the default path.
 		if rs, ok := src.(*releaseSource); ok && p.Downloader != "" {
 			err := d.fetchRemotely(ctx, r, p, rs)
-			if err == nil {
+			switch got, mismatch := remoteMismatch(err); {
+			case err == nil:
 				d.Copied, d.FetchedRemotely = true, true
-			} else {
+			case mismatch:
+				// The target downloaded the asset fine and it hashed to something
+				// else. Pushing it over SSH instead cannot help: this machine would
+				// download the same bytes and check them against the same digest.
+				if diag := rs.diagnoseMismatch(p.Platform, got); diag != nil {
+					return diag
+				}
+				return fmt.Errorf("the target's download of %s did not match its checksum (%v)", rs.Location(p.Platform), err)
+			default:
 				fmt.Fprintf(os.Stderr, "target could not fetch it itself (%v)\n  falling back to pushing it over the SSH connection\n", err)
 			}
 		}
@@ -108,9 +118,16 @@ func (d *deployment) run(ctx context.Context, r *sshRunner, p *probe, src Source
 		// install a binary under the wrong sha and poison the content-addressed
 		// cache for every later run.
 		got := sha256.Sum256(blob)
-		if hex.EncodeToString(got[:]) != d.Digest {
+		if gotHex := hex.EncodeToString(got[:]); gotHex != d.Digest {
+			if rs, ok := src.(*releaseSource); ok {
+				if diag := rs.diagnoseMismatch(p.Platform, gotHex); diag != nil {
+					return diag
+				}
+				return fmt.Errorf("%s did not match its checksum: expected %s, got %s",
+					src.Location(p.Platform), short12(d.Digest), short12(gotHex))
+			}
 			return fmt.Errorf("%s changed under us: expected sha %s, got %s\n(a concurrent build? re-run)",
-				src.Location(p.Platform), short12(d.Digest), short12(hex.EncodeToString(got[:])))
+				src.Location(p.Platform), short12(d.Digest), short12(gotHex))
 		}
 		if err := d.push(ctx, r, d.BinaryPath, blob, "755"); err != nil {
 			return fmt.Errorf("deploying webtmux: %v", err)
@@ -146,6 +163,31 @@ func (d *deployment) fetchRemotely(ctx context.Context, r *sshRunner, p *probe, 
 	}
 	return nil
 }
+
+// logPath is where webtmux's own output goes on the target: one file per
+// remote port, overwritten by each start. In logs/, NOT beside the binaries:
+// the cache's prune keeps the newest few "webtmux-*" entries, so a log named
+// like a binary would push real binaries out (and anything finding "the newest
+// binary" by that glob would pick a log).
+func (d *deployment) logPath(port int) string {
+	return path.Join(d.CacheDir, "logs", fmt.Sprintf("webtmux-%d.log", port))
+}
+
+// remoteMismatch recognises the fetch script's checksum failure and returns the
+// sha the target computed. Any other fetch error (no egress, a 404, no space) is
+// one the SSH push can still get around; this one it cannot.
+func remoteMismatch(err error) (got string, ok bool) {
+	if err == nil {
+		return "", false
+	}
+	m := remoteMismatchRE.FindStringSubmatch(err.Error())
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
+var remoteMismatchRE = regexp.MustCompile(`sha256 mismatch: wanted [0-9a-f]+, got ([0-9a-f]{64})`)
 
 // fetchCommandFor is the remote script, separated so its ordering — verify, THEN
 // install — can be asserted without a target.

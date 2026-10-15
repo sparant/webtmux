@@ -111,6 +111,10 @@ func tunnelArgs() []string {
 		"-o", "ControlMaster=no",
 		"-o", "ControlPath=none",
 		"-o", "ExitOnForwardFailure=yes",
+		// "channel N: open failed: connect failed" for every readiness poll
+		// that lands before webtmux listens is INFO-level noise; real failures
+		// (auth, host key, unreachable) are errors and still print.
+		"-o", "LogLevel=ERROR",
 	}, keepaliveArgs...)
 }
 

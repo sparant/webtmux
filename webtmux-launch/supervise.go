@@ -59,6 +59,10 @@ const (
 	// server still answers while the forward behind it is wedged.
 	defaultHealthEvery = 5 * time.Second
 	defaultHealthFails = 3
+
+	// probeHeader marks the launcher's own health checks; webtmux's request
+	// log skips requests carrying it (server/middleware.go).
+	probeHeader = "X-Webtmux-Probe"
 )
 
 // run is the supervisor loop. It returns when ctx is cancelled (Ctrl-C).
@@ -245,8 +249,16 @@ func watchHealth(ctx context.Context, client *http.Client, url string, every tim
 // answers reports whether webtmux is reachable through the forward. 401 counts:
 // it is up and asking for basic auth — an adopted instance whose credentials
 // we could not recover.
+//
+// The request carries probeHeader, which webtmux leaves out of its request log:
+// a check every 5s would otherwise be most of that log.
 func answers(client *http.Client, url string) bool {
-	resp, err := client.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set(probeHeader, "health")
+	resp, err := client.Do(req)
 	if err != nil {
 		return false
 	}

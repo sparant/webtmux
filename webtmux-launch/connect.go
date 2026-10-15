@@ -64,33 +64,49 @@ func pickInstance(insts []instance, wantPort int, c *chooser) (*instance, error)
 // pickSession implements step 3: attach to what is already there, and only
 // create when there is nothing to attach to.
 //
-// Returns the session name and whether it already exists — the caller reports
-// "attaching to" versus "creating", and the distinction is worth showing because
-// creating one on a box you thought had sessions means something is wrong.
-func pickSession(want string, p *probe, c *chooser) (name string, existed bool, err error) {
+// With several sessions and no --session it makes the choice `tmux attach`
+// makes with no target — prefer a session nobody is attached to, then the most
+// recently active — rather than asking. That is the answer a tmux user already
+// expects from "attach", and a wrong pick costs nothing: webtmux's sidebar
+// lists and switches every session, and --session decides it up front. (It
+// used to prompt, which interrupted every launch on a box with several
+// sessions to ask a question tmux answers on its own.)
+//
+// Returns the session name, whether it already exists — the caller reports
+// "attaching to" versus "creating", and the distinction is worth showing
+// because creating one on a box you thought had sessions means something is
+// wrong — and, when it chose among several, why.
+func pickSession(want string, p *probe) (name string, existed bool, why string) {
 	if want != "" {
-		return want, contains(p.Sessions, want), nil
+		return want, contains(p.Sessions, want), ""
 	}
 	switch len(p.Sessions) {
 	case 0:
-		return "main", false, nil
+		return "main", false, ""
 	case 1:
-		return p.Sessions[0], true, nil
+		return p.Sessions[0], true, ""
 	}
-	labels := make([]string, len(p.Sessions))
-	for i, s := range p.Sessions {
-		if l := p.SessionLabels[s]; l != "" {
-			labels[i] = l
-		} else {
-			labels[i] = s
+	best := ""
+	for _, s := range p.Sessions {
+		if best == "" || sessionBetter(p, s, best) {
+			best = s
 		}
 	}
-	idx, err := c.choose(fmt.Sprintf("%d tmux sessions exist on this machine", len(p.Sessions)),
-		labels, "pick one non-interactively with --session <name>")
-	if err != nil {
-		return "", false, err
+	why = fmt.Sprintf("the most recently used of %d sessions, as `tmux attach` would pick; --session <name> for another", len(p.Sessions))
+	if p.SessionAttached[best] {
+		why = fmt.Sprintf("the most recently used of %d sessions (all attached elsewhere), as `tmux attach` would pick; --session <name> for another", len(p.Sessions))
 	}
-	return p.Sessions[idx], true, nil
+	return best, true, why
+}
+
+// sessionBetter is tmux's own ordering for an untargeted attach-session
+// (cmd_find_best_session with CMD_FIND_PREFER_UNATTACHED): an unattached session
+// beats an attached one, then later activity wins. Ties keep list order.
+func sessionBetter(p *probe, a, b string) bool {
+	if p.SessionAttached[a] != p.SessionAttached[b] {
+		return !p.SessionAttached[a]
+	}
+	return p.SessionActivity[a] > p.SessionActivity[b]
 }
 
 // webtmuxVersionMatches decides whether a webtmux already on the target is the

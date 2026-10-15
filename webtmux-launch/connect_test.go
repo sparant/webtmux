@@ -89,61 +89,60 @@ func TestRemotePortSkipsTheQuestion(t *testing.T) {
 
 // Step 3: attach to what exists; create only when there is nothing to attach to.
 func TestSessionSelection(t *testing.T) {
-	c, _ := testChooser("", true)
-
-	name, existed, err := pickSession("", &probe{}, c)
-	if err != nil || name != "main" || existed {
-		t.Errorf("no sessions should create main: %q existed=%v err=%v", name, existed, err)
+	name, existed, _ := pickSession("", &probe{})
+	if name != "main" || existed {
+		t.Errorf("no sessions should create main: %q existed=%v", name, existed)
 	}
 
 	one := &probe{Sessions: []string{"services"}}
-	name, existed, err = pickSession("", one, c)
-	if err != nil || name != "services" || !existed {
-		t.Errorf("a single session should be used: %q existed=%v err=%v", name, existed, err)
+	name, existed, why := pickSession("", one)
+	if name != "services" || !existed || why != "" {
+		t.Errorf("a single session should be used, silently: %q existed=%v why=%q", name, existed, why)
 	}
 
 	// An explicit --session wins even when it does not exist yet.
-	name, existed, err = pickSession("brand-new", one, c)
-	if err != nil || name != "brand-new" || existed {
-		t.Errorf("--session ignored: %q existed=%v err=%v", name, existed, err)
+	name, existed, _ = pickSession("brand-new", one)
+	if name != "brand-new" || existed {
+		t.Errorf("--session ignored: %q existed=%v", name, existed)
 	}
 }
 
-func TestSeveralSessionsAsk(t *testing.T) {
+// Several sessions: the choice `tmux attach` makes — unattached first, then the
+// most recent activity — never a prompt.
+func TestSeveralSessionsPickLikeTmuxAttach(t *testing.T) {
 	p := &probe{
-		Sessions:      []string{"services", "scratch"},
-		SessionLabels: map[string]string{"services": "services (4 windows) — attached", "scratch": "scratch (1 window)"},
+		Sessions:        []string{"services", "claude-editors", "scratch"},
+		SessionActivity: map[string]int64{"services": 300, "claude-editors": 200, "scratch": 100},
+		SessionAttached: map[string]bool{"services": true},
 	}
-	c, out := testChooser("1\n", true)
-	name, existed, err := pickSession("", p, c)
-	if err != nil || name != "services" || !existed {
-		t.Fatalf("got %q existed=%v err=%v", name, existed, err)
+	name, existed, why := pickSession("", p)
+	if name != "claude-editors" || !existed {
+		t.Errorf("an unattached session beats a more recent attached one: got %q", name)
 	}
-	if !strings.Contains(out.String(), "4 windows") || !strings.Contains(out.String(), "attached") {
-		t.Errorf("the menu should carry enough to choose by:\n%s", out.String())
+	if !strings.Contains(why, "tmux attach") || !strings.Contains(why, "--session") {
+		t.Errorf("the pick should say why and how to choose another: %q", why)
 	}
-	c, _ = testChooser("", false)
-	if _, _, err := pickSession("", p, c); err == nil || !strings.Contains(err.Error(), "--session") {
-		t.Errorf("no-tty error should name --session: %v", err)
+
+	p.SessionAttached = map[string]bool{"services": true, "claude-editors": true, "scratch": true}
+	if name, _, why := pickSession("", p); name != "services" || !strings.Contains(why, "all attached") {
+		t.Errorf("all attached: the most recent wins and says so: %q (%q)", name, why)
+	}
+
+	p.SessionAttached = nil
+	p.SessionActivity = map[string]int64{"services": 1, "claude-editors": 5, "scratch": 5}
+	if name, _, _ := pickSession("", p); name != "claude-editors" {
+		t.Errorf("a tie keeps list order: got %q", name)
 	}
 }
 
 func TestSessionLineParsing(t *testing.T) {
-	name, label, ok := parseSessionLine("4 1 services")
-	if !ok || name != "services" || !strings.Contains(label, "4 windows") || !strings.Contains(label, "attached") {
-		t.Errorf("name=%q label=%q ok=%v", name, label, ok)
+	s, ok := parseSessionLine("4 1 1760000000 my services")
+	if !ok || s.name != "my services" || s.activity != 1760000000 || !s.attached ||
+		!strings.Contains(s.label, "4 windows") || !strings.Contains(s.label, "attached") {
+		t.Errorf("%+v ok=%v", s, ok)
 	}
-	// A name with spaces survives, because it is the LAST field.
-	name, _, _ = parseSessionLine("2 0 my project")
-	if name != "my project" {
-		t.Errorf("name with spaces mangled: %q", name)
-	}
-	// Singular reads correctly.
-	if _, label, _ = parseSessionLine("1 0 solo"); strings.Contains(label, "1 windows") {
-		t.Errorf("label should say 1 window: %q", label)
-	}
-	if _, _, ok := parseSessionLine(""); ok {
-		t.Error("empty line should not produce a session")
+	if s, ok := parseSessionLine("main"); !ok || s.name != "main" {
+		t.Errorf("a bare name must still parse: %+v ok=%v", s, ok)
 	}
 }
 

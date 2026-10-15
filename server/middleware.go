@@ -185,6 +185,11 @@ func (server *Server) wrapLogger(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rw := &logResponseWriter{w, 200}
 		handler.ServeHTTP(rw, r)
+		// webtmux-launch checks its tunnel every few seconds; logging each
+		// check would make them most of this log.
+		if r.Header.Get("X-Webtmux-Probe") != "" {
+			return
+		}
 		log.Printf("%s %d %s %s", r.RemoteAddr, rw.status, r.Method, r.URL.Path)
 	})
 }

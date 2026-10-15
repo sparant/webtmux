@@ -3,6 +3,8 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -327,5 +329,85 @@ func TestConfiguredSourceBeatsBesideTheLauncher(t *testing.T) {
 	}
 	if err := validateSourceConfig(&options{}, func(string) string { return "" }); err != nil {
 		t.Errorf("nothing configured is not an error: %v", err)
+	}
+}
+
+// A pinned release republished since this launcher cached its sums: the fresh
+// sums name what was downloaded, so it is reported as republished (with both
+// checksums) and trust() swaps the cache — sums AND any binary cached under
+// the old ones — for the release as served now.
+func TestRepublishedReleaseIsDiagnosedAndCanBeTrusted(t *testing.T) {
+	sumOf := func(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
+	oldSum, newSum := sumOf("old release bytes"), sumOf("new release bytes")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "SHA256SUMS") {
+			io.WriteString(w, newSum+"  webtmux-linux-amd64\n")
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	dir := filepath.Join(t.TempDir(), "v1")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "SHA256SUMS"), []byte(oldSum+"  webtmux-linux-amd64\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "webtmux-linux-amd64"), []byte("old release bytes"), 0o755)
+	r := &releaseSource{owner: "o", repo: "webtmux", version: "v1", cacheDir: dir, client: srv.Client(), urlBase: srv.URL}
+
+	if d, _ := r.Digest("linux-amd64"); d != oldSum {
+		t.Fatalf("precondition: the cached sum should be pinned, got %s", d)
+	}
+	var rep *republishedError
+	if err := r.diagnoseMismatch("linux-amd64", newSum); !errors.As(err, &rep) {
+		t.Fatalf("want a republished diagnosis, got %v", err)
+	}
+	msg := rep.Error()
+	for _, want := range []string{"changed since", short12(oldSum), short12(newSum), "republished"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("explanation lacks %q:\n%s", want, msg)
+		}
+	}
+	if err := rep.trust(); err != nil {
+		t.Fatal(err)
+	}
+	if d, _ := r.Digest("linux-amd64"); d != newSum {
+		t.Errorf("after trust the digest should be the served one, got %s", d)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "webtmux-linux-amd64")); !os.IsNotExist(err) {
+		t.Error("a binary cached under the old sums must not survive trust()")
+	}
+}
+
+// The release's own current sums still name the cached digest, yet the bytes
+// hashed to something else: corruption or tampering, refused with no offer.
+func TestMismatchAgainstUnchangedReleaseIsRefused(t *testing.T) {
+	sumOf := func(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
+	pinned := sumOf("the real release")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, pinned+"  webtmux-linux-amd64\n")
+	}))
+	defer srv.Close()
+	dir := filepath.Join(t.TempDir(), "v1")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "SHA256SUMS"), []byte(pinned+"  webtmux-linux-amd64\n"), 0o644)
+	r := &releaseSource{owner: "o", repo: "webtmux", version: "v1", cacheDir: dir, client: srv.Client(), urlBase: srv.URL}
+	r.Digest("linux-amd64")
+
+	err := r.diagnoseMismatch("linux-amd64", sumOf("something else"))
+	var rep *republishedError
+	if err == nil || errors.As(err, &rep) || !strings.Contains(err.Error(), "does not match the release's own checksum") {
+		t.Fatalf("want a hard refusal, got %v", err)
+	}
+}
+
+// The target's fetch script reports a checksum failure in one specific shape;
+// only that shape skips the push fallback.
+func TestRemoteMismatchIsRecognised(t *testing.T) {
+	full := strings.Repeat("ab", 32)
+	if got, ok := remoteMismatch(fmt.Errorf("exit status 1: sha256 mismatch: wanted b98790b6769b, got %s", full)); !ok || got != full {
+		t.Errorf("got %q ok=%v", got, ok)
+	}
+	if _, ok := remoteMismatch(fmt.Errorf("exit status 6: curl: (6) Could not resolve host")); ok {
+		t.Error("a network failure must still fall back to pushing over SSH")
 	}
 }

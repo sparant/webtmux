@@ -13,6 +13,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -208,12 +209,13 @@ func run(ctx context.Context, o *options) error {
 	}
 
 	// --- step 3: nothing running, so decide which tmux session to attach to.
-	session, existed, err := pickSession(o.session, p, ask)
-	if err != nil {
-		return err
-	}
+	session, existed, why := pickSession(o.session, p)
 	if existed {
-		fmt.Printf("attaching to existing session %q\n", session)
+		if why != "" {
+			fmt.Printf("attaching to existing session %q — %s\n", session, why)
+		} else {
+			fmt.Printf("attaching to existing session %q\n", session)
+		}
 	} else {
 		fmt.Printf("creating session %q\n", session)
 	}
@@ -267,16 +269,40 @@ func resolveBinary(ctx context.Context, o *options, ssh *sshRunner, p *probe) (*
 	}
 
 	dep := planDeploy(p, digest)
-	if err := dep.run(ctx, ssh, p, src, o.forceCopy); err != nil {
+	err = dep.run(ctx, ssh, p, src, o.forceCopy)
+	var rep *republishedError
+	if errors.As(err, &rep) {
+		fmt.Println(rep.Error())
+		dir := rep.src.cacheDir
+		ok, askErr := newChooser().confirm(
+			fmt.Sprintf("Trust the release as GitHub serves it now, and replace the cached copy in %s?", dir),
+			fmt.Sprintf("not trusted (no terminal to ask). To accept the release as it is now:\n  rm -rf %s\nand re-run.", dir))
+		if askErr != nil {
+			return nil, askErr
+		}
+		if !ok {
+			return nil, fmt.Errorf("not trusted; nothing was installed. To accept it later: rm -rf %s and re-run", dir)
+		}
+		if err := rep.trust(); err != nil {
+			return nil, fmt.Errorf("updating %s: %v", dir, err)
+		}
+		if digest, err = src.Digest(p.Platform); err != nil {
+			return nil, err
+		}
+		fmt.Printf("updated %s; now installing %s\n", dir, short12(digest))
+		dep = planDeploy(p, digest)
+		err = dep.run(ctx, ssh, p, src, o.forceCopy)
+	}
+	if err != nil {
 		return nil, err
 	}
 	switch {
 	case dep.FetchedRemotely:
 		fmt.Printf("target downloaded it: %s\n", dep.BinaryPath)
 	case dep.Copied:
-		fmt.Printf("deployed: %s\n", dep.BinaryPath)
-	case o.verbose:
-		fmt.Printf("already present: %s (no transfer)\n", dep.BinaryPath)
+		fmt.Printf("deployed: %s (pushed over SSH from this machine)\n", dep.BinaryPath)
+	default:
+		fmt.Printf("already present: %s (on the target from an earlier run; no transfer)\n", dep.BinaryPath)
 	}
 	return dep, nil
 }
@@ -323,6 +349,11 @@ func launch(ctx context.Context, o *options, ssh *sshRunner, p *probe, cfg *targ
 	if err := cfg.save(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not persist ports for %s: %v\n", o.target, err)
 	}
+	logPath := dep.logPath(cfg.RemotePort)
+	fmt.Printf("run: %s\n", displayCommand(dep, cfg, o))
+	fmt.Printf("     started by this launcher over SSH and stopped when it exits — tmux and its sessions keep running\n")
+	fmt.Printf("     webtmux's log on the target: %s\n", logPath)
+	fmt.Println(tunnelLine(cfg.LocalPort, cfg.RemotePort, "if it drops, the launcher reconnects and starts webtmux again"))
 	fmt.Printf("url: %s\n", cfg.url())
 	if o.auth {
 		// Chrome dropped http://user:pass@host URLs, so the credential cannot
@@ -373,7 +404,27 @@ func remoteCommand(dep *deployment, cfg *targetConfig, session string, tmuxPath 
 	for _, a := range o.tmuxArgs {
 		b.WriteString(" " + shellQuote(a))
 	}
-	return tieToConnection(b.String())
+	return tieToConnection(b.String(), dep.logPath(cfg.RemotePort))
+}
+
+// displayCommand is the webtmux invocation as the user should read it: the
+// binary and its arguments, without the environment plumbing and the
+// connection-tying wrapper around it — and never a credential.
+func displayCommand(dep *deployment, cfg *targetConfig, o *options) string {
+	parts := []string{dep.BinaryPath, "-w", "-a", "127.0.0.1", "-p", fmt.Sprint(cfg.RemotePort),
+		"--path", cfg.urlPath(), "--reconnect"}
+	if !o.auth {
+		parts = append(parts, "--no-auth")
+	}
+	parts = append(parts, dep.AttachPath)
+	parts = append(parts, o.tmuxArgs...)
+	return strings.Join(parts, " ")
+}
+
+// tunnelLine says how the browser reaches webtmux and what keeps that working.
+func tunnelLine(local, remote int, onDrop string) string {
+	return fmt.Sprintf("tunnel: 127.0.0.1:%d on this machine -> 127.0.0.1:%d on the target, over its own SSH connection;\n"+
+		"        checked every %ds — %s", local, remote, int(defaultHealthEvery.Seconds()), onDrop)
 }
 
 // tieToConnection is what actually makes webtmux disposable.
@@ -399,10 +450,18 @@ func remoteCommand(dep *deployment, cfg *targetConfig, session string, tmuxPath 
 // first, the backgrounded reader would read EOF from /dev/null instantly and
 // kill webtmux the moment it started. Backgrounding webtmux itself gets the same
 // /dev/null treatment, which is what we want for it.
-func tieToConnection(cmd string) string {
-	return "exec 3<&0; { " + cmd + " & } ; p=$!; " +
+//
+// webtmux's own output goes to logPath on the target, not back over the
+// connection: it logs every request, which buried the launcher's own lines in
+// the console. When it exits non-zero the log's tail is replayed on stderr, so a
+// startup failure still reaches the user — and the supervisor's port-collision
+// check, which reads that stderr, still sees "address already in use".
+func tieToConnection(cmd, logPath string) string {
+	log := shellQuote(logPath)
+	return "mkdir -p " + shellQuote(path.Dir(logPath)) + "; exec 3<&0; { " + cmd + " >" + log + " 2>&1 & } ; p=$!; " +
 		"{ cat <&3 >/dev/null; kill -TERM $p 2>/dev/null; } & r=$!; " +
-		"wait $p; ec=$?; kill $r 2>/dev/null; exit $ec"
+		"wait $p; ec=$?; kill $r 2>/dev/null; " +
+		"[ $ec -eq 0 ] || [ $ec -eq 143 ] || tail -n 20 " + log + " >&2; exit $ec"
 }
 
 // adopt connects to the webtmux that is already running. It skips deploy,
@@ -444,6 +503,8 @@ func adopt(ctx context.Context, o *options, ssh *sshRunner, p *probe, cfg *targe
 	if err := cfg.save(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not persist ports for %s: %v\n", o.target, err)
 	}
+	fmt.Printf("run: nothing started — using the webtmux already running (pid %d), which keeps running after the launcher exits\n", inst.PID)
+	fmt.Println(tunnelLine(cfg.LocalPort, cfg.RemotePort, "if it drops, the launcher reconnects"))
 	fmt.Printf("url: %s\n", url)
 
 	sup := &supervisor{

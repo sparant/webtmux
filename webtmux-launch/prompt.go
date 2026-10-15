@@ -2,11 +2,10 @@ package main
 
 // Asking the user to choose, when the launcher genuinely cannot know.
 //
-// There are exactly two such moments: several webtmux instances are running, and
-// several tmux sessions exist with no --session given. Both are cases where any
-// automatic pick would be a guess that silently connects you to the wrong thing
-// — the failure mode is not an error message, it is a terminal showing someone
-// else's work.
+// Several webtmux instances running is such a moment: any automatic pick would
+// be a guess that silently connects you to the wrong server. (Several tmux
+// sessions is NOT — `tmux attach` has a well-known answer for that, and the
+// launcher gives the same one; see pickSession.)
 //
 // When there is no terminal to ask (a script, a cron job, a pipe), asking is
 // impossible and guessing is still wrong, so the launcher fails and names the
@@ -94,4 +93,20 @@ func (c *chooser) choose(title string, labels []string, noTTYHint string) (int, 
 		fmt.Fprintf(c.out, "  not a choice between 1 and %d\n", len(labels))
 	}
 	return -1, fmt.Errorf("no valid choice after 3 attempts\n(%s)", noTTYHint)
+}
+
+// confirm asks a yes/no question; anything but y/yes is no. With no terminal it
+// cannot ask, so it answers no and returns noTTYHint as the error — which must
+// say how to do it non-interactively.
+func (c *chooser) confirm(question, noTTYHint string) (bool, error) {
+	if !c.interactive {
+		return false, fmt.Errorf("%s", noTTYHint)
+	}
+	fmt.Fprintf(c.out, "%s [y/N] ", question)
+	line, _ := bufio.NewReader(c.in).ReadString('\n')
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true, nil
+	}
+	return false, nil
 }
