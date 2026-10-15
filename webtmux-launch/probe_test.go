@@ -191,3 +191,21 @@ func TestLoginLineSplitsOnFirstColon(t *testing.T) {
 		}
 	}
 }
+
+// webtmux's flag is --url-path (it was --path / -m before v0.3.0). Reading a
+// running instance's command line accepts both spellings and both forms, since
+// an instance started by an older build still says --path.
+func TestInstanceReadsUrlPathAndTheOldPath(t *testing.T) {
+	for _, argv := range [][]string{
+		{"webtmux", "--url-path", "/new/"},
+		{"webtmux", "--url-path=/new/"},
+		{"webtmux", "--path", "/new/"},
+		{"webtmux", "-m", "/new/"},
+	} {
+		i := &instance{Cmdline: argv}
+		i.parse("")
+		if i.Path != "/new/" {
+			t.Errorf("%v: Path = %q", argv, i.Path)
+		}
+	}
+}

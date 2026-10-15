@@ -26,7 +26,7 @@ type instance struct {
 	// parsed out of Cmdline / Env
 	Port          int
 	Address       string
-	Path          string // --path value, the secret path
+	Path          string // --url-path value, the secret path
 	Credential    string
 	NoAuth        bool
 	Session       string
@@ -57,7 +57,11 @@ func (i *instance) parse(selfPIDNS string) {
 			i.Port, _ = strconv.Atoi(val())
 		case "-a", "--address":
 			i.Address = val()
-		case "-m", "--path":
+		case "--url-path",
+			// webtmux v0.3.0 renamed --path (short form -m) to --url-path. A
+			// webtmux started before that still says --path in its command line,
+			// and this is reading that line, not passing a flag.
+			"--path", "-m":
 			i.Path = val()
 		case "-c", "--credential":
 			i.Credential = val()
@@ -102,7 +106,7 @@ func containerFromCgroup(line string) string {
 	return ""
 }
 
-// secretPath is the --path value normalised to a leading and trailing slash,
+// secretPath is the --url-path value normalised to a leading and trailing slash,
 // matching what webtmux serves.
 func (i *instance) secretPath() string {
 	p := strings.Trim(i.Path, "/")

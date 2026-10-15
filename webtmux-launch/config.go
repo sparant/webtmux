@@ -164,7 +164,7 @@ func randomSecret(n int) (string, error) {
 	return string(b), nil
 }
 
-// urlPath is what webtmux's --path wants and what the browser opens: a leading
+// urlPath is what webtmux's --url-path wants and what the browser opens: a leading
 // and trailing slash around the secret.
 func (c *targetConfig) urlPath() string { return "/" + c.Secret + "/" }
 

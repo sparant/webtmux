@@ -395,7 +395,7 @@ func remoteCommand(dep *deployment, cfg *targetConfig, session string, tmuxPath 
 		// -c user:pass, which is visible in ps to every user on that machine.
 		fmt.Fprintf(&b, "GOTTY_CREDENTIAL=%s ", shellQuote("webtmux:"+cfg.Password))
 	}
-	fmt.Fprintf(&b, "%s -w -a 127.0.0.1 -p %d --path %s --reconnect ",
+	fmt.Fprintf(&b, "%s -w -a 127.0.0.1 -p %d --url-path %s --reconnect ",
 		shellQuote(dep.BinaryPath), cfg.RemotePort, shellQuote(cfg.urlPath()))
 	if !o.auth {
 		b.WriteString("--no-auth ")
@@ -412,7 +412,7 @@ func remoteCommand(dep *deployment, cfg *targetConfig, session string, tmuxPath 
 // connection-tying wrapper around it — and never a credential.
 func displayCommand(dep *deployment, cfg *targetConfig, o *options) string {
 	parts := []string{dep.BinaryPath, "-w", "-a", "127.0.0.1", "-p", fmt.Sprint(cfg.RemotePort),
-		"--path", cfg.urlPath(), "--reconnect"}
+		"--url-path", cfg.urlPath(), "--reconnect"}
 	if !o.auth {
 		parts = append(parts, "--no-auth")
 	}

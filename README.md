@@ -851,7 +851,8 @@ webtmux fix reaches existing launchers without updating them. It looks, in order
    verifies the sha256 itself; one without internet is fed it over the SSH
    connection, so **a target never strictly needs internet.**
 
-The version is **pinned** at build time (currently `v0.1.0`), so a launcher never
+The version is **pinned** at build time — each launcher installs the release it
+shipped in (`v0.3.0` for this one; `webtmux-launch --version` says) — so a launcher never
 upgrades your remote mid-session; `--webtmux-version` overrides. Binaries are
 cached by hash under `~/.cache/webtmux/webtmux-<sha>`, so repeat launches transfer
 nothing and versions coexist.
@@ -860,7 +861,7 @@ nothing and versions coexist.
 32-character secret path, so reaching the terminal takes the SSH tunnel or a
 local account on either machine. Plainly: _any local user on either machine who
 learns the secret path gets a shell._ The secret shows in `ps` on both machines
-(a `--path` argument) and is stored in `~/.config/webtmux-launch/<target>.json`.
+(a `--url-path` argument) and is stored in `~/.config/webtmux-launch/<target>.json`.
 On a shared box, use `--auth`.
 
 ### Developing against a local build

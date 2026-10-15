@@ -262,7 +262,7 @@ BIN=$(rsh 'ls -t ~/.cache/webtmux/webtmux-* | head -1')
 ATT=$(rsh 'ls -t ~/.cache/webtmux/attach-*.sh | head -1')
 hand_start() { # <port> <path> [extra flags]
   local port="$1" pathv="$2"; shift 2
-  rsh "setsid env WEBTMUX_SESSION=main $BIN -w -a 127.0.0.1 -p $port --path $pathv $* $ATT \
+  rsh "setsid env WEBTMUX_SESSION=main $BIN -w -a 127.0.0.1 -p $port --url-path $pathv $* $ATT \
        </dev/null >/tmp/webtmux-$port.log 2>&1 & disown; sleep 1" >/dev/null 2>&1
   for _ in $(seq 20); do
     rsh "pgrep -f -- '-p $port' >/dev/null" && return 0

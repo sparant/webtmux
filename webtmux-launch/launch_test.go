@@ -36,7 +36,7 @@ func TestRemoteCommandShape(t *testing.T) {
 			t.Errorf("remote command is not tied to the connection (%q missing): %s", want, cmd)
 		}
 	}
-	for _, want := range []string{"'" + dep.BinaryPath + "'", "-a 127.0.0.1", "-p 9999", "--path '/s3cr3t/'", "--no-auth", "--reconnect", "-w"} {
+	for _, want := range []string{"'" + dep.BinaryPath + "'", "-a 127.0.0.1", "-p 9999", "--url-path '/s3cr3t/'", "--no-auth", "--reconnect", "-w"} {
 		if !strings.Contains(cmd, want) {
 			t.Errorf("command lacks %q: %s", want, cmd)
 		}
@@ -326,7 +326,7 @@ func TestConsoleSaysWhatRunsAndHowItIsKeptUp(t *testing.T) {
 	dep := planDeploy(&probe{Home: "/h"}, strings.Repeat("e", 64))
 	cfg := &targetConfig{Secret: "s3", RemotePort: 4242, Password: "hunter2"}
 	got := displayCommand(dep, cfg, &options{auth: true})
-	if !strings.HasPrefix(got, dep.BinaryPath+" -w -a 127.0.0.1 -p 4242 --path /s3/") || !strings.HasSuffix(got, dep.AttachPath) {
+	if !strings.HasPrefix(got, dep.BinaryPath+" -w -a 127.0.0.1 -p 4242 --url-path /s3/") || !strings.HasSuffix(got, dep.AttachPath) {
 		t.Errorf("run line: %s", got)
 	}
 	if strings.Contains(got, "hunter2") || strings.Contains(got, "--no-auth") {

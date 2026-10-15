@@ -286,6 +286,12 @@ instead, which appears in no commit log.
   so also Ctrl+Alt+/) now opens the help overlay instead.
 - **Each new browser tab shows the help overlay once on connecting.** Tap
   Ctrl+Alt, press Enter or Esc, or click *Got it* to dismiss it.
+- **webtmux's `--path` is now `--url-path`**, and the `-m` short form is gone (no
+  alias: "path" read as a directory). The environment variable is
+  `GOTTY_URL_PATH` and the config-file key `url_path`. It is the URL path every
+  page is served under — the launcher's secret, e.g. `--url-path /5QTM…/`. The
+  launcher still recognises `--path` when it attaches to a webtmux started by an
+  older build.
 - **Exposé moved from Ctrl+Alt+E to Ctrl+Alt+F** (tmux's find-window key), and
   pressing it again closes rather than stepping 2×2 → 3×3. Pick the grid size in
   Exposé's header.
