@@ -375,3 +375,16 @@ func TestEnsureRepairsAnAdoptedRemotePortButKeepsAChosenOne(t *testing.T) {
 		t.Error("the choice must survive a save/load, or the next run would 'repair' it away")
 	}
 }
+
+// macOS's /bin/bash is 3.2, where set -u calls an empty array unbound: a bare
+// "${SOCKARGS[@]}" killed every Mac attach when WEBTMUX_SOCKET was unset.
+func TestAttachScriptSurvivesBash32EmptyArrays(t *testing.T) {
+	for i, line := range strings.Split(attachScript, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		if strings.Contains(strings.ReplaceAll(line, `${SOCKARGS[@]+"${SOCKARGS[@]}"}`, ""), "SOCKARGS[@]") {
+			t.Errorf("attach script line %d expands SOCKARGS unguarded: %s", i+1, line)
+		}
+	}
+}

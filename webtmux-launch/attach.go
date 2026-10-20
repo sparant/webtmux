@@ -56,21 +56,24 @@ export LC_ALL="${LC_ALL:-C.UTF-8}"
 
 # Unset WEBTMUX_SOCKET means tmux's default socket, which is what a native
 # install wants (empty -S would be wrong, so build the argument conditionally).
+# Expanded as ${SOCKARGS[@]+"${SOCKARGS[@]}"}, never plain "${SOCKARGS[@]}":
+# macOS ships bash 3.2, where set -u calls an EMPTY array unbound and the
+# script dies on its first tmux call.
 SOCKARGS=()
 if [ -n "${WEBTMUX_SOCKET:-}" ]; then SOCKARGS=(-S "$WEBTMUX_SOCKET"); fi
 BASE="${WEBTMUX_SESSION:-main}"
 NAME="${HTTP_WEBTMUX_SESSION:-}"
 
 ensure_base() {
-  tmux "${SOCKARGS[@]}" has-session -t "=$BASE" 2>/dev/null \
-    || tmux "${SOCKARGS[@]}" new-session -d -s "$BASE"
+  tmux ${SOCKARGS[@]+"${SOCKARGS[@]}"} has-session -t "=$BASE" 2>/dev/null \
+    || tmux ${SOCKARGS[@]+"${SOCKARGS[@]}"} new-session -d -s "$BASE"
 }
 
 # 1. Named grouped region (split-view). A name equal to the base is the
 #    primary/shared path, handled below.
 if [ -n "$NAME" ] && [ "$NAME" != "$BASE" ]; then
   ensure_base
-  exec tmux -u "${SOCKARGS[@]}" new-session -t "$BASE" -s "$NAME" \; \
+  exec tmux -u ${SOCKARGS[@]+"${SOCKARGS[@]}"} new-session -t "$BASE" -s "$NAME" \; \
     set-option destroy-unattached on
 fi
 
@@ -80,7 +83,7 @@ fi
 #    become the command of a session that does not exist yet.
 ensure_base
 if [ "$#" -gt 0 ]; then
-  exec tmux -u "${SOCKARGS[@]}" new-session -A -s "$BASE" "$@"
+  exec tmux -u ${SOCKARGS[@]+"${SOCKARGS[@]}"} new-session -A -s "$BASE" "$@"
 fi
-exec tmux -u "${SOCKARGS[@]}" new-session -A -s "$BASE"
+exec tmux -u ${SOCKARGS[@]+"${SOCKARGS[@]}"} new-session -A -s "$BASE"
 `
