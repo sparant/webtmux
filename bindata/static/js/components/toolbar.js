@@ -85,7 +85,7 @@ const MOUSE_META = {
   'app':            { name: 'app',   hint: 'every click and drag goes to the program; dragging never selects' },
   'buffer':         { name: 'buf',   hint: 'every click and drag selects text; the program sees no mouse at all' },
   'adaptive-mode':  { name: 'auto',  hint: 'a program that asked for the mouse (Claude/vim/htop) gets it; anywhere else, dragging selects' },
-  'adaptive-probe': { name: 'auto+', hint: 'clicks still reach the program, but click-and-DRAG selects text — no entering copy mode first' },
+  'adaptive-probe': { name: 'auto+', hint: 'clicks still reach the program, but click-and-DRAG selects text — tmux copy mode is entered automatically if needed' },
 };
 
 // The closed button has to answer "what am I in?" without a click, so it shows both
