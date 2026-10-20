@@ -43,7 +43,7 @@ import { WorkAlerts, AlertsPersistence, hiddenAlerts, alertOf } from './work-ale
 import {
   clampRecentsMax, RECENTS_MIN, RECENTS_MAX, RecentsPersistence,
   visibleRecents, offStripRecents, admitRecent, trimRecentsHistory, reorderVisibleRecents,
-  RECENT_DRAG_TYPE, parseRecentDrag, carriesRecentDrag,
+  RECENT_DRAG_TYPE, parseRecentDrag, carriesRecentDrag, nextRecentAfter,
 } from './recents-strip.js';
 import { planRegionMove } from './region-move.js';
 import {
@@ -323,7 +323,7 @@ export class SplitManager {
     // Every tmux command this region sends ticks the toolbar's activity spinner.
     unit.onTmuxActivity = () => this.pulseTmuxActivity();
     // …and losing/regaining the socket recolors it — see _refreshConnection.
-    unit.onConnectionChange = () => this._refreshConnection();
+    unit.onConnectionChange = () => { this._refreshConnection(); this._reviveClosedViews(); };
     // A region born into a hidden tab or an offline browser starts from what is true
     // now, not from the defaults: _watchPageLiveness only reports CHANGES, and a split
     // restored on load would otherwise idle-probe from a tab nobody is looking at.
@@ -788,6 +788,11 @@ export class SplitManager {
       this.captureCache.noteLiveWindows(new Set(unit.layout.allWindows.map((w) => w.id)));
     }
 
+    // The window this view was showing closed under it: put the next one in its place
+    // ourselves rather than keep whatever tmux fell back to. Before anything below
+    // reads the layout, so the fallback is never counted as a visit.
+    this._replaceClosedWindow(unit);
+
     if (unit === this.focusedUnit) this._pushLayout(unit);
     else this._pushElsewhere();   // another view moved -> refresh what's on screen elsewhere
     this._paintHead(unit);
@@ -874,7 +879,104 @@ export class SplitManager {
       unit._seenSession = nowSession;
       this._persistSplitState();
     }
+    // A fresh directory may be the one that says a dead view's window is gone.
+    this._reviveClosedViews();
     this._refreshToolbar();
+  }
+
+  // ---- a view whose window closed ----------------------------------------------
+  //
+  // Closing a tmux window must never close the VIEW showing it — only ✕ does that.
+  // The view takes the next window instead, chosen the way closing a recents tab
+  // chooses: the next tab along (see nextRecentAfter), else the most recently used
+  // window that is on screen nowhere else. Two ways a window can close under a view:
+  //
+  //   • its session survives. tmux has already moved the view somewhere — its own
+  //     choice, which knows nothing of the strip and may well be a window another
+  //     view is showing, two views mirroring one window. _replaceClosedWindow
+  //     overrides it.
+  //   • it was the LAST window of its session. The session dies with it and takes the
+  //     view's tmux client along; the view is left holding a dead socket.
+  //     _reviveClosedViews re-attaches it at once and lands it on the replacement.
+
+  // Window ids that exist anywhere on the server right now, from every live view's
+  // directory (any one would do; a closed view's would be stale).
+  _liveWindowIds() {
+    const live = new Set();
+    for (const u of this.units) {
+      if (!u.isConnected?.() || !u.layout) continue;
+      for (const w of (u.layout.allWindows || [])) live.add(w.id);
+      for (const w of (u.layout.windows || [])) live.add(w.id);
+    }
+    return live;
+  }
+
+  // What takes over from `gone` ({id, session}) in `unit`, or null if nothing can.
+  _replacementFor(unit, gone) {
+    const live = this._liveWindowIds();
+    const occupied = this.occupiedWindowIds(unit);
+    const previewed = this.previewedWindowIds();
+    // The strip as it was while it still held the closed window — the prune that drops
+    // it may already have run off another view's layout.
+    const strip = this._stripBeforeClose?.get(gone.id) || this.recentWindows;
+    const free = (id) => id !== gone.id && live.has(id) && !occupied.has(id);
+    const next = nextRecentAfter(strip, gone, (e) => !free(e.id) || previewed.has(e.id));
+    if (next) return { id: next.id, session: next.session || '' };
+    const recency = (id) => this.captureCache.accessed.get(id) ?? 0;
+    const mru = (this._placements || [])
+      .filter((p) => free(p.id))
+      .sort((a, b) => recency(b.id) - recency(a.id))[0];
+    return mru ? { id: mru.id, session: mru.session || '' } : null;
+  }
+
+  // Case one: the view is still attached and tmux moved it off a window that has left
+  // its session's list. Only a move within the SAME session counts — a hop to another
+  // session leaves its old window list behind legitimately — and never one this app
+  // asked for.
+  _replaceClosedWindow(unit) {
+    const lay = unit.layout;
+    const cur = lay?.activeWindowId || null;
+    const session = this.logicalSession(unit);
+    const prev = unit._lastView;
+    if (cur) unit._lastView = { id: cur, session };
+    if (!prev?.id || !cur || cur === prev.id || prev.session !== session) return;
+    if (unit._targetWindowId && unit._targetWindowId === cur) return;
+    if ((lay.windows || []).some((w) => w.id === prev.id)) return;
+    const next = this._replacementFor(unit, prev);
+    // Where tmux parked the view is not somewhere the user went.
+    unit._accessSeenId = cur;
+    if (next && next.id !== cur) this._placeWindowIn(unit, next.id, next.session);
+  }
+
+  // Case two: the view's socket closed because its session died with the window. Once
+  // a live view's directory confirms the window is gone, re-attach straight away (no
+  // waiting out the reconnect timer — the server is fine, only the session went) and
+  // land on the replacement, through the same restore target a reload uses. Nothing
+  // to take over: the view auto-picks, as a new split does.
+  _reviveClosedViews() {
+    let live = null;
+    for (const u of this.units) {
+      if (u.destroyed || u.isConnected() || !u._wasClosed) continue;
+      const gone = u._lastView;
+      if (!gone?.id || u._revivedFrom === gone.id) continue;
+      live = live || this._liveWindowIds();
+      if (!live.size || live.has(gone.id)) continue;
+      u._revivedFrom = gone.id;
+      const next = this._replacementFor(u, gone);
+      // The reconnect's own restore would chase the dead window; aim it nowhere and
+      // let the restore target below do the landing.
+      u.desiredWindowId = null;
+      u.desiredSession = null;
+      u.desiredWindowIndex = null;
+      u._lastView = null;
+      if (next) {
+        u._restoreWindowId = next.id;
+        u._restoreSession = next.session;
+      } else {
+        u._autoPickPending = true;
+      }
+      u.reconnectNow();
+    }
   }
 
   // Restore-target: a region wants to land on the VIEW — (session, window) — it showed
@@ -1121,8 +1223,27 @@ export class SplitManager {
       for (const w of (u.layout.windows || [])) live.add(w.id);
     }
     if (!live.size) return;
-    const kept = this.recentWindows.filter(e => live.has(e.id) || !covered.has(e.session));
-    if (kept.length !== this.recentWindows.length) this.recentWindows = kept;
+    // The server-wide directory (layout.allWindows) settles it outright when a live
+    // view has one: a window in no session at all is gone — including every window of
+    // a session that died with its last window, which no view's own list can cover.
+    const directory = this.units.some((u) => u.isConnected?.() && u.layout?.allWindows?.length)
+      ? this._liveWindowIds() : null;
+    const kept = this.recentWindows.filter(e => (directory
+      ? directory.has(e.id)
+      : live.has(e.id) || !covered.has(e.session)));
+    if (kept.length !== this.recentWindows.length) {
+      // Remember where each dropped window stood: a view that was showing one picks its
+      // successor from the strip as it was (see _replacementFor), and its own layout
+      // may land after this prune.
+      this._stripBeforeClose = this._stripBeforeClose || new Map();
+      for (const e of this.recentWindows) {
+        if (!kept.includes(e)) this._stripBeforeClose.set(e.id, this.recentWindows);
+      }
+      while (this._stripBeforeClose.size > 20) {
+        this._stripBeforeClose.delete(this._stripBeforeClose.keys().next().value);
+      }
+      this.recentWindows = kept;
+    }
   }
 
   // --- recents-strip persistence -----------------------------------------------
@@ -1207,17 +1328,15 @@ export class SplitManager {
     // and it's about to stop existing. Drop the preview first so it can't outlive
     // the tab that owns it (nothing would ever fire the matching leave).
     if (this.hover.windowId === id) this.hover.cancel();
-    // If the focused pane is currently VIEWING this exact (window, session), closing
-    // its tab would strand the pane on a window that's no longer in the strip. So
-    // first move the view to the next available recent — exactly what Ctrl+Option+N
-    // does. (No-op if there's nothing else to step to.)
-    if (this.focusedUnit?.layout?.activeWindowId === id &&
-        (session == null || this.logicalSession(this.focusedUnit) === session)) {
-      this.navigateRecents(+1);
-    }
-    if (this.units.length > 1) {
-      const holder = this.units.find(u => !u.primary && u.layout?.activeWindowId === id);
-      if (holder) this.removeUnit(holder);
+    // Any view currently SHOWING this exact (window, session) would be stranded on a
+    // window that's no longer in the strip, so it moves on to the next tab first —
+    // what Ctrl+Option+N does for the focused one. A view is never CLOSED for this:
+    // only its ✕ does that. (No change if there's nothing else to step to.)
+    for (const u of this.units) {
+      if (u.layout?.activeWindowId !== id) continue;
+      if (session != null && this.logicalSession(u) !== session) continue;
+      const next = this._replacementFor(u, { id, session: session ?? this.logicalSession(u) });
+      if (next) this._placeWindowIn(u, next.id, next.session);
     }
     const before = this.recentWindows.length;
     this.recentWindows = this.recentWindows.filter(e => !matches(e));
@@ -1230,7 +1349,7 @@ export class SplitManager {
   // Remove the FOCUSED pane's CURRENT window from the recents strip — the keyboard
   // equivalent of clicking × on the recent tab you're looking at (Ctrl+Alt+D). It
   // reuses removeRecent, so it inherits the same "step the view to the next recent"
-  // pick and the same close-the-split-holder behavior. No-op if the current window
+  // pick. No-op if the current window
   // isn't in the strip (nothing to remove). Prefer the tab for the pane's own
   // session; fall back to any tab for this window id.
   removeFocusedFromRecents() {
@@ -1257,11 +1376,11 @@ export class SplitManager {
   // and leaving them would put tabs back the moment the preview let go — the same
   // "it came back" the clear was asked to end.
   //
-  // What it deliberately does NOT do, unlike removeRecent: close a split region that
-  // happens to be showing one of these windows. That is the tail of a per-window "I am
-  // done with this one" gesture; applied to the whole strip it would tear down the
-  // user's layout to tidy a history list. Every window keeps running and every region
-  // keeps its view — only the strip forgets.
+  // What it deliberately does NOT do, unlike removeRecent: move the views showing these
+  // windows on to another one. That is the tail of a per-window "I am done with this
+  // one" gesture; applied to the whole strip it would reshuffle every view to tidy a
+  // history list. Every window keeps running and every view keeps its window — only
+  // the strip forgets.
   //
   // The strip is not sealed shut afterwards: recents are a record of where you go, so
   // the next window you focus earns a tab again, from an empty strip. That is the

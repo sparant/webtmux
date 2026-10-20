@@ -21,7 +21,7 @@ import {
   RECENT_DRAG_TYPE, recentDragPayload, parseRecentDrag, carriesRecentDrag,
   sanitizeRecents, recentsSignature, RecentsPersistence,
   visibleRecents, offStripRecents, admitRecent, trimRecentsHistory, reorderVisibleRecents,
-  fitTabCount,
+  fitTabCount, nextRecentAfter,
 } from '../resources/js/recents-strip.js';
 import { StateStore } from '../resources/js/state-store.js';
 
@@ -593,4 +593,26 @@ test('regions accept only our own drags, and can tell from `types` alone', () =>
   assert.equal(carriesRecentDrag({ types: ['Files'] }), false);
   assert.equal(carriesRecentDrag({}), false);
   assert.equal(carriesRecentDrag(null), false);
+});
+
+// ---- the window that replaces a closed one -------------------------------------------
+
+test('nextRecentAfter: the tab to the right of the closed one, wrapping', () => {
+  const l = [{ id: '@1', session: 'a' }, { id: '@2', session: 'a' }, { id: '@3', session: 'b' }];
+  assert.equal(nextRecentAfter(l, { id: '@2', session: 'a' })?.id, '@3');
+  assert.equal(nextRecentAfter(l, { id: '@3', session: 'b' })?.id, '@1', 'wraps from the last tab');
+});
+
+test('nextRecentAfter: skips what may not take its place, and gives up cleanly', () => {
+  const l = [{ id: '@1', session: 'a' }, { id: '@2', session: 'a' }, { id: '@3', session: 'a' }];
+  assert.equal(nextRecentAfter(l, { id: '@1', session: 'a' }, (e) => e.id === '@2')?.id, '@3');
+  assert.equal(nextRecentAfter(l, { id: '@1', session: 'a' }, () => true), null);
+  assert.equal(nextRecentAfter(l, { id: '@9', session: 'a' }), null, 'not in the strip');
+  assert.equal(nextRecentAfter([], { id: '@1' }), null);
+});
+
+test('nextRecentAfter: a linked window is matched by its session too', () => {
+  const l = [{ id: '@1', session: 'a' }, { id: '@2', session: 'a' }, { id: '@1', session: 'b' }, { id: '@4', session: 'b' }];
+  assert.equal(nextRecentAfter(l, { id: '@1', session: 'b' })?.id, '@4');
+  assert.equal(nextRecentAfter(l, { id: '@1', session: 'a' })?.id, '@2', 'and never lands on its own other placement');
 });

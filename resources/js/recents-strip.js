@@ -315,6 +315,23 @@ export function admitRecent(list, entry, { previewed, max = MAX_RECENTS, recency
   return next;
 }
 
+// The window that takes over a view whose window has just closed (or whose tab was just
+// closed): the next entry to the RIGHT of it in the strip's stable order, wrapping round
+// to the start — the same "the next one just appears" a closed recents tab gives the
+// focused view. `skip(entry)` rules out what may not take its place (windows that are
+// gone, or already on screen in another view). Null when the closed window was not in
+// the list or nothing else qualifies; the caller falls back to most-recently-used.
+export function nextRecentAfter(list, gone, skip = () => false) {
+  const l = Array.isArray(list) ? list : [];
+  const i = l.findIndex((e) => e && e.id === gone?.id && (!gone.session || e.session === gone.session));
+  if (i < 0) return null;
+  for (let k = 1; k < l.length; k++) {
+    const e = l[(i + k) % l.length];
+    if (e && e.id !== gone.id && !skip(e)) return e;
+  }
+  return null;
+}
+
 // Hold the stored list to its ceiling. The tail is the least-recently-used end of the
 // off-strip queue (see "the off-strip queue"), so dropping from there loses the
 // entries the user is least likely to ever come back to — and never a tab, since tabs

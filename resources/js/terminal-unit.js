@@ -1491,6 +1491,18 @@ export class TerminalUnit {
     };
   }
 
+  // Re-attach NOW instead of waiting out the reconnect timer — for a socket that closed
+  // because its tmux session went away (the last window in it closed), where the server
+  // is fine and there is nothing to wait for. Also covers a server started without
+  // --reconnect, where no timer was ever set. The post-reconnect restore runs as usual.
+  reconnectNow() {
+    if (this.destroyed || this.isConnected()) return;
+    if (this.ws && this.ws.readyState === WebSocket.CONNECTING) return;   // already on its way
+    if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
+    this.restorePending = true;
+    this.connect();
+  }
+
   handleMessage(data) {
     const type = data[0];
     const payload = data.slice(1);

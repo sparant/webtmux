@@ -178,6 +178,12 @@ Pieces:
   with the view that had the window, never jumping the focus there — a tab dropped on a
   view still puts it there, a top/bottom divider drags, a reload brings the shape and
   sizes back, and ✕ closes a view (the primary's too) and focuses the next one),
+  `verify-split-window-close.js` (closing a tmux WINDOW never closes the split view
+  showing it: a window killed under a view — the first view's too — is replaced by the
+  next recents tab, skipping the other view's window rather than mirroring it; killing
+  the last window of a session, which takes the view's tmux client with it, re-attaches
+  the view and lands it on the next tab; × on a tab and ⌃⌥D move the view on and never
+  close it),
   `verify-pip-label-format.js` (a Preview tile's label strip follows the Recent ▾
   "Labels" toggles: every combination of show-session and trim-name, flipped through
   the real menu, labels each tile exactly as the toolbar's own formatter labels its
