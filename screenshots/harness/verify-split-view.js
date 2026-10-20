@@ -10,7 +10,8 @@
 //   1. Single view: no header strip, no focus dots, and the split button is a ▾ menu
 //      offering left | right and top / bottom.
 //   2. Splitting from the menu and from ⌃⌥" builds row[ A, col[ B, C ] ], the newest
-//      view focused and the only one framed.
+//      view focused and the only one framed. Once split, the menu also adds a view
+//      across the whole screen: full width puts it under everything.
 //   3. The header strip takes its own height (the terminal starts below it, nothing
 //      overlaps), its controls are invisible until the pointer nears the top of the
 //      view, and it offers exactly the directions there is a view in.
@@ -166,6 +167,30 @@ async function main() {
   check('only the focused view wears the frame', fr.filter(Boolean).length === 1 && fr[ord.indexOf(2)] === true, JSON.stringify(fr));
   const shown = await panes();
   check('three views, three different windows', new Set(shown).size === 3 && shown.every(Boolean), shown.join(' '));
+
+  // ---- 2b. a view across the whole screen ------------------------------------------
+  await toolbar((el, rr) => rr.querySelector('.split-wrap .tbtn').click());
+  await sleep(300);
+  const items2 = await toolbar((el, rr) => [...rr.querySelectorAll('.split-menu .mitem')].map((b) => b.textContent.replace(/\s+/g, ' ').trim()));
+  check('once split, the menu also offers full-height and full-width views',
+    items2.length === 4 && /Full height/.test(items2[2]) && /Full width/.test(items2[3]), JSON.stringify(items2));
+  await toolbar((el, rr) => rr.querySelectorAll('.split-menu .mitem')[3].click());
+  await sleep(3000);
+  const sh3 = await shape();
+  check('full width puts a new view under EVERYTHING, not under one view',
+    JSON.stringify(sh3) === JSON.stringify({ dir: 'col', kids: [{ dir: 'row', kids: [0, { dir: 'col', kids: [1, 2] }] }, 3] }), JSON.stringify(sh3));
+  const wide = await mgr((m) => {
+    const r = m.units[3].region.getBoundingClientRect();
+    const all = document.querySelector('.split-root').getBoundingClientRect();
+    return Math.abs(r.width - all.width) < 2;
+  });
+  check('…spanning the whole width', wide);
+  await mgr((m) => m.removeUnit(m.units[3]));
+  await sleep(1500);
+  check('closing it restores the shape it was added to',
+    JSON.stringify(await shape()) === JSON.stringify({ dir: 'row', kids: [0, { dir: 'col', kids: [1, 2] }] }), JSON.stringify(await shape()));
+  await mgr((m) => m.focus(m.units[2]));
+  await sleep(300);
 
   // ---- 3. header strip -----------------------------------------------------------
   const hc = await head(2);

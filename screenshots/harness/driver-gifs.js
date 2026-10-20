@@ -203,25 +203,145 @@ const clearLights = () => {
     await sleep(2400);
   }, async () => { await goTo('editor'); });
 
-  // ---- split-view.gif: add a region (auto-picks MRU) -> drag the divider ->
-  // ---- close the focused region
+  // ---- split-view.gif: split left | right from the ⊞ ▾ menu -> split top / bottom
+  // ---- (Ctrl+Alt+") -> the header's controls fade in near the top of a view -> ↑
+  // ---- trades two views -> a full-width view along the bottom (⊞ ▾ again) -> a
+  // ---- recents tab lands in the FOCUSED view -> drag a divider -> ✕ closes views
+  // ---- until one is left
+  if (!ONLY.length || ONLY.includes('split-view')) {
+    // Off camera: a single view and a strip with tabs to click, whatever an earlier
+    // scene (or run) left behind in the shared state. Quiet windows on purpose — the
+    // new views auto-pick the most recent (tests, then shell), and a gif of scrolling
+    // logs is mostly the logs, at several times the size.
+    await offCamera(browser, async () => {
+      await page.evaluate(async () => {
+        const m = window.splitManager;
+        for (const u of m.units.slice(1)) m.removeUnit(u);
+        for (const name of ['server', 'panes', 'shell', 'tests', 'editor']) {
+          const w = (m._placements || []).find((p) => p.name === name);
+          if (!w) continue;
+          m.goToWindow(w.id, w.session);
+          await new Promise((r) => setTimeout(r, 1500));
+        }
+      });
+      await sleep(800);
+    });
+  }
   await scene(browser, 'split-view', async () => {
-    await chord('Enter');
-    await sleep(3000);
-    const div = page.locator('.divider').first();
+    const glide = async (pt, steps = 20) => { await page.mouse.move(pt.x, pt.y, { steps }); };
+    const tbBox = (sel) => page.evaluate((s) => {
+      const r = document.querySelector('webtmux-toolbar').shadowRoot.querySelector(s).getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    }, sel);
+    // The centre of a header control of view n, or of view n's top strip.
+    const headBox = (n, sel) => page.evaluate(([i, s]) => {
+      const h = window.splitManager.units[i].head;
+      const el = s ? h.shadowRoot.querySelector(s) : h;
+      const r = el.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    }, [n, sel]);
+
+    // 1. Split left | right from the menu.
+    await glide(await tbBox('.split-wrap .tbtn'));
+    await sleep(300);
+    await page.mouse.click((await tbBox('.split-wrap .tbtn')).x, (await tbBox('.split-wrap .tbtn')).y);
+    await sleep(600);
+    const item = await tbBox('.split-menu .mitem');
+    await glide(item, 8);
+    await sleep(300);
+    await page.mouse.click(item.x, item.y);
+    await sleep(1500);
+
+    // 2. Split the new (right) view top / bottom from the keyboard.
+    await glide({ x: 960, y: 500 });
+    await chord('Shift+Quote');
+    await sleep(1600);
+
+    // 3. Near the top of the bottom-right view its controls fade in; ↑ trades it with
+    // the view above.
+    const strip = await headBox(2, null);
+    await glide({ x: strip.x, y: strip.y + 120 }, 10);
+    await sleep(300);
+    await glide({ x: strip.x + 150, y: strip.y + 6 }, 12);
+    await sleep(500);
+    const up = await headBox(2, '.tbtn.up');
+    await glide(up, 9);
+    await sleep(300);
+    await page.mouse.click(up.x, up.y);
+    await sleep(1000);
+
+    // 3b. Now that the screen is split the menu also adds a view across the WHOLE
+    // screen: full width, along the bottom, under both halves.
+    const btn = await tbBox('.split-wrap .tbtn');
+    await glide(btn, 14);
+    await sleep(300);
+    await page.mouse.click(btn.x, btn.y);
+    await sleep(700);
+    const wide = await page.evaluate(() => {
+      const r = document.querySelector('webtmux-toolbar').shadowRoot.querySelectorAll('.split-menu .mitem')[3].getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    });
+    await glide(wide, 10);
+    await sleep(500);
+    await page.mouse.click(wide.x, wide.y);
+    await sleep(1600);
+
+    // 4. Focus the left view and pick a recents tab: it lands THERE.
+    const left = await page.evaluate(() => {
+      const r = window.splitManager.units[0].region.querySelector('.region-term').getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    });
+    await glide(left, 13);
+    await page.mouse.click(left.x, left.y);
+    await sleep(500);
+    // A tab whose window the left view is not showing — one another view has makes the
+    // point best (the two views trade), but any will do.
+    const tb = await page.evaluate(() => {
+      const m = window.splitManager;
+      const mine = m.focusedUnit.layout?.activeWindowId;
+      const shown = new Set(m.units.map((u) => u.layout?.activeWindowId));
+      const tabs = [...document.querySelector('webtmux-toolbar').shadowRoot.querySelectorAll('.rtab:not(.spare)')];
+      const rec = m.toolbar.recent || [];
+      let i = rec.findIndex((e) => e.id !== mine && shown.has(e.id));
+      if (i < 0) i = rec.findIndex((e) => e.id !== mine);
+      const r = tabs[i]?.getBoundingClientRect();
+      return r ? { x: r.x, y: r.y, width: r.width, height: r.height } : null;
+    });
+    if (tb) {
+      await glide({ x: tb.x + tb.width / 2, y: tb.y + tb.height / 2 }, 14);
+      await sleep(700);
+      await page.mouse.click(tb.x + tb.width / 2, tb.y + tb.height / 2);
+      await sleep(1300);
+    }
+
+    // 5. Drag the left | right divider.
+    const div = page.locator('.divider.row').first();
     const box = await div.boundingBox();
     if (box) {
       const x = box.x + box.width / 2, y = box.y + box.height / 2;
-      await page.mouse.move(x, y, { steps: 15 });
+      await glide({ x, y }, 12);
       await page.mouse.down();
-      await page.mouse.move(x + 180, y, { steps: 30 });
+      await page.mouse.move(x - 160, y, { steps: 20 });
       await sleep(300);
-      await page.mouse.move(x - 60, y, { steps: 25 });
+      await page.mouse.move(x - 60, y, { steps: 13 });
       await page.mouse.up();
-      await sleep(1200);
+      await sleep(700);
     }
-    await chord('x'); // close the focused (secondary) region
-    await sleep(2000);
+
+    // 6. ✕ closes views — the next one takes the focus — down to one.
+    for (const n of [3, 2, 1]) {
+      const s2 = await headBox(n, null);
+      await glide({ x: s2.x, y: s2.y + 60 }, 10);
+      await glide({ x: s2.x, y: s2.y + 4 }, 6);
+      await sleep(400);
+      const x2 = await headBox(n, '.tbtn.close');
+      await glide(x2, 8);
+      await sleep(400);
+      await page.mouse.click(x2.x, x2.y);
+      await sleep(1000);
+    }
+    await glide({ x: 640, y: 500 }, 10);
+    await sleep(700);
   });
 
   // ---- sidebar.gif: toggle open -> hover rows to preview live -> Esc restores

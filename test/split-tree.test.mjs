@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ROW, COL, leaf, leaves, rowOf, splitLeaf, removeLeaf, replaceKey, focusAfterClose,
-  toShape, fromShape, shapeSignature, sizesOf, withSizes, setSizesAt, swapKeys, neighborToward, mapKeys,
+  toShape, fromShape, shapeSignature, sizesOf, withSizes, setSizesAt, swapKeys, neighborToward, mapKeys, splitAll,
 } from '../resources/js/split-tree.js';
 
 const id = (k) => k;
@@ -129,4 +129,16 @@ test('the neighbour in a direction is the one you see there', () => {
 
 test('mapKeys renames every leaf', () => {
   assert.deepEqual(leaves(mapKeys(rowOf([0, 1]), (i) => `r${i}`)), ['r0', 'r1']);
+});
+
+test('a full-span view on a left | right split goes the whole width along the bottom', () => {
+  const t = splitAll(rowOf(['a', 'b']), 'c', COL);
+  assert.deepEqual(t, { dir: COL, kids: [rowOf(['a', 'b']), leaf('c')], sizes: [1, 1] });
+});
+
+test('a full-span view along the split\'s own direction joins it with an average share', () => {
+  const t = splitAll({ dir: ROW, kids: [leaf('a'), leaf('b')], sizes: [3, 1] }, 'c', ROW);
+  assert.deepEqual(leaves(t), ['a', 'b', 'c']);
+  assert.deepEqual(t.sizes, [3, 1, 2]);
+  assert.deepEqual(splitAll(leaf('a'), 'b', ROW), { dir: ROW, kids: [leaf('a'), leaf('b')], sizes: [1, 1] });
 });

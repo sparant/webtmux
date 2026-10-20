@@ -111,6 +111,8 @@ const mouseCaptureTooltip = (mouseCur, scrollCur) => {
 const SPLIT_TIP = [
   'Split view — split the focused view in two, left | right or top / bottom.',
   '',
+  'Once split, the menu also adds a view across the whole screen: full height on the right, or full width along the bottom.',
+  '',
   'The focused view has the bright frame; every switcher (recents, sidebar, Exposé) changes the window in it.',
   '',
   'Point near the top of a view for its controls: move it left / right / up / down, or close it. Drag a divider to resize.',
@@ -2409,19 +2411,33 @@ class WebtmuxToolbar extends LitElement {
   // Hung off the "Recent" label itself rather than adding another toolbar button:
   // it's a rarely-touched display preference, and the label is exactly the thing it
   // is about.
-  // The split button's menu: which way to split the FOCUSED view.
+  // The split button's menu. With one view there is one question — which way to split
+  // it. Once the screen is split there are two: divide the FOCUSED view, or add a view
+  // across the WHOLE screen (full height on the right, full width along the bottom) —
+  // without the second, a left | right split could only ever be subdivided further,
+  // never given a strip that runs the full width under both halves.
   _splitMenu() {
-    const pick = (dir) => { this.splitMenuOpen = false; this.manager?.splitAdd(dir); };
+    const pick = (dir, span = false) => { this.splitMenuOpen = false; this.manager?.splitAdd(dir, { span }); };
+    const split = (this.manager?.units?.length || 0) > 1;
     return html`
       <div class="label-backdrop" @click=${() => { this.splitMenuOpen = false; }}></div>
       <div class="label-menu split-menu" @click=${(e) => e.stopPropagation()}>
-        <div class="mtitle">Split the focused view</div>
+        <div class="mtitle">${split ? 'Split the focused view' : 'Split the view'}</div>
         <button class="mitem" @click=${() => pick('row')}>
           <span class="mark">◫</span> Left | right <span class="mkey">${chord('%')} · ${chord('⏎')}</span>
         </button>
         <button class="mitem" @click=${() => pick('col')}>
           <span class="mark">⊟</span> Top / bottom <span class="mkey">${chord('"')}</span>
         </button>
+        ${split ? html`
+          <div class="mtitle">Add a view across the whole screen</div>
+          <button class="mitem span" @click=${() => pick('row', true)}>
+            <span class="mark">▐</span> Full height, on the right
+          </button>
+          <button class="mitem span" @click=${() => pick('col', true)}>
+            <span class="mark">▄</span> Full width, along the bottom
+          </button>
+        ` : ''}
       </div>
     `;
   }

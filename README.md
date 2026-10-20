@@ -249,6 +249,7 @@ Keep an eye on specific windows while you work in others, and jump to them quick
 The keys mirror tmux's on purpose (`%`, `"`, `O`, `;`, `X`), but with Ctrl+Alt they act on views. Your tmux prefix keys still split panes inside the window.
 
 - **Split** the focused view left | right (Ctrl+Alt+%, or Ctrl+Alt+Enter) or top / bottom (Ctrl+Alt+"), or pick a direction from the toolbar's **⊞ ▾** menu. Splits nest, so you can build any grid.
+- **Add a view across the whole screen.** Once the screen is split, the **⊞ ▾** menu also offers a new view at **full height on the right** or **full width along the bottom**, so a left | right split can get a strip under both halves instead of only being subdivided further.
 - **The focused view has a cyan frame.** Every switcher (recents tabs, sidebar, Exposé, Ctrl+Alt+0–9, the keyboard walks) changes the window in the focused view, exactly as with no split. A window does not remember which view it was last in.
 - **One window, one view.** Picking a window another view is showing makes the two views **trade** windows, so nothing goes blank and no window is shown twice.
 - **Each view has a slim header strip** naming its window. Point near the top of a view and its controls fade in. **← ↑ ↓ →** trade places with the view on that side; both keep their windows. **✕** closes the view. The strip has its own height, so the controls never cover terminal content.

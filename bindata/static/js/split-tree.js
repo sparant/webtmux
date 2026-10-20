@@ -72,6 +72,20 @@ export function splitLeaf(node, key, newKey, dir = ROW) {
   return { ...node, kids: node.kids.map((k) => splitLeaf(k, key, newKey, dir)) };
 }
 
+// Add `newKey` as a view spanning the WHOLE split in direction `dir` — full height on
+// the right for ROW, full width along the bottom for COL — rather than dividing one
+// view. When the top-level split already runs that way the new view simply joins it,
+// taking an average share; otherwise everything there is now goes on one side and the
+// new view on the other, half and half.
+export function splitAll(node, newKey, dir = ROW) {
+  if (!node) return leaf(newKey);
+  if (isSplit(node) && node.dir === dir) {
+    const avg = node.sizes.reduce((a, b) => a + b, 0) / node.sizes.length;
+    return { ...node, kids: [...node.kids, leaf(newKey)], sizes: [...node.sizes, avg] };
+  }
+  return { dir, kids: [node, leaf(newKey)], sizes: [1, 1] };
+}
+
 // Take the region `key` out. Its space goes to the neighbour that FOLLOWS it (or the
 // one before, if it was last), so the view next to the closed one grows into the gap
 // rather than every view shifting. A split left holding a single child dissolves into

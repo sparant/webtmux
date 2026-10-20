@@ -47,7 +47,7 @@ import {
 } from './recents-strip.js';
 import { planRegionMove } from './region-move.js';
 import {
-  ROW, COL, leaf, splitLeaf, removeLeaf, replaceKey, swapKeys, focusAfterClose,
+  ROW, COL, leaf, splitLeaf, splitAll, removeLeaf, replaceKey, swapKeys, focusAfterClose,
   toShape, fromShape, shapeSignature, sizesOf, withSizes, setSizesAt, neighborToward, mapKeys,
 } from './split-tree.js';
 import { windowTitle } from './window-label.js';
@@ -285,8 +285,9 @@ export class SplitManager {
 
   // Add a region. `from` is the unit whose view is split to make room and `dir` which
   // way (ROW = the new view goes to its right, COL = below it); without `from` the
-  // focused view is the one split.
-  addUnit({ sessionName = null, primary = false, from = null, dir = ROW } = {}) {
+  // focused view is the one split. `span` instead adds the new view across the WHOLE
+  // split — full height on the right, or full width along the bottom.
+  addUnit({ sessionName = null, primary = false, from = null, dir = ROW, span = false } = {}) {
     if (sessionName === null) sessionName = this.genSessionName();
 
     // Region DOM = the view's header strip (shown only while split — see
@@ -302,7 +303,9 @@ export class SplitManager {
     region.appendChild(term);
     // Into the tree, and so into the DOM, BEFORE the unit opens its terminal on it.
     const split = (from || this.focusedUnit)?.region;
-    this.tree = this.tree && split ? splitLeaf(this.tree, split, region, dir) : leaf(region);
+    if (!this.tree) this.tree = leaf(region);
+    else if (span) this.tree = splitAll(this.tree, region, dir);
+    else this.tree = split ? splitLeaf(this.tree, split, region, dir) : splitAll(this.tree, region, dir);
     this._renderLayout();
 
     const unit = new TerminalUnit({ sessionName, terminalEl: term, primary });
@@ -2520,11 +2523,12 @@ export class SplitManager {
   }
 
   // Split the FOCUSED view in two — `dir` ROW puts the new view to its right, COL
-  // below it — and, once the new view's layout arrives, auto-select the
-  // most-recently-used window not already shown by another view, so the split opens
-  // on something useful (what you last looked at) rather than the default first window.
-  splitAdd(dir = ROW) {
-    const unit = this.addUnit({ from: this.focusedUnit, dir: dir === COL ? COL : ROW });
+  // below it — or, with `span`, add a view across the whole screen: full height on
+  // the right (ROW) or full width along the bottom (COL). Once the new view's layout
+  // arrives it auto-selects the most-recently-used window not already shown by another
+  // view, so it opens on something useful rather than the default first window.
+  splitAdd(dir = ROW, { span = false } = {}) {
+    const unit = this.addUnit({ from: this.focusedUnit, dir: dir === COL ? COL : ROW, span });
     unit._autoPickPending = true;
     return unit;
   }
