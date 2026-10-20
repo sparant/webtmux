@@ -166,7 +166,7 @@ A tab flashes amber when its window has stopped working, and an arrow flashes wh
   - Windows beyond the tab count, or that don't fit a narrow browser, wait in line. The strip never scrolls sideways, and the next window slides in when a slot frees up.
   - Only the hover-revealed × removes a window for good. To clear the whole strip and its queue, hover **Recent ▾** for a ✕ or use its menu. It asks first and only clears the list; windows keep running and split regions keep their views.
   - From the **Recent ▾** menu you can show the session before the name, or trim a name to what follows its first space ("ssh web-01" → "web-01"). Preview tiles use the same labels.
-  - In split view, a tab opens in the focused view — the one with the cyan frame — just as it does without a split. Drag a tab onto a view to put it there instead. See [Split View And Regions](#split-view-and-regions).
+  - In split view, a tab opens in the focused view — the one with the cyan frame — just as it does without a split. Drag a tab onto a view to put it there instead. See [Split Views](#split-views-not-tmux-panes).
   - A window in the [preview](#preview-and-picture-in-picture) gives up its tab while it's on screen and gets it back when the preview closes or hides.
   - Recents persist across reloads.
 - Attention arrow (→) at the end of the strip counts and flashes for windows that need you but are visible nowhere; clicking it opens the most recent one for preview.
@@ -231,21 +231,34 @@ Keep an eye on specific windows while you work in others, and jump to them quick
   - Alerts cover every window on the server, not just visible tabs.
 - A bash prompt-hook installer ships in the repo so ordinary shells paint their own light automatically (see below), or you can hook into your agent framework (like Claude).
 
-### Split View And Regions
+### Split Views (Not tmux Panes)
 
-![Split view replayed: Ctrl+Alt+Enter adds a second live region (auto-picking the most recent unseen window), the divider drags to resize, Ctrl+Alt+X closes it](screenshots/split-view.gif)
+![Split view replayed: Ctrl+Alt+Enter adds a second live view (auto-picking the most recent unseen window), the divider drags to resize, Ctrl+Alt+X closes it](screenshots/split-view.gif)
 
-- Split view: split the focused view left | right (Ctrl+Alt+% or Ctrl+Alt+Enter) or top / bottom (Ctrl+Alt+"), or pick a direction from the toolbar's **⊞ ▾** menu. Splits nest like tmux's own panes. Each view is an independent live tmux view backed by its own grouped session, so you can watch several windows of the same server at once.
-- **The focused view wears a cyan frame**, and every switcher (recents, sidebar, Exposé, the keyboard walks) changes the window in it, exactly as without a split. A window does not remember which view it was last in. Picking one that another view is showing makes the two views **trade** windows, so nothing goes blank and nothing is mirrored.
-- **Each view has a slim header strip** naming its window. Point near the top of a view and its controls fade in: **← ↑ ↓ →** trade places with the view on that side (both keep their windows), and **✕** closes the view. The strip has its own height, so the controls never cover terminal content.
-- **Closing a view works like closing a recents tab:** the next view takes the focus. Any view can be closed, the first one included, down to the last.
-- Drag a divider to resize; left | right and top / bottom dividers both drag. Sizes are remembered per browser.
-- One shared sidebar, bound to whichever view is focused.
-- A new view auto-picks the most-recently-used window not already on screen. A tab can still be dragged onto a view to put its window there.
+**A split view divides your browser, not a tmux window.** Each view is a separate, complete window on the same tmux server, side by side or stacked, so you can watch several windows at once. A tmux pane is a different thing: it divides one window into several shells. webtmux leaves panes alone, so they still work as usual. A window with panes shows them all inside whichever view is displaying it.
+
+| | tmux pane (`Prefix %` / `Prefix "`) | webtmux split view (`Ctrl+Alt+%` / `Ctrl+Alt+"`) |
+|---|---|---|
+| What it divides | One tmux window | The browser page |
+| What it shows | One more shell, inside that window | A whole window, with all of its panes |
+| Where it lives | In tmux: every client sees it, including your ssh console | In this browser only: tmux's windows and layouts are unchanged |
+| Closing it | Kills the program running in it | Closes the view; the window keeps running |
+| Survives | Until the pane exits | Reloads, through the saved UI state (see [State persistence](#state-persistence)) |
+| Under the hood | Part of the window's layout | Its own tmux client, on a grouped session with its own current window |
+
+The keys mirror tmux's on purpose (`%`, `"`, `O`, `;`, `X`), but with Ctrl+Alt they act on views. Your tmux prefix keys still split panes inside the window.
+
+- **Split** the focused view left | right (Ctrl+Alt+%, or Ctrl+Alt+Enter) or top / bottom (Ctrl+Alt+"), or pick a direction from the toolbar's **⊞ ▾** menu. Splits nest, so you can build any grid.
+- **The focused view has a cyan frame.** Every switcher (recents tabs, sidebar, Exposé, Ctrl+Alt+0–9, the keyboard walks) changes the window in the focused view, exactly as with no split. A window does not remember which view it was last in.
+- **One window, one view.** Picking a window another view is showing makes the two views **trade** windows, so nothing goes blank and no window is shown twice.
+- **Each view has a slim header strip** naming its window. Point near the top of a view and its controls fade in. **← ↑ ↓ →** trade places with the view on that side; both keep their windows. **✕** closes the view. The strip has its own height, so the controls never cover terminal content.
+- **Closing a view works like closing a recents tab:** the window keeps running and the next view takes the focus. Any view can be closed, the first one included, down to the last.
+- **Resize** by dragging a divider; left | right and top / bottom dividers both drag. Sizes are remembered per browser. The arrangement itself is shared state, like the rest of the UI.
+- One shared sidebar, bound to whichever view is focused. Ctrl+Alt+O / Ctrl+Alt+; move the focus between views.
+- A new view opens on the most recently used window that isn't already on screen. A recents tab can also be dragged onto a view to put its window there.
+- Views switch sessions freely without dragging the first view or the ssh console along. A view that gets synced onto a shared session repairs itself.
 
 ![Three views: left | right, with the right one split top / bottom, the pointer near the top of the bottom-right view showing its move and close controls](screenshots/split-views.jpg)
-
-- Secondary views switch sessions freely without dragging the primary or the console along; a split that gets synced onto a shared session self-heals.
 
 ### Capture & preview infrastructure
 
@@ -256,10 +269,10 @@ Keep an eye on specific windows while you work in others, and jump to them quick
 
 ### State persistence
 
-![Persistence replayed: with a split open, a full browser reload re-assembles every region, the recents strip, and prefs from state stored in the tmux server](screenshots/state-persistence.gif)
+![Persistence replayed: with a split open, a full browser reload re-assembles every view, the recents strip, and prefs from state stored in the tmux server](screenshots/state-persistence.gif)
 
 - Shared UI state lives in the tmux server itself (global option `@wt_state`), surviving reloads, reconnects, and webtmux restarts, and shared by every browser: sidebar prefs, session order, renderer choice, Exposé/preview/toolbar prefs, split window assignments, the recents strip, access recency, the chosen save directory, and the primary region's window.
-- Per-tab state (focused view, split sizes) stays in the browser tab so two browsers don't fight over focus. A reload returns every region to the exact session+window it was on.
+- Per-tab state (focused view, split sizes) stays in the browser tab so two browsers don't fight over focus. A reload returns every view to the exact session+window it was on.
 
 ### Copy Buffers
 
