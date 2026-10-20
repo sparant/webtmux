@@ -31,6 +31,8 @@ type supervisor struct {
 	out       io.Writer
 
 	noBrowser bool
+	// defaultBrowser skips the Chrome preference and opens the system default.
+	defaultBrowser bool
 	// onPortCollision lets the caller reallocate a remote port when webtmux
 	// could not bind. Returns the new port, or 0 to give up on reallocation.
 	onPortCollision func() int
@@ -204,7 +206,7 @@ func (s *supervisor) watch(ctx context.Context, reconnect bool, dead func()) {
 	if s.opened.CompareAndSwap(false, true) {
 		fmt.Fprintf(s.out, "ready: %s\n", s.url)
 		if !s.noBrowser {
-			if err := openBrowser(s.url); err != nil {
+			if err := openBrowser(s.url, s.defaultBrowser); err != nil {
 				fmt.Fprintf(s.out, "(could not open a browser: %v)\n", err)
 			}
 		}
@@ -282,7 +284,24 @@ func answers(client *http.Client, url string) bool {
 	return resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusUnauthorized
 }
 
-func openBrowser(url string) error {
+// openBrowser opens url in Google Chrome when it is installed, and in the
+// system default browser otherwise, or always when defaultBrowser is set.
+func openBrowser(url string, defaultBrowser bool) error {
+	if !defaultBrowser {
+		for _, argv := range chromeCommands(runtime.GOOS, url, exec.LookPath, fileExists) {
+			if argv[0] == "open" {
+				// `open -a` fails fast when the app is missing, so Run it and
+				// fall through rather than guessing where the app lives.
+				if exec.Command(argv[0], argv[1:]...).Run() == nil {
+					return nil
+				}
+				continue
+			}
+			if exec.Command(argv[0], argv[1:]...).Start() == nil {
+				return nil
+			}
+		}
+	}
 	switch runtime.GOOS {
 	case "darwin":
 		return exec.Command("open", url).Start()
@@ -291,6 +310,38 @@ func openBrowser(url string) error {
 	default:
 		return exec.Command("xdg-open", url).Start()
 	}
+}
+
+// chromeCommands lists the ways to open url in Chrome on goos, most likely
+// first; empty means Chrome is not installed. lookPath and exists are
+// injected so tests need no Chrome.
+func chromeCommands(goos, url string, lookPath func(string) (string, error), exists func(string) bool) [][]string {
+	var out [][]string
+	switch goos {
+	case "darwin":
+		out = append(out, []string{"open", "-a", "Google Chrome", url})
+	case "windows":
+		for _, env := range []string{"ProgramFiles", "ProgramFiles(x86)", "LocalAppData"} {
+			if dir := os.Getenv(env); dir != "" {
+				if exe := dir + `\Google\Chrome\Application\chrome.exe`; exists(exe) {
+					out = append(out, []string{exe, url})
+				}
+			}
+		}
+	default:
+		for _, name := range []string{"google-chrome", "google-chrome-stable"} {
+			if path, err := lookPath(name); err == nil {
+				out = append(out, []string{path, url})
+				break
+			}
+		}
+	}
+	return out
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // isPortCollision recognises webtmux failing to bind the remote port. webtmux

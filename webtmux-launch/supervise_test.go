@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -99,5 +100,35 @@ func TestTunnelCommandUsesItsOwnConnection(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(r.TunnelCommand(context.Background(), 1, 2, "").Args, " "), " -N box") {
 		t.Error("adopt mode's tunnel must be a bare -N forward")
+	}
+}
+
+func TestChromeCommandsPicksChromeWhenInstalled(t *testing.T) {
+	const u = "http://127.0.0.1:8090/"
+	missing := func(string) (string, error) { return "", errors.New("not found") }
+	stable := func(name string) (string, error) {
+		if name == "google-chrome-stable" {
+			return "/usr/bin/google-chrome-stable", nil
+		}
+		return "", errors.New("not found")
+	}
+	if got := chromeCommands("linux", u, missing, fileExists); len(got) != 0 {
+		t.Fatalf("no Chrome on PATH should fall back to the default browser, got %q", got)
+	}
+	got := chromeCommands("linux", u, stable, fileExists)
+	if len(got) != 1 || got[0][0] != "/usr/bin/google-chrome-stable" || got[0][1] != u {
+		t.Fatalf("linux = %q", got)
+	}
+	got = chromeCommands("darwin", u, missing, fileExists)
+	if len(got) != 1 || strings.Join(got[0], " ") != "open -a Google Chrome "+u {
+		t.Fatalf("darwin = %q", got)
+	}
+	t.Setenv("ProgramFiles", `C:\PF`)
+	t.Setenv("ProgramFiles(x86)", "")
+	t.Setenv("LocalAppData", `C:\LAD`)
+	onlyUser := func(p string) bool { return p == `C:\LAD\Google\Chrome\Application\chrome.exe` }
+	got = chromeCommands("windows", u, missing, onlyUser)
+	if len(got) != 1 || got[0][0] != `C:\LAD\Google\Chrome\Application\chrome.exe` {
+		t.Fatalf("windows = %q", got)
 	}
 }

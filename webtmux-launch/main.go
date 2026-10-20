@@ -48,6 +48,7 @@ type options struct {
 	remotePort int
 	session    string
 	noBrowser  bool
+	defBrowser bool
 	auth       bool
 	forceCopy  bool
 	arch       string
@@ -102,6 +103,7 @@ func parseArgs(argv []string) (*options, error) {
 	fs.IntVar(&o.remotePort, "remote-port", 0, "remote port webtmux listens on (also selects which instance to adopt)")
 	fs.StringVar(&o.session, "session", "", "tmux session to attach (default: the only existing session, else \"main\")")
 	fs.BoolVar(&o.noBrowser, "no-browser", false, "do not open a browser; just print the URL")
+	fs.BoolVar(&o.defBrowser, "default-browser", false, "open the system default browser instead of preferring Google Chrome")
 	fs.BoolVar(&o.auth, "auth", false, "keep webtmux's basic auth on (for shared multi-user boxes)")
 	fs.BoolVar(&o.forceCopy, "force-copy", false, "push the binary even if the target already has this build")
 	fs.StringVar(&o.arch, "arch", "", "override the probed architecture (uname -m form, e.g. aarch64)")
@@ -376,12 +378,13 @@ func launch(ctx context.Context, o *options, ssh *sshRunner, p *probe, cfg *targ
 	}
 
 	sup := &supervisor{
-		ssh:       ssh,
-		local:     cfg.LocalPort,
-		remote:    cfg.RemotePort,
-		url:       cfg.url(),
-		out:       os.Stdout,
-		noBrowser: o.noBrowser,
+		ssh:            ssh,
+		local:          cfg.LocalPort,
+		remote:         cfg.RemotePort,
+		url:            cfg.url(),
+		out:            os.Stdout,
+		noBrowser:      o.noBrowser,
+		defaultBrowser: o.defBrowser,
 		remoteCmd: func() string {
 			return remoteCommand(dep, cfg, session, p.TmuxPath, o)
 		},
@@ -591,12 +594,13 @@ func adopt(ctx context.Context, o *options, ssh *sshRunner, p *probe, cfg *targe
 	fmt.Printf("url: %s\n", url)
 
 	sup := &supervisor{
-		ssh:       ssh,
-		local:     localPort,
-		remote:    remotePort,
-		url:       url,
-		out:       os.Stdout,
-		noBrowser: o.noBrowser || (inst.needsCredential() && !inst.credentialRecoverable()),
+		ssh:            ssh,
+		local:          localPort,
+		remote:         remotePort,
+		url:            url,
+		out:            os.Stdout,
+		noBrowser:      o.noBrowser || (inst.needsCredential() && !inst.credentialRecoverable()),
+		defaultBrowser: o.defBrowser,
 		// nil remoteCmd => a bare `ssh -N -L …` forward on the tunnel's own
 		// connection. The adopted webtmux is the user's long-lived process and
 		// must outlive us, so nothing runs on the remote side at all.

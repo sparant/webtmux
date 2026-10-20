@@ -825,6 +825,7 @@ nothing for this machine; see
 | ---------------------------------- | --------------------------------------------------------------------------- |
 | `--session <name>`                 | which tmux session to attach (default: the box's only session, else `main`) |
 | `--no-browser`                     | print the URL instead of opening it                                         |
+| `--default-browser`                | open the system default browser (default: Google Chrome when installed)     |
 | `--auth`                           | keep basic auth on, for a shared multi-user box                             |
 | `--fresh` / `--adopt-only`         | ignore a running instance / refuse to start one                             |
 | `--webtmux-version vX.Y.Z\|latest` | which release to install                                                    |
