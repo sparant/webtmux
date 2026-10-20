@@ -77,9 +77,10 @@ class WebtmuxSidebar extends LitElement {
     // (pointer past the tab's horizontal midpoint) — drives the insertion marker.
     sessionDropTarget: { type: String },
     sessionDropAfter: { type: Boolean },
-    // Window ids currently displayed by OTHER split regions — not selectable here
-    // (two panes on one window share it / stay in sync). Set by the SplitManager.
-    disabledWindows: { type: Array },
+    // Window ids on screen in OTHER split views. Still selectable — picking one trades
+    // it into the focused view — just marked, so you can see it is showing somewhere.
+    // Set by the SplitManager.
+    elsewhereWindows: { type: Array },
     // The window the shared HoverPreview is showing ('' = none). Browsing — with the
     // pointer or the arrow keys — moves THIS, not activeWindow: nothing is committed
     // until you click or press Enter. Set by the SplitManager.
@@ -397,15 +398,9 @@ class WebtmuxSidebar extends LitElement {
        here blinks in the same colours, at the same rate, as the tab in the recents
        strip for the very same window. */
 
-    /* Shown in another split pane -> not selectable from here. */
-    .window-tab.disabled {
-      opacity: 0.35;
-      cursor: not-allowed;
-    }
-    .window-tab.disabled:hover {
-      border-color: #0f3460;
-      color: #888;
-    }
+    /* On screen in another split view. Picking it brings it into the focused view
+       (the two views trade windows), so it is marked, not disabled. */
+    .window-tab.elsewhere { border-style: dotted; }
 
     /* Drag-and-drop reordering: the row being dragged dims. */
     .window-tab[draggable] { cursor: grab; }
@@ -727,8 +722,8 @@ class WebtmuxSidebar extends LitElement {
     // click into the terminal) ACCEPTS it, Escape reverts to this. Null = no browse
     // in progress. Captured in updated() on the collapsed→open transition.
     this._baseline = null;
-    // Windows shown by other split regions (disabled here). SplitManager updates it.
-    this.disabledWindows = [];
+    // Windows on screen in other split views. SplitManager updates it.
+    this.elsewhereWindows = [];
     this.previewWindow = '';
     this.previewSession = '';
     this.alerts = null;      // WorkAlerts.snapshot(), pushed by the SplitManager
@@ -924,8 +919,9 @@ class WebtmuxSidebar extends LitElement {
   // split-add, Exposé, Picture-in-Picture, scroll mode, keyboard shortcuts — now
   // live on the toolbar.
   modeRow() {
-    // "Close this region" only makes sense for an added (non-primary) region.
-    const canClose = this.unit && !this.unit.primary;
+    // "Close this view" only makes sense while the screen is split (any view, the
+    // primary's included — see SplitManager.removeUnit).
+    const canClose = (this.unit?.manager?.units?.length || 0) > 1;
     // The two panel toggles share one line. They were full-width stacked buttons whose
     // labels spelled out the whole state ("▣ Hover over terminal", "📌 Pinned (stays
     // open)"), which cost two rows at the top of a panel whose actual job is the window
@@ -982,9 +978,9 @@ class WebtmuxSidebar extends LitElement {
           <button
             class="mode-btn"
             @click=${this.closeRegion}
-            title="Close this region. Shortcut: ${chord('X')}"
+            title="Close this view; the next view takes the focus. Shortcut: ${chord('X')}"
           >
-            ✕ Close this region
+            ✕ Close this view
           </button>
         ` : ''}
       </div>
@@ -1318,7 +1314,7 @@ class WebtmuxSidebar extends LitElement {
   // action below (preview, select, reorder, unlink) targets the right one of a
   // linked window's several homes.
   renderWindowRow(win, i, node) {
-    const disabled = this._windowDisabled(win.id);
+    const elsewhere = this._windowElsewhere(win.id);
     const killing = pendingWindow(this._killing, win.session || node.name, win.id);
     return html`
       <div class="wrow ${killing ? 'killing' : ''}">
@@ -1344,7 +1340,7 @@ class WebtmuxSidebar extends LitElement {
           data-widx=${i}
           data-win=${win.id}
           data-sess=${win.session || ''}
-          class="window-tab has-kill ${this._isActiveRow(win) ? 'active' : ''} ${disabled ? 'disabled' : ''} ${this._isDraggingRow(win) ? 'dragging' : ''} ${this._dropLine(node, i) ? 'drop-before' : ''} ${!this._isActiveRow(win) && this._isPreviewRow(win) ? 'previewing' : ''} ${alertClass(this._alert(win))}"
+          class="window-tab has-kill ${this._isActiveRow(win) ? 'active' : ''} ${elsewhere ? 'elsewhere' : ''} ${this._isDraggingRow(win) ? 'dragging' : ''} ${this._dropLine(node, i) ? 'drop-before' : ''} ${!this._isActiveRow(win) && this._isPreviewRow(win) ? 'previewing' : ''} ${alertClass(this._alert(win))}"
           draggable="true"
           @mouseenter=${() => this.previewWindowRow(win.id, win.session)}
           @mouseleave=${() => this.endPreview()}
@@ -1352,7 +1348,7 @@ class WebtmuxSidebar extends LitElement {
           @dblclick=${() => this.startRename(win.id)}
           @dragstart=${(e) => this.onDragStart(e, win.id, win.session)}
           @dragend=${() => this.onDragEnd()}
-          title=${(disabled ? 'Shown in another split pane' : 'Hover to preview · click to switch · double-click to rename · drag between rows to reorder, or onto another session to link') + alertTip(this._alert(win))}
+          title=${(elsewhere ? 'On screen in another view — click to bring it into the focused view (the two views trade windows) · ' : 'Hover to preview · click to switch · ') + 'double-click to rename · drag between rows to reorder, or onto another session to link' + alertTip(this._alert(win))}
         >
           ${win.index}: ${win.name || 'bash'}<span
             class="kill"
@@ -1459,8 +1455,6 @@ class WebtmuxSidebar extends LitElement {
   //     on that session's tab does — the branch you are over IS the session, and
   //     making the reader aim at the header instead would be a needless trap).
   onDragStart(e, winId, session = '') {
-    // Disabled windows (shown in another pane) can't be dragged meaningfully.
-    if (this._windowDisabled(winId)) { e.preventDefault(); return; }
     this.draggingWindow = winId;
     this.draggingWindowSession = session || this._ownSession();
     try {
@@ -1778,7 +1772,6 @@ class WebtmuxSidebar extends LitElement {
     if (terms.length === 0) return null;
     const tree = this.treeView;
     return this._rows({ filtered: false }).find(w => {
-      if (this._windowDisabled(w.id)) return false;
       return matchesWords(tree ? rowText(w) : `${w.index}: ${w.name || 'bash'}`, terms);
     }) || null;
   }
@@ -1923,10 +1916,10 @@ class WebtmuxSidebar extends LitElement {
     try { u.terminal?.focus(); } catch (e) {}
   }
 
-  // True if a window is displayed by ANOTHER split region (so not selectable from
-  // this pane). The pane's own current window is never "disabled".
-  _windowDisabled(id) {
-    return id !== this.activeWindow && (this.disabledWindows || []).includes(id);
+  // True if a window is on screen in ANOTHER split view. The pane's own current
+  // window never is.
+  _windowElsewhere(id) {
+    return id !== this.activeWindow && (this.elsewhereWindows || []).includes(id);
   }
 
   // A window's raw @wt_working value for its stoplight dot. Prefer the layout's
@@ -1999,8 +1992,7 @@ class WebtmuxSidebar extends LitElement {
     const from = this.previewWindow
       ? rowKey(this.previewSession || this._ownSession(), this.previewWindow)
       : rowKey(this._ownSession(), this.activeWindow);
-    const cand = stepRow(rows, from, delta, (r) => this._windowDisabled(r.id));
-    // Every other window is occupied by another pane — nothing to move to.
+    const cand = stepRow(rows, from, delta);
     if (!cand) return;
     // Arrow-key browsing is a PREVIEW, exactly like hovering: the region shows the
     // window's captured screen, tmux is not touched, and nothing enters the recents
@@ -2106,7 +2098,6 @@ class WebtmuxSidebar extends LitElement {
   // handles it) — which is exactly what clicking a window listed under a different
   // session in the tree should mean.
   selectWindow(windowId, session = '') {
-    if (this._windowDisabled(windowId)) return;   // shown in another split pane
     this._acceptInPlace(windowId, session || this._ownSession());
   }
 

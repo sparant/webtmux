@@ -1,0 +1,309 @@
+// Verification driver for the split view: views split left | right AND top / bottom,
+// the focused one wears a frame, each has a header strip whose controls appear when the
+// pointer nears the top of the view (move the view left / right / up / down, close it),
+// and picking a window always changes the FOCUSED view.
+//
+// The node tests pin the pure halves — the tree (test/split-tree.test.mjs) and the
+// preview's "the focused view, nothing else" rule (test/hover-preview.test.mjs). This
+// covers the wiring: a real toolbar, real regions and a real tmux server.
+//
+//   1. Single view: no header strip, no focus dots, and the split button is a ▾ menu
+//      offering left | right and top / bottom.
+//   2. Splitting from the menu and from ⌃⌥" builds row[ A, col[ B, C ] ], the newest
+//      view focused and the only one framed.
+//   3. The header strip takes its own height (the terminal starts below it, nothing
+//      overlaps), its controls are invisible until the pointer nears the top of the
+//      view, and it offers exactly the directions there is a view in.
+//   4. ↑ swaps the bottom-right view with the one above it; both keep their windows and
+//      the moved view keeps the focus.
+//   5. A recents tab never grows a pane picker, previews in the FOCUSED view even for a
+//      window last shown in another, and clicking a window another view shows trades
+//      it into the focused view (no focus jump, no mirror).
+//   6. A tab dropped on a view still puts the window there.
+//   7. Dragging a top/bottom divider resizes vertically.
+//   8. A reload brings the same shape back.
+//   9. ✕ on a view closes it and focuses the next one; ✕ on the FIRST (primary) view
+//      closes that view too — the primary moves into the next view's slot and shows its
+//      window — down to one view, which has no ✕ at all.
+//
+// Run exactly like run.sh does, with DRIVER=verify-split-view.js.
+const { chromium } = require('playwright');
+
+const URL = 'http://localhost:8090/';
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+let page;
+const results = [];
+function check(name, ok, detail = '') {
+  results.push({ name, ok, detail });
+  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ' — ' + detail : ''}`);
+}
+
+const toolbar = (fn, arg) => page.evaluate(([f, a]) => {
+  const el = document.querySelector('webtmux-toolbar');
+  return eval(f)(el, el.shadowRoot, a);
+}, [fn.toString(), arg]);
+const mgr = (fn, arg) => page.evaluate(([f, a]) => eval(f)(window.splitManager, a), [fn.toString(), arg]);
+
+// What each unit shows, in `units` order, and the reading order of the views on screen.
+const panes = () => mgr((m) => m.units.map((u) => u._targetWindowId || u.layout?.activeWindowId));
+const order = () => mgr((m) => [...document.querySelectorAll('#app .region')].map((r) => m.units.findIndex((u) => u.region === r)));
+const focusedIdx = () => mgr((m) => m.units.indexOf(m.focusedUnit));
+const previewing = () => mgr((m) => m.units.findIndex((u) => u === m.hover.activeUnit));
+// The shape as saved: nested {dir, kids} by unit index.
+const shape = () => mgr((m) => m._splitView().tree);
+
+// A view's header: its box, whether its controls are showing, and which it offers.
+const head = (i) => mgr((m, n) => {
+  const u = m.units[n];
+  const h = u?.head;
+  if (!h) return null;
+  const hr = h.getBoundingClientRect();
+  const tr = u.region.querySelector('.region-term').getBoundingClientRect();
+  const btns = [...h.shadowRoot.querySelectorAll('.tbtn')];
+  return {
+    shown: getComputedStyle(h).display !== 'none' && hr.height > 0,
+    top: hr.top, bottom: hr.bottom, left: hr.left, right: hr.right,
+    termTop: tr.top,
+    near: h.near,
+    opacity: btns[0] ? getComputedStyle(btns[0]).opacity : null,
+    buttons: btns.map((b) => b.className.replace('tbtn', '').trim()),
+    label: h.shadowRoot.querySelector('.label')?.textContent || '',
+  };
+}, i);
+const headBtn = (i, cls) => mgr((m, [n, c]) => {
+  const b = m.units[n].head.shadowRoot.querySelector(`.tbtn.${c}`);
+  if (!b) return null;
+  const r = b.getBoundingClientRect();
+  return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+}, [i, cls]);
+const framed = () => mgr(() => [...document.querySelectorAll('#app .region')].map(
+  (r) => getComputedStyle(r, '::before').content !== 'none'));
+
+async function hoverTab(id) {
+  const i = await mgr((m, wid) => (m.toolbar.recent || []).findIndex((e) => e.id === wid), id);
+  if (i < 0) return null;
+  const box = await toolbar((el, rr, n) => {
+    const r = rr.querySelectorAll('.rtab:not(.spare)')[n].getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  }, i);
+  await page.mouse.move(box.x, box.y);
+  return box;
+}
+
+// Visit a window none of the views shows, in the focused view, and return its id.
+async function visitFresh() {
+  return mgr(async (m) => {
+    const held = new Set(m.recentWindows.map((e) => e.id));
+    for (const u of m.units) held.add(u.layout?.activeWindowId);
+    const fresh = (m._placements || []).find((p) => !held.has(p.id));
+    if (!fresh) return null;
+    m.goToWindow(fresh.id, fresh.session);
+    for (let i = 0; i < 30; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      if (m.focusedUnit?.layout?.activeWindowId === fresh.id) break;
+    }
+    return fresh.id;
+  });
+}
+
+async function clickView(i) {
+  const c = await mgr((m, n) => {
+    const r = m.units[n].region.querySelector('.region-term').getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  }, i);
+  await page.mouse.click(c.x, c.y);
+  await sleep(400);
+}
+
+async function main() {
+  const browser = await chromium.launch();
+  const ctx = await browser.newContext({
+    viewport: { width: 1600, height: 900 },
+    httpCredentials: { username: 'wt', password: 'wt' },
+  });
+  page = await ctx.newPage();
+  page.on('pageerror', (e) => console.log('PAGE ERROR:', e.message));
+  await page.goto(URL, { waitUntil: 'domcontentloaded' });
+  await sleep(4000);
+
+  // Start from a known state: no preview, no split, an empty strip — and the sidebar
+  // collapsed (a fresh browser opens it floating over the right of the screen, on top of
+  // the right-hand view's header).
+  await mgr((m) => {
+    m.sidebar.collapsed = true;
+    for (const id of [...m.pip.windowIds()]) m.pip.removeWindow(id);
+    m.pip.setHidden(false);
+    for (const u of m.units.slice(1)) m.removeUnit(u);
+    for (const e of [...m.recentWindows]) m.removeRecent(e);
+    m.setRecentsMax(5);
+  });
+  await sleep(1200);
+  const visited = [];
+  for (let i = 0; i < 5; i++) visited.push(await visitFresh());
+  await sleep(600);
+
+  // ---- 1. single view ------------------------------------------------------------
+  check('single view: no header strip', (await head(0))?.shown === false);
+  check('no focus dots on the toolbar', await toolbar((el, rr) => !rr.querySelector('.dots')));
+  await toolbar((el, rr) => rr.querySelector('.split-wrap .tbtn').click());
+  await sleep(300);
+  const items = await toolbar((el, rr) => [...rr.querySelectorAll('.split-menu .mitem')].map((b) => b.textContent.replace(/\s+/g, ' ').trim()));
+  check('the split button opens a menu: left | right and top / bottom',
+    items.length === 2 && /Left \| right/.test(items[0]) && /Top \/ bottom/.test(items[1]), JSON.stringify(items));
+
+  // ---- 2. split both ways --------------------------------------------------------
+  await toolbar((el, rr) => rr.querySelectorAll('.split-menu .mitem')[0].click());
+  await sleep(3000);
+  await page.keyboard.press('Control+Alt+Shift+Quote');
+  await sleep(3000);
+  const sh = await shape();
+  check('menu then ⌃⌥" builds row[ A, col[ B, C ] ]',
+    JSON.stringify(sh) === JSON.stringify({ dir: 'row', kids: [0, { dir: 'col', kids: [1, 2] }] }), JSON.stringify(sh));
+  check('the newest view is focused', (await focusedIdx()) === 2);
+  const fr = await framed();
+  const ord = await order();
+  check('only the focused view wears the frame', fr.filter(Boolean).length === 1 && fr[ord.indexOf(2)] === true, JSON.stringify(fr));
+  const shown = await panes();
+  check('three views, three different windows', new Set(shown).size === 3 && shown.every(Boolean), shown.join(' '));
+
+  // ---- 3. header strip -----------------------------------------------------------
+  const hc = await head(2);
+  check('the header strip is shown while split', hc?.shown === true);
+  check('…and the terminal starts below it (nothing overlaps)', hc && hc.termTop >= hc.bottom - 0.5, `head bottom ${hc?.bottom}, term top ${hc?.termTop}`);
+  await page.mouse.move((hc.left + hc.right) / 2, hc.bottom + 200, { steps: 4 });
+  await sleep(300);
+  check('controls stay hidden with the pointer mid-view', (await head(2)).opacity === '0', (await head(2)).opacity);
+  await page.mouse.move((hc.left + hc.right) / 2, hc.bottom + 10, { steps: 4 });
+  await sleep(400);
+  const near = await head(2);
+  check('…and appear as the pointer nears the top', near.near === true && near.opacity === '1', `near ${near.near} opacity ${near.opacity}`);
+  check('bottom-right view offers ↑, ← and ✕ only',
+    JSON.stringify([...near.buttons].sort()) === JSON.stringify(['close', 'move left', 'move up']), JSON.stringify(near.buttons));
+  check('…and names its window', near.label.includes('window'), JSON.stringify(near.label));
+  const hA = await head(0);
+  check('the left view offers → and ✕ only', JSON.stringify([...hA.buttons].sort()) === JSON.stringify(['close', 'move right']), JSON.stringify(hA.buttons));
+
+  // ---- 4. move up ----------------------------------------------------------------
+  const before = await panes();
+  const up = await headBtn(2, 'up');
+  await page.mouse.move(up.x, up.y, { steps: 3 });
+  await page.mouse.click(up.x, up.y);
+  await sleep(800);
+  const sh2 = await shape();
+  check('↑ trades places with the view above',
+    JSON.stringify(sh2) === JSON.stringify({ dir: 'row', kids: [0, { dir: 'col', kids: [2, 1] }] }), JSON.stringify(sh2));
+  check('…both views keep their windows', JSON.stringify(await panes()) === JSON.stringify(before));
+  check('…and the moved view keeps the focus', (await focusedIdx()) === 2);
+
+  // ---- 5. the focused view gets the window ----------------------------------------
+  await clickView(0);
+  check('clicking a view focuses it', (await focusedIdx()) === 0);
+  const p5 = await panes();
+  const inB = p5[1];
+  // Hover the tab of the window view B is showing: it previews in the FOCUSED view A.
+  const box = await hoverTab(inB);
+  await sleep(900);
+  check('no pane picker grows off a hovered tab', await toolbar((el, rr) => !rr.querySelector('.rpick')));
+  check('hovering a window another view shows previews it in the focused view', (await previewing()) === 0, `previewing ${await previewing()}`);
+  await page.mouse.click(box.x, box.y);
+  await sleep(2800);
+  const p5b = await panes();
+  check('clicking it brings it into the focused view', p5b[0] === inB, `${p5.join(' ')} -> ${p5b.join(' ')}`);
+  check('…the other view takes the focused view\'s old window (a trade)', p5b[1] === p5[0], `${p5.join(' ')} -> ${p5b.join(' ')}`);
+  check('…and no other view changed', p5b[2] === p5[2], await mgr((m) => JSON.stringify(m.units.map((u) => [u.layout?.sessionName, m.logicalSession(u), u.layout?.activeWindowId, u._targetWindowId]))));
+  check('…and the focus did not jump', (await focusedIdx()) === 0);
+  // A window that USED to be in view C, picked from A, lands in A — no stickiness.
+  const wasInC = p5b[2];
+  await clickView(2);
+  const fresh = await visitFresh();
+  await sleep(600);
+  await clickView(0);
+  const box2 = await hoverTab(wasInC);
+  await sleep(900);
+  check('a window last shown in another view still previews in the focused one', (await previewing()) === 0, `previewing ${await previewing()}`);
+  await page.mouse.click(box2.x, box2.y);
+  await sleep(2800);
+  const p5c = await panes();
+  check('…and lands there when clicked', p5c[0] === wasInC && p5c[2] === fresh, p5c.join(' '));
+  await page.mouse.move(800, 880);
+  await sleep(500);
+
+  // ---- 6. drop a tab on a view ---------------------------------------------------
+  const tabs = await mgr((m) => (m.toolbar.recent || []).map((e) => e.id));
+  const target = tabs.find((id) => !p5c.includes(id));
+  const drop = await page.evaluate(([wid]) => {
+    const rr = document.querySelector('webtmux-toolbar').shadowRoot;
+    const m = window.splitManager;
+    const i = (m.toolbar.recent || []).findIndex((e) => e.id === wid);
+    if (i < 0) return { ok: false };
+    const tab = rr.querySelectorAll('.rtab:not(.spare)')[i];
+    const dt = new DataTransfer();
+    tab.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+    const region = m.units[1].region;
+    region.dispatchEvent(new DragEvent('dragover', { bubbles: true, dataTransfer: dt }));
+    region.dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer: dt }));
+    tab.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
+    return { ok: true };
+  }, [target]);
+  await sleep(2800);
+  check('a tab dropped on a view puts the window there', drop.ok && (await panes())[1] === target,
+    `target ${target}, drop ${JSON.stringify(drop)}, panes ${(await panes()).join(' ')}, tabs ${JSON.stringify(await mgr((m) => (m.toolbar.recent || []).map((e) => e.id)))}`);
+
+  // ---- 7. resize a top/bottom split ------------------------------------------------
+  const dv = await mgr(() => {
+    const d = document.querySelector('#app .divider.col');
+    const r = d.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  const hBefore = await mgr((m) => m.units[2].region.getBoundingClientRect().height);
+  await page.mouse.move(dv.x, dv.y);
+  await page.mouse.down();
+  await page.mouse.move(dv.x, dv.y + 120, { steps: 8 });
+  await page.mouse.up();
+  await sleep(600);
+  const hAfter = await mgr((m) => m.units[2].region.getBoundingClientRect().height);
+  check('dragging the top/bottom divider resizes the views vertically', Math.abs(hAfter - hBefore - 120) < 12, `${hBefore} -> ${hAfter}`);
+
+  // ---- 8. reload -----------------------------------------------------------------
+  const shBefore = await shape();
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await sleep(6000);
+  const shAfter = await shape();
+  check('a reload brings the same shape back', JSON.stringify(shAfter) === JSON.stringify(shBefore), `${JSON.stringify(shBefore)} vs ${JSON.stringify(shAfter)}`);
+  const hReload = await mgr((m) => m.units[2]?.region.getBoundingClientRect().height);
+  check('…and this browser\'s sizes', Math.abs(hReload - hAfter) < 12, `${hAfter} vs ${hReload}`);
+
+  // ---- 9. close ------------------------------------------------------------------
+  // Close the top-right view (unit 2): the next view in reading order takes the focus.
+  const ord9 = await order();
+  const after2 = ord9[ord9.indexOf(2) + 1];
+  const cls = await headBtn(2, 'close');
+  await page.mouse.move(cls.x, cls.y + 20, { steps: 3 });
+  await page.mouse.move(cls.x, cls.y, { steps: 2 });
+  await page.mouse.click(cls.x, cls.y);
+  await sleep(1500);
+  const units9 = await mgr((m) => m.units.length);
+  check('✕ closes the view', units9 === 2);
+  const focusedRegionOrder = await mgr((m) => [...document.querySelectorAll('#app .region')].indexOf(m.focusedUnit.region));
+  check('…and the next view takes the focus', focusedRegionOrder === 1, `focused at ${focusedRegionOrder} (was after ${after2})`);
+
+  // Close the primary's view: the other view's window stays on screen, in the primary.
+  const keep = (await panes())[1];
+  const pc = await headBtn(0, 'close');
+  await page.mouse.move(pc.x, pc.y + 20, { steps: 3 });
+  await page.mouse.move(pc.x, pc.y, { steps: 2 });
+  await page.mouse.click(pc.x, pc.y);
+  await sleep(3000);
+  const last = await mgr((m) => ({ n: m.units.length, primary: m.units[0].primary, id: m.units[0]._targetWindowId || m.units[0].layout?.activeWindowId }));
+  check('✕ on the first view closes it too', last.n === 1 && last.primary === true, JSON.stringify(last));
+  check('…leaving the other view\'s window on screen', last.id === keep, `${last.id} vs ${keep}`);
+  check('one view left: no header, no frame', (await head(0)).shown === false && (await framed()).every((f) => !f));
+
+  await browser.close();
+  const bad = results.filter((r) => !r.ok);
+  console.log(`\n${results.length - bad.length}/${results.length} passed`);
+  process.exit(bad.length ? 1 : 0);
+}
+
+main().catch((e) => { console.error(e); process.exit(1); });

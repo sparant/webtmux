@@ -1,6 +1,6 @@
 // Stills for the README sections added after the first tour: the sidebar's
-// all-windows tree and new-window menu, the stoplight duration badge, the split
-// region picker, file transfer, and the scrollback and link menus.
+// all-windows tree and new-window menu, the stoplight duration badge, split
+// views, file transfer, and the scrollback and link menus.
 // Run with DRIVER=driver-features.js (see run.sh); writes into SHOT_DIR.
 const { chromium } = require('playwright');
 const { execSync } = require('child_process');
@@ -34,7 +34,12 @@ async function goTo(name) {
   await page.keyboard.press('Enter'); await sleep(1500);
 }
 
+// SHOTS=a,b re-takes just those stills — re-shooting every one for a one-feature
+// change rewrites images nobody looked at.
+const ONLY = process.env.SHOTS ? process.env.SHOTS.split(',') : null;
+
 async function shot(name, fn) {
+  if (ONLY && !ONLY.includes(name)) return;
   try { console.log(`--- ${name}`); await fn(); console.log(`ok  ${name}`); }
   catch (e) {
     console.log(`FAIL ${name}: ${e.message}`); failures.push(name);
@@ -162,15 +167,22 @@ const setSidebar = (collapsed, overlay) => page.evaluate(([c, o]) => {
     await page.keyboard.press('Escape'); await page.mouse.click(800, 600); await sleep(600);
   });
 
-  await shot('split-region-picker', async () => {
+  // Three views — left | right, then the right one split top / bottom — with the
+  // pointer near the top of the bottom-right view, so its header controls are up.
+  await shot('split-views', async () => {
+    await page.evaluate(() => { window.splitManager.sidebar.collapsed = true; });
     await chord('Enter'); await sleep(3000);
-    const tab = page.locator('webtmux-toolbar').getByText('htop', { exact: true }).first();
-    await tab.hover(); await sleep(1500);
-    if (!await tb('.rpick')) throw new Error('no region picker');
-    const chip = page.locator('webtmux-toolbar').locator('.rpick button, .rpick .chip').nth(1);
-    await chip.hover().catch(() => {}); await sleep(1500);
-    await page.screenshot(jpg('split-region-picker'));
+    await chord('Shift+Quote'); await sleep(3000);
+    const n = await page.evaluate(() => window.splitManager.units.length);
+    if (n !== 3) throw new Error(`expected 3 views, got ${n}`);
+    const head = await page.evaluate(() => {
+      const r = window.splitManager.focusedUnit.region.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + 12 };
+    });
+    await page.mouse.move(head.x, head.y + 30, { steps: 4 }); await sleep(1200);
+    await page.screenshot(jpg('split-views'));
     await page.mouse.move(800, 600); await sleep(800);
+    await chord('x'); await sleep(1500);
     await chord('x'); await sleep(1500);
   });
 

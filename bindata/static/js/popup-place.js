@@ -68,9 +68,9 @@ export function placePopup(anchor, size, opts = {}) {
 // screen", and which side that is depends on where the tile is docked — so the caller
 // names it (see tileSide in preview-slots.js) and this does the geometry.
 //
-// `gap` is 0 for something the pointer has to travel INTO (the region picker: a gap
-// between the tile and the picker is a strip where the hover it depends on ends) and
-// PLACE_MARGIN for a hint, which the pointer never enters.
+// `gap` is 0 for something the pointer has to travel INTO (a gap between the anchor
+// and the popup is a strip where the hover it depends on ends) and PLACE_MARGIN for a
+// hint, which the pointer never enters.
 //
 // side  'above' | 'below' | 'left' | 'right'
 // Flips to the opposite side when the named one has no room, and clamps along the

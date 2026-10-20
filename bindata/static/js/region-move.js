@@ -1,13 +1,11 @@
-// "Put THAT window in THIS region" — the rule for sending a window to a named
-// terminal region, rather than to whichever one happens to be focused.
+// "Put THAT window in THIS region" — the rule for showing a window in one region when
+// another region may already be showing it.
 //
 // Every switcher in the app (recents strip, sidebar, Exposé, ⌃⌥N) navigates the
-// FOCUSED region: one navigation rule, no aiming required. That is the right default
-// and it is also the whole gap this module fills, because with the view split there
-// are two panes and no way to say which one you meant. Worse, a window that is
-// already on screen somewhere could not be moved at all: "show me this window"
-// resolves to the region that already has it (goToWindowIn), so clicking its tab
-// just focused that region and the window stayed exactly where it was.
+// FOCUSED region, and a tab dropped on a region names that one. Either way the window
+// may already be on screen in some OTHER region, and "show me this window" has to
+// bring it HERE rather than jump the focus over there — jumping made the split
+// sticky, every window dragging you back to wherever it was last shown.
 //
 // THE EXCHANGE. A window is visible in at most one region — two regions showing one
 // window are two mirrors of the same screen, which wastes a pane and confuses every

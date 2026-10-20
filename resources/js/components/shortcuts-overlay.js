@@ -6,7 +6,7 @@
 // tmux has a natural key after its Ctrl-b prefix, reuse that same letter so the
 // muscle memory carries over — w=choose-tree, p/n and ⇧P/⇧N=prev/next-window, 0-9,
 // x=kill-pane, &=kill-window, o/;=next/last pane, ]=paste, f=find (Exposé),
-// ?=list-keys. Split-add also keeps Enter alongside tmux's shifted % and ".
+// ?=list-keys, %=split left|right, "=split top/bottom (Enter splits left|right too).
 import { LitElement, html, css } from 'lit';
 import { MOD_LABEL, MOD_CHIPS, IS_MAC } from '../os.js';
 
@@ -28,10 +28,11 @@ const GROUPS = [
       { keys: [...M, 'H'], desc: 'Preview — hide / show it (keeps its windows, and where each one is drawn)' },
       { keys: [...M, 'D'], desc: 'Recents — remove the current window from the strip & view (same as its tab ×)' },
       { keys: [...M, 'C'], desc: 'New window in the focused pane’s session (also ⌘⌥C on a Mac)' },
-      { keys: [...M, '⏎'], desc: 'Split view — add another terminal region (% and " work too) — tmux ⌃b % / ⌃b "' },
-      { keys: [...M, 'O'], desc: 'Focus the next region — tmux ⌃b o' },
-      { keys: [...M, ';'], desc: 'Focus the region you were in before (again: back) — tmux ⌃b ;' },
-      { keys: [...M, 'X'], desc: 'Close the focused region (⌫ works too) — tmux ⌃b x' },
+      { keys: [...M, '%'], desc: 'Split view — split the focused view left | right (⏎ works too) — tmux ⌃b %' },
+      { keys: [...M, '"'], desc: 'Split view — split the focused view top / bottom — tmux ⌃b "' },
+      { keys: [...M, 'O'], desc: 'Focus the next view — tmux ⌃b o' },
+      { keys: [...M, ';'], desc: 'Focus the view you were in before (again: back) — tmux ⌃b ;' },
+      { keys: [...M, 'X'], desc: 'Close the focused view; the next view takes the focus (⌫ works too) — tmux ⌃b x' },
       { keys: [...M, '&'], desc: 'Kill the focused window, after asking (a window linked into other sessions is only unlinked from this one) — tmux ⌃b &' },
       { keys: [...M, '['], desc: 'Toggle copy / normal (scrollback) mode — tmux ⌃b [' },
       { keys: [...M, ']'], desc: 'Paste the focused copy buffer into the pane — tmux ⌃b ]' },
@@ -64,7 +65,7 @@ const GROUPS = [
     ],
   },
   {
-    title: 'Hover preview (pointing at a recents tab, preview tile or region chip)',
+    title: 'Hover preview (pointing at a recents tab or preview tile)',
     rows: [
       { keys: ['⏎'], desc: 'Switch to the window being previewed (same as clicking)' },
       { keys: ['Esc'], desc: 'Put the region back the way it was (same as moving the pointer away)' },

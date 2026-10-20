@@ -166,7 +166,7 @@ A tab flashes amber when its window has stopped working, and an arrow flashes wh
   - Windows beyond the tab count, or that don't fit a narrow browser, wait in line. The strip never scrolls sideways, and the next window slides in when a slot frees up.
   - Only the hover-revealed × removes a window for good. To clear the whole strip and its queue, hover **Recent ▾** for a ✕ or use its menu. It asks first and only clears the list; windows keep running and split regions keep their views.
   - From the **Recent ▾** menu you can show the session before the name, or trim a name to what follows its first space ("ssh web-01" → "web-01"). Preview tiles use the same labels.
-  - In split view, hover a tab for a chip per region, or drag the tab onto a region, to choose where the window opens. See [Split View And Regions](#split-view-and-regions).
+  - In split view, a tab opens in the focused view — the one with the cyan frame — just as it does without a split. Drag a tab onto a view to put it there instead. See [Split View And Regions](#split-view-and-regions).
   - A window in the [preview](#preview-and-picture-in-picture) gives up its tab while it's on screen and gets it back when the preview closes or hides.
   - Recents persist across reloads.
 - Attention arrow (→) at the end of the strip counts and flashes for windows that need you but are visible nowhere; clicking it opens the most recent one for preview.
@@ -174,7 +174,6 @@ A tab flashes amber when its window has stopped working, and an arrow flashes wh
   - Copy-mode indicator/toggle
   - a single **mouse capture** dropdown holding both gesture questions — `click+drag:` (who gets a mouse press, the program or a text selection) and `copymode on scroll:` (who gets the wheel).
   - save (⤓) button to download your buffer locally or remotely — whole scrollback by default, or just the visible screen
-  - focus dots tell you which region you are in.
   - a hidden build-id chip (Ctrl+Alt+B, copies the build id when revealed).
 
 ### Windows Mosaic
@@ -199,7 +198,7 @@ Keep an eye on specific windows while you work in others, and jump to them quick
 - You choose the surface per window:
   - The **docked bar** sits along a screen edge, reserving space rather than covering the terminal, and holds any number.
   - **Corner PiP boxes** float, one window per corner, up to four — over a bar still holding others.
-- Hovering a tile (bar or corner) offers the free corners, a way back to the bar, and close. Its label names the window like a recents tab (`session — window N: name`, led by its stoplight dot), and in split view it offers the same [region picker](#split-view-and-regions).
+- Hovering a tile (bar or corner) offers the free corners, a way back to the bar, and close. Its label names the window like a recents tab (`session — window N: name`, led by its stoplight dot).
 - **Drag tiles to arrange the bar.** It keeps your order and never reshuffles; dropping a corner box onto the bar docks it at that spot. The order is shared state, so it survives reloads and every browser sees it.
 - Dock the bar to any edge with its buttons. **Drag its inner edge to resize** — tiles grow with it, so you can read a window without opening it; double-click resets. Top/bottom and left/right sizes are remembered separately.
 
@@ -209,7 +208,7 @@ Keep an eye on specific windows while you work in others, and jump to them quick
 
 ### Hover Previews
 
-- Pointing at any window — recents tab, sidebar row, preview tile, region chip — previews it full-size in a real terminal region, instantly.
+- Pointing at any window — recents tab, sidebar row, preview tile — previews it full-size in the focused view, instantly.
 
 ![Hover preview replayed: pointing at a recents tab paints that window full-size in the real terminal, marked as temporary; moving away restores the original view](screenshots/hover-preview.gif)
 
@@ -236,16 +235,17 @@ Keep an eye on specific windows while you work in others, and jump to them quick
 
 ![Split view replayed: Ctrl+Alt+Enter adds a second live region (auto-picking the most recent unseen window), the divider drags to resize, Ctrl+Alt+X closes it](screenshots/split-view.gif)
 
-- Split view: add side-by-side terminal regions (Ctrl+Alt+Enter), each an independent live tmux view backed by its own grouped session — watch two windows of the same server at once.
-- One shared sidebar bound to whichever region is focused
-- A draggable divider resizes regions.
-- A new region auto-picks the most-recently-used window not already on screen; two regions never show the same window (occupied windows are greyed out in every switcher).
-- **Choose which region a window opens in.** In split view, hovering a recents tab shows one chip per region, drawn in the regions' proportions: point at one to preview there, click to send it, or drag the tab onto a region. Sending a window another region is showing makes them **trade**, so nothing goes blank.
+- Split view: split the focused view left | right (Ctrl+Alt+% or Ctrl+Alt+Enter) or top / bottom (Ctrl+Alt+"), or pick a direction from the toolbar's **⊞ ▾** menu. Splits nest like tmux's own panes. Each view is an independent live tmux view backed by its own grouped session, so you can watch several windows of the same server at once.
+- **The focused view wears a cyan frame**, and every switcher (recents, sidebar, Exposé, the keyboard walks) changes the window in it, exactly as without a split. A window does not remember which view it was last in. Picking one that another view is showing makes the two views **trade** windows, so nothing goes blank and nothing is mirrored.
+- **Each view has a slim header strip** naming its window. Point near the top of a view and its controls fade in: **← ↑ ↓ →** trade places with the view on that side (both keep their windows), and **✕** closes the view. The strip has its own height, so the controls never cover terminal content.
+- **Closing a view works like closing a recents tab:** the next view takes the focus. Any view can be closed, the first one included, down to the last.
+- Drag a divider to resize; left | right and top / bottom dividers both drag. Sizes are remembered per browser.
+- One shared sidebar, bound to whichever view is focused.
+- A new view auto-picks the most-recently-used window not already on screen. A tab can still be dragged onto a view to put its window there.
 
-![The region picker: hovering the htop recents tab in a two-region split shows one chip per region, and pointing at the second chip previews htop in that region](screenshots/split-region-picker.jpg)
+![Three views: left | right, with the right one split top / bottom, the pointer near the top of the bottom-right view showing its move and close controls](screenshots/split-views.jpg)
 
-- Secondary regions switch sessions freely without dragging the primary or the console along; a split that gets synced onto a shared session self-heals.
-- Close the focused region with Ctrl+Alt+X (the primary region can't be closed).
+- Secondary views switch sessions freely without dragging the primary or the console along; a split that gets synced onto a shared session self-heals.
 
 ### Capture & preview infrastructure
 
@@ -259,7 +259,7 @@ Keep an eye on specific windows while you work in others, and jump to them quick
 ![Persistence replayed: with a split open, a full browser reload re-assembles every region, the recents strip, and prefs from state stored in the tmux server](screenshots/state-persistence.gif)
 
 - Shared UI state lives in the tmux server itself (global option `@wt_state`), surviving reloads, reconnects, and webtmux restarts, and shared by every browser: sidebar prefs, session order, renderer choice, Exposé/preview/toolbar prefs, split window assignments, the recents strip, access recency, the chosen save directory, and the primary region's window.
-- Per-tab state (focused view, split widths) stays in the browser tab so two browsers don't fight over focus. A reload returns every region to the exact session+window it was on.
+- Per-tab state (focused view, split sizes) stays in the browser tab so two browsers don't fight over focus. A reload returns every region to the exact session+window it was on.
 
 ### Copy Buffers
 
@@ -365,9 +365,9 @@ The file you want is usually on the tmux machine — a build artifact, a log, a 
   | `P` / `N` | previous / next recents tab | `p` / `n` |
   | `⇧P` / `⇧N` | previous / next window in index order | `p` / `n` |
   | `L` | cycle recently used windows, alt-tab style | `l` |
-  | `⏎`, `%`, `"` | add a split region | `%` / `"` |
-  | `O` / `;` | next region / the region you were in before | `o` / `;` |
-  | `X` | close the region | `x` |
+  | `%` (or `⏎`) / `"` | split the focused view left \| right / top / bottom | `%` / `"` |
+  | `O` / `;` | next view / the view you were in before | `o` / `;` |
+  | `X` | close the focused view | `x` |
   | `[` | copy mode | `[` |
   | `]` | paste the focused copy buffer | `]` |
   | `=` | copy buffers panel | `=` |
