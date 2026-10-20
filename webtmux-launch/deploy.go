@@ -96,7 +96,11 @@ func (d *deployment) run(ctx context.Context, r *sshRunner, p *probe, src Source
 				}
 				return fmt.Errorf("the target's download of %s did not match its checksum (%v)", rs.Location(p.Platform), err)
 			default:
-				fmt.Fprintf(os.Stderr, "target could not fetch it itself (%v)\n  falling back to pushing it over the SSH connection\n", err)
+				if r.local {
+					fmt.Fprintf(os.Stderr, "could not fetch it with %s (%v)\n  falling back to the launcher's own download\n", p.Downloader, err)
+				} else {
+					fmt.Fprintf(os.Stderr, "target could not fetch it itself (%v)\n  falling back to pushing it over the SSH connection\n", err)
+				}
 			}
 		}
 	}

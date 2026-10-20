@@ -73,6 +73,15 @@ A short alias also names the launcher's saved settings for that machine
 (`~/.config/webtmux-launch/mybox.json`), so `ssh mybox` and
 `webtmux-launch mybox` stay the same thing.
 
+**This machine.** With no target — or `localhost`, `127.0.0.1`, `::1`, or one of
+this machine's own addresses — the launcher skips SSH entirely: it makes sure
+the right webtmux binary is installed here, starts it on `127.0.0.1` directly
+(no tunnel), and stops it when the launcher exits, exactly as a remote one stops
+with its connection. tmux and its sessions keep running. All those spellings
+share one saved URL. A target with another user (`other@localhost`) or another
+port (`ssh://localhost:2222`, typically a container's sshd) still goes over
+SSH, and `--ssh` forces SSH for any target.
+
 See [`webtmux-launch` flags](#webtmux-launch-flags) for options, and
 [How webtmux-launch works](#how-webtmux-launch-works) for what it connects to,
 which binary it installs, and its security model.
@@ -807,7 +816,8 @@ needs you".
 
 ## `webtmux-launch` flags
 
-`webtmux-launch [flags] <target>` — the target is anything `ssh` accepts; see
+`webtmux-launch [flags] [<target>]` — the target is anything `ssh` accepts, or
+nothing for this machine; see
 [Naming the target](#tmux-on-another-machine--webtmux-launch) for ports, IPv6 and
 `~/.ssh/config` aliases.
 
@@ -819,6 +829,7 @@ needs you".
 | `--fresh` / `--adopt-only`         | ignore a running instance / refuse to start one                             |
 | `--webtmux-version vX.Y.Z\|latest` | which release to install                                                    |
 | `--verbose`                        | echo the ssh command lines and say which binary source won                  |
+| `--ssh`                            | go over SSH even when the target is this machine                            |
 
 ## How webtmux-launch works
 

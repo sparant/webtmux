@@ -34,6 +34,9 @@ type supervisor struct {
 	// onPortCollision lets the caller reallocate a remote port when webtmux
 	// could not bind. Returns the new port, or 0 to give up on reallocation.
 	onPortCollision func() int
+	// urlFor recomputes url after a collision moved the port. Only local mode
+	// needs it: there the browser's port is the one that moved.
+	urlFor func() string
 
 	// opened is touched by one goroutine per connection attempt, so it is
 	// atomic: only the first success may open a browser tab.
@@ -132,7 +135,16 @@ func (s *supervisor) run(ctx context.Context) error {
 
 		if s.onPortCollision != nil && isPortCollision(errTail.String()) && alive < 10*time.Second {
 			if p := s.onPortCollision(); p > 0 {
-				fmt.Fprintf(s.out, "remote port %d was taken; retrying on %d\n", s.remote, p)
+				if s.ssh.local {
+					fmt.Fprintf(s.out, "port %d was taken; retrying on %d\n", s.remote, p)
+					s.local = p
+					if s.urlFor != nil {
+						s.url = s.urlFor()
+						fmt.Fprintf(s.out, "url: %s\n", s.url)
+					}
+				} else {
+					fmt.Fprintf(s.out, "remote port %d was taken; retrying on %d\n", s.remote, p)
+				}
 				s.remote = p
 				delay = backoffMin
 				continue
@@ -146,7 +158,11 @@ func (s *supervisor) run(ctx context.Context) error {
 		attempt++
 		select {
 		case <-bounced:
-			fmt.Fprintf(s.out, "\rtunnel stopped answering; reconnecting\n")
+			if s.ssh.local {
+				fmt.Fprintf(s.out, "\rwebtmux stopped answering; restarting\n")
+			} else {
+				fmt.Fprintf(s.out, "\rtunnel stopped answering; reconnecting\n")
+			}
 		default:
 			if err != nil && attempt == 1 {
 				fmt.Fprintf(s.out, "\rconnection ended: %v\n", err)

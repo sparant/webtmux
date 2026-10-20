@@ -132,7 +132,7 @@ func TestContainerizedInstanceSoftensReporting(t *testing.T) {
 	if i.Container != "9f8e7d6c5b4a" {
 		t.Errorf("container id = %q", i.Container)
 	}
-	report := strings.Join(i.report("differs"), "\n")
+	report := strings.Join(i.report("differs", false), "\n")
 	if strings.Contains(report, "WARNING: bound to") {
 		t.Errorf("container-relative bind must not raise the exposure warning:\n%s", report)
 	}

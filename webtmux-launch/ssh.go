@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type sshRunner struct {
@@ -23,6 +24,40 @@ type sshRunner struct {
 	controlPath string
 	verbose     bool
 	stderr      io.Writer
+	// local runs every command with `sh -c` on this machine instead of over
+	// ssh, and the "tunnel" is the command alone (see local.go).
+	local bool
+}
+
+// newLocalRunner is the runner for a target that is this machine: same
+// methods, no ssh, no mux, no forward.
+func newLocalRunner(verbose bool) *sshRunner {
+	return &sshRunner{target: "localhost", verbose: verbose, stderr: os.Stderr, local: true}
+}
+
+// where names the machine webtmux runs on, for the console.
+func (r *sshRunner) where() string {
+	if r.local {
+		return "this machine"
+	}
+	return "the target"
+}
+
+// command builds the process for one remote shell command: ssh with args, or
+// the local shell in local mode. ssh starts the command in the user's home
+// with sshd's environment; the local shell is given the same starting point.
+func (r *sshRunner) command(ctx context.Context, args []string, remote string) *exec.Cmd {
+	if r.local {
+		if r.verbose {
+			fmt.Fprintf(r.stderr, "+ sh -c %s\n", shellQuote(remote))
+		}
+		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", remote)
+		cmd.Dir = homeDir()
+		cmd.Env = localEnv()
+		return cmd
+	}
+	r.logArgs(args)
+	return exec.CommandContext(ctx, "ssh", args...)
 }
 
 // newSSHRunner sets up connection multiplexing so ONE password/2FA prompt
@@ -128,9 +163,7 @@ func (r *sshRunner) logArgs(args []string) {
 // is returned rather than swallowed — its messages are better than anything we
 // would invent.
 func (r *sshRunner) Run(ctx context.Context, remote string) (string, string, error) {
-	args := append(r.baseArgs(), r.target, remote)
-	r.logArgs(args)
-	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd := r.command(ctx, append(r.baseArgs(), r.target, remote), remote)
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
@@ -140,9 +173,7 @@ func (r *sshRunner) Run(ctx context.Context, remote string) (string, string, err
 
 // RunWithStdin streams data to a remote command over the existing connection.
 func (r *sshRunner) RunWithStdin(ctx context.Context, remote string, stdin io.Reader) (string, error) {
-	args := append(r.baseArgs(), r.target, remote)
-	r.logArgs(args)
-	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd := r.command(ctx, append(r.baseArgs(), r.target, remote), remote)
 	cmd.Stdin = stdin
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
@@ -162,7 +193,28 @@ func (r *sshRunner) RunWithStdin(ctx context.Context, remote string, stdin io.Re
 //
 // ExitOnForwardFailure turns a port collision into a clean failure instead of a
 // tunnel-less session that looks fine until the browser cannot connect.
+//
+// In local mode there is nothing to forward: the command runs as is, in its own
+// process group so a Ctrl-C at the terminal reaches only the launcher — webtmux
+// then goes the way it does over SSH, when the liveness pipe closes. Adopt
+// mode's bare forward becomes a placeholder that just waits, so the supervisor
+// and its health check work unchanged.
 func (r *sshRunner) TunnelCommand(ctx context.Context, localPort, remotePort int, remote string) *exec.Cmd {
+	if r.local {
+		if remote == "" {
+			remote = "exec sleep 2147483647"
+		}
+		cmd := r.command(ctx, nil, remote)
+		tieToParent(cmd)
+		ownProcessGroup(cmd)
+		// The wrapper's stdin watcher inherits the shell's stderr, and it exits
+		// only once the launcher closes the liveness pipe — which it does after
+		// Wait returns. Over SSH, ssh is the pipe's only holder; here, without a
+		// bound, Wait would sit on that stderr forever and the launcher would
+		// never exit (nor, therefore, webtmux).
+		cmd.WaitDelay = time.Second
+		return cmd
+	}
 	args := append(tunnelArgs(),
 		"-L", fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", localPort, remotePort),
 	)
@@ -183,6 +235,9 @@ func (r *sshRunner) TunnelCommand(ctx context.Context, localPort, remotePort int
 // next run would silently move to a new URL. main calls this when it finds its
 // stored port busy for exactly that reason.
 func (r *sshRunner) Shutdown(ctx context.Context) {
+	if r.local {
+		return
+	}
 	args := append(r.baseArgs(), "-O", "exit", r.target)
 	_ = exec.CommandContext(ctx, "ssh", args...).Run()
 	_ = os.Remove(r.controlPath)

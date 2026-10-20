@@ -9,6 +9,9 @@
 // browser. The target needs no internet, no curl/wget, and no pre-installed
 // webtmux: the launcher resolves the binary locally and pushes it down the SSH
 // connection it already has open.
+//
+// With no target, or a target that is this machine (localhost, a loopback or
+// local interface address), it does the same without SSH — see local.go.
 package main
 
 import (
@@ -53,6 +56,7 @@ type options struct {
 	showVer    bool
 	fresh      bool
 	adoptOnly  bool
+	forceSSH   bool
 
 	webtmuxVersion string
 	webtmuxSource  string
@@ -69,7 +73,7 @@ type options struct {
 
 func usage(fs *flag.FlagSet) func() {
 	return func() {
-		fmt.Fprintf(fs.Output(), "usage: webtmux-launch [flags] <ssh-target> [-- tmux args…]\n\n")
+		fmt.Fprintf(fs.Output(), "usage: webtmux-launch [flags] [<ssh-target>] [-- tmux args…]\n\n")
 		fmt.Fprint(fs.Output(), `<ssh-target> is passed to ssh exactly as typed — anything ssh accepts works:
 
   linuxbox                         a host, or a ~/.ssh/config alias
@@ -80,6 +84,10 @@ func usage(fs *flag.FlagSet) func() {
 user@host:port does NOT work: ssh reads it as a host named "host:port". For a
 port, use the ssh:// form or put Port in ~/.ssh/config, which is also where a
 jump host (ProxyJump), a key file or any other ssh option belongs.
+
+With no target, or one that is this machine — localhost, 127.0.0.1, ::1 or one
+of its own addresses — webtmux runs here directly, with no SSH (--ssh to ssh
+anyway). It still stops when the launcher exits.
 
 `)
 		fs.PrintDefaults()
@@ -102,6 +110,7 @@ func parseArgs(argv []string) (*options, error) {
 	fs.BoolVar(&o.showVer, "version", false, "print the launcher version and exit")
 	fs.BoolVar(&o.fresh, "fresh", false, "ignore a running webtmux and start our own")
 	fs.BoolVar(&o.adoptOnly, "adopt-only", false, "fail rather than starting a webtmux")
+	fs.BoolVar(&o.forceSSH, "ssh", false, "connect over SSH even when the target is this machine")
 	fs.StringVar(&o.webtmuxVersion, "webtmux-version", DefaultWebtmuxVersion, "release version to install, or \"latest\"")
 	fs.StringVar(&o.webtmuxSource, "webtmux-source", "", "directory of webtmux-<os>-<arch> builds to deploy from")
 	fs.StringVar(&o.webtmuxBinary, "webtmux-binary", "", "deploy this exact binary, whatever it is named")
@@ -112,12 +121,19 @@ func parseArgs(argv []string) (*options, error) {
 		return o, nil
 	}
 	rest := fs.Args()
-	if len(rest) == 0 {
-		fs.Usage()
-		return nil, fmt.Errorf("no ssh target given")
+	// No target means this machine. `--` with nothing before it is the same:
+	// `webtmux-launch -- htop` runs htop locally.
+	// The flag package swallows a "--" that ends the flags, so it is looked
+	// for in argv: if the word before the first non-flag is "--", there is no
+	// target and everything after it is the command.
+	if n := len(argv) - len(rest); len(rest) > 0 && (n == 0 || argv[n-1] != "--") {
+		o.target, rest = rest[0], rest[1:]
 	}
-	o.target = rest[0]
-	o.tmuxArgs = rest[1:]
+	if o.target == "" && o.forceSSH {
+		fs.Usage()
+		return nil, fmt.Errorf("--ssh needs an ssh target")
+	}
+	o.tmuxArgs = rest
 	if len(o.tmuxArgs) > 0 && o.tmuxArgs[0] == "--" {
 		o.tmuxArgs = o.tmuxArgs[1:]
 	}
@@ -160,11 +176,26 @@ func run(ctx context.Context, o *options) error {
 		return err
 	}
 
-	ssh := newSSHRunner(o.target, o.verbose)
+	var ssh *sshRunner
+	var cfg *targetConfig
+	if !o.forceSSH && isLocalTarget(o.target) {
+		if o.localPort > 0 && o.remotePort > 0 && o.localPort != o.remotePort {
+			return fmt.Errorf("on this machine webtmux listens on the browser's port itself, so --local-port %d and --remote-port %d cannot differ",
+				o.localPort, o.remotePort)
+		}
+		ssh = newLocalRunner(o.verbose)
+		if o.target == "" {
+			o.target = "localhost"
+		}
+		cfg = loadTargetConfig(localConfigKey)
+		fmt.Printf("target: this machine (%s) — no SSH; webtmux runs here directly\n", o.target)
+	} else {
+		ssh = newSSHRunner(o.target, o.verbose)
+		cfg = loadTargetConfig(o.target)
+	}
 	// Close the setup mux on exit rather than leaving it to ControlPersist.
 	defer ssh.Shutdown(context.Background())
 
-	cfg := loadTargetConfig(o.target)
 	// A launcher that died abnormally (SIGKILL, a crash) leaves its mux master
 	// running for ControlPersist, and the master owns the forward — so our own
 	// stored port looks taken and we would silently move to a new URL. Clearing
@@ -184,7 +215,11 @@ func run(ctx context.Context, o *options) error {
 		fmt.Printf("target: %s %s (%s), tmux %s, home %s\n", p.OS, p.Arch, p.Platform,
 			strings.TrimPrefix(p.TmuxVer, "tmux "), p.Home)
 	}
-	portNote, err := cfg.ensure(o.localPort)
+	localOverride := o.localPort
+	if ssh.local && localOverride == 0 {
+		localOverride = o.remotePort
+	}
+	portNote, err := cfg.ensure(localOverride)
 	if err != nil {
 		return err
 	}
@@ -222,9 +257,13 @@ func run(ctx context.Context, o *options) error {
 	}
 
 	// --- step 4: and only now does a binary matter.
-	if o.remotePort > 0 {
+	switch {
+	case ssh.local:
+		// One port: the one webtmux listens on IS the browser's.
+		cfg.useRemotePort(cfg.LocalPort)
+	case o.remotePort > 0:
 		cfg.useRemotePort(o.remotePort)
-	} else if portNote != "" {
+	case portNote != "":
 		fmt.Println(portNote)
 	}
 	return launch(ctx, o, ssh, p, cfg, session)
@@ -242,7 +281,7 @@ func resolveBinary(ctx context.Context, o *options, ssh *sshRunner, p *probe) (*
 		dep := planDeploy(p, "")
 		dep.SkipBinary = true
 		dep.BinaryPath = p.WebtmuxPath
-		fmt.Printf("using the webtmux already on the target: %s (%s)\n", p.WebtmuxPath, versionToken(p.WebtmuxVer))
+		fmt.Printf("using the webtmux already on %s: %s (%s)\n", ssh.where(), p.WebtmuxPath, versionToken(p.WebtmuxVer))
 		return dep, nil
 	}
 	if p.WebtmuxPath != "" && o.verbose {
@@ -303,12 +342,16 @@ func resolveBinary(ctx context.Context, o *options, ssh *sshRunner, p *probe) (*
 		return nil, err
 	}
 	switch {
+	case dep.FetchedRemotely && ssh.local:
+		fmt.Printf("downloaded: %s\n", dep.BinaryPath)
 	case dep.FetchedRemotely:
 		fmt.Printf("target downloaded it: %s\n", dep.BinaryPath)
+	case dep.Copied && ssh.local:
+		fmt.Printf("deployed: %s (installed from the source above)\n", dep.BinaryPath)
 	case dep.Copied:
 		fmt.Printf("deployed: %s (pushed over SSH from this machine)\n", dep.BinaryPath)
 	default:
-		fmt.Printf("already present: %s (on the target from an earlier run; no transfer)\n", dep.BinaryPath)
+		fmt.Printf("already present: %s (on %s from an earlier run; no transfer)\n", dep.BinaryPath, ssh.where())
 	}
 	return dep, nil
 }
@@ -343,6 +386,15 @@ func launch(ctx context.Context, o *options, ssh *sshRunner, p *probe, cfg *targ
 			return remoteCommand(dep, cfg, session, p.TmuxPath, o)
 		},
 		onPortCollision: func() int {
+			if ssh.local {
+				p, err := freeLocalPort()
+				if err != nil {
+					return 0
+				}
+				cfg.LocalPort, cfg.RemotePort = p, p
+				_ = cfg.save()
+				return p
+			}
 			p, err := randomHighPort()
 			if err != nil {
 				return 0
@@ -351,15 +403,22 @@ func launch(ctx context.Context, o *options, ssh *sshRunner, p *probe, cfg *targ
 			_ = cfg.save()
 			return p
 		},
+		urlFor: cfg.url,
 	}
 	if err := cfg.save(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not persist ports for %s: %v\n", o.target, err)
 	}
 	logPath := dep.logPath(cfg.RemotePort)
 	fmt.Printf("run: %s\n", displayCommand(dep, cfg, o))
-	fmt.Printf("     started by this launcher over SSH and stopped when it exits — tmux and its sessions keep running\n")
-	fmt.Printf("     webtmux's log on the target: %s\n", logPath)
-	fmt.Println(tunnelLine(cfg.LocalPort, cfg.RemotePort, "if it drops, the launcher reconnects and starts webtmux again"))
+	if ssh.local {
+		fmt.Printf("     started by this launcher and stopped when it exits — tmux and its sessions keep running\n")
+		fmt.Printf("     webtmux's log on this machine: %s\n", logPath)
+		fmt.Println(directLine(cfg.LocalPort, "if it stops answering, the launcher starts webtmux again"))
+	} else {
+		fmt.Printf("     started by this launcher over SSH and stopped when it exits — tmux and its sessions keep running\n")
+		fmt.Printf("     webtmux's log on the target: %s\n", logPath)
+		fmt.Println(tunnelLine(cfg.LocalPort, cfg.RemotePort, "if it drops, the launcher reconnects and starts webtmux again"))
+	}
 	fmt.Printf("url: %s\n", cfg.url())
 	if o.auth {
 		// Chrome dropped http://user:pass@host URLs, so the credential cannot
@@ -433,6 +492,12 @@ func tunnelLine(local, remote int, onDrop string) string {
 		"        checked every %ds — %s", local, remote, int(defaultHealthEvery.Seconds()), onDrop)
 }
 
+// directLine is tunnelLine for local mode, where the browser needs no tunnel.
+func directLine(port int, onDrop string) string {
+	return fmt.Sprintf("tunnel: none — the browser connects to 127.0.0.1:%d on this machine directly;\n"+
+		"        checked every %ds — %s", port, int(defaultHealthEvery.Seconds()), onDrop)
+}
+
 // tieToConnection is what actually makes webtmux disposable.
 //
 // The obvious `ssh host 'exec webtmux …'` does NOT die with the connection: for
@@ -497,7 +562,7 @@ func adopt(ctx context.Context, o *options, ssh *sshRunner, p *probe, cfg *targe
 	default:
 		match = "not the " + srcDesc + " binary (" + short12(digest) + ") — informational; it is connected to as-is (--fresh starts the release build instead)"
 	}
-	for _, line := range inst.report(match) {
+	for _, line := range inst.report(match, ssh.local) {
 		fmt.Println(line)
 	}
 
@@ -509,17 +574,25 @@ func adopt(ctx context.Context, o *options, ssh *sshRunner, p *probe, cfg *targe
 	// uses, and saving an adopted one made the next launch start webtmux on,
 	// say, a container's 8090.
 	remotePort := inst.Port
-	url := fmt.Sprintf("http://127.0.0.1:%d%s", cfg.LocalPort, inst.secretPath())
+	localPort := cfg.LocalPort
+	if ssh.local {
+		localPort = remotePort // no tunnel: the browser goes straight to it
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%d%s", localPort, inst.secretPath())
 	if err := cfg.save(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not persist ports for %s: %v\n", o.target, err)
 	}
 	fmt.Printf("run: nothing started — using the webtmux already running (pid %d), which keeps running after the launcher exits\n", inst.PID)
-	fmt.Println(tunnelLine(cfg.LocalPort, remotePort, "if it drops, the launcher reconnects"))
+	if ssh.local {
+		fmt.Println(directLine(localPort, "if it stops answering, the launcher says so and keeps checking"))
+	} else {
+		fmt.Println(tunnelLine(cfg.LocalPort, remotePort, "if it drops, the launcher reconnects"))
+	}
 	fmt.Printf("url: %s\n", url)
 
 	sup := &supervisor{
 		ssh:       ssh,
-		local:     cfg.LocalPort,
+		local:     localPort,
 		remote:    remotePort,
 		url:       url,
 		out:       os.Stdout,

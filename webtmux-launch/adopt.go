@@ -127,7 +127,7 @@ func (i *instance) credentialRecoverable() bool {
 }
 
 // report describes what is about to be adopted, plus any warnings.
-func (i *instance) report(buildMatch string) []string {
+func (i *instance) report(buildMatch string, local bool) []string {
 	lines := []string{}
 	desc := fmt.Sprintf("adopting webtmux pid %d on port %d", i.PID, i.Port)
 	if i.Session != "" {
@@ -155,10 +155,14 @@ func (i *instance) report(buildMatch string) []string {
 			// Informational: the launcher reaches it through the SSH tunnel either
 			// way, and cannot see how docker published the port, so all it can
 			// honestly do is say where that question is answered.
+			via := "           Nothing to do: this connection goes through SSH."
+			if local {
+				via = "           Nothing to do: this connection goes to it over loopback."
+			}
 			lines = append(lines,
 				"  network: informational — it listens on all interfaces INSIDE its container;",
 				"           how the container publishes the port decides who else can reach it.",
-				"           Nothing to do: this connection goes through SSH.")
+				via)
 		} else {
 			lines = append(lines, "  WARNING: bound to "+i.Address+" — reachable from the box's network, not just loopback")
 		}
