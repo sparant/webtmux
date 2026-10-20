@@ -13,6 +13,7 @@ import './components/pip-overlay.js';
 import './components/toolbar.js';
 import './components/shortcuts-overlay.js';
 import './components/help-overlay.js';
+import './components/region-head.js';
 
 document.addEventListener('DOMContentLoaded', () => {
   const app = document.getElementById('app');

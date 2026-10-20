@@ -31,7 +31,8 @@ function str(v) {
 }
 
 // -> { regions: Array<{windowId: string|null, session: string|null}>,
-//      primaryWindowId: string|null, primarySession: string|null }
+//      primaryWindowId: string|null, primarySession: string|null,
+//      tree: unknown }
 //
 // `regions[i]` is the view for units[i+1]; a null windowId means that region had no
 // window worth restoring (the caller then MRU-auto-picks one). The array's LENGTH is
@@ -53,16 +54,23 @@ export function readSplitState(section) {
   // primarySession is absent on the builds in between (window persisted, session not).
   // Those blobs are read as "the session I am attached to now", which is exactly the
   // behavior they had: a saved window is only honored if it is in the pane's own list.
+  //
+  // `tree` is the SHAPE of the split — which regions sit side by side and which are
+  // stacked — by region index (0 = the primary, i = regions[i-1]). Absent on blobs from
+  // before views could be stacked, which were all one flat row. Passed through RAW:
+  // validating it needs the region count, and fromShape (split-tree.js) is total —
+  // anything it can't read becomes that same flat row.
   return {
     regions,
     primaryWindowId: str(s.primaryWindowId),
     primarySession: str(s.primarySession),
+    tree: s.tree === undefined ? null : s.tree,
   };
 }
 
 // Stable content signature for a saved split view. Everything a restore would act
 // on is in it — the region COUNT (how many panes to recreate), each region's
-// (session, window) pair, and the primary's own pair — and nothing else, so the
+// (session, window) pair, the primary's own pair, and the shape — and nothing else, so the
 // 500ms refresh tick can ask "did this really change?" for the price of one string.
 export function splitSignature(view) {
   const v = view || {};
@@ -71,6 +79,7 @@ export function splitSignature(view) {
     regions.map((r) => [(r && r.windowId) || null, (r && r.session) || null]),
     v.primaryWindowId || null,
     v.primarySession || null,
+    v.tree ?? null,
   ]);
 }
 
@@ -138,6 +147,7 @@ export class SplitPersistence {
         .map((r) => ({ windowId: (r && r.windowId) || null, session: (r && r.session) || null })),
       primaryWindowId: v.primaryWindowId || null,
       primarySession: v.primarySession || null,
+      tree: v.tree ?? null,
     });
     if (ok) this._sig = sig;
     return ok;

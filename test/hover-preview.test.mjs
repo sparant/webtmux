@@ -88,7 +88,7 @@ function fakeManager(units, focused = units[0], cache = fakeCache()) {
     // region show (or is on its way to showing)", which HoverPreview now calls.
     _shownWindowId(u) { return u._targetWindowId || u._restoreWindowId || u.layout?.activeWindowId; },
     goToWindowIn(unit, id, session) { this.navigations.push({ unit, id, session }); },
-    // The named-region commit path (region picker / a tab dropped on a pane). Kept
+    // The named-region commit path (a tab dropped on a pane). Kept
     // as a separate recording so a test can tell "navigated" from "moved" — they end
     // in different places when another region already has the window.
     moves: [],
@@ -129,35 +129,21 @@ test('previewing borrows a region, and leaving gives it back with a repaint', as
   assert.equal(hp.windowId, '');
 });
 
-test('a preview lands in the region that last displayed the window, not the focused one', async (t) => {
+test('a preview lands in the focused region — a window has no view of its own to go back to', async (t) => {
   const a = fakeUnit('@1');
   const b = fakeUnit('@2');
-  const mgr = fakeManager([a, b], a);
+  const mgr = fakeManager([a, b], b);
   const hp = controller(mgr, t);
-  hp.noteRendered('@9', b);      // @9 was last seen in region b
 
   hp.enter('@9');
   await settle();
 
-  assert.equal(b.held, true, 'the remembered region hosts it');
-  assert.equal(a.held, false, 'the focused region is left alone');
+  assert.equal(b.held, true, 'the focused region hosts it — that is where committing puts it');
+  assert.equal(a.held, false);
 });
 
-test('a remembered region that has since closed falls back to the focused region', async (t) => {
-  const a = fakeUnit('@1');
-  const gone = fakeUnit('@2');
-  const mgr = fakeManager([a], a);   // `gone` is no longer in units
-  const hp = controller(mgr, t);
-  hp.noteRendered('@9', gone);
-
-  hp.enter('@9');
-  await settle();
-
-  assert.equal(gone.held, false, 'the dead region is never chosen');
-  assert.equal(a.held, true);
-});
-
-test('a window already on screen is not mirrored into another region', async (t) => {
+test('a window another region shows still previews in the focused one', async (t) => {
+  // Committing it trades the two regions' windows, so this is what you will get.
   const a = fakeUnit('@1');
   const b = fakeUnit('@9');          // region b is really showing @9
   const mgr = fakeManager([a, b], a);
@@ -166,8 +152,20 @@ test('a window already on screen is not mirrored into another region', async (t)
   hp.enter('@9');
   await settle();
 
-  assert.equal(a.held, false, 'no region is borrowed — it is already visible');
-  assert.equal(b.held, false);
+  assert.equal(a.held, true, 'the focused region is lent to the preview');
+  assert.equal(b.held, false, 'the region that really has it is untouched');
+  assert.equal(hp.windowId, '@9');
+});
+
+test('a window the focused region already shows draws nothing', async (t) => {
+  const a = fakeUnit('@9');
+  const mgr = fakeManager([a], a);
+  const hp = controller(mgr, t);
+
+  hp.enter('@9');
+  await settle();
+
+  assert.equal(a.held, false, 'nothing is borrowed — it is already showing exactly that');
   assert.equal(hp.windowId, '@9', 'but it is still the commit target');
 });
 
@@ -204,9 +202,8 @@ test('leaving for good tears the preview down after the grace window', async (t)
 test('committing switches the region that was showing the preview, without restoring it', async (t) => {
   const a = fakeUnit('@1');
   const b = fakeUnit('@2');
-  const mgr = fakeManager([a, b], a);
+  const mgr = fakeManager([a, b], b);
   const hp = controller(mgr, t);
-  hp.noteRendered('@9', b);
 
   hp.enter('@9', 'services');
   await settle();
@@ -233,9 +230,8 @@ test('committing works with no preview drawn (a click with no hover)', (t) => {
 test('closing the region hosting a preview releases it and forgets it', async (t) => {
   const a = fakeUnit('@1');
   const b = fakeUnit('@2');
-  const mgr = fakeManager([a, b], a);
+  const mgr = fakeManager([a, b], b);
   const hp = controller(mgr, t);
-  hp.noteRendered('@9', b);
 
   hp.enter('@9');
   await settle();
@@ -244,8 +240,9 @@ test('closing the region hosting a preview releases it and forgets it', async (t
   hp.forgetUnit(b);
   assert.equal(b.held, false, 'the dying region is handed back');
 
-  // With b forgotten, the next preview of @9 falls back to the focused region.
+  // With b gone, the next preview of @9 lands in the newly focused region.
   mgr.units = [a];
+  mgr.focusedUnit = a;
   hp.enter('@9');
   await settle();
   assert.equal(a.held, true);
@@ -398,21 +395,19 @@ test('a repeated enter() on the same target does not push its capture back forev
     'the capture went out once, on the first settle');
 });
 
-// ---- pointing at a NAMED region (the toolbar's region picker) -------------------
+// ---- pointing at a NAMED region ---------------------------------------------------
 //
-// With the view split, "show me that window" has a second half — WHERE. These cover
-// the part HoverPreview owns: a named region overrides the where-does-it-live memory,
-// it defeats the "already on screen, nothing to draw" rule (which is exactly the case
-// the picker exists for), and committing one is a MOVE rather than a navigation.
+// A caller can still name the region outright (a tab dropped on a view does). A named
+// region overrides the focused one, previews even when another region has the window,
+// and committing one is a MOVE rather than a navigation.
 
-test('a named region beats the region that last displayed the window', async (t) => {
+test('a named region beats the focused one', async (t) => {
   const a = fakeUnit('@1');
   const b = fakeUnit('@2');
-  const mgr = fakeManager([a, b], a);
+  const mgr = fakeManager([a, b], b);
   const hp = controller(mgr, t);
-  hp.noteRendered('@9', b);          // @9 normally reappears in region b
 
-  hp.enter('@9', 'services', a);     // …but the user pointed at region a's chip
+  hp.enter('@9', 'services', a);
   await settle();
 
   assert.equal(a.held, true, 'the pane you aimed at is the one that shows it');
@@ -420,8 +415,6 @@ test('a named region beats the region that last displayed the window', async (t)
 });
 
 test('a window already on screen still previews in the region you aimed at', async (t) => {
-  // The whole reason the picker exists: region b HAS @9, and "it is already visible"
-  // is not an answer to "what would it look like over here".
   const a = fakeUnit('@1');
   const b = fakeUnit('@9');
   const mgr = fakeManager([a, b], a);
@@ -447,7 +440,7 @@ test('aiming at the region that already has it draws nothing', async (t) => {
   assert.equal(a.held, false);
 });
 
-test('sweeping across the chips re-hosts the preview instead of pinning the first pane', async (t) => {
+test('naming another region re-hosts the preview instead of pinning the first pane', async (t) => {
   const a = fakeUnit('@1');
   const b = fakeUnit('@2');
   const mgr = fakeManager([a, b], a);
@@ -457,9 +450,9 @@ test('sweeping across the chips re-hosts the preview instead of pinning the firs
   await settle();
   assert.equal(a.held, true);
 
-  hp.enter('@9', 'services', b);     // same window, next chip along
+  hp.enter('@9', 'services', b);     // same window, the other region
   await settle(50);
-  assert.equal(b.held, true, 'the second chip shows it in the second pane');
+  assert.equal(b.held, true, 'the second region shows it')
   assert.equal(a.held, false, 'and the first pane is handed back');
 });
 
@@ -474,7 +467,7 @@ test('committing a named region MOVES the window there rather than following it'
   hp.commit();
 
   assert.deepEqual(mgr.moves, [{ unit: a, id: '@9', session: 'services' }],
-    'the aimed pane gets it — goToWindowIn would have sent focus to b instead');
+    'the aimed pane gets it');
   assert.deepEqual(mgr.navigations, [], 'and it is not routed as a plain navigation');
 });
 
@@ -489,17 +482,16 @@ test('a named commit with no hover at all still moves (a click, or a drop)', (t)
   assert.deepEqual(mgr.moves, [{ unit: b, id: '@9', session: 'services' }]);
 });
 
-test('an unaimed commit is unchanged — the window\'s own region still wins', async (t) => {
+test('an unaimed commit navigates the focused region', async (t) => {
   const a = fakeUnit('@1');
   const b = fakeUnit('@2');
   const mgr = fakeManager([a, b], a);
   const hp = controller(mgr, t);
-  hp.noteRendered('@9', b);
 
   hp.enter('@9', 'services');
   await settle();
   hp.commit();
 
   assert.deepEqual(mgr.moves, [], 'no move — nobody aimed');
-  assert.deepEqual(mgr.navigations, [{ unit: b, id: '@9', session: 'services' }]);
+  assert.deepEqual(mgr.navigations, [{ unit: a, id: '@9', session: 'services' }]);
 });

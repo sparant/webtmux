@@ -68,7 +68,7 @@ const TOOLBAR = [
     details: [
       { id: 'recents.menu', title: 'Recent ▾', text: 'How many tabs to keep, label style (session, trimmed names), clear the strip.', keys: [R('click', 'options')], find: tb('.label') },
       { id: 'recents.clear', title: 'Clear strip', text: 'Forgets every remembered window (the windows stay open).', find: tb('.label-clear') },
-      { id: 'recents.tab', title: 'A tab', text: 'Index and name. Hover previews it in the pane; click switches. In split view hover offers which pane to show it in.', keys: [R('click', 'switch'), R('hover', 'preview'), R('⏎', 'take the preview'), R('Esc', 'put it back'), R('drag', 'reorder · drop on a pane')], find: tb('.rtab .tab') },
+      { id: 'recents.tab', title: 'A tab', text: 'Index and name. Hover previews it in the focused view; click switches it there (from another view, the two trade).', keys: [R('click', 'switch'), R('hover', 'preview'), R('⏎', 'take the preview'), R('Esc', 'put it back'), R('drag', 'reorder · drop on a view')], find: tb('.rtab .tab') },
       { id: 'recents.light', title: 'Stoplight', text: STOPLIGHT + ' A tab flashes when its window drops out of green while you are elsewhere.', find: tb('.rtab .work') },
       { id: 'recents.age', title: 'Time in state', text: 'How long the window has been working / waiting.', keys: [R('click', 'other reading')], find: tb('.rtab .work-age') },
       { id: 'recents.close', title: '× (on hover)', text: 'Removes the tab from the strip. The window keeps running.', keys: [C('D', 'same, current tab')], find: tb('.rtab .tab .close'), alt: (m) => qa(m.toolbar, '.rtab .tab').at(-1) || null },
@@ -81,12 +81,11 @@ const TOOLBAR = [
     text: 'Split, Exposé, save & transfer, scrollback, mouse modes, copy, preview, sidebar. Point here for each button.',
     find: tb('.sidebar-toggle'),
     details: [
-      { id: 'tools.split', title: 'Split view', text: 'Add another terminal region beside this one.', keys: [C('⏎', 'add'), C('X', 'close focused'), C('O', 'next region'), C(';', 'last region')], find: tb('.tbtn[aria-label^="Split view"]') },
+      { id: 'tools.split', title: 'Split view', text: 'Split the focused view; ▾ picks the direction.', keys: [C('%', 'left | right'), C('"', 'top / bottom'), C('X', 'close focused'), C('O', 'next view')], find: tb('.split-wrap .tbtn') },
       { id: 'tools.expose', title: 'Exposé', text: 'Every window of every session as live tiles; type to filter.', keys: [C('F', 'open / close')].concat(IS_MAC ? [R('spread', 'trackpad: open')] : []), find: tb('.tbtn[aria-label^="Exposé"]') },
       { id: 'tools.save', title: 'Save & transfer', text: 'Download the pane’s scrollback or screen, write it to a file there, or copy files/folders between the two machines.', find: tb('.tbtn[aria-label^="Save pane"]') },
       { id: 'tools.history', title: 'Scrollback', text: 'How full this window’s history is; resize it, set the default, clear it.', find: tb('.tbtn[aria-label="Scrollback buffer"]') },
       { id: 'tools.mouse', title: 'Mouse capture', text: 'Who gets a click+drag (the program, or a selection) and the scroll wheel.', find: tb('.mouse-wrap .tbtn') },
-      { id: 'tools.dots', title: 'Regions', text: 'One dot per terminal region; green is focused. Drag a divider to resize.', find: tb('.dots') },
       { id: 'tools.copy', title: 'Copy', text: 'NORMAL / COPY mode of the focused pane. Click opens the copy buffers.', keys: [C('[', 'flip mode'), C('=', 'buffers panel'), C(']', 'paste buffer')], find: tb('.mode') },
       { id: 'tools.pip', title: 'Preview', text: 'Keep an eye on the focused window in the preview bar, or a floating corner.', keys: [C('I', 'add / remove'), C(['⇧', 'I'], 'pin to a corner')], find: tb('.pip-toggle[aria-label^="Add focused"]') },
       { id: 'tools.piphide', title: 'Show / hide preview', text: 'Hides the preview but keeps its windows.', keys: [C('H', 'hide / show')], find: tb('.pip-toggle[aria-label="Show or hide the preview"]') },
@@ -229,23 +228,32 @@ function regionSpots(m) {
   const spots = regions.map((r) => (r === focused ? {
     id: 'term',
     title: 'Terminal',
-    text: multi ? 'The focused region (blue outline) — every switcher changes what it shows. Click another region to focus it.'
+    text: multi ? 'The focused view (cyan frame) — every switcher changes what it shows. Click another view to focus it.'
       : 'Your tmux window. Drag selects even over a program that holds the mouse; dragging to an edge scrolls.',
     keys: [R('drag', 'select'), R(['⇧', 'click'], 'extend selection'), R([IS_MAC ? '⌥' : '⇧', 'drag'], 'force select'), R([CMD, 'C'], 'copy (again = new buffer)'), R([CMD, 'V'], 'paste'), C('[', 'copy mode')]
-      .concat(multi ? [C('O', 'next region'), C(';', 'last region'), C('X', 'close region')] : []),
+      .concat(multi ? [C('O', 'next view'), C(';', 'last view'), C('X', 'close view')] : []),
     find: () => r,
     inside: true,
     brief: `drag selects · ${CMD}C / ${CMD}V copy & paste`,
   } : {
     id: `term.${regions.indexOf(r)}`,
-    title: 'Region',
+    title: 'View',
     text: 'Click to focus it.',
     keys: [C('O', 'next')],
     find: () => r,
     inside: true,
   }));
+  if (multi) {
+    regions.forEach((r, i) => spots.push({
+      id: `head.${i}`,
+      title: 'View header',
+      text: 'The window this view shows. Point near it for the controls: ← ↑ ↓ → trade places with the view on that side, ✕ closes the view.',
+      keys: [R('click', 'move / close')],
+      find: () => r.querySelector('webtmux-region-head'),
+    }));
+  }
   document.querySelectorAll('#app .divider').forEach((d, i) => spots.push({
-    id: `divider.${i}`, title: 'Divider', text: 'Drag to resize the regions.', find: () => d,
+    id: `divider.${i}`, title: 'Divider', text: 'Drag to resize the views.', find: () => d,
   }));
   return spots;
 }

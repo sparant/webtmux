@@ -6,7 +6,7 @@
 // with "Trim name" on, a tab reading "web-01" above a tile reading "ssh web-01" is the
 // same window under two names, and the whole point of the toggle is that you picked
 // one. (The FULL "session — window N: name" is what every hover hint says, whatever
-// these are set to — see region-picker.js windowTitle.)
+// these are set to — see windowTitle below.)
 //
 // Pure — no DOM, no lit — so it is unit-tested under node (test/window-label.test.mjs).
 
@@ -47,4 +47,12 @@ export function trimWindowName(name) {
 export function windowLabel(w, prefs = LABEL_DEFAULTS) {
   const name = prefs.trimName ? trimWindowName(w?.name) : (w?.name || 'bash');
   return prefs.showSession && w?.session ? `${w.session}: ${name}` : name;
+}
+
+// The FULL name of a window — "session — window N: name" — the one way every hover
+// hint and every split view's header names a window, so the same window reads the
+// same wherever you point at it.
+export function windowTitle(session, index, name) {
+  const win = `window ${index == null || index === '' ? '' : `${index}: `}${name || ''}`;
+  return session ? `${session} — ${win}` : win;
 }

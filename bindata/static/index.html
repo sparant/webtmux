@@ -62,29 +62,63 @@
       /* Shrink the region area by any docked preview bar's reserved edge space. */
       padding: var(--wt-preview-top) var(--wt-preview-right) var(--wt-preview-bottom) var(--wt-preview-left);
     }
-    /* Each split region is a flex row: [terminal | its sidebar]. Regions tile
-       across #app; a .divider sits between them. The SplitManager fills #app. */
+    /* The split view (SplitManager._renderLayout): .split-root holds a tree of
+       .split-node boxes — a flex ROW for a left | right split, a COLUMN for top /
+       bottom — whose leaves are the .region elements, with a .divider between every
+       two children. Each child's flex weight is its share of its split. */
+    .split-root {
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+    }
+    .split-node {
+      display: flex;
+      min-width: 0;
+      min-height: 0;
+    }
+    .split-node.row { flex-direction: row; }
+    .split-node.col { flex-direction: column; }
+    /* A region is [its header strip / its terminal], stacked. */
     .region {
       flex: 1;
       min-width: 0;
+      min-height: 0;
       display: flex;
+      flex-direction: column;
       position: relative;
     }
     .region-term {
       flex: 1;
       min-width: 0;
-      height: 100%;
+      min-height: 0;
     }
+    /* The header strip (components/region-head.js) only exists while split: a lone
+       view looks exactly as it always did. */
+    webtmux-region-head { display: none; }
+    #app.split-active webtmux-region-head { display: flex; }
     .divider {
       flex: 0 0 4px;
       background: #0f3460;
-      cursor: col-resize;
     }
-    /* Focus outline + divider only matter once there are 2+ regions, so a lone
-       single-view region looks exactly as before. */
-    #app.split-active .region.focused {
-      outline: 2px solid #4a9eff;
-      outline-offset: -2px;
+    .divider.row { cursor: col-resize; }
+    .divider.col { cursor: row-resize; }
+    .divider:hover { background: #2c5a94; }
+    /* The FOCUSED view — the one every switcher changes — wears a frame, drawn the way
+       the help overlay outlines what it is explaining (a rounded line with a soft
+       halo), in cyan rather than the overlay's amber so the two never read as the
+       same thing. A pseudo-element over the region rather than a border, so it costs
+       the terminal no columns and never resizes the tmux pane as focus moves. Only
+       while split, so a lone view looks exactly as before. */
+    #app.split-active .region.focused::before {
+      content: '';
+      position: absolute;
+      inset: 1px;
+      z-index: 15;
+      border: 2px solid #4fd6ff;
+      border-radius: 6px;
+      box-shadow: 0 0 0 3px rgba(79, 214, 255, 0.22), inset 0 0 14px rgba(79, 214, 255, 0.16);
+      pointer-events: none;
     }
     /* A region on loan to a hover preview: it is showing some OTHER window's last
        captured screen, and its own window comes back the moment you move away. The

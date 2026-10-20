@@ -9,10 +9,8 @@
 //   3. The stoplight dot (now at the head of the label, where the recents tab has it)
 //      is hoverable, and hovering IT is what explains the colours. Coming off it puts
 //      the tile's own hint back.
-//   4. With the view split, hovering a tile opens the region picker instead — one chip
-//      per pane, the pane already holding the window marked, flush against the tile's
-//      inward side. Hovering a chip previews the window in that pane; clicking it sends
-//      the window there, and the picker then says which region it is in.
+//   4. With the view split, hovering a tile says exactly the same — there is no pane
+//      picker any more; the window previews in, and a click puts it in, the FOCUSED view.
 //
 // The long window name also checks the reason the hint exists at all: the label strip
 // ellipsis-clips a long name, and the hint is how you read the rest.
@@ -54,23 +52,7 @@ const tipState = () => pip((el, rr) => {
   return { shown: tip.classList.contains('show'), text: tip.textContent, top: r.top, bottom: r.bottom };
 });
 
-const picker = () => pip((el, rr) => {
-  const p = rr.querySelector('.rpick');
-  if (!p) return null;
-  const r = p.getBoundingClientRect();
-  return {
-    head: p.querySelector('.rpick-head')?.textContent.trim(),
-    hint: p.querySelector('.rpick-hint')?.textContent.replace(/\s+/g, ' ').trim(),
-    chips: [...p.querySelectorAll('.rslot')].map((b) => ({ here: b.classList.contains('here'), label: b.textContent.replace(/\s+/g, ' ').trim() })),
-    top: r.top, bottom: r.bottom,
-  };
-});
-const chipBox = (n) => pip((el, rr, i) => {
-  const b = rr.querySelectorAll('.rpick .rslot')[i];
-  if (!b) return null;
-  const r = b.getBoundingClientRect();
-  return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-}, n);
+const picker = () => pip((el, rr) => !!rr.querySelector('.rpick'));
 
 const panes = () => mgr((m) => m.units.map((u) => u._targetWindowId || u.layout?.activeWindowId));
 const previewing = () => mgr((m) => m.units.findIndex((u) => u === m.hover.activeUnit));
@@ -158,7 +140,7 @@ async function main() {
   const tc = await tipState();
   check('a tile button hints through the shared Tip', tc.shown && tc.text.startsWith('Remove from the preview'), JSON.stringify(tc.text));
 
-  check('single view offers no region picker', (await picker()) === null);
+  check('single view offers no region picker', (await picker()) === false);
   await page.mouse.move(800, 300, { steps: 4 });
   await sleep(700);
 
@@ -170,42 +152,16 @@ async function main() {
 
   const fB = await boxIn(B.id, '.pframe');
   await page.mouse.move(fB.x, fB.y, { steps: 4 });
-  await sleep(450);   // > PICKER_DELAY 240
-  const p1 = await picker();
-  check('hovering a tile in split view opens the region picker (by ~240ms)', !!p1);
-  check('…with one chip per pane', p1?.chips.length === 2, JSON.stringify(p1?.chips));
-  check('…headed with the same "session — window N: name"', p1?.head === title(B), `${JSON.stringify(p1?.head)} vs ${JSON.stringify(title(B))}`);
-  const tileBTop = await pip((el, rr, id) => rr.querySelector(`.ptile[data-window="${id}"]`).getBoundingClientRect().top, B.id);
-  check('…flush against the tile\'s top edge (the pointer can walk into it)', p1 && Math.abs(p1.bottom - tileBTop) <= 1, `picker bottom ${p1?.bottom}, tile top ${tileBTop}`);
-  const heldAt = before.indexOf(B.id);
-  check('…marking the pane that holds the window, if any',
-    p1 && p1.chips.every((c, i) => c.here === (i === heldAt)), `held at ${heldAt}: ${JSON.stringify(p1?.chips)}`);
-  check('…while the tile\'s plain hint stays down', (await tipState()).shown === false);
-
-  // Walk up into the picker, onto the chip of a pane that is NOT showing B.
-  const target = heldAt === 1 ? 0 : 1;
-  const cb = await chipBox(target);
-  await page.mouse.move(fB.x, tileBTop + 2, { steps: 4 });
-  await page.mouse.move(cb.x, cb.y, { steps: 6 });
   await sleep(900);
-  check(`hovering chip ${target + 1} previews the window in pane ${target + 1}`, (await previewing()) === target, `previewing ${await previewing()}`);
-  check('…and the picker stayed up on the way', !!(await picker()));
+  check('split view offers no region picker either', !(await picker()));
+  const ts = await tipState();
+  check('…the tile says its usual hint', ts.shown && ts.text.split('\n')[0] === title(B), JSON.stringify(ts.text));
+  const focusedIdx = await mgr((m) => m.units.indexOf(m.focusedUnit));
+  if (before.indexOf(B.id) !== focusedIdx) {
+    check('…and the preview lands in the FOCUSED view', (await previewing()) === focusedIdx, `previewing ${await previewing()}, focused ${focusedIdx}`);
+  }
 
-  await page.mouse.click(cb.x, cb.y);
-  await sleep(2800);
-  const after = await panes();
-  check(`clicking it puts the window in pane ${target + 1}`, after[target] === B.id, `${before.join(' ')} -> ${after.join(' ')}`);
-  check('…and the picker closed', (await picker()) === null);
-
-  await page.mouse.move(800, 300, { steps: 4 });
-  await sleep(600);
-  await page.mouse.move(fB.x, fB.y, { steps: 4 });
-  await sleep(450);
-  const p2 = await picker();
-  check('the picker now says which region the window is in',
-    !!p2 && p2.chips[target]?.here === true && p2.hint.includes(`It is in region ${target + 1}`), JSON.stringify(p2));
-
-  // The dot's key is still reachable with the picker up.
+  // The dot's key is still reachable in split view.
   const dotB = await boxIn(B.id, '.plabel .pwork');
   await page.mouse.move(dotB.x, dotB.y, { steps: 3 });
   await sleep(800);

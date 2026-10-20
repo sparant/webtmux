@@ -51,10 +51,6 @@ import {
   carriesPreviewDrag, tileSide, tileTip, barAxis, clampBarThick, barThickFor, withBarThick,
   dragThick, BAR_THICK_DEFAULT,
 } from '../preview-slots.js';
-import {
-  PICKER_DELAY, PICKER_GRACE, REGION_PICKER_CSS, regionPickerTemplate,
-} from '../region-picker.js';
-import { placeOnSide } from '../popup-place.js';
 import { labelPrefs, windowLabel } from '../window-label.js';
 import {
   terminalContentBox, cropBox, fitTransform, CropTracker, sameBox,
@@ -86,9 +82,6 @@ class WebtmuxPip extends LitElement {
     // _paintDrag(), which a re-render runs anyway.
     _dragId: { state: true },
     _dropIndex: { state: true },
-    // The window whose REGION PICKER is open ('' = none). Split view only — see
-    // "the region picker" below.
-    _pickFor: { state: true },
   };
 
   static styles = [css`
@@ -424,7 +417,7 @@ class WebtmuxPip extends LitElement {
        that must not fill with the alert colour — that would hide the very screen the
        flash is telling you to go and look at. Inset so the tile's own overflow can't
        clip it and its size never changes mid-pulse. */
-  `, STOPLIGHT_CSS, ALERT_CSS, TIP_CSS, REGION_PICKER_CSS];
+  `, STOPLIGHT_CSS, ALERT_CSS, TIP_CSS];
 
   constructor() {
     super();
@@ -475,16 +468,6 @@ class WebtmuxPip extends LitElement {
     this._focusedWinId = null; // set by SplitManager: the window the focused pane shows
     this._dragId = '';         // window id of the tile being dragged (see _onTileDragStart)
     this._dropIndex = -1;      // insertion gap in the bar under the pointer, -1 = none
-    // The region picker's bookkeeping (see "the region picker"). _regions is fed by the
-    // SplitManager on every refresh; it is NOT reactive state, because a re-render
-    // repaints every tile's terminal and the refresh runs twice a second.
-    this._pickFor = '';
-    this._regions = [];
-    this._regionsSig = '';
-    this._hoverId = '';        // the tile the pointer is on ('' = none)
-    this._pickTimer = null;
-    this._pickCloseTimer = null;
-    this._pickHold = false;    // the pointer is inside the picker itself
     this._terms = new Map(); // windowId -> {term, screen, cols, rows}
     this._pollTimer = null;
     // Per-window @wt_working, pushed by the SplitManager (the same map the recents
@@ -510,17 +493,14 @@ class WebtmuxPip extends LitElement {
       }
     };
     // The hover-to-enlarge CSS resizes a corner box; re-letterbox the xterm inside it
-    // when that transition settles — and re-anchor a picker hanging off it, which was
-    // placed against the box's size before it grew. Transitions on the boxes bubble to
-    // the host.
-    this.addEventListener('transitionend', () => { this._rescaleAll(); this._placePicker(); });
+    // when that transition settles. Transitions on the boxes bubble to the host.
+    this.addEventListener('transitionend', () => this._rescaleAll());
     this._tip = new Tip(this);  // shared hover hint — see tooltip.js
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     this._tip.dispose();
-    this._closePicker();
     this._teardownAll();
     this.manager?.hover?.cancel();
     if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null; }
@@ -662,7 +642,6 @@ class WebtmuxPip extends LitElement {
     this._syncTiles();
     this._applySpace();
     this._rescaleAll();
-    this._placePicker();
   }
 
   // Both surfaces are rendered UNCONDITIONALLY and shown with a class, rather than
@@ -699,7 +678,6 @@ class WebtmuxPip extends LitElement {
           corner=${c}
         ><div class="tiles" data-slot=${c}></div></div>
       `)}
-      ${this._regionPicker()}
       <div class="wt-tip"></div>
     `;
   }
@@ -869,8 +847,8 @@ class WebtmuxPip extends LitElement {
     tile.addEventListener('transitionend', () => this._rescale(w.windowId));
 
     // Hovering a preview shows that window full size in a terminal region (the
-    // shared browse gesture — see hover-preview.js), and says which window it is —
-    // or, with the view split, offers the region picker. See _tileEnter.
+    // shared browse gesture — see hover-preview.js), and says which window it is.
+    // See _tileEnter.
     const id = w.windowId;
     tile.addEventListener('mouseenter', () => this._tileEnter(tile, id));
     tile.addEventListener('mouseleave', () => this._tileLeave());
@@ -947,143 +925,30 @@ class WebtmuxPip extends LitElement {
   //
   // What the recents tab does, for the same window, in the same words and at the same
   // speed (toolbar.js _tabEnter): the full "session — window N: name" and what the
-  // gestures do after the shared hint's delay — or, with the view split, the region
-  // picker instead, which also says which pane the window is in and lets you send it to
-  // another. Both hang off the side of the tile that faces the middle of the screen
-  // (tileSide), because below a tile in a bottom bar is off screen.
+  // gestures do after the shared hint's delay. It hangs off the side of the tile that
+  // faces the middle of the screen (tileSide), because below a tile in a bottom bar is
+  // off screen.
 
   _tileEnter(tile, id) {
     const w = this._win(id);
     if (!w) return;
-    this._hoverId = id;
-    if (this._splitView()) { this._tip.leave(); this._openPicker(id); }
-    else this._tip.enter({ currentTarget: tile }, this._tileTip(w), tileSide(w.slot, this.edge));
+    this._tip.enter({ currentTarget: tile }, this._tileTip(w), tileSide(w.slot, this.edge));
     this.manager?.hover?.enter(id, w.session || '');
   }
 
-  // The preview controller and the picker both apply their own leave grace, so sweeping
-  // from one tile to the next (or from a tile into its picker) tears nothing down.
+  // The preview controller applies its own leave grace, so sweeping from one tile to
+  // the next tears nothing down.
   _tileLeave() {
-    this._hoverId = '';
     this._tip.leave();
     this.manager?.hover?.leave();
-    this._schedulePickerClose();
   }
 
   // The pointer came off a control inside the tile (the dot, a pin button) and is back
-  // on the tile itself: say the tile's own hint again. Nothing in split view — there the
-  // picker is the tile's hint, and it is already up.
+  // on the tile itself: say the tile's own hint again.
   _tileHint(tile, id) {
     const w = this._win(id);
-    if (!w || this._splitView()) { this._tip.leave(); return; }
+    if (!w) { this._tip.leave(); return; }
     this._tip.enter({ currentTarget: tile }, this._tileTip(w), tileSide(w.slot, this.edge));
-  }
-
-  // ---- the region picker -------------------------------------------------------------
-  //
-  // With the view split, "click to switch there" stops being an answer: there are
-  // several theres. The recents tab solves that with a picker (region-picker.js) — one
-  // chip per pane, which pane already holds the window, hover a chip to preview it
-  // there, click to send it — and a preview tile is the same question about the same
-  // window, so it gets the same picker. Without it the only way to learn which split a
-  // previewed window was in was to go and look at every split.
-  //
-  // The bookkeeping mirrors the toolbar's: open after PICKER_DELAY (swapping at once if
-  // one is already up), survive PICKER_GRACE after the pointer leaves the tile so it can
-  // travel into the picker, and stay while the pointer is inside it.
-
-  _splitView() { return this._regions.length > 1; }
-
-  // What the picker offers: SplitManager.regionViews(), pushed on every refresh.
-  // Re-rendered only when the answer changed — and only while a picker is up, since a
-  // render repaints every tile.
-  setRegions(list) {
-    const next = Array.isArray(list) ? list : [];
-    const sig = JSON.stringify(next);
-    if (sig === this._regionsSig) return;
-    this._regionsSig = sig;
-    this._regions = next;
-    if (!this._splitView()) { this._closePicker(); return; }
-    if (this._pickFor) this.requestUpdate();
-  }
-
-  _openPicker(id) {
-    if (this._pickCloseTimer) { clearTimeout(this._pickCloseTimer); this._pickCloseTimer = null; }
-    if (this._pickFor === id) return;
-    if (this._pickTimer) clearTimeout(this._pickTimer);
-    if (this._pickFor) { this._pickFor = id; return; }
-    this._pickTimer = setTimeout(() => {
-      this._pickTimer = null;
-      if (this._hoverId === id) this._pickFor = id;
-    }, PICKER_DELAY);
-  }
-
-  _schedulePickerClose() {
-    if (!this._pickFor && !this._pickTimer) return;
-    if (this._pickCloseTimer) clearTimeout(this._pickCloseTimer);
-    this._pickCloseTimer = setTimeout(() => {
-      this._pickCloseTimer = null;
-      if (!this._pickHold) this._closePicker();
-    }, PICKER_GRACE);
-  }
-
-  _closePicker() {
-    if (this._pickTimer) { clearTimeout(this._pickTimer); this._pickTimer = null; }
-    if (this._pickCloseTimer) { clearTimeout(this._pickCloseTimer); this._pickCloseTimer = null; }
-    this._pickHold = false;
-    if (this._pickFor) this._pickFor = '';
-  }
-
-  // The window as the picker names it: index and name off its capture, falling back to
-  // the entry's (which _paint keeps current once a capture has landed).
-  _winView(w) {
-    const entry = this.cache?.byPlacement?.get(placementKey(w.session, w.windowId))
-      || this.cache?.get(w.windowId);
-    return {
-      id: w.windowId,
-      session: w.session || entry?.sessionName || '',
-      index: entry?.index ?? w.index ?? '',
-      name: entry?.name || w.name || '',
-    };
-  }
-
-  _regionPicker() {
-    if (!this._pickFor || !this._on || !this._splitView()) return '';
-    const w = this._win(this._pickFor);
-    if (!w) return '';
-    const win = this._winView(w);
-    return regionPickerTemplate({
-      win,
-      regions: this._regions,
-      extra: alertTip(this._alertFor(w.windowId)),
-      onEnter: () => {
-        this._pickHold = true;
-        if (this._pickCloseTimer) { clearTimeout(this._pickCloseTimer); this._pickCloseTimer = null; }
-      },
-      // A grace rather than an outright close: the tile is right there, and a pointer
-      // that drifts back onto it should find its picker still up (_openPicker keeps it).
-      onLeave: () => { this._pickHold = false; this.manager?.hover?.leave(); this._schedulePickerClose(); },
-      onSlotEnter: (i) => this.manager?.previewWindowIn?.(win, i),
-      onSlotPick: (i) => { this._closePicker(); this._tip.leave(); this.manager?.sendWindowTo?.(win, i); },
-    });
-  }
-
-  // Keep the picker against its tile, flush on the side facing the middle of the screen
-  // — flush, because the pointer has to cross from the tile into it without a gap.
-  _placePicker() {
-    const el = this.renderRoot?.querySelector('.rpick');
-    if (!el) return;
-    const w = this._win(this._pickFor);
-    const tile = w && this._tileEl(w.windowId);
-    if (!tile) { this._closePicker(); return; }
-    const { left, top } = placeOnSide(
-      tile.getBoundingClientRect(),
-      { width: el.offsetWidth, height: el.offsetHeight },
-      tileSide(w.slot, this.edge),
-      { viewport: { width: window.innerWidth, height: window.innerHeight }, gap: 0 },
-    );
-    el.style.left = `${left}px`;
-    el.style.top = `${top}px`;
   }
 
   // Fill (or refresh) one tile's hover controls from the shared placement model — the
@@ -1113,7 +978,7 @@ class WebtmuxPip extends LitElement {
       b.setAttribute('aria-label', title);
       b.addEventListener('mouseenter', () => this._tip.enter({ currentTarget: b }, title));
       b.addEventListener('mouseleave', () => this._tileHint(tile, w.windowId));
-      b.addEventListener('click', (e) => { e.stopPropagation(); this._tip.leave(); this._closePicker(); fn(); });
+      b.addEventListener('click', (e) => { e.stopPropagation(); this._tip.leave(); fn(); });
       ctl.appendChild(b);
       return b;
     };
@@ -1152,10 +1017,6 @@ class WebtmuxPip extends LitElement {
     this._dragId = w.windowId;
     this._dropIndex = -1;
     this._tip.leave();
-    // The picker asks "which pane?" — a drag is not that question, and the popover
-    // would sit over the very gaps the tile is being dragged between.
-    this._hoverId = '';
-    this._closePicker();
     // Pointing at a tile previews its window in a real region (the tile's own
     // mouseenter — see _buildTile). Picking the tile UP is a rearrangement, not a
     // browse, so that preview is dismissed for the length of the drag; otherwise a
@@ -1555,9 +1416,6 @@ class WebtmuxPip extends LitElement {
     // removing, moving or hiding a preview — so the shared blob stops re-applying
     // itself over this client's set (see the adopt in restoreState).
     if (!this._restoring) this._userTouched = true;
-    // A picker for a window that just left (or a preview that was just tucked away)
-    // has nothing left to hang off.
-    if (this._pickFor && (this._hidden || !this._has(this._pickFor))) this._closePicker();
     if (this._wins.length === 0 || this._hidden) {
       if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null; }
       this.cache?.removeEventListener('update', this._onCacheUpdate);

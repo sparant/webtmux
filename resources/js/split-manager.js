@@ -1,23 +1,25 @@
-// SplitManager — owns an ordered list of TerminalUnits tiled side by side, a
-// focused unit, and ONE shared sidebar. The first unit is the PRIMARY region on
-// the shared base session (stays in sync with the ssh console); each added region
-// gets a freshly generated grouped-session name so it has its own current window
-// while sharing the window list.
+// SplitManager — owns the TerminalUnits of the split view, laid out as a tree of
+// left|right and top/bottom splits (split-tree.js), a focused unit, and ONE shared
+// sidebar. The first unit is the PRIMARY region on the shared base session (stays in
+// sync with the ssh console); each added region gets a freshly generated
+// grouped-session name so it has its own current window while sharing the window list.
 //
 // THE NAVIGATION MODEL (the invariants every switcher relies on):
 //   1. focusedUnit is the ONE navigation target. Every switcher — sidebar window
 //      tabs, sidebar session tabs, sidebar arrow keys, toolbar recents, Exposé —
-//      changes what the FOCUSED pane shows, even when that means the pane hops
-//      to another session. Nothing ever navigates a non-focused pane.
-//      …unless the user AIMED at one. A recents tab's region picker and a tab
-//      dropped on a pane both name their destination outright, which is the only
-//      way to say "that pane, not this one"; moveWindowTo is that path and it is
-//      the only thing in the app that navigates a pane you are not in.
-//   2. A window is VISIBLE in at most one pane. Windows shown (or in-flight
-//      via _targetWindowId) by other panes are disabled in every switcher; the
-//      single source of that set is occupiedWindowIds(). Aiming a window that
-//      another pane already has does not break this: the two panes TRADE views
-//      (see region-move.js), so the count of panes-per-window never changes.
+//      changes what the FOCUSED view shows, even when that means the view hops to
+//      another session. Exactly what happens with no split at all: picking a window
+//      replaces the window in the view you are in. A window does NOT remember which
+//      view it was last in and go back there — that made the split sticky, every
+//      window pulling its own view to the front instead of landing where you were.
+//      (A tab dropped onto a view names that view outright; moveWindowTo is that
+//      path.)
+//   2. A window is VISIBLE in at most one view. Picking a window another view is
+//      showing does not mirror it: the two views TRADE windows (see region-move.js),
+//      so the focused view gets what you asked for and the other one gets what the
+//      focused view had. occupiedWindowIds() is still the one source of "on screen
+//      elsewhere" — the keyboard walkers skip those windows rather than trade on
+//      every step, and a new split's auto-pick avoids them.
 //   3. A pane's LOGICAL session is layout.sessionBase (the server resolves a
 //      split's ephemeral web-* grouped session to the group's base). All display
 //      and comparison uses it; the web-* shadow names never surface.
@@ -44,6 +46,11 @@ import {
   RECENT_DRAG_TYPE, parseRecentDrag, carriesRecentDrag,
 } from './recents-strip.js';
 import { planRegionMove } from './region-move.js';
+import {
+  ROW, COL, leaf, splitLeaf, removeLeaf, replaceKey, swapKeys, focusAfterClose,
+  toShape, fromShape, shapeSignature, sizesOf, withSizes, setSizesAt, neighborToward, mapKeys,
+} from './split-tree.js';
+import { windowTitle } from './window-label.js';
 import { workBadge } from './stoplight.js';
 import { buildMruOrder } from './mru-order.js';
 import { SplitPersistence } from './split-state.js';
@@ -67,6 +74,16 @@ export class SplitManager {
     this.container = container;   // #app — holds .region elements, .divider bars, and the shared sidebar
     this.units = [];
     this.focusedUnit = null;
+    // The split's shape (split-tree.js), keyed by each unit's REGION element: regions
+    // exist (and are in the DOM) before their unit does, because xterm measures its
+    // container when it opens. Null until the primary is added.
+    this.tree = null;
+    // Everything the tree draws goes in here — nested .split-node containers, the
+    // .region elements and the .divider bars between them. One box ahead of the shared
+    // sidebar, so the panels on the right never take part in the split's layout.
+    this.splitRoot = document.createElement('div');
+    this.splitRoot.className = 'split-root';
+    this.container.appendChild(this.splitRoot);
 
     // ONE client-side capture cache for the whole app. Requests go out over any
     // connected unit's ws (capture is server-global, so the connection is
@@ -266,30 +283,34 @@ export class SplitManager {
     return `web-${rnd}`;
   }
 
-  addUnit({ sessionName = null, primary = false } = {}) {
+  // Add a region. `from` is the unit whose view is split to make room and `dir` which
+  // way (ROW = the new view goes to its right, COL = below it); without `from` the
+  // focused view is the one split.
+  addUnit({ sessionName = null, primary = false, from = null, dir = ROW } = {}) {
     if (sessionName === null) sessionName = this.genSessionName();
 
-    // Region DOM = just the terminal area (the sidebar is shared, not per-region).
-    // A divider precedes every region after the first. Insert BEFORE the shared
-    // sidebar so it stays rightmost.
-    if (this.units.length > 0) {
-      const divider = document.createElement('div');
-      divider.className = 'divider';
-      // Drag the divider to transfer width between the two regions it sits between.
-      // (The cursor already advertised col-resize; this makes it actually work.)
-      divider.addEventListener('mousedown', (e) => this._startDividerDrag(divider, e));
-      this.container.insertBefore(divider, this.sidebar);
-    }
+    // Region DOM = the view's header strip (shown only while split — see
+    // components/region-head.js) above the terminal area. The sidebar is shared, not
+    // per-region.
     const region = document.createElement('div');
     region.className = 'region';
     region.dataset.session = sessionName || 'primary';
+    const head = document.createElement('webtmux-region-head');
+    region.appendChild(head);
     const term = document.createElement('div');
     term.className = 'region-term';
     region.appendChild(term);
-    this.container.insertBefore(region, this.sidebar);
+    // Into the tree, and so into the DOM, BEFORE the unit opens its terminal on it.
+    const split = (from || this.focusedUnit)?.region;
+    this.tree = this.tree && split ? splitLeaf(this.tree, split, region, dir) : leaf(region);
+    this._renderLayout();
 
     const unit = new TerminalUnit({ sessionName, terminalEl: term, primary });
     unit.region = region;
+    unit.head = head;
+    head.manager = this;
+    head.unit = unit;
+    this._watchHeadProximity(region, head);
     // Back-reference so components bound to a unit (the shared sidebar) can reach
     // app-wide services — chiefly the one HoverPreview every switcher goes through.
     unit.manager = this;
@@ -344,7 +365,6 @@ export class SplitManager {
 
     this.units.push(unit);
     this._syncSplitClass();
-    this._equalizeRegions();   // a fresh region joins as an equal split, clearing any prior drag
     this.focus(unit);
     this._refitSoon();
     if (!primary) {
@@ -357,9 +377,8 @@ export class SplitManager {
   // ---- a recents tab dropped on a region ---------------------------------------
   //
   // The strip's tabs have always been draggable among THEMSELVES (reorder). Dragging
-  // one onto a terminal region is the direct-manipulation half of the region picker:
-  // point at the pane you mean and let go. It is the same instruction the picker's
-  // chips give (moveWindowTo), so the two can never drift apart.
+  // one onto a terminal region puts its window in THAT view rather than the focused
+  // one: point at the pane you mean and let go (moveWindowTo).
   //
   // Listeners go on the region rather than on #app because the answer to "which pane
   // is under the pointer" should be the browser's, not arithmetic over pane rects
@@ -408,16 +427,11 @@ export class SplitManager {
 
   // ---- sending a window to a NAMED region --------------------------------------
   //
-  // goToWindow's rule — "navigation changes the FOCUSED region" — is what every
-  // switcher the user drives blind relies on. This is the other case: the user has
-  // pointed at a specific pane (a picker chip, a tab dropped on a region), so that
-  // pane is the destination even when the window is already on screen elsewhere.
-  //
-  // Which is the case that had no answer at all before: goToWindowIn resolves "show
-  // me this window" to the region that already has it, so a window in the other split
-  // could only be jumped TO, never brought over. The exchange that fixes it lives in
-  // region-move.js — including why the other region takes this one's view rather than
-  // being sent somewhere of its own.
+  // Put a window in ONE named region, trading with whichever region already has it.
+  // goToWindowIn hands the focused region here whenever the window is on screen
+  // elsewhere, and a tab dropped on a region names that region outright. The exchange
+  // lives in region-move.js — including why the other region takes this one's view
+  // rather than being sent somewhere of its own.
   moveWindowTo(unit, id, session = '') {
     const u = unit || this.focusedUnit;
     if (!u || !id) return;
@@ -447,59 +461,6 @@ export class SplitManager {
     landing.terminal?.focus();
   }
 
-  // What each region is showing, for the toolbar's region picker: one entry per
-  // region in left-to-right order. `grow` is the divider-drag ratio (read off the
-  // inline style rather than measured, so this costs no layout flush on the 500ms
-  // refresh) — the picker draws its chips in the panes' real proportions, so the
-  // thing you click looks like the thing you are aiming at.
-  regionViews() {
-    return this.units.map((u, i) => {
-      const view = this._viewOf(u);
-      const live = (u.layout?.windows || []).find((w) => w.id === view.windowId);
-      const cached = view.windowId ? this.captureCache?.get(view.windowId) : null;
-      const grow = parseFloat(u.region?.style.flexGrow);
-      return {
-        index: i,
-        windowId: view.windowId || '',
-        session: view.session || '',
-        name: live?.name || cached?.name || '',
-        windowIndex: live?.index ?? cached?.index ?? null,
-        grow: Number.isFinite(grow) && grow > 0 ? grow : 1,
-        focused: u === this.focusedUnit,
-        primary: !!u.primary,
-      };
-    });
-  }
-
-  // Point a preview at a NAMED region — the picker's chips. Same browse as hovering
-  // the tab itself, aimed: what the window would look like in that pane, committed
-  // only if you click.
-  previewWindowIn(entry, index) {
-    const u = this.units[index];
-    if (!u) return;
-    const id = typeof entry === 'string' ? entry : entry?.id;
-    const session = (typeof entry === 'object' && entry?.session) || '';
-    if (id) this.hover.enter(id, session, u);
-  }
-
-  // …and commit that browse — the picker's chip click. Routed through the hover
-  // controller (rather than straight to moveWindowTo) so the borrowed region is
-  // handed back without a repaint it is about to overwrite anyway.
-  sendWindowTo(entry, index) {
-    const u = this.units[index];
-    if (!u) return;
-    const id = typeof entry === 'string' ? entry : entry?.id;
-    const session = (typeof entry === 'object' && entry?.session) || '';
-    if (id) this.hover.commit(id, session, u);
-  }
-
-  // Return every region to equal `flex: 1 1 0` by clearing the inline flex-grow a
-  // divider drag stamped on. Called on add/remove so a new/removed region doesn't
-  // inherit stale grow ratios (which would render the un-stamped region as a sliver).
-  _equalizeRegions() {
-    for (const r of this.container.querySelectorAll('.region')) r.style.flexGrow = '';
-  }
-
   // --- split-view persistence --------------------------------------------------
   // Shared: which VIEW each region shows — (session, window), never a window id
   // alone. `regions` covers the EXTRA regions only — regions[i] is units[i+1] — and
@@ -526,13 +487,23 @@ export class SplitManager {
   // current window, which moves the console too; that is the accepted trade for the
   // main region remembering where you were. Per-client width/focus stay in ClientStore.
   // The whole saved view: the extra regions plus the primary's own pair.
+  //
+  // …and the SHAPE: which views sit side by side and which are stacked, by unit index
+  // (split-tree.js toShape). Shared like the region count, because the two only make
+  // sense together. How big each view is stays per-client — see _persistSizes.
   _splitView() {
     const primary = this._viewOf(this.units[0]);
     return {
       regions: this.units.slice(1).map((u) => this._viewOf(u)),
       primaryWindowId: primary.windowId,
       primarySession: primary.session,
+      tree: toShape(this.tree, (r) => this._unitIndexOf(r)),
     };
+  }
+
+  // A region element's position in `units` — the number a saved shape calls it by.
+  _unitIndexOf(region) {
+    return this.units.findIndex((u) => u.region === region);
   }
 
   // Publish the current view. Both write guards live in SplitPersistence (see
@@ -576,12 +547,26 @@ export class SplitManager {
     };
   }
 
-  // Per-client: the divider ratios (inline flex-grow) in region DOM order. A reload
-  // restores your own pane sizes without sharing them across browsers.
-  _persistWidths() {
+  // Per-client: how big each view is (every split's size ratios), stamped with the
+  // shape they were measured on so they are only ever re-applied to that shape. A
+  // reload restores your own view sizes without sharing them across browsers — a
+  // phone and a wide monitor want different ones.
+  _persistSizes() {
     if (this._restoringSplit) return;
-    const widths = [...this.container.querySelectorAll('.region')].map((r) => r.style.flexGrow || '');
-    clientStore.patch({ splitWidths: widths });
+    clientStore.patch({
+      splitSizes: {
+        shape: shapeSignature(this.tree, (r) => this._unitIndexOf(r)),
+        sizes: sizesOf(this.tree),
+      },
+    });
+  }
+
+  // …and put them back, if they still describe the split on screen.
+  _restoreSizes() {
+    const saved = clientStore.get('splitSizes', null);
+    if (!saved || saved.shape !== shapeSignature(this.tree, (r) => this._unitIndexOf(r))) return;
+    this.tree = withSizes(this.tree, saved.sizes);
+    this._renderLayout();
   }
 
   // Recreate the saved extra regions (shared) and re-apply per-client widths + focus.
@@ -599,13 +584,8 @@ export class SplitManager {
 
     this._applySplitView(saved, { boot: true });
 
-    // Per-client widths (applied AFTER regions exist; _equalizeRegions cleared them).
-    const widths = clientStore.get('splitWidths', null);
-    if (Array.isArray(widths) && widths.length) {
-      const rgs = [...this.container.querySelectorAll('.region')];
-      widths.forEach((w, i) => { if (rgs[i] && w) rgs[i].style.flexGrow = w; });
-      this._refitSoon();
-    }
+    // Per-client sizes (applied AFTER the regions and their shape exist).
+    this._restoreSizes();
 
     // Per-client focused region.
     const fi = clientStore.get('focusedIndex', 0);
@@ -641,7 +621,7 @@ export class SplitManager {
         this.units[0]._restoreSession = view.primarySession;
       }
       for (const v of list) {
-        const unit = this.addUnit({});
+        const unit = this.addUnit({ from: this.units[this.units.length - 1] });
         if (v.windowId) {
           unit._restoreWindowId = v.windowId;
           unit._restoreSession = v.session;
@@ -649,6 +629,11 @@ export class SplitManager {
           unit._autoPickPending = true;   // no saved window → MRU auto-pick
         }
       }
+      // Now that every region exists, arrange them the way they were saved. A view
+      // with no shape (saved before views could be stacked) reads as one row.
+      const regions = this.units.map((u) => u.region);
+      this.tree = mapKeys(fromShape(view?.tree ?? null, regions.length), (i) => regions[i]);
+      this._renderLayout();
     } finally {
       this._restoringSplit = false;
     }
@@ -660,42 +645,88 @@ export class SplitManager {
     const view = this._split.adopt();
     if (!view) return;
     this._applySplitView(view);
-    // The region COUNT may have changed, so this client's saved widths no longer
-    // describe anything; add/remove already re-equalized, so record that.
-    this._persistWidths();
+    // The shape may have changed; the sizes saved for it come back only if it didn't.
+    this._restoreSizes();
     this._refitSoon();
   }
 
+  // Close a view. Its space goes to the view next to it and the NEXT view takes the
+  // focus (the previous one when it was last) — the same rule closing a recents tab
+  // follows. The last view can't be closed.
+  //
+  // ANY view can be closed, the primary's included, but the primary UNIT can't go: it
+  // is the one attached to the shared base session (in sync with the ssh console, and
+  // the one StateStore writes through). So closing the primary's view closes the next
+  // view's UNIT instead and moves the primary into that slot, showing that view's
+  // window — on screen, exactly what closing the primary's view should look like.
   removeUnit(unit) {
-    if (!unit || unit.primary) return;   // never remove the console-synced primary
-    const idx = this.units.indexOf(unit);
-    if (idx === -1) return;
+    if (!unit || this.units.length < 2 || !this.units.includes(unit)) return;
+    const nextRegion = focusAfterClose(this.tree, unit.region);
+    const next = this.units.find((u) => u.region === nextRegion) || null;
+    if (!next) return;
 
-    // Drop it from the hover preview's "where does this window live" memory (and
-    // release it if it happens to be hosting a preview right now) BEFORE it dies.
-    this.hover.forgetUnit(unit);
+    if (unit.primary) {
+      const view = this._viewOf(next);
+      this.tree = replaceKey(removeLeaf(this.tree, unit.region), next.region, unit.region);
+      this._dropUnit(next);
+      this._renderLayout();
+      this.focus(unit);
+      if (view.windowId) this._placeWindowIn(unit, view.windowId, view.session || '');
+    } else {
+      this.tree = removeLeaf(this.tree, unit.region);
+      this._dropUnit(unit);
+      this._renderLayout();
+      this.focus(next);
+    }
 
-    unit.destroy();   // closes its ws -> the grouped session self-reaps (destroy-unattached)
-
-    // Remove the region and exactly one adjacent divider.
-    const region = unit.region;
-    const prev = region.previousElementSibling;
-    const next = region.nextElementSibling;
-    if (prev && prev.classList.contains('divider')) prev.remove();
-    else if (next && next.classList.contains('divider')) next.remove();
-    region.remove();
-
-    this.units.splice(idx, 1);
     // A closed region takes its (possibly dead) socket with it — the warning must go
     // with it, or closing the broken region leaves the toolbar claiming tmux is gone.
     this._refreshConnection();
     this._syncSplitClass();
-    this._equalizeRegions();   // remaining regions re-split evenly
-    this.focus(this.units[Math.min(idx, this.units.length - 1)] || this.units[0]);
     this._refitSoon();
     this._touchSplit();              // closing a region is this client's own arrangement
     this._persistSplitState();       // region count changed → shared 'split'
-    this._persistWidths();           // regions re-equalized → drop stale per-client widths
+    this._persistSizes();
+  }
+
+  // Tear one unit down and take its region out of the DOM. The tree is the caller's.
+  _dropUnit(unit) {
+    // Release it if it happens to be hosting a hover preview right now, BEFORE it dies.
+    this.hover.forgetUnit(unit);
+    unit.destroy();   // closes its ws -> the grouped session self-reaps (destroy-unattached)
+    unit.region.remove();
+    const idx = this.units.indexOf(unit);
+    if (idx >= 0) this.units.splice(idx, 1);
+  }
+
+  // Move a view one step left / right / up / down: it trades places with the view on
+  // that side (the one you SEE there — see split-tree.js neighborToward). Both keep
+  // their windows and their focus; only the slots change hands.
+  moveRegion(unit, dir) {
+    const u = unit || this.focusedUnit;
+    if (!u) return;
+    const other = neighborToward(this._regionRects(), u.region, dir);
+    if (!other) return;
+    this.tree = swapKeys(this.tree, u.region, other);
+    this._renderLayout();
+    this.focus(u);
+    this._refitSoon();
+    this._touchSplit();
+    this._persistSplitState();
+    this._persistSizes();
+  }
+
+  // Every region's box on screen, keyed by region element.
+  _regionRects() {
+    return new Map(this.units.map((u) => [u.region, u.region.getBoundingClientRect()]));
+  }
+
+  // Which directions a view could move in — what its header offers.
+  _movesFor(unit) {
+    const rects = this._regionRects();
+    const out = {};
+    for (const d of ['left', 'right', 'up', 'down']) out[d] = !!neighborToward(rects, unit.region, d);
+    return out;
   }
 
   focus(unit) {
@@ -714,6 +745,7 @@ export class SplitManager {
     window.webtmux = unit;
     for (const u of this.units) {
       u.region.classList.toggle('focused', u === unit);
+      if (u.head) u.head.focused = u === unit;
     }
     // Re-point the single shared sidebar at the focused region and paint its state.
     this.sidebar.unit = unit;
@@ -757,7 +789,8 @@ export class SplitManager {
     }
 
     if (unit === this.focusedUnit) this._pushLayout(unit);
-    else this._pushDisabled();   // another region moved -> refresh what's occupied
+    else this._pushElsewhere();   // another view moved -> refresh what's on screen elsewhere
+    this._paintHead(unit);
 
     if (unit._autoPickPending && unit.layout) {
       const activeId = unit.layout.activeWindowId;
@@ -803,11 +836,6 @@ export class SplitManager {
     if (unit._targetSession && unit._targetSession === this.logicalSession(unit)) {
       unit._targetSession = null;
     }
-
-    // Remember which region each window really lives in, so a later hover preview of
-    // it reappears where you're used to seeing it rather than hijacking the focused
-    // region (HoverPreview rule 1).
-    if (unit.layout?.activeWindowId) this.hover.noteRendered(unit.layout.activeWindowId, unit);
 
     // MRU access: a region now shows a window it wasn't = an access — UNLESS the
     // switch came from sidebar browsing (marked in _suppressAccessIds for arrow-key
@@ -1255,14 +1283,11 @@ export class SplitManager {
     this._refreshToolbar();
   }
 
-  // Pane-focus dots: one per region (only when >1), green on the focused pane.
-  // Also surface the focused region's copy-mode state (ground truth from the
-  // layout poll's #{pane_in_mode}) so the toolbar can recolor + show the status.
+  // Surface the focused region's copy-mode state (ground truth from the layout poll's
+  // #{pane_in_mode}) so the toolbar can recolor + show the status. (Which view is
+  // focused is the view's own frame now, not a row of dots up here.)
   _refreshPanes() {
     if (!this.toolbar) return;
-    this.toolbar.panes = this.units.length > 1
-      ? this.units.map(u => u === this.focusedUnit)
-      : [];
     const inMode = !!this.focusedUnit?.layout?.activePaneInMode;
     this.toolbar.copyMode = inMode;
     // The copy panel's mode button is the same pill; both are driven from the one
@@ -1801,8 +1826,8 @@ export class SplitManager {
     // them. Signature-guarded, so the common no-change poll costs one JSON.stringify.
     this._alertState.persist(this.workAlerts);
     const alerts = this.workAlerts.snapshot();
-    // Windows shown by OTHER panes are not selectable here (they'd put two panes on
-    // one window) — greyed out, like the sidebar. One shared source: occupiedWindowIds.
+    // Windows on screen in ANOTHER view. Still clickable — picking one trades it into
+    // the focused view (goToWindowIn) — but the tab's hint says what will happen.
     const occupied = this.occupiedWindowIds(focused);
     // Tabs the preview is standing in for. Walked over the WHOLE list rather than the
     // visible slice so a suppressed — or merely off-strip — entry still picks up tmux
@@ -1835,7 +1860,7 @@ export class SplitManager {
         session: e.session || c?.sessionName || '',
         // Active only when the focused pane shows this window IN THIS entry's session.
         active: e.id === activeId && e.session === focusedSession,
-        disabled: occupied.has(e.id),
+        elsewhere: occupied.has(e.id),
         // Self-reported work status from @wt_working: "1" working (green), "0" stopped
         // (red), "" unset (unfilled dot). Prefer the global map (correct across sessions)
         // and fall back to the focused region's per-session copy only if absent.
@@ -1891,13 +1916,6 @@ export class SplitManager {
     // window doesn't come back on the next reload). Signature-guarded — see
     // _persistRecents; the common no-change case costs one JSON.stringify.
     this._persistRecents();
-    // What the region picker offers: one chip per region, in pane order. Fed
-    // unconditionally (each surface decides when a picker is worth showing) so the
-    // chips can never describe a split that has since been closed. The preview's
-    // tiles carry the same picker as the strip's tabs — see region-picker.js.
-    const regions = this.regionViews();
-    this.toolbar.regions = regions;
-    this.pip?.setRegions(regions);
     this.toolbar.collapsed = !!this.sidebar?.collapsed;
     // Keep the toolbar's mode labels reflecting the focused pane's settings.
     if (focused?.scrollMode) this.toolbar.scrollMode = focused.scrollMode;
@@ -2041,19 +2059,15 @@ export class SplitManager {
     // the switchers that navigate outright — Exposé, ⌃⌥P/N, the MRU walk — which
     // must not leave a region stuck holding someone else's screen.
     this.hover.cancel();
-    // Already on screen in ANOTHER region: go there. A window is visible in at
-    // most one pane, so "show me this window" can only mean the pane that has it.
-    //
-    // This used to `return`. Every switcher that can SEE the rule handles it
-    // first — the toolbar and sidebar grey those tabs out, the keyboard walkers
-    // skip them — so the branch was only ever reached by one that can't: Exposé,
-    // whose tiles are plain thumbnails with no disabled state. Clicking one whose
-    // window happened to live in the other pane did nothing at all, with nothing
-    // on screen to say why. Keyed on the window ALONE, not the (session, window)
-    // placement: a linked window's two tiles are the same screen, so honouring the
-    // session half would put identical content in two regions.
+    // Already on screen in ANOTHER view: bring it HERE, and hand that view the window
+    // this one is leaving — the trade in region-move.js. It used to jump the focus to
+    // the view that had it instead, which made the split sticky: every window dragged
+    // you back to wherever it was last shown rather than landing in the view you were
+    // in. Keyed on the window ALONE, not the (session, window) placement: a linked
+    // window's two tiles are the same screen, so honouring the session half would put
+    // identical content in two views.
     const holder = this._unitShowing(id, u);
-    if (holder) { this.focus(holder); return; }   // focus() focuses its terminal too
+    if (holder) { this.moveWindowTo(u, id, session); return; }
     if (u !== this.focusedUnit) this.focus(u);
     this._placeWindowIn(u, id, session);
     u.terminal?.focus();
@@ -2375,30 +2389,29 @@ export class SplitManager {
     sb.activeWindow = unit.layout?.activeWindowId || '';
     sb.previewWindow = this.hover?.windowId || '';
     sb.previewSession = this.hover?.session || '';
-    this._pushDisabled();
+    this._pushElsewhere();
   }
 
-  // Tell the shared sidebar which windows are already shown by OTHER regions, so it
-  // can grey them out / skip them — two panes on the same window share it (tmux
-  // grouped sessions) and would stay in sync, which is exactly what we prevent.
-  // Same source as the toolbar (occupiedWindowIds), so in-flight switches count.
-  _pushDisabled() {
+  // Tell the shared sidebar which windows other views are showing, so it can mark
+  // them. Same source as the toolbar (occupiedWindowIds), so in-flight switches count.
+  _pushElsewhere() {
     const focused = this.focusedUnit;
     if (!focused) return;
-    this.sidebar.disabledWindows = [...this.occupiedWindowIds(focused)];
+    this.sidebar.elsewhereWindows = [...this.occupiedWindowIds(focused)];
   }
 
-  // Add a region and, once its layout arrives, auto-select the most-recently-used
-  // window not already shown by another region, so the split opens on something
-  // useful (what you last looked at) rather than the default first window.
-  splitAdd() {
-    const unit = this.addUnit({});
+  // Split the FOCUSED view in two — `dir` ROW puts the new view to its right, COL
+  // below it — and, once the new view's layout arrives, auto-select the
+  // most-recently-used window not already shown by another view, so the split opens
+  // on something useful (what you last looked at) rather than the default first window.
+  splitAdd(dir = ROW) {
+    const unit = this.addUnit({ from: this.focusedUnit, dir: dir === COL ? COL : ROW });
     unit._autoPickPending = true;
     return unit;
   }
 
   closeFocused() {
-    if (this.focusedUnit && !this.focusedUnit.primary) this.removeUnit(this.focusedUnit);
+    if (this.focusedUnit) this.removeUnit(this.focusedUnit);
   }
 
   // Is the keyboard somewhere that owns Escape/Enter itself — the sidebar or the
@@ -2528,56 +2541,124 @@ export class SplitManager {
     this.container.classList.toggle('split-active', this.units.length > 1);
   }
 
+  // Draw the tree: one .split-node per split (a flex row or column), the .region
+  // elements as its leaves, and a .divider between every two children. The regions are
+  // MOVED into the new containers, never recreated — each one carries a live xterm and
+  // its socket. Rebuilt whole on every change of shape; a divider drag only touches
+  // the flex weights of the two children it sits between.
+  _renderLayout() {
+    const build = (node, path) => {
+      if (!node.kids) return node.key;
+      const el = document.createElement('div');
+      el.className = `split-node ${node.dir}`;
+      node.kids.forEach((k, i) => {
+        if (i) {
+          const divider = document.createElement('div');
+          divider.className = `divider ${node.dir}`;
+          divider.addEventListener('mousedown', (e) => this._startDividerDrag(divider, path, e));
+          el.appendChild(divider);
+        }
+        const child = build(k, [...path, i]);
+        child.style.flex = `${node.sizes[i]} 1 0`;
+        el.appendChild(child);
+      });
+      return el;
+    };
+    const top = this.tree ? build(this.tree, []) : null;
+    if (top) top.style.flex = '1 1 0';
+    // Moving a region out of the document blurs its terminal; give the keyboard back.
+    const hadFocus = this.focusedUnit?.region?.contains(document.activeElement);
+    this.splitRoot.replaceChildren(...(top ? [top] : []));
+    if (hadFocus) this.focusedUnit.terminal?.focus();
+    this._syncSplitClass();
+    this._refitSoon();
+    // Which way each view can move depends on where everything now is.
+    requestAnimationFrame(() => { for (const u of this.units) this._paintHead(u); });
+  }
+
+  // Refresh a view's header: the window it shows, and the directions it can move.
+  // Only drawn while split (CSS hides it otherwise), so skip the work in single view.
+  _paintHead(unit) {
+    const head = unit?.head;
+    if (!head || this.units.length < 2) return;
+    const id = unit.layout?.activeWindowId;
+    const win = (unit.layout?.windows || []).find((w) => w.id === id);
+    head.label = win ? windowTitle(this.logicalSession(unit), win.index, win.name) : '';
+    const moves = this._movesFor(unit);
+    if (JSON.stringify(moves) !== JSON.stringify(head.moves)) head.moves = moves;
+  }
+
+  // Show a view's header controls while the pointer is near the top of the view: over
+  // the strip itself, or within a few rows below it. Hovering anywhere in the view
+  // would light every header up as the pointer crosses the screen; this keeps them
+  // out of the way until you reach for them.
+  _watchHeadProximity(region, head) {
+    const NEAR_PX = 48;
+    region.addEventListener('mousemove', (e) => {
+      const near = e.clientY - region.getBoundingClientRect().top < NEAR_PX;
+      if (head.near !== near) head.near = near;
+    });
+    region.addEventListener('mouseleave', () => { head.near = false; });
+  }
+
   _refitSoon() {
     setTimeout(() => { for (const u of this.units) { try { u.fit(); } catch (e) {} } }, 60);
   }
 
-  // Divider drag-to-resize. The divider sits between two .region siblings; dragging
-  // transfers width from one to the other. Regions are `flex: 1 1 0` (equal grow),
-  // so we express widths as flex-grow ratios — freezing EVERY region to a grow
-  // proportional to its current pixel width first, so non-adjacent regions hold
-  // steady and the ratios survive later container/window resizes. Each region's
-  // terminal has a ResizeObserver (fit + sendResize), so xterm reflows and tmux
-  // gets the new size live as we drag; a final refit settles it on release.
-  _startDividerDrag(divider, e) {
+  // Divider drag-to-resize. A divider sits between two children of one split node —
+  // regions or nested splits — and dragging it moves space between those two along
+  // the split's axis (across for a left|right split, down for a top/bottom one).
+  // Every child of that node is first pinned to its current pixel size as its flex
+  // weight, so the others hold still and the weights stay proportional through later
+  // window resizes. Each region's terminal has a ResizeObserver (fit + sendResize), so
+  // xterm reflows and tmux gets the new size live as we drag; on release the weights
+  // go back into the tree (and the per-client store) and a final refit settles it.
+  _startDividerDrag(divider, path, e) {
     if (e.button !== 0) return;                  // left-drag only
-    const prevRegion = divider.previousElementSibling;
-    const nextRegion = divider.nextElementSibling;
-    if (!prevRegion?.classList.contains('region') || !nextRegion?.classList.contains('region')) return;
+    const node = divider.parentElement;
+    const prev = divider.previousElementSibling;
+    const next = divider.nextElementSibling;
+    if (!node || !prev || !next) return;
     e.preventDefault();
-
-    // Pin all regions to width-proportional grow values so only this pair moves.
-    // Measure EVERY width in one pass BEFORE writing any flex-grow: interleaving
-    // read/write forces a reflow between iterations, so region N would be measured
-    // AFTER region N-1 already grabbed the space (grow 700 vs 1) — collapsing it to
-    // its min and snapping the divider hard to one side on the first mousedown.
-    const regions = [...this.container.querySelectorAll('.region')];
-    const widths = regions.map(r => Math.max(1, Math.round(r.getBoundingClientRect().width)));
-    regions.forEach((r, i) => { r.style.flexGrow = String(widths[i]); });
-    const startX = e.clientX;
-    const w1 = widths[regions.indexOf(prevRegion)];
-    const w2 = widths[regions.indexOf(nextRegion)];
-    const total = w1 + w2;
-    const MIN = 80;                              // keep a usable sliver on both sides
+    const across = node.classList.contains(ROW);
+    const kids = [...node.children].filter((c) => !c.classList.contains('divider'));
+    // Measure EVERY child in one pass BEFORE writing any weight: interleaving read and
+    // write forces a reflow between them, so a later child would be measured after an
+    // earlier one already took the space — snapping the divider to one side.
+    const px = kids.map((c) => {
+      const r = c.getBoundingClientRect();
+      return Math.max(1, Math.round(across ? r.width : r.height));
+    });
+    kids.forEach((c, i) => { c.style.flexGrow = String(px[i]); });
+    const i1 = kids.indexOf(prev);
+    const i2 = kids.indexOf(next);
+    const start = across ? e.clientX : e.clientY;
+    const from = px[i1];
+    const total = px[i1] + px[i2];
+    const MIN = across ? 80 : 60;                // keep a usable sliver on both sides
 
     const onMove = (ev) => {
-      let nw1 = w1 + (ev.clientX - startX);
-      nw1 = Math.max(MIN, Math.min(total - MIN, nw1));
-      prevRegion.style.flexGrow = String(Math.round(nw1));
-      nextRegion.style.flexGrow = String(Math.round(total - nw1));
+      let a = from + ((across ? ev.clientX : ev.clientY) - start);
+      a = Math.max(MIN, Math.min(total - MIN, a));
+      px[i1] = Math.round(a);
+      px[i2] = total - px[i1];
+      prev.style.flexGrow = String(px[i1]);
+      next.style.flexGrow = String(px[i2]);
     };
     const onUp = () => {
       window.removeEventListener('mousemove', onMove, true);
       window.removeEventListener('mouseup', onUp, true);
       document.body.style.userSelect = '';
       document.body.style.cursor = '';
+      this.tree = setSizesAt(this.tree, path, px);
       this._refitSoon();
-      this._persistWidths();   // final divider ratios → per-client ClientStore
+      this._persistSizes();   // final sizes → per-client ClientStore
+      for (const u of this.units) this._paintHead(u);
     };
     // userSelect/cursor overrides keep the drag from selecting page text or
     // flipping to the default cursor when the pointer briefly leaves the 4px bar.
     document.body.style.userSelect = 'none';
-    document.body.style.cursor = 'col-resize';
+    document.body.style.cursor = across ? 'col-resize' : 'row-resize';
     window.addEventListener('mousemove', onMove, true);
     window.addEventListener('mouseup', onUp, true);
   }
@@ -2597,7 +2678,8 @@ export class SplitManager {
     //                                            (physical '/', Shift or not); the
     //                                            plain shortcut list moved to K (keys)
     //   0-9 select-window                     -> window N of the focused pane's session
-    //   % " split-window                      -> add a split region (as Enter does)
+    //   %  split-window -h                    -> split the focused view left | right
+    //   "  split-window -v                    -> split the focused view top / bottom
     //   o  select-pane (next) / ; last-pane   -> move focus between regions
     //   &  kill-window                        -> kill the focused window (confirms)
     //   ]  paste-buffer                       -> paste the focused copy buffer
@@ -2663,11 +2745,11 @@ export class SplitManager {
       }
       if (!ev.ctrlKey || !ev.altKey || ev.metaKey) return;
       // tmux's shifted keys, matched by physical key so they work on any layout's
-      // shift row: % and " both split (webtmux has one split direction), & kills the
-      // window. Checked before the switch because Digit5/Digit7 unshifted mean
-      // "go to window 5/7".
+      // shift row: % splits left | right and " splits top / bottom, as tmux's own
+      // split-window does; & kills the window. Checked before the switch because
+      // Digit5/Digit7 unshifted mean "go to window 5/7".
       if (ev.shiftKey && (ev.code === 'Digit5' || ev.code === 'Quote')) {
-        this.splitAdd();
+        this.splitAdd(ev.code === 'Quote' ? COL : ROW);
         ev.preventDefault(); ev.stopPropagation();
         return;
       }
@@ -2688,7 +2770,7 @@ export class SplitManager {
         case 'KeyW':                                   // tmux 'w' (choose-tree): toggle sidebar
           this.sidebar?.toggleCollapsed();
           break;
-        case 'Enter':                                  // add a split region
+        case 'Enter':                                  // split the focused view left | right
           this.splitAdd();
           break;
         case 'KeyX':                                   // tmux 'x' (kill-pane): close focused region

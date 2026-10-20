@@ -39,7 +39,9 @@ Pieces:
 - `boot-tmux.sh` — stages 3 tmux sessions / 9 windows of realistic content
   (pygmentized source, a rolling build, request logs, htop, a pane grid, …) on a
   private socket.
-- `attach.sh` — the command webtmux spawns per connection.
+- `attach.sh` — the command webtmux spawns per connection. Like the real
+  `attach-web.sh`, it puts each added split view on its own grouped session; attaching
+  them to the base made a split a mirror of the primary whenever both were on it.
 - `driver.js` — Playwright script that poses each feature (split, sidebar,
   Exposé, previews, stoplights, copy mode, save dropdown, …) and writes one jpg
   per README feature section into `screenshots/`.
@@ -50,7 +52,7 @@ Pieces:
   `verify-ux6.js` (MRU chord with an empty capture cache, Exposé's status filter, the
   mouse-capture dropdown, the paired sidebar toggles, paste-trim on rename),
   `verify-tmux-chords.js` (the tmux-shaped chords, each asked of tmux over its socket:
-  ⌃⌥0–9 selects window N, ⌃⌥% and ⌃⌥" add a region, ⌃⌥O / ⌃⌥; move focus between
+  ⌃⌥0–9 selects window N, ⌃⌥% and ⌃⌥" split the focused view, ⌃⌥O / ⌃⌥; move focus between
   regions, ⌃⌥& asks and then kills, ⌃⌥] types the focused copy buffer into the pane — and
   Exposé: ⌃⌥F opens at 3×3 and closes on the next press, ⌃⌥E does nothing, the header's
   Grid toggle re-lays-out the tiles and is remembered, a trackpad spread only opens and
@@ -159,7 +161,7 @@ Pieces:
   does NOT light up for it the way it does for a recents tab.
   Most of the drags are dispatched as DragEvents with a hand-made DataTransfer, but the
   FIRST one is real: `page.dragAndDrop` does drive a native HTML5 drag here (contrary to
-  what verify-recents-target.js's comment assumes), and it is the only way to test the one
+  what the old recents-target driver's comment assumed), and it is the only way to test the one
   thing a synthetic driver cannot see — whether the browser makes a tile a drag source at
   all. It runs first on purpose: a native drag is the flakiest thing in this harness, and
   the same call later in the run, over a page also holding a floating corner box, timed
@@ -167,13 +169,15 @@ Pieces:
   `SHOTS=1` writes the bar mid-drag and a column-docked bar to `screenshots/verify/`,
   since whether a 3px line inside a tile's edge reads as "it lands HERE" is not a DOM
   assertion),
-  `verify-recents-target.js` (WHICH pane a recents tab goes to: a hovered tab grows a
-  region picker only when the view is split, hovering a chip previews the window in
-  THAT pane, clicking one lands it there, and asking for a window the other pane is
-  already showing trades the two views rather than following it — twice over, since the
-  gesture is its own inverse. Also drives the drag: the panes light up as targets for
-  the length of it, the payload rides a private MIME type, and a drop moves the window
-  exactly as its chip does).,
+  `verify-split-view.js` (the split view end to end: the ⊞ ▾ menu and ⌃⌥" build a
+  left | right split with a top / bottom one nested in it, only the focused view wears
+  the frame, each view's header strip has its own height (the terminal starts below
+  it), its controls appear only as the pointer nears the top and offer exactly the
+  directions there is a view in, ↑ trades places with the view above, a recents tab
+  never grows a pane picker and always previews and lands in the FOCUSED view — trading
+  with the view that had the window, never jumping the focus there — a tab dropped on a
+  view still puts it there, a top/bottom divider drags, a reload brings the shape and
+  sizes back, and ✕ closes a view (the primary's too) and focuses the next one),
   `verify-pip-label-format.js` (a Preview tile's label strip follows the Recent ▾
   "Labels" toggles: every combination of show-session and trim-name, flipped through
   the real menu, labels each tile exactly as the toolbar's own formatter labels its
@@ -182,8 +186,7 @@ Pieces:
   tab's answer, at the recents tab's speed: no native `title` anywhere in the preview,
   the tile's hint leads with the full "session — window N: name" and does not explain
   the stoplight, the dot in the label strip is what does, and with the view split the
-  tile grows the same region picker a recents tab does — flush on its inward side,
-  previewing and sending the window to the pane you pick),
+  tile says the same and previews in the focused view — no pane picker),
   `verify-link-menu.js` (the dropdown the spinner opens: attaching hides tmux's own
   status line and remembers what it hid WITHOUT recording it as the user's choice, the
   menu's connection row agrees with the spinner's state, the settings row is drawn from

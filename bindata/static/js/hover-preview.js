@@ -13,24 +13,17 @@
 // reading, and needs its own xterm; showing the window in a region you already have
 // is bigger, in place, and costs nothing extra.
 //
-// WHICH REGION a preview lands in:
-//   0. the region the caller NAMED, if it named one (the toolbar's region picker and
-//      a tab dragged over a region both point at a specific pane — see below);
-//   1. otherwise the region that LAST actually displayed this window (so a window
-//      keeps reappearing where you're used to seeing it), if it still exists;
-//   2. otherwise the focused region.
-//   3. …unless some region is ALREADY showing the window, in which case there is
-//      nothing to do — it's on screen, and mirroring it into a second region would
-//      just take a region away for no gain.
+// WHICH REGION a preview lands in: the one the caller NAMED, if it named one;
+// otherwise the FOCUSED region — because that is where committing it will put the
+// window (SplitManager rule 1). Nothing else. A window used to reappear in whichever
+// region last displayed it, which made the split sticky: every window you pointed at
+// pulled you back to its old view instead of showing in the one you were in.
 //
-// Rule 0 also switches rule 3 off, and that is the point of it. With the view split,
-// "it's already on screen so there is nothing to show you" is the wrong answer to
-// "what would it look like in the OTHER pane" — that is exactly the question the
-// region picker exists to ask, and its answer is a blit of a capture, so drawing the
-// same screen in two places for the length of a hover costs nothing and disturbs
-// nobody. Committing such a preview is a MOVE, not a navigation: see
-// SplitManager.moveWindowTo, which trades the two regions' views rather than
-// mirroring one window into both.
+// A window ANOTHER region is showing still previews here. Committing it trades the two
+// regions' windows (SplitManager.moveWindowTo), so this is exactly what you will get,
+// and the drawing is a blit of a capture — showing the same screen in two places for
+// the length of a hover costs nothing and disturbs nobody. Only a region that is
+// already showing the window itself has nothing to preview.
 //
 // The screen itself is the shared CaptureCache frame (the same snapshot Exposé and
 // the Preview read) blitted into the region's xterm — tmux is never asked to
@@ -86,9 +79,6 @@ const CAPTURE_TS_RESOLUTION_MS = 1000;
 export class HoverPreview {
   constructor(manager) {
     this.manager = manager;
-    // windowId -> the TerminalUnit that last actually displayed it. Fed by
-    // SplitManager on every layout change; the "where does this window live" memory.
-    this._lastUnit = new Map();
     this._enterTimer = null;
     this._leaveTimer = null;
     this._pollTimer = null;
@@ -128,17 +118,9 @@ export class HoverPreview {
   // that is still showing its own window hasn't been lent to anything yet.
   get activeUnit() { return this._held?.unit || null; }
 
-  // Remember where a window really lives. Called by SplitManager whenever a region
-  // lands on a window, so rule 1 above has something to consult.
-  noteRendered(windowId, unit) {
-    if (windowId && unit) this._lastUnit.set(windowId, unit);
-  }
-
-  // A region went away: drop it from the memory so a stale unit can never be chosen
-  // as a preview host (rule 1's "if that region still exists"), and give up any hold
-  // on it. No restore — the region is being torn down, so repainting it is pointless.
+  // A region went away: give up any hold on it. No restore — the region is being torn
+  // down, so repainting it is pointless.
   forgetUnit(unit) {
-    for (const [id, u] of [...this._lastUnit]) if (u === unit) this._lastUnit.delete(id);
     if (this._held?.unit === unit || this._active?.unit === unit) this._dropActive(false);
   }
 
@@ -152,9 +134,8 @@ export class HoverPreview {
     if (this._leaveTimer) { clearTimeout(this._leaveTimer); this._leaveTimer = null; }
     this._target = { windowId, session, unit: unit || null };
     // Same window, same region: nothing changed. A NAMED region that differs from the
-    // one we're drawing in has to re-host, though — sweeping along the picker's chips
-    // is one window shown in a different pane per chip, and returning early there
-    // would leave the preview stuck in whichever pane the first chip picked.
+    // one we're drawing in has to re-host, though — returning early there would leave
+    // the preview stuck in the first region it was drawn in.
     if (this._active && this._active.windowId === windowId
         && (!unit || this._active.unit === unit)) return;
     if (this._enterTimer) { clearTimeout(this._enterTimer); this._enterTimer = null; }
@@ -199,16 +180,16 @@ export class HoverPreview {
   // COMMIT: make the previewed window the region's real window. This is the only
   // durable action — everything above is transient. Committing lands the window in
   // the SAME region the preview was showing in (what you looked at is what switches),
-  // falling back to the focused region when nothing was drawn.
+  // which is the focused one unless a region was named.
   commit(windowId, session = '', unit = null) {
     const id = windowId || this._target?.windowId;
     if (!id) return;
     const sess = windowId ? session : (this._target?.session || '');
-    // A NAMED region (the picker's chips, a tab dropped on a pane) is the user having
+    // A NAMED region (a tab dropped on a pane) is the user having
     // aimed, so it outranks everything — including the region a preview happens to be
     // drawn in, which for an already-visible window is no region at all.
     const named = unit || this._target?.unit || null;
-    const host = named || this._active?.unit || this._unitFor(id) || this.manager.focusedUnit;
+    const host = named || this._active?.unit || this.manager.focusedUnit;
     // Restore WITHOUT asking tmux to repaint — the switch below repaints anyway, and
     // a refresh racing a select-window just flashes the old screen.
     if (this._enterTimer) { clearTimeout(this._enterTimer); this._enterTimer = null; }
@@ -217,9 +198,8 @@ export class HoverPreview {
     this._engaged = false;
     this._target = null;
     this._dropActive(false);
-    // Aiming at a region means MOVE it there — which, when another region already has
-    // the window, trades the two views instead of following it. Unaimed, this stays
-    // the plain navigation it has always been: the window's own region wins.
+    // Either way the window comes to `host`; when another region already has it, the
+    // two trade (goToWindowIn hands that case to moveWindowTo).
     if (named) this.manager.moveWindowTo(host, id, sess);
     else this.manager.goToWindowIn(host, id, sess);
     this._notify();
@@ -262,26 +242,15 @@ export class HoverPreview {
     return now;
   }
 
-  // Draw `windowId` somewhere sensible, per the three rules at the top.
+  // Draw `windowId` in the named region, else the focused one (see the top).
   _show(windowId, session, named = null) {
     const mgr = this.manager;
-    // Already on screen in some region → nothing to draw. Stay "engaged" so moving
-    // on to the NEXT tab still previews instantly (the pointer never left the strip),
-    // and restore any region we were holding for a previous target.
-    //
-    // Unless a DIFFERENT region was named: see rule 0 at the top. "It's already over
-    // there" is not an answer to "show me it over here", and the drawing is a blit of
-    // a capture, so the momentary duplicate costs nothing and ends with the hover.
-    const visible = this._visibleUnit(windowId);
-    if (visible && (!named || visible === named)) {
-      this._engaged = true;
-      this._dropActive(true);
-      this._notify();
-      return;
-    }
-    const unit = named || this._unitFor(windowId) || mgr.focusedUnit;
+    const unit = named || mgr.focusedUnit;
     if (!unit || !unit.terminal) return;
-    const realId = unit._targetWindowId || unit.layout?.activeWindowId || null;
+    // That region is already showing it → nothing to draw. Stay "engaged" so moving on
+    // to the NEXT tab still previews instantly (the pointer never left the strip), and
+    // restore the region if we were holding it for a previous target.
+    const realId = unit._targetWindowId || unit._restoreWindowId || unit.layout?.activeWindowId || null;
     if (realId === windowId) { this._engaged = true; this._dropActive(true); this._notify(); return; }
 
     // Re-host onto a different region: put the old one back first.
@@ -482,26 +451,6 @@ export class HoverPreview {
     // No hold means we were still waiting for a frame and never touched the region —
     // there is nothing to give back.
     this._release(restore, a?.realWindowId);
-  }
-
-  // The unit a preview of `windowId` should land in (rule 1), or null for "use the
-  // focused one". A remembered unit that has since been closed is ignored.
-  _unitFor(windowId) {
-    const u = this._lastUnit.get(windowId);
-    if (u && this.manager.units.includes(u)) return u;
-    return null;
-  }
-
-  // The unit currently DISPLAYING windowId for real, if any (rule 3). The region we
-  // are ourselves HOLDING doesn't count — its real window is hidden behind a preview.
-  // (A region we've targeted but not yet drawn into is still showing its own window,
-  // so it does count.)
-  _visibleUnit(windowId) {
-    // Answered via the manager's one accessor (see _shownWindowId's comment): a
-    // separate expression here ignored _restoreWindowId, so during boot-restore a
-    // hover could open a preview of a window a restoring region was about to show.
-    return this.manager.units.find((u) =>
-      u !== this._held?.unit && this.manager._shownWindowId(u) === windowId) || null;
   }
 
   // Let the switchers repaint their "this row is being previewed" highlight.

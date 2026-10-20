@@ -29,9 +29,6 @@ import { workClass, workLabel, workTip, workBadgeTip, workBadge, workBadgeModes,
 import { ALERT_CSS, alertClass, alertTip } from '../alert-flash.js';
 import { STOPLIGHT_CSS } from '../stoplight-dot.js';
 import { Tip, TIP_CSS } from '../tooltip.js';
-import {
-  PICKER_DELAY, PICKER_GRACE, REGION_PICKER_CSS, regionPickerTemplate, windowTitle,
-} from '../region-picker.js';
 import { saveHint } from '../save-target.js';
 import {
   DEFAULT_SAVE_SCOPE, SCOPE_OPTIONS, normalizeScope,
@@ -55,8 +52,7 @@ import {
   clampRecentsMax, fitTabCount, RECENTS_MIN, RECENTS_MAX,
   RECENT_DRAG_TYPE, recentDragPayload, parseRecentDrag,
 } from '../recents-strip.js';
-import { placePopup } from '../popup-place.js';
-import { labelPrefs, windowLabel } from '../window-label.js';
+import { labelPrefs, windowLabel, windowTitle } from '../window-label.js';
 import { ConfirmPopup, CONFIRM_CSS } from '../confirm-popup.js';
 
 // Recent-tab label shape (LABEL_DEFAULTS, trimWindowName, windowLabel) lives in
@@ -110,6 +106,17 @@ const mouseCaptureTooltip = (mouseCur, scrollCur) => {
     'Click to change either (▾).',
   ].join('\n');
 };
+
+// The split button's hover hint.
+const SPLIT_TIP = [
+  'Split view — split the focused view in two, left | right or top / bottom.',
+  '',
+  'The focused view has the bright frame; every switcher (recents, sidebar, Exposé) changes the window in it.',
+  '',
+  'Point near the top of a view for its controls: move it left / right / up / down, or close it. Drag a divider to resize.',
+  '',
+  `Click for the directions (▾). Shortcuts: ${chord('%')} left | right, ${chord('"')} top / bottom, ${chord('X')} closes the focused view.`,
+].join('\n');
 
 // The Exposé button's icon. It used to be ▦ — a grid glyph that, next to the
 // split button's ⊞, read as "another box" and said nothing about windows. Four
@@ -267,7 +274,6 @@ class WebtmuxToolbar extends LitElement {
   static properties = {
     recent: { type: Array },
     collapsed: { type: Boolean },
-    panes: { type: Array },
     // Current scroll-wheel mode (mirror of the focused unit's setting). Cycled by
     // the toolbar's scroll button; one of SCROLL_ORDER.
     scrollMode: { type: String },
@@ -363,12 +369,8 @@ class WebtmuxToolbar extends LitElement {
     // The clear affordance is about this number, not about the tabs — clearing only
     // what is drawn is precisely the treadmill it exists to end (see clearRecents).
     recentTotal: { type: Number },
-    // What each terminal region is showing, in pane order — the region picker's
-    // chips (see _regionPicker). Fed on every layout push by SplitManager.regionViews.
-    regions: { type: Array },
-    // Which tab's region picker is open ('' = none). Reactive so opening it after the
-    // hover delay re-renders; the pointer bookkeeping around it is plain fields.
-    pickerFor: { type: String },
+    // The split button's ▾ menu (left | right, or top / bottom).
+    splitMenuOpen: { type: Boolean },
     // Recents drag-reorder: the tab being dragged, and the insertion GAP the drop
     // would land in (0..n, -1 = not over the strip).
     dragKey: { type: String },
@@ -514,10 +516,6 @@ class WebtmuxToolbar extends LitElement {
     .rtab.drop-before::before { left: -4px; }
     .rtab.drop-end::after { right: -4px; }
 
-    /* The region picker (.rpick and its chips) hangs off a hovered tab whenever the
-       view is split — its rules are REGION_PICKER_CSS, shared with the preview tiles
-       (see region-picker.js). */
-
     /* Working-status dot: green = working, green ring = working in the background,
        amber = prompting (blocked on your answer), red = waiting for work to do,
        unfilled = not reporting. Clients drive it with: tmux set -w @wt_working
@@ -591,11 +589,10 @@ class WebtmuxToolbar extends LitElement {
     }
     .tab:hover { border-color: #4a9eff; color: #fff; }
     .tab.active { background: #e94560; border-color: #e94560; color: #fff; }
-    /* Open in another region: it can't be moved HERE (two regions on one window would
-       just mirror each other), so it reads as dimmed — but clicking jumps to the
-       region that has it, which is the only useful thing left to do with it. */
-    .tab.disabled { opacity: 0.5; }
-    .tab.disabled:hover { border-color: #4a9eff; color: #fff; }
+    /* On screen in another split view. Clicking brings it into the focused view (the
+       two views trade windows), so it is NOT dimmed like a dead control — just a
+       dotted edge, so you can see it is already showing somewhere. */
+    .tab.elsewhere { border-style: dotted; }
     .tab .sess { color: #4a9eff; font-size: 11px; opacity: 0.85; flex: 0 0 auto; }
     .tab.active .sess { color: #ffd7de; }
     /* The tab whose window the shared hover preview is currently showing. Dashed,
@@ -1160,26 +1157,6 @@ class WebtmuxToolbar extends LitElement {
       color: #2a1902;
     }
 
-    /* One dot per visible pane (only when >1). Green = the focused pane, red = the
-       rest. Sits just left of the sidebar toggle. */
-    .dots {
-      flex: 0 0 auto;
-      display: flex;
-      align-items: center;
-      gap: 5px;
-      margin-right: 4px;
-    }
-    .dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      background: #e94560;              /* red — not the focused pane */
-      box-shadow: 0 0 0 1px rgba(0,0,0,0.3) inset;
-    }
-    .dot.focused {
-      background: #37d17a;              /* green — the focused pane */
-      box-shadow: 0 0 6px rgba(55, 209, 122, 0.8);
-    }
     /* tmux-activity spinner, far left. Advances one notch (SPIN_STEP_DEG) every time
        webtmux sends tmux a command, debounced — so it flicks when you switch/rename/capture
        and sits still when nothing is talking to tmux. A liveness tell you can read
@@ -1269,7 +1246,10 @@ class WebtmuxToolbar extends LitElement {
        imperatively so hovering a tab never re-renders the bar. */
 
     /* Recent-tab label-shape menu, anchored under the "Recent" label. */
-    .label-wrap { position: relative; flex: 0 0 auto; display: inline-flex; }
+    .label-wrap, .split-wrap { position: relative; flex: 0 0 auto; display: inline-flex; }
+    /* The split button's ▾, kept small: the button says "split" first and "has a menu"
+       second, and stays about the width it always was. */
+    .split-wrap .caret { font-size: 8px; margin-left: 2px; opacity: 0.8; }
     .label-backdrop { position: fixed; inset: 0; z-index: 90; background: transparent; }
     .label-menu {
       position: absolute;
@@ -1303,6 +1283,8 @@ class WebtmuxToolbar extends LitElement {
     .label-menu .mitem[disabled] { opacity: 0.35; cursor: default; }
     .label-menu .mitem[disabled]:hover { border-color: #0f3460; color: #d99aa8; }
     .label-menu .mitem .mark { width: 12px; flex: 0 0 auto; color: #37d17a; }
+    .split-menu .mitem .mark { color: #9fc4ff; }
+    .split-menu .mkey { margin-left: auto; padding-left: 12px; color: #6b7690; font-size: 11px; }
     .label-menu .mprev {
       color: #6b7690; font-size: 11px; padding: 2px 2px 0;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -1436,7 +1418,7 @@ class WebtmuxToolbar extends LitElement {
        land. Amber, the same "waiting on you" colour the stoplight uses. */
     .link-menu .rwin .rwpend { flex: 0 0 auto; color: #ffb454; font-size: 15px; line-height: 1; }
     .link-menu .merr { color: #ff8fa3; font-size: 11px; line-height: 1.35; padding: 0 2px; }
-  `, STOPLIGHT_CSS, ALERT_CSS, TIP_CSS, CONFIRM_CSS, REGION_PICKER_CSS];
+  `, STOPLIGHT_CSS, ALERT_CSS, TIP_CSS, CONFIRM_CSS];
 
   constructor() {
     super();
@@ -1448,14 +1430,7 @@ class WebtmuxToolbar extends LitElement {
     // "Are you sure?" for the one destructive control up here — the same popup the
     // sidebar asks kill questions with, anchored at whatever was clicked.
     this._confirm = new ConfirmPopup(this);
-    this.regions = [];
-    this.pickerFor = '';
-    // The pointer is inside the picker, not on the tab that opened it. Kept as a
-    // plain field (like dragKey) because it is answered by real mouse events, and
-    // because the post-render hover sync reads it before lit could have re-rendered.
-    this._pickerHold = false;
-    this._pickerTimer = null;
-    this._pickerCloseTimer = null;
+    this.splitMenuOpen = false;
     this.collapsed = false;
     // Per-window override of which "how long" reading the duration badge shows
     // (see stoplight.js workBadgeModes()) — a plain Map, not a reactive property,
@@ -1476,7 +1451,6 @@ class WebtmuxToolbar extends LitElement {
     this.previewCount = 0;        // windows currently in the preview (SplitManager sets)
     this.previewHidden = false;   // preview tucked away (SplitManager sets)
     this.previewHasFocused = false; // focused window is in the preview (SplitManager sets)
-    this.panes = [];       // [bool] per pane in order; true = focused. [] hides the dots.
     this.manager = null;   // SplitManager, set directly
     // Build id (git short-hash) served fresh by config.js from the RUNNING binary —
     // read it out loud to identify exactly which build is deployed.
@@ -2239,7 +2213,6 @@ class WebtmuxToolbar extends LitElement {
     this._unsubCopy?.();
     this._stripObserver?.disconnect();
     this._stripObserver = null;
-    this._closePicker();
     this.manager?.hover?.cancel();
   }
 
@@ -2247,13 +2220,7 @@ class WebtmuxToolbar extends LitElement {
   // because the ~30 call sites in render() read better as _tipEnter/_tipLeave than
   // as reaching through a field, and because the sidebar shows the same hint for
   // the same stoplight — the delay and the look have to come from one place.
-  // …with one exception: while a tab's region picker is up, the strip does not also
-  // hint. Both hang off the same tab edge, so the two would land on top of each
-  // other, and the picker already carries the tab's label and its alert. The
-  // controls whose hints this swallows (the ×, the stoplight dot) keep their
-  // aria-labels, which is what the hint is a sighted shortcut for.
   _tipEnter(ev, text) {
-    if (this.pickerFor && ev?.currentTarget?.closest?.('.rtab')) return;
     this._tip.enter(ev, text);
   }
   _tipLeave() { this._tip.leave(); }
@@ -2284,11 +2251,7 @@ class WebtmuxToolbar extends LitElement {
   _tabEnter(el, w) {
     if (!el || !w) return;
     this._hoverKey = this._key(w);
-    // Split: the picker answers everything the hint would have said and adds the one
-    // thing it can't (where to put this window), and both hang off the tab's bottom
-    // edge — so they take turns rather than stacking on top of each other.
-    if (this._splitView()) this._openPicker(this._hoverKey);
-    else this._tipEnter({ currentTarget: el }, this._tabTip(w));
+    this._tipEnter({ currentTarget: el }, this._tabTip(w));
     this.manager?.hover?.enter(w.id, w.session);
   }
 
@@ -2298,32 +2261,21 @@ class WebtmuxToolbar extends LitElement {
     this._hoverKey = '';
     this._tipLeave();
     this.manager?.hover?.leave();
-    // Not closed outright: the pointer may be on its way INTO the picker, and the
-    // tab's mouseleave fires before the picker's mouseenter can say so. Same grace
-    // the preview controller applies for the same reason.
-    this._schedulePickerClose();
   }
 
   // What a tab says when you point at it. Recomputed (rather than captured in the
   // render closure) so the sync below can re-hint a slot whose window changed.
   //
-  // A window shown in ANOTHER region can't be moved here (two regions on one window
-  // would just mirror each other) — but it can be JUMPED to, which is what clicking
-  // now does. Hovering it shows nothing new for the same reason: it's already on
-  // screen.
+  // A window shown in ANOTHER split view still comes to the focused view when you
+  // pick it — the two views trade windows — so the hint says that rather than
+  // pretending it is out of reach.
   _tabTip(w) {
     const full = windowTitle(w.session, w.index, w.name);
-    // Split view adds the aiming half — but there the picker is what you are looking
-    // at, not this, so the sentence is only ever read in single view (and by anything
-    // reading the label rather than the popover).
-    const aim = this._splitView()
-      ? ' · drop it on a pane, or use the region picker, to choose which one'
-      : '';
     // One-line name, blank line, what it does — the toolbar's tooltip layout. The
     // alert line (it starts with its own newline) gets a blank line of its own too.
-    return (w.disabled
-      ? `${full}\n\nAlready open in another region — click to jump there · drag to reorder${aim}`
-      : `${full}\n\nHover to preview it in a terminal region · click to switch there · drag to reorder${aim}`)
+    return (w.elsewhere
+      ? `${full}\n\nOn screen in another view — click to bring it into the focused view (the two views trade windows) · drag to reorder`
+      : `${full}\n\nHover to preview it in the focused view · click to switch there · drag to reorder`)
       + (w.alert ? '\n' + alertTip(w.alert) : '');
   }
 
@@ -2344,10 +2296,6 @@ class WebtmuxToolbar extends LitElement {
     // browser's to interpret — re-opening a preview from it would undo that cancel
     // on every drop-indicator re-render.
     if (this.dragKey) return;
-    // Nor while the pointer is in the region picker. No tab is :hover then, so the
-    // "nothing is hovered any more" branch below would fire twice a second and tear
-    // down the very preview the picker is there to let you aim.
-    if (this._pickerHold) return;
     const tabs = this.renderRoot?.querySelector('.tabs');
     if (!tabs) return;
     // The invisible width probe is excluded: it is `pointer-events: none`, so it can
@@ -2370,113 +2318,6 @@ class WebtmuxToolbar extends LitElement {
     if (age?.matches(':hover')) this._tipEnter({ currentTarget: age }, workBadgeTip(w.workingSince, w.activity, undefined, this._badgeMode.get(w.id)));
   }
 
-  // ---- the region picker -------------------------------------------------------
-  //
-  // WHY IT EXISTS. Every switcher in the app navigates the FOCUSED region — one rule,
-  // nothing to aim at. With the view split that rule runs out of answers: the strip
-  // can say WHICH window but never WHICH PANE, and a window already on screen in the
-  // other split could not be moved at all (clicking its tab jumped you over to it,
-  // which is the opposite of bringing it here).
-  //
-  // So a hovered tab grows a small picture of the split — one chip per region, drawn
-  // in the panes' real proportions. Pointing at a chip PREVIEWS the window in that
-  // pane and clicking commits it there, which is the same browse-then-commit the rest
-  // of the app already runs on; the tab itself keeps behaving exactly as before, so
-  // nothing has to be learned to go on using the strip the old way.
-  //
-  // It only appears when there are 2+ regions. In single view there is no question to
-  // ask, and the tab's hint (which this replaces while it is up) is the better answer.
-
-  // Is there more than one pane to choose between?
-  _splitView() { return (this.regions?.length || 0) > 1; }
-
-  // Open the picker for a tab after a short rest. The pause is the same idea as the
-  // hint's: sweeping the pointer along the strip should not strobe a popover at every
-  // tab it crosses. Shorter than the hint's, because this one is a control you are
-  // reaching for rather than a label you are reading.
-  _openPicker(key) {
-    if (this._pickerCloseTimer) { clearTimeout(this._pickerCloseTimer); this._pickerCloseTimer = null; }
-    if (this.pickerFor === key) return;
-    if (this._pickerTimer) clearTimeout(this._pickerTimer);
-    // Already showing one: swap it to this tab at once. Waiting again between
-    // neighbours makes a row of controls feel stuck (see Tip.enter, same rule).
-    if (this.pickerFor) { this.pickerFor = key; return; }
-    this._pickerTimer = setTimeout(() => {
-      this._pickerTimer = null;
-      if (this._hoverKey === key) this.pickerFor = key;
-    }, PICKER_DELAY);
-  }
-
-  _schedulePickerClose() {
-    if (!this.pickerFor && !this._pickerTimer) return;
-    if (this._pickerCloseTimer) clearTimeout(this._pickerCloseTimer);
-    this._pickerCloseTimer = setTimeout(() => {
-      this._pickerCloseTimer = null;
-      if (!this._pickerHold) this._closePicker();
-    }, PICKER_GRACE);
-  }
-
-  _closePicker() {
-    if (this._pickerTimer) { clearTimeout(this._pickerTimer); this._pickerTimer = null; }
-    if (this._pickerCloseTimer) { clearTimeout(this._pickerCloseTimer); this._pickerCloseTimer = null; }
-    this._pickerHold = false;
-    this.pickerFor = '';
-  }
-
-  // The tab the open picker belongs to, or null when its slot no longer holds that
-  // window (× on a tab slides the next one in underneath a motionless pointer — see
-  // _syncTabHover, which re-enters and reopens the picker for whatever arrived).
-  _pickerEntry() {
-    if (!this.pickerFor || !this._splitView()) return null;
-    return this.recent.find((w) => this._key(w) === this.pickerFor) || null;
-  }
-
-  // Point at a chip: preview the window in THAT pane.
-  _slotEnter(w, i) { this.manager?.previewWindowIn?.(w, i); }
-
-  // …and commit it there. Closing first so the popover is gone before the panes
-  // repaint underneath it.
-  _slotPick(w, i) {
-    this._closePicker();
-    this._tipLeave();
-    this.manager?.sendWindowTo?.(w, i);
-  }
-
-  _regionPicker() {
-    const w = this._pickerEntry();
-    if (!w) return '';
-    return regionPickerTemplate({
-      win: w,
-      regions: this.regions,
-      extra: ` You can also drag the tab straight onto a pane.${alertTip(w.alert)}`,
-      onEnter: () => { this._pickerHold = true;
-        if (this._pickerCloseTimer) { clearTimeout(this._pickerCloseTimer); this._pickerCloseTimer = null; } },
-      onLeave: () => { this._pickerHold = false; this._closePicker(); this.manager?.hover?.leave(); },
-      onSlotEnter: (i) => this._slotEnter(w, i),
-      onSlotPick: (i) => this._slotPick(w, i),
-    });
-  }
-
-  // Keep the popover under its tab. Flush against the tab's bottom edge rather than
-  // the shared 6px offset (see .rpick) — the horizontal clamp is still the one rule
-  // every other popup follows, so it lines up with the hint and the confirm popup.
-  _placePicker() {
-    const el = this.renderRoot?.querySelector('.rpick');
-    if (!el) return;
-    const i = this.recent.findIndex((w) => this._key(w) === this.pickerFor);
-    const tabs = [...(this.renderRoot?.querySelectorAll('.rtab:not(.spare)') || [])];
-    const anchor = i >= 0 ? tabs[i] : null;
-    if (!anchor) { this._closePicker(); return; }
-    const rect = anchor.getBoundingClientRect();
-    const { left } = placePopup(
-      rect,
-      { width: el.offsetWidth, height: el.offsetHeight },
-      { viewport: { width: window.innerWidth, height: window.innerHeight } },
-    );
-    el.style.left = `${left}px`;
-    el.style.top = `${Math.round(rect.bottom)}px`;
-  }
-
   // ---- recents drag-reorder ----------------------------------------------------
   // The strip's order is deliberately stable (re-accessing a window never moves its
   // tab), which is what makes it a place you can build muscle memory — so it should
@@ -2496,10 +2337,8 @@ class WebtmuxToolbar extends LitElement {
     // post-drop sync would compare against a tab it thinks is still previewing and
     // leave the dropped tab, now under the pointer, without one.
     this._hoverKey = '';
-    // A drag is the other way to aim at a pane (drop the tab on it), so the picker —
-    // which asks the same question with buttons — gets out of the way, and every
-    // region is told to show itself as a target for the length of the drag.
-    this._closePicker();
+    // A tab can be dropped on a view to put it there, so every region is told to
+    // show itself as a target for the length of the drag.
     this.manager?.noteRecentDrag?.(true);
     try {
       e.dataTransfer.effectAllowed = 'move';
@@ -2570,6 +2409,23 @@ class WebtmuxToolbar extends LitElement {
   // Hung off the "Recent" label itself rather than adding another toolbar button:
   // it's a rarely-touched display preference, and the label is exactly the thing it
   // is about.
+  // The split button's menu: which way to split the FOCUSED view.
+  _splitMenu() {
+    const pick = (dir) => { this.splitMenuOpen = false; this.manager?.splitAdd(dir); };
+    return html`
+      <div class="label-backdrop" @click=${() => { this.splitMenuOpen = false; }}></div>
+      <div class="label-menu split-menu" @click=${(e) => e.stopPropagation()}>
+        <div class="mtitle">Split the focused view</div>
+        <button class="mitem" @click=${() => pick('row')}>
+          <span class="mark">◫</span> Left | right <span class="mkey">${chord('%')} · ${chord('⏎')}</span>
+        </button>
+        <button class="mitem" @click=${() => pick('col')}>
+          <span class="mark">⊟</span> Top / bottom <span class="mkey">${chord('"')}</span>
+        </button>
+      </div>
+    `;
+  }
+
   _labelMenu() {
     const sample = this.recent[0] || { session: 'services', name: 'ssh web-01', index: 3 };
     const shape = (showSession, trimName) => windowLabel(sample, { showSession, trimName });
@@ -2755,7 +2611,7 @@ class WebtmuxToolbar extends LitElement {
             @mouseenter=${(e) => { e.stopPropagation(); this._tipEnter(e, workBadgeTip(w.workingSince, w.activity, undefined, badgeMode)); }}
             @mouseleave=${(e) => { e.stopPropagation(); this._tipEnter({ currentTarget: e.currentTarget.closest('.rtab') }, tip); }}
           >${badge}</span>` : ''}<button
-            class="tab ${w.active ? 'active' : ''} ${w.disabled ? 'disabled' : ''} ${!w.active && this.previewWindow === w.id ? 'previewing' : ''} ${alertClass(w.alert)}"
+            class="tab ${w.active ? 'active' : ''} ${w.elsewhere ? 'elsewhere' : ''} ${!w.active && this.previewWindow === w.id ? 'previewing' : ''} ${alertClass(w.alert)}"
             aria-label=${full}
             @click=${() => { this._tipLeave(); this.manager?.pickRecentWindow(w); }}
           ><span class="sess">${w.index}</span><span class="wname">${this._tabLabel(w)}</span><span
@@ -2846,9 +2702,6 @@ class WebtmuxToolbar extends LitElement {
     // After the strip is drawn, not before: the answer to "which window is the
     // pointer on" is read off the tabs this render just produced.
     this._syncTabHover();
-    // …and the picker is re-anchored against those same tabs: a re-fit, a closed
-    // tab or a widened window all move the tab out from under it.
-    this._placePicker();
   }
 
   _overflowArrow() {
@@ -3261,17 +3114,19 @@ class WebtmuxToolbar extends LitElement {
         ${this.recentNext ? this._recentTab(this.recentNext, -1, true) : ''}
       </div>
       ${this._overflowArrow()}
-      ${this._regionPicker()}
       <div class="wt-tip"></div>
       <div class="wt-confirm"></div>
       <span class="tsep"></span>
-      <button
-        class="tbtn"
-        aria-label="Split view — add a terminal region"
-        @mouseenter=${(e) => this._tipEnter(e, `Split view — add another terminal region.\n\nShortcut: ${chord('⏎ Enter')}`)}
-        @mouseleave=${() => this._tipLeave()}
-        @click=${() => { this._tipLeave(); this.manager?.splitAdd(); }}
-      >⊞</button>
+      <span class="split-wrap">
+        <button
+          class="tbtn ${this.splitMenuOpen ? 'on' : ''}"
+          aria-label="Split view — split the focused view"
+          @mouseenter=${(e) => this._tipEnter(e, SPLIT_TIP)}
+          @mouseleave=${() => this._tipLeave()}
+          @click=${() => { this._tipLeave(); this.splitMenuOpen = !this.splitMenuOpen; }}
+        >⊞<span class="caret">▾</span></button>
+        ${this.splitMenuOpen ? this._splitMenu() : ''}
+      </span>
       <button
         class="tbtn icon"
         aria-label="Exposé — all windows"
@@ -3352,15 +3207,6 @@ class WebtmuxToolbar extends LitElement {
         >🖱 ${modeName(MOUSE_META, normalizeMouse(this.mouseMode))}/${modeName(SCROLL_META, normalizeScroll(this.scrollMode))} ▾</button>
         ${this.mouseMenuOpen ? this._mouseMenu() : ''}
       </div>
-      ${this.panes.length > 1 ? html`
-        <div
-          class="dots"
-          @mouseenter=${(e) => this._tipEnter(e, `Split panes — one dot per open terminal region (${this.panes.length} open).\n\nGreen is the focused pane. Drag a divider to resize.\n\n${chord('X')} closes the focused region — but the first (leftmost) pane is the original and can't be closed; only added panes can.`)}
-          @mouseleave=${() => this._tipLeave()}
-        >
-          ${this.panes.map((focused) => html`<span class="dot ${focused ? 'focused' : ''}"></span>`)}
-        </div>
-      ` : ''}
       <button
         class="mode ${this.copyMode ? 'copy' : ''}"
         aria-label="Copy buffers and copy mode"
