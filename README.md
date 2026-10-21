@@ -891,7 +891,8 @@ would have installed, the launcher still connects and prints a note naming both:
 
 ```text
 note: this launcher wanted webtmux v0.4.0, but build c4a9ae0, built 2026-10-21 is running on linuxbox
-      connecting to it as is — it is its container's own build; rebuilding the container updates it
+      connecting to it as is — it runs inside a container, so it changes when that container's image does
+      (--fresh starts the launcher's own build alongside it instead)
 ```
 
 A build is named by its release tag where it has one, and otherwise by its

@@ -154,8 +154,12 @@ func runningLine(b buildID, withCommit bool, released, fileTime time.Time) strin
 // way.
 func versionMismatchNote(wanted, running string, inst *instance, where string) []string {
 	lines := []string{fmt.Sprintf("note: this launcher wanted %s, but %s is running on %s", wanted, running, where)}
+	// Nothing here assumes how the container got its build: it may be built
+	// locally or pulled, so the note names the image, not a rebuild.
 	if inst.Containerized {
-		return append(lines, "      connecting to it as is — it is its container's own build; rebuilding the container updates it")
+		lines = append(lines, "      connecting to it as is — it runs inside a container, so it changes when that container's image does")
+	} else {
+		lines = append(lines, "      connecting to it as is")
 	}
-	return append(lines, "      connecting to it as is (--fresh starts the launcher's own build alongside it instead)")
+	return append(lines, "      (--fresh starts the launcher's own build alongside it instead)")
 }
