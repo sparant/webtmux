@@ -1,4 +1,5 @@
-// The strip above each split view: which window the view shows, and — when the
+// The strip above each split view: which window the view shows (with its stoplight
+// and time-in-state, as on its recents tab), and — when the
 // pointer comes near the top of the view — the controls that act on the view itself:
 // move it left / right / up / down (keeping every view's size — see split-tree.js
 // moveBranch) and close it.
@@ -16,6 +17,8 @@
 import { LitElement, html, css } from 'lit';
 import { Tip, TIP_CSS } from '../tooltip.js';
 import { chord } from '../os.js';
+import { workClass, workLabel, workTip, workBadgeTip } from '../stoplight.js';
+import { STOPLIGHT_CSS } from '../stoplight-dot.js';
 
 // Arrow, and the words the hint uses.
 const MOVES = [
@@ -29,6 +32,8 @@ class WebtmuxRegionHead extends LitElement {
   static properties = {
     // The window the view shows, already formatted ("session — window N: name").
     label: { type: String },
+    // The window's work status: { working, since, activity, badge } (null before a layout).
+    work: { type: Object },
     // Which directions have a view to trade places with: { left, right, up, down }.
     moves: { type: Object },
     // The pointer is near the top of the view: show the controls.
@@ -53,6 +58,7 @@ class WebtmuxRegionHead extends LitElement {
       overflow: hidden;
     }
     :host([focused]) { color: #b8f1ff; }
+    .work { display: flex; align-items: center; gap: 5px; flex: 0 0 auto; }
     .label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .tools { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; }
     .gap { width: 6px; }
@@ -71,11 +77,12 @@ class WebtmuxRegionHead extends LitElement {
     .tbtn:hover { transform: scale(1.12); border-color: #7cc0ff; background: rgba(20, 28, 54, 0.95); color: #fff; }
     .tbtn.close { border-color: rgba(233, 69, 96, 0.7); }
     .tbtn.close:hover { border-color: #e94560; background: #e94560; color: #fff; }
-  `, TIP_CSS];
+  `, STOPLIGHT_CSS, TIP_CSS];
 
   constructor() {
     super();
     this.label = '';
+    this.work = null;
     this.moves = {};
     this.near = false;
     this.focused = false;
@@ -96,7 +103,20 @@ class WebtmuxRegionHead extends LitElement {
 
   render() {
     const m = this.moves || {};
+    const w = this.work;
+    const badge = w?.badge || '';
     return html`
+      ${w ? html`<span class="work"><span
+        class="stoplight ${workClass(w.working)}"
+        role="img"
+        aria-label=${workLabel(w.working)}
+        @mouseenter=${(e) => this._tip.enter(e, workTip(w.working, w.since, w.activity))}
+        @mouseleave=${() => this._tip.leave()}
+      ></span>${badge ? html`<span
+        class="work-age"
+        @mouseenter=${(e) => this._tip.enter(e, workBadgeTip(w.since, w.activity))}
+        @mouseleave=${() => this._tip.leave()}
+      >${badge}</span>` : ''}</span>` : ''}
       <span class="label">${this.label}</span>
       <span class="tools">
         ${MOVES.filter(([dir]) => m[dir]).map(([dir, glyph, words]) => html`

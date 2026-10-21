@@ -124,7 +124,7 @@ A tab flashes amber when its window has stopped working, and an arrow flashes wh
   - `Ctrl+Option+N`/`P` step through them; `Ctrl+Option+L` cycles every window, including previewed ones.
   - In split view, `Ctrl+Option+L` counts focusing a view as a visit. A window another view already shows is reached by moving the focus to that view, so the chord flips between two views just as it flips between two windows.
   - Windows beyond the tab count, or that don't fit a narrow browser, wait in line. The strip never scrolls sideways, and the next window slides in when a slot frees up.
-  - Only the hover-revealed × removes a window for good. To clear the whole strip and its queue, hover **Recent ▾** for a ✕ or use its menu. It asks first and only clears the list; windows keep running and split regions keep their views.
+  - Only the hover-revealed × removes a window for good. To clear the whole strip and its queue, hover **Recent ▾** for a ✕ or use its menu. It asks first and only clears the list; windows keep running and split views keep their windows.
   - From the **Recent ▾** menu you can show the session before the name, or trim a name to what follows its first space ("ssh web-01" → "web-01"). Preview tiles use the same labels.
   - In split view, a tab opens in the focused view — the one with the cyan frame — just as it does without a split. Drag a tab onto a view to put it there instead. See [Split Views](#split-views-not-tmux-panes).
   - A window in the [preview](#preview-and-picture-in-picture) gives up its tab while it's on screen and gets it back when the preview closes or hides.
@@ -140,7 +140,7 @@ A tab flashes amber when its window has stopped working, and an arrow flashes wh
 
 A Mac-style Exposé of every window, 9 (or 4) at a time. Filter by name, scroll for more, and sort by recency to find what you were working on. A **Show** filter narrows it to one status — working / needs you / idle — a triage board when a dozen agents are running.
 
-![Exposé replayed: Ctrl+Alt+F opens the mosaic at 3×3, the header's Grid toggle switches to 2×2 and back, typing filters by name, Enter switches the focused region](screenshots/expose.gif)
+![Exposé replayed: Ctrl+Alt+F opens the mosaic at 3×3, the header's Grid toggle switches to 2×2 and back, typing filters by name, Enter switches the focused view](screenshots/expose.gif)
 
 - Ctrl+Alt+F (tmux's `f`, find-window) opens it across every session; press again to close. On a Mac, spread two fingers on the trackpad to open, pinch to close.
 - **Grid** in the header picks 3×3 (default) or 2×2, and is remembered.
@@ -195,30 +195,26 @@ Keep an eye on specific windows while you work in others, and jump to them quick
 
 ![Split view replayed: Ctrl+Alt+Enter adds a second live view (auto-picking the most recent unseen window), the divider drags to resize, Ctrl+Alt+X closes it](screenshots/split-view.gif)
 
-**A split view divides your browser, not a tmux window.** Each view is a separate, complete window on the same tmux server, side by side or stacked, so you can watch several windows at once. A tmux pane is a different thing: it divides one window into several shells. webtmux leaves panes alone, so they still work as usual. A window with panes shows them all inside whichever view is displaying it.
+**tmux panes subdivide a window, so they travel with it. Split views divide the browser, and each view is independent.** Every view shows any window from any session, and changing one never moves the others. Panes still work as usual: a window with panes shows them all inside whichever view displays it.
 
 | | tmux pane (`Prefix %` / `Prefix "`) | webtmux split view (`Ctrl+Alt+%` / `Ctrl+Alt+"`) |
 |---|---|---|
 | What it divides | One tmux window | The browser page |
-| What it shows | One more shell, inside that window | A whole window, with all of its panes |
-| Where it lives | In tmux: every client sees it, including your ssh console | In this browser only: tmux's windows and layouts are unchanged |
+| Switching windows | The panes go with the window | Only the focused view changes |
+| What it shows | One shell, inside that window | A whole window, with all of its panes |
+| Who sees it | Every client, including your ssh console | This browser |
 | Closing it | Kills the program running in it | Closes the view; the window keeps running |
-| Survives | Until the pane exits | Reloads, through the saved UI state (see [State persistence](#state-persistence)) |
-| Under the hood | Part of the window's layout | Its own tmux client, on a grouped session with its own current window |
+| Under the hood | Part of the window's layout | Its own tmux client, on a grouped session |
 
-The keys mirror tmux's on purpose (`%`, `"`, `O`, `;`, `X`), but with Ctrl+Alt they act on views. Your tmux prefix keys still split panes inside the window.
+The keys mirror tmux's (`%`, `"`, `O`, `;`, `X`), but with Ctrl+Alt they act on views. Your tmux prefix keys still split panes.
 
-- **Split** the focused view left | right (Ctrl+Alt+%, or Ctrl+Alt+Enter) or top / bottom (Ctrl+Alt+"), or pick a direction from the toolbar's **⊞ ▾** menu. Splits nest, so you can build any grid.
-- **Add a view across the whole screen.** Once the screen is split, the **⊞ ▾** menu also offers a new view at **full height on the right** or **full width along the bottom**, so a left | right split can get a strip under both halves instead of only being subdivided further.
-- **The focused view has a cyan frame.** Every switcher (recents tabs, sidebar, Exposé, Ctrl+Alt+0–9, the keyboard walks) changes the window in the focused view, exactly as with no split. A window does not remember which view it was last in.
-- **One window, one view.** Picking a window another view is showing makes the two views **trade** windows, so nothing goes blank and no window is shown twice.
-- **Each view has a slim header strip** naming its window. Point near the top of a view and its controls fade in. **← ↑ ↓ →** move the view one step that way, and every view keeps its size and its window. If the view sits in a group that runs the other way, like one of two side-by-side views above a full-width view, the whole group moves together. So **↑** on a full-width bottom view puts it on top with the pair beneath. **✕** closes the view. The strip has its own height, so the controls never cover terminal content.
-- **Closing a view works like closing a recents tab:** the window keeps running and the next view takes the focus. Any view can be closed, the first one included, down to the last.
-- **Closing a window never closes its view.** Kill a window (or close its recents tab) while a view shows it and the view moves on to the next recents tab, skipping windows other views are showing, the same way the focused view moves on when you close its tab. This holds even when it was the last window of its session, which takes the view's tmux client with it: the view re-attaches by itself. Only a view's ✕ removes the view.
-- **Resize** by dragging a divider; left | right and top / bottom dividers both drag. Sizes are remembered per browser. The arrangement itself is shared state, like the rest of the UI.
-- One shared sidebar, bound to whichever view is focused. Ctrl+Alt+O / Ctrl+Alt+; move the focus between views.
-- A new view opens on the most recently used window that isn't already on screen. A recents tab can also be dragged onto a view to put its window there.
-- Views switch sessions freely without dragging the first view or the ssh console along. A view that gets synced onto a shared session repairs itself.
+- **Split** the focused view left | right (Ctrl+Alt+% or Ctrl+Alt+Enter) or top / bottom (Ctrl+Alt+"), or use the toolbar's **⊞ ▾** menu. Splits nest. Once split, the menu can also add a view at full height on the right or full width along the bottom.
+- **The focused view** wears a cyan frame, and every switcher (recents tabs, sidebar, Exposé, Ctrl+Alt+0–9, the keyboard walks) changes the window in it. Ctrl+Alt+O / Ctrl+Alt+; move the focus, and Ctrl+Alt+L counts focusing a view as a visit.
+- **One window, one view.** Picking a window another view shows makes the two views trade windows. While you hover it on a recents tab, preview tile or sidebar row, the view that has it throbs its frame.
+- **A header strip** on each view shows the window's name, stoplight and time-in-state. Point near the top for its controls: **← ↑ ↓ →** move the view (every view keeps its size, and a group running the other way moves together), and **✕** closes it.
+- **Closing a view never kills a window, and closing a window never closes a view.** The view moves on to the next recents tab instead, and re-attaches by itself if the window was its session's last.
+- **Resize** by dragging a divider. Sizes are remembered per browser; the arrangement is shared like the rest of the UI.
+- A new view opens on the most recently used window that isn't on screen. Drag a recents tab onto a view to put its window there.
 
 ![Three views: left | right, with the right one split top / bottom, the pointer near the top of the bottom-right view showing its move and close controls](screenshots/split-views.jpg)
 
@@ -233,7 +229,7 @@ The keys mirror tmux's on purpose (`%`, `"`, `O`, `;`, `X`), but with Ctrl+Alt t
 
 ![Persistence replayed: with a split open, a full browser reload re-assembles every view, the recents strip, and prefs from state stored in the tmux server](screenshots/state-persistence.gif)
 
-- Shared UI state lives in the tmux server itself (global option `@wt_state`), surviving reloads, reconnects, and webtmux restarts, and shared by every browser: sidebar prefs, session order, renderer choice, Exposé/preview/toolbar prefs, split window assignments, the recents strip, access recency, the chosen save directory, and the primary region's window.
+- Shared UI state lives in the tmux server itself (global option `@wt_state`), surviving reloads, reconnects, and webtmux restarts, and shared by every browser: sidebar prefs, session order, renderer choice, Exposé/preview/toolbar prefs, split view arrangement and windows, the recents strip, access recency, the chosen save directory, and the first view's window.
 - Per-tab state (focused view, split sizes) stays in the browser tab so two browsers don't fight over focus. A reload returns every view to the exact session+window it was on.
 
 ### Copy Buffers
@@ -262,7 +258,7 @@ A program on the tmux machine — a CLI printing a login URL or a token — can 
 
 **tmux silently drops these by default.** Its `set-clipboard external` default forwards tmux's own copies but ignores programs', so the program says "copied!" and nothing happens. webtmux sets `set-clipboard on` when it attaches, remembering the old value.
 
-- It's a **default, not a policy**: switch it in the toolbar's link menu (the spinner) and webtmux stops applying it, so reloads and new regions won't undo your choice. Switching it off restores tmux's previous value, and the row says whether that's `external` (tmux's own yanks still pass) or `off` (nothing passes).
+- It's a **default, not a policy**: switch it in the toolbar's link menu (the spinner) and webtmux stops applying it, so reloads and new views won't undo your choice. Switching it off restores tmux's previous value, and the row says whether that's `external` (tmux's own yanks still pass) or `off` (nothing passes).
 - Large copies (a URL runs to hundreds of bytes, a scrollback to megabytes) that arrive split across frames are rejoined, not lost.
 - These copies land in the [copy buffers](#copy-buffers) too, so the next copy doesn't destroy the URL.
 - It's one-way: OSC 52 *queries* ("what's on the clipboard?") are never answered. With this on, any pane can *replace* your clipboard — but never quietly: each copy floats the buffers panel in, with the previous contents still a row above.
@@ -315,7 +311,7 @@ The file you want is usually on the tmux machine — a build artifact, a log, a 
 <img src="screenshots/link-menu.jpg" alt="Clicking the spinner (ringed) opens the link menu: the connection's state in longhand, then the tmux settings — tmux status line, copy from a program to this browser, and run a command when a window is renamed — each saying who else it affects" width="22%">
 
 - **Click it** for the details in longhand, plus the settings that belong to **tmux** itself. These are the only toolbar controls that change the tmux server for every attached client, so each row says who else it affects.
-- **tmux status line.** webtmux hides tmux's green status bar when it attaches (`set -g status off`): the toolbar and sidebar show the same things clickably, and in a split the bar costs a row per region. Turn it back on from the menu; that sticks for the life of the tmux server, and a multi-row status line (`status 2`..`5`) returns at its height. tmux has no per-client status option, so this affects every client on the server, plain terminals included. Changing it needs `-w`.
+- **tmux status line.** webtmux hides tmux's green status bar when it attaches (`set -g status off`): the toolbar and sidebar show the same things clickably, and in a split the bar costs a row per view. Turn it back on from the menu; that sticks for the life of the tmux server, and a multi-row status line (`status 2`..`5`) returns at its height. tmux has no per-client status option, so this affects every client on the server, plain terminals included. Changing it needs `-w`.
 - **Run a command when a window is renamed** (`set-hook -g after-rename-window`, normally only discoverable via `show-hooks`). The row shows whether anything is hooked, the command verbatim, and a switch. It fires for renames from webtmux, `⌃b ,` or a script alike.
   - webtmux never writes the command — it can't see or validate scripts on the tmux machine. The switch is save-and-restore: off stashes the hook in `@wt_rename_hook_saved`, on restores it, and with no hook the row says so.
   - Below it are **the windows that opted in** (carrying `@wt_rename_handler`, which a well-built handler checks), each with its own save-and-restore switch; amber means its last push didn't land.
@@ -326,7 +322,7 @@ The file you want is usually on the tmux machine — a build artifact, a log, a 
 ![The shortcuts overlay (Ctrl+Alt+K): every global chord with modifier labels matching your OS](screenshots/keyboard-shortcuts.jpg)
 
 - A shortcuts overlay (Ctrl+Alt+K) lists every hotkey with modifier labels matching your OS (⌃⌥ on Mac).
-- **Hold Ctrl+Alt (⌃⌥) for a moment with no other key** and a help overlay dims the terminal and points at every part of the screen with a note and its keys. Each area starts as one outline; move the pointer toward it and it opens into a note per control (a recents tab's stoplight, age, ×, drag…). It follows whatever is on screen — Exposé, the sidebar, the preview bar, split regions — keys and clicks keep working while it is up, and letting go hides it. Ctrl+Alt+? brings it up without holding (tap Ctrl+Alt to dismiss), and each new tab's first connection shows it that way unasked.
+- **Hold Ctrl+Alt (⌃⌥) for a moment with no other key** and a help overlay dims the terminal and points at every part of the screen with a note and its keys. Each area starts as one outline; move the pointer toward it and it opens into a note per control (a recents tab's stoplight, age, ×, drag…). It follows whatever is on screen — Exposé, the sidebar, the preview bar, split views — keys and clicks keep working while it is up, and letting go hides it. Ctrl+Alt+? brings it up without holding (tap Ctrl+Alt to dismiss), and each new tab's first connection shows it that way unasked.
 - Global Ctrl+Alt chords use the same key tmux uses after its `Ctrl+b` prefix, wherever tmux has one:
 
   | Keys (after Ctrl+Alt) | Does | tmux |
@@ -358,7 +354,7 @@ The file you want is usually on the tmux machine — a build artifact, a log, a 
 
 - Glyph fidelity: tmux clients attach UTF-8-clean and the DOM renderer is the default (WebGL opt-in), so box-drawing and pane borders render correctly; pure black terminal background.
 - Honors a custom tmux socket and env-based detection (`WEBTMUX_SOCKET`, `WEBTMUX_SESSION`).
-- Per-connection tmux controller threading: each browser region follows its pane's real tmux client by tty+pid, fixing wrong-client switches (including cross-container pty name collisions, backed by a pts-number reservation, `WEBTMUX_PTS_FLOOR`).
+- Per-connection tmux controller threading: each split view follows its own tmux client by tty+pid, fixing wrong-client switches (including cross-container pty name collisions, backed by a pts-number reservation, `WEBTMUX_PTS_FLOOR`).
 
 ### Build, server & reliability
 
@@ -803,9 +799,9 @@ out of green while you're looking elsewhere, everything showing it flashes in
 the new colour until you look at it. There's no expiry — a signal that gives up
 after thirty seconds is the one you miss when you step away.
 
-When a window needs you and has no tab, preview tile or region, the recents strip
+When a window needs you and has no tab, preview tile or view, the recents strip
 ends in a flashing **attention arrow** (→) with a count. Clicking it opens the
-window list on the most recent one, previewed in a region; Enter or click
+window list on the most recent one, previewed in the focused view; Enter or click
 switches, Escape puts everything back. So "nothing is blinking" means "nothing
 needs you".
 

@@ -1938,6 +1938,9 @@ export class SplitManager {
       const act = u.layout?.allActivity;
       if (act) for (const id in act) if (!activityById.has(id)) activityById.set(id, act[id]);
     }
+    // The views' header strips draw the same light (see _paintHead).
+    this._work = { workingById, workingSinceById, activityById };
+    for (const u of this.units) this._paintHead(u);
     // Raise/clear the attention flashes across the WHOLE server before anything is
     // rendered, so every surface below reads one settled answer.
     this._placements = this._markWorkAlerts(workingById);
@@ -2509,6 +2512,12 @@ export class SplitManager {
   // A hover preview appeared/moved/ended: repaint the switchers' "being previewed"
   // highlight. Cheap — both are Lit components that diff.
   onHoverPreviewChange() {
+    // The window being pointed at may already be on screen in ANOTHER view. The preview
+    // still opens in the focused view (that is the offer: bring it here), and the view
+    // that already has it throbs the focus frame — "or look, it's over here".
+    const id = this.hover.windowId;
+    const holder = id && this.units.length > 1 ? this._unitShowing(id, this.focusedUnit) : null;
+    for (const u of this.units) u.region.classList.toggle('holds-hovered', u === holder);
     if (this.toolbar) this.toolbar.previewWindow = this.hover.windowId;
     if (this.sidebar) {
       this.sidebar.previewWindow = this.hover.windowId;
@@ -2721,6 +2730,18 @@ export class SplitManager {
     const id = unit.layout?.activeWindowId;
     const win = (unit.layout?.windows || []).find((w) => w.id === id);
     head.label = win ? windowTitle(this.logicalSession(unit), win.index, win.name) : '';
+    // The window's stoplight and time-in-state, from the same server-wide maps the
+    // recents tabs read (falling back to this view's own session copy).
+    const w = this._work;
+    const pick = (map, own) => (map?.has(id) ? map.get(id) : (own || ''));
+    const work = win ? {
+      working: pick(w?.workingById, win.working),
+      since: pick(w?.workingSinceById, win.workingSince),
+      activity: pick(w?.activityById, win.activity),
+    } : null;
+    // The badge text is part of the comparison, so the age keeps counting up.
+    if (work) work.badge = workBadge(work.since, work.activity);
+    if (JSON.stringify(work) !== JSON.stringify(head.work)) head.work = work;
     const moves = this._movesFor(unit);
     if (JSON.stringify(moves) !== JSON.stringify(head.moves)) head.moves = moves;
   }
