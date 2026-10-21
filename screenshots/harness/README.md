@@ -173,7 +173,8 @@ Pieces:
   left | right split with a top / bottom one nested in it, only the focused view wears
   the frame, each view's header strip has its own height (the terminal starts below
   it), its controls appear only as the pointer nears the top and offer exactly the
-  directions there is a view in, ↑ trades places with the view above, a recents tab
+  directions it can move in, ↑ swaps a view with the one above it, ↑ on a full-width bottom
+  view puts it on top with every view keeping its size, a recents tab
   never grows a pane picker and always previews and lands in the FOCUSED view — trading
   with the view that had the window, never jumping the focus there — a tab dropped on a
   view still puts it there, a top/bottom divider drags, a reload brings the shape and

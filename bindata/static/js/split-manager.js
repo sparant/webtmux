@@ -47,8 +47,8 @@ import {
 } from './recents-strip.js';
 import { planRegionMove } from './region-move.js';
 import {
-  ROW, COL, leaf, splitLeaf, splitAll, removeLeaf, replaceKey, swapKeys, focusAfterClose,
-  toShape, fromShape, shapeSignature, sizesOf, withSizes, setSizesAt, neighborToward, mapKeys,
+  ROW, COL, leaf, splitLeaf, splitAll, removeLeaf, replaceKey, moveBranch, focusAfterClose,
+  toShape, fromShape, shapeSignature, sizesOf, withSizes, setSizesAt, mapKeys,
 } from './split-tree.js';
 import { windowTitle } from './window-label.js';
 import { workBadge } from './stoplight.js';
@@ -702,15 +702,16 @@ export class SplitManager {
     if (idx >= 0) this.units.splice(idx, 1);
   }
 
-  // Move a view one step left / right / up / down: it trades places with the view on
-  // that side (the one you SEE there — see split-tree.js neighborToward). Both keep
-  // their windows and their focus; only the slots change hands.
+  // Move a view one step left / right / up / down, keeping every view's size: the
+  // view — or, when its own split runs the other way, the group it sits in — swaps
+  // with its neighbour at the first split along that axis (split-tree.js moveBranch).
+  // Windows and focus stay with their views.
   moveRegion(unit, dir) {
     const u = unit || this.focusedUnit;
     if (!u) return;
-    const other = neighborToward(this._regionRects(), u.region, dir);
-    if (!other) return;
-    this.tree = swapKeys(this.tree, u.region, other);
+    const next = moveBranch(this.tree, u.region, dir);
+    if (!next) return;
+    this.tree = next;
     this._renderLayout();
     this.focus(u);
     this._refitSoon();
@@ -719,16 +720,10 @@ export class SplitManager {
     this._persistSizes();
   }
 
-  // Every region's box on screen, keyed by region element.
-  _regionRects() {
-    return new Map(this.units.map((u) => [u.region, u.region.getBoundingClientRect()]));
-  }
-
   // Which directions a view could move in — what its header offers.
   _movesFor(unit) {
-    const rects = this._regionRects();
     const out = {};
-    for (const d of ['left', 'right', 'up', 'down']) out[d] = !!neighborToward(rects, unit.region, d);
+    for (const d of ['left', 'right', 'up', 'down']) out[d] = !!moveBranch(this.tree, unit.region, d);
     return out;
   }
 

@@ -16,7 +16,8 @@
 //      overlaps), its controls are invisible until the pointer nears the top of the
 //      view, and it offers exactly the directions there is a view in.
 //   4. ↑ swaps the bottom-right view with the one above it; both keep their windows and
-//      the moved view keeps the focus.
+//      the moved view keeps the focus. (And in 2b: ↑ on a full-width bottom view moves
+//      it to the top with the split beneath, every view keeping its size.)
 //   5. A recents tab never grows a pane picker, previews in the FOCUSED view even for a
 //      window last shown in another, and clicking a window another view shows trades
 //      it into the focused view (no focus jump, no mirror).
@@ -185,6 +186,34 @@ async function main() {
     return Math.abs(r.width - all.width) < 2;
   });
   check('…spanning the whole width', wide);
+  // ↑ on it: the full-width view goes on top, the split it was under beneath — every
+  // view keeping its size (sizes travel with the views, not with the slots).
+  const dims = () => mgr((m) => m.units.map((u) => {
+    const r = u.region.getBoundingClientRect();
+    return [Math.round(r.width), Math.round(r.height)];
+  }));
+  const before3 = await dims();
+  await mgr((m) => { m.units[3].head.near = true; });
+  await sleep(200);
+  const up3 = await mgr((m) => {
+    const b = m.units[3].head.shadowRoot.querySelector('.tbtn.up');
+    const r = b.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  await page.mouse.move(up3.x, up3.y, { steps: 3 });
+  await page.mouse.click(up3.x, up3.y);
+  await sleep(1200);
+  const sh4 = await shape();
+  check('↑ on the full-width view puts it on top, with the split beneath',
+    JSON.stringify(sh4) === JSON.stringify({ dir: 'col', kids: [3, { dir: 'row', kids: [0, { dir: 'col', kids: [1, 2] }] }] }), JSON.stringify(sh4));
+  const after3 = await dims();
+  check('…and every view keeps its size', after3.every((d, i) => Math.abs(d[0] - before3[i][0]) <= 2 && Math.abs(d[1] - before3[i][1]) <= 2),
+    `${JSON.stringify(before3)} -> ${JSON.stringify(after3)}`);
+  const top3 = await mgr((m) => Math.round(m.units[3].region.getBoundingClientRect().top - document.querySelector('.split-root').getBoundingClientRect().top));
+  check('…at the top of the screen', top3 <= 1, `${top3}px from the top`);
+  await mgr((m) => m.moveRegion(m.units[3], 'down'));
+  await sleep(800);
+  check('↓ puts it back', JSON.stringify(await shape()) === JSON.stringify(sh3), JSON.stringify(await shape()));
   await mgr((m) => m.removeUnit(m.units[3]));
   await sleep(1500);
   check('closing it restores the shape it was added to',
@@ -216,7 +245,7 @@ async function main() {
   await page.mouse.click(up.x, up.y);
   await sleep(800);
   const sh2 = await shape();
-  check('↑ trades places with the view above',
+  check('↑ swaps it with the view above',
     JSON.stringify(sh2) === JSON.stringify({ dir: 'row', kids: [0, { dir: 'col', kids: [2, 1] }] }), JSON.stringify(sh2));
   check('…both views keep their windows', JSON.stringify(await panes()) === JSON.stringify(before));
   check('…and the moved view keeps the focus', (await focusedIdx()) === 2);

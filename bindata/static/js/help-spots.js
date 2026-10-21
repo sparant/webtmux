@@ -247,7 +247,7 @@ function regionSpots(m) {
     regions.forEach((r, i) => spots.push({
       id: `head.${i}`,
       title: 'View header',
-      text: 'The window this view shows. Point near it for the controls: ← ↑ ↓ → trade places with the view on that side, ✕ closes the view.',
+      text: 'The window this view shows. Point near it for the controls: ← ↑ ↓ → move the view, keeping every size; ✕ closes it.',
       keys: [R('click', 'move / close')],
       find: () => r.querySelector('webtmux-region-head'),
     }));
