@@ -221,8 +221,8 @@ async function main() {
       count: btns.length,
       tops: btns.map((b) => b.getBoundingClientRect().top),
       texts: btns.map((b) => b.textContent.trim()),
-      // The destructive control must NOT be in the pair.
-      closeInPair: btns.some((b) => b.textContent.includes('Close this region')),
+      // Closing a view lives on the view's own header now, not in the sidebar.
+      closeInSidebar: [...rr.querySelectorAll('button')].some((b) => /Close this (view|region)/.test(b.textContent)),
     };
   });
   check('both panel toggles are in the pair', pair.count === 2, `${pair.count} buttons`);
@@ -230,7 +230,7 @@ async function main() {
     JSON.stringify(pair.tops));
   check('with the short labels', /float|mount/.test(pair.texts[0]) && /pinned|auto hide/.test(pair.texts[1]),
     pair.texts.join(' / '));
-  check('close-region is not one of them', pair.closeInPair === false);
+  check('the sidebar has no close-view button (the view header has it)', pair.closeInSidebar === false);
 
   // ---- 5. paste-trim in the rename input ------------------------------------
   const pasted = await sidebar((n, rr) => {

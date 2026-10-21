@@ -908,20 +908,12 @@ class WebtmuxSidebar extends LitElement {
     return !!(this.treeCollapsed && this.treeCollapsed.has(name));
   }
 
-  closeRegion() {
-    this.dispatchEvent(new CustomEvent('webtmux-split-close', {
-      bubbles: true, composed: true, detail: { unit: this.unit },
-    }));
-  }
 
-  // The sidebar keeps only the controls that shape the PANEL itself (hover vs
-  // side-by-side, pinned) plus the contextual close-region. Action buttons —
-  // split-add, Exposé, Picture-in-Picture, scroll mode, keyboard shortcuts — now
-  // live on the toolbar.
+  // The sidebar keeps only the controls that shape the PANEL itself (what it lists,
+  // hover vs side-by-side, pinned). Action buttons — split-add, Exposé,
+  // Picture-in-Picture, scroll mode, keyboard shortcuts — live on the toolbar, and
+  // closing a view is the ✕ on that view's own header strip (region-head.js).
   modeRow() {
-    // "Close this view" only makes sense while the screen is split (any view, the
-    // primary's included — see SplitManager.removeUnit).
-    const canClose = (this.unit?.manager?.units?.length || 0) > 1;
     // The two panel toggles share one line. They were full-width stacked buttons whose
     // labels spelled out the whole state ("▣ Hover over terminal", "📌 Pinned (stays
     // open)"), which cost two rows at the top of a panel whose actual job is the window
@@ -929,10 +921,6 @@ class WebtmuxSidebar extends LitElement {
     // the hover, where it is read once. Abbreviated to the word that differs, with the
     // full explanation moved to the shared hint (the same ~600ms tooltip the stoplight
     // dots use, so a hover here doesn't answer more slowly than a hover there).
-    //
-    // ✕ Close this region stays full-width below: it destroys something, and a
-    // destructive control should not sit shoulder-to-shoulder with two harmless toggles
-    // where a mis-aimed click lands on it.
     return html`
       <div class="mode-row">
         <div class="shortcut-hint">Toggle panel: <kbd>${MOD_KEYS[0]}</kbd>+<kbd>${MOD_KEYS[1]}</kbd>+<kbd>W</kbd></div>
@@ -974,15 +962,6 @@ class WebtmuxSidebar extends LitElement {
             ${this.pinned ? '📌 pinned' : '📌 auto hide'}
           </button>
         </div>
-        ${canClose ? html`
-          <button
-            class="mode-btn"
-            @click=${this.closeRegion}
-            title="Close this view; the next view takes the focus. Shortcut: ${chord('X')}"
-          >
-            ✕ Close this view
-          </button>
-        ` : ''}
       </div>
     `;
   }
