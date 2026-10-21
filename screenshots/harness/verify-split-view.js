@@ -109,6 +109,17 @@ async function visitFresh() {
   });
 }
 
+// Hold ⌃⌥ and tap L, then release — the release commits the walk (_endMruCycle).
+async function tapMru() {
+  await page.keyboard.down('Control');
+  await page.keyboard.down('Alt');
+  await page.keyboard.press('KeyL');
+  await sleep(400);
+  await page.keyboard.up('Alt');
+  await page.keyboard.up('Control');
+  await sleep(1500);
+}
+
 async function clickView(i) {
   const c = await mgr((m, n) => {
     const r = m.units[n].region.querySelector('.region-term').getBoundingClientRect();
@@ -282,6 +293,22 @@ async function main() {
   check('…and lands there when clicked', p5c[0] === wasInC && p5c[2] === fresh, p5c.join(' '));
   await page.mouse.move(800, 880);
   await sleep(500);
+
+  // ---- 5b. ⌃⌥L counts view switches and focuses the view holding a window ----------
+  await clickView(1);
+  const p5d = await panes();
+  await tapMru();
+  check('⌃⌥L after switching views goes back to the previous view', (await focusedIdx()) === 0, `focused ${await focusedIdx()}`);
+  check('…without changing any view\'s window', JSON.stringify(await panes()) === JSON.stringify(p5d), `${p5d.join(' ')} -> ${(await panes()).join(' ')}`);
+  await tapMru();
+  check('…and again flips back', (await focusedIdx()) === 1, `focused ${await focusedIdx()}`);
+  const fresh5 = await visitFresh();
+  await sleep(600);
+  await tapMru();
+  const p5e = await panes();
+  check('a window no view shows still loads into the focused view',
+    !!fresh5 && p5e[1] === p5d[1] && p5e[0] === p5d[0] && p5e[2] === p5d[2] && (await focusedIdx()) === 1,
+    `${fresh5} ${p5d.join(' ')} -> ${p5e.join(' ')}`);
 
   // ---- 6. drop a tab on a view ---------------------------------------------------
   const tabs = await mgr((m) => (m.toolbar.recent || []).map((e) => e.id));
