@@ -23,6 +23,7 @@ import (
 	"os/signal"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 )
@@ -89,6 +90,11 @@ jump host (ProxyJump), a key file or any other ssh option belongs.
 With no target, or one that is this machine — localhost, 127.0.0.1, ::1 or one
 of its own addresses — webtmux runs here directly, with no SSH (--ssh to ssh
 anyway). It still stops when the launcher exits.
+
+On Windows, webtmux cannot run natively, so "this machine" means WSL:
+
+  wsl                              the default WSL distro on this PC
+  wsl:Ubuntu-24.04                 a named distro (wsl --list)
 
 `)
 		fs.PrintDefaults()
@@ -180,7 +186,25 @@ func run(ctx context.Context, o *options) error {
 
 	var ssh *sshRunner
 	var cfg *targetConfig
-	if !o.forceSSH && isLocalTarget(o.target) {
+	// On Windows "this machine" cannot be Windows itself (see wsl.go): no
+	// target, localhost, or an explicit `wsl[:<distro>]` all mean WSL.
+	distro, isWSL := parseWSLTarget(runtime.GOOS, o.target)
+	if runtime.GOOS == "windows" && !o.forceSSH && !isWSL && isLocalTarget(o.target) {
+		isWSL = true
+	}
+	if isWSL {
+		if _, err := wslExe(); err != nil {
+			return nativeWindowsError()
+		}
+		if o.localPort > 0 && o.remotePort > 0 && o.localPort != o.remotePort {
+			return fmt.Errorf("WSL forwards webtmux's own port to Windows, so --local-port %d and --remote-port %d cannot differ",
+				o.localPort, o.remotePort)
+		}
+		ssh = newWSLRunner(distro, o.verbose)
+		o.target = ssh.target
+		cfg = loadTargetConfig("@" + ssh.target)
+		fmt.Printf("target: WSL on this PC (%s) — no SSH; webtmux runs in the distro, its port forwarded to Windows by WSL\n", o.target)
+	} else if !o.forceSSH && isLocalTarget(o.target) {
 		if o.localPort > 0 && o.remotePort > 0 && o.localPort != o.remotePort {
 			return fmt.Errorf("on this machine webtmux listens on the browser's port itself, so --local-port %d and --remote-port %d cannot differ",
 				o.localPort, o.remotePort)
@@ -192,6 +216,9 @@ func run(ctx context.Context, o *options) error {
 		cfg = loadTargetConfig(localConfigKey)
 		fmt.Printf("target: this machine (%s) — no SSH; webtmux runs here directly\n", o.target)
 	} else {
+		if err := requireSSH(); err != nil {
+			return err
+		}
 		ssh = newSSHRunner(o.target, o.verbose)
 		cfg = loadTargetConfig(o.target)
 	}

@@ -156,7 +156,7 @@ func runProbe(ctx context.Context, r *sshRunner, archOverride, tmuxOverride stri
 		return nil, fmt.Errorf("no tmux found on the target\n"+
 			"(searched $PATH for a non-interactive shell, the usual prefixes, and a login shell)\n"+
 			"if it is installed somewhere unusual: --tmux-path /path/to/tmux\n"+
-			"if it really is missing: %s", tmuxInstallHint(p.DistroID))
+			"if it really is missing: %s", tmuxInstallHint(p.OS, p.DistroID))
 	}
 	if p.Home == "" {
 		return nil, fmt.Errorf("probe could not determine $HOME on the target")
@@ -338,25 +338,6 @@ func (p *probe) hasCached(name string) bool {
 		}
 	}
 	return false
-}
-
-func tmuxInstallHint(distro string) string {
-	switch distro {
-	case "debian", "ubuntu", "raspbian", "linuxmint", "pop":
-		return "sudo apt install tmux"
-	case "fedora", "rhel", "centos", "rocky", "almalinux":
-		return "sudo dnf install tmux"
-	case "arch", "manjaro":
-		return "sudo pacman -S tmux"
-	case "alpine":
-		return "sudo apk add tmux"
-	case "opensuse", "opensuse-leap", "opensuse-tumbleweed", "sles":
-		return "sudo zypper install tmux"
-	case "":
-		return "your package manager's tmux package"
-	default:
-		return "your package manager's tmux package (" + distro + ")"
-	}
 }
 
 // durability reports whether the target will reap the tmux server at logout.

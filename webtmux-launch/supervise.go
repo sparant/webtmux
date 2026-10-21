@@ -308,6 +308,13 @@ func openBrowser(url string, defaultBrowser bool) error {
 	case "windows":
 		return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
 	default:
+		if insideWSL() {
+			for _, argv := range wslBrowserCommands(url) {
+				if exec.Command(argv[0], argv[1:]...).Start() == nil {
+					return nil
+				}
+			}
+		}
 		return exec.Command("xdg-open", url).Start()
 	}
 }
