@@ -1,9 +1,17 @@
-# webtmux v0.4.0
+# webtmux v0.4.0 — first public release
 
-Split views become a real layout: left|right and top/bottom, in any
-arrangement, each view with its own header. The launcher reaches more places:
-this machine with no SSH, Windows (natively and into WSL), and a laptop that
-changes networks under it.
+This is webtmux's first public release. webtmux puts your tmux sessions in a
+browser: every window visible at a glance, stoplights that show which windows
+are working, which are waiting on you and which are idle, and tmux's own keys
+with Ctrl+Alt in place of the prefix. It was built for running many AI coding
+agents at once. `webtmux-launch` gets it onto any machine you can SSH to in one
+command, and the target needs only `ssh` and `tmux`.
+
+Earlier tags (v0.1.0 to v0.3.0) were working releases. If you never ran them,
+start at [Install](#install). What is new since v0.3.0: split views are now a
+real layout, left|right and top/bottom in any arrangement with a header per
+view. The launcher now also runs on this machine without SSH, on Windows
+(natively and into WSL), and on a laptop that changes networks under it.
 
 ## Split views: a layout, not a row
 
@@ -26,7 +34,7 @@ Views are independent of each other.
   elsewhere, and hovering a window another view holds pulses that view's frame.
 - **Closing a window never closes a view.** The view moves on to the next recents
   tab, even when the window's whole session went with it. Only a view's own close
-  button removes the view.
+  button, or Ctrl+Alt+X for the focused view, removes the view.
 - **Ctrl+Alt+L counts views.** Walking back through recent windows stops at
   windows other views show and lands by focusing that view.
 
@@ -107,9 +115,14 @@ Reproducible from the tag: `make release-from-commit REF=v0.4.0`, and
 
 ## Upgrading from v0.3.0
 
+Only for anyone who ran an earlier working release:
+
+
 - **Navigation always changes the focused view.** A window no longer pulls you
   back to the view it was last in, and the recents/preview region picker is
   removed.
+- **The sidebar's "Close this view" button is gone.** Use the ✕ in the view's
+  header, or Ctrl+Alt+X.
 - **The launcher no longer uses SSH for this machine.** If you relied on
   `webtmux-launch localhost` going through sshd, pass `--ssh`.
 - **The launcher opens Google Chrome when it is installed.** Pass
