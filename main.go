@@ -50,6 +50,7 @@ func newRootCommand(appOptions *server.Options, backendOptions *localcommand.Opt
 	// like any other. v3 also has no transitive dependencies at all, which is
 	// why this project is on it — v2 pulled in go-md2man, blackfriday and
 	// sanitized_anchor_name purely to render man pages from --help.
+	cli.VersionPrinter = printVersion
 	cmd := &cli.Command{
 		Name:    "webtmux",
 		Version: Version,

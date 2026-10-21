@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // probe is the parsed result of one probeScript run.
@@ -89,7 +90,9 @@ if [ -z "$wtl_wt" ]; then
   done
 fi
 p WEBTMUX "$wtl_wt"
-if [ -n "$wtl_wt" ]; then p WEBTMUXVER "$("$wtl_wt" --version 2>/dev/null | head -1 || true)"; fi
+# A webtmux that takes too long to answer --version is not worth a stalled probe.
+wtl_to=""; if command -v timeout >/dev/null 2>&1; then wtl_to="timeout 3"; fi
+if [ -n "$wtl_wt" ]; then p WEBTMUXVER "$($wtl_to "$wtl_wt" --version 2>/dev/null | head -1 || true)"; fi
 # Can the target fetch its own binary? Checked, never assumed: a box with no
 # egress falls back to being fed over the SSH connection we already have.
 if command -v curl >/dev/null 2>&1; then p DOWNLOADER curl
@@ -124,6 +127,12 @@ for pid in $pids; do
   p PIDNS "$pid $(readlink /proc/$pid/ns/pid 2>/dev/null || true)"
   p ETIME "$pid $(ps -o etimes= -p $pid 2>/dev/null | tr -d ' ')"
   p CGROUP "$pid $(head -1 /proc/$pid/cgroup 2>/dev/null)"
+  # Which build is running, asked of the running file itself: /proc/<pid>/exe
+  # is the binary that process was started from, even one since replaced on
+  # disk or living inside a container. Since v0.3.1 --version also prints the
+  # commit and build time; the file's mtime is the fallback date for older ones.
+  p EXEVER "$pid $($wtl_to /proc/$pid/exe --version 2>/dev/null | head -3 | tr '\n' ' ')"
+  p EXEMTIME "$pid $(stat -L -c %Y /proc/$pid/exe 2>/dev/null)"
 done
 `
 
@@ -266,6 +275,16 @@ func parseProbe(out string) *probe {
 		case "CGROUP":
 			if pid, rest := splitPID(val); pid != 0 {
 				inst(pid).Cgroup = strings.TrimSpace(rest)
+			}
+		case "EXEVER":
+			if pid, rest := splitPID(val); pid != 0 {
+				inst(pid).Build = parseBuildID(rest)
+			}
+		case "EXEMTIME":
+			if pid, rest := splitPID(val); pid != 0 {
+				if sec, err := strconv.ParseInt(strings.TrimSpace(rest), 10, 64); err == nil && sec > 0 {
+					inst(pid).ExeMTime = time.Unix(sec, 0)
+				}
 			}
 		}
 	}

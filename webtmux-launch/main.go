@@ -28,6 +28,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // Baked at build time with -ldflags -X, so the launcher is self-describing and
@@ -37,6 +38,10 @@ var (
 	RepoOwner             = ""
 	RepoName              = "webtmux"
 	DefaultWebtmuxVersion = "v0.1.0"
+	// DefaultWebtmuxCommit is DefaultWebtmuxVersion's commit, so a running
+	// build that reports no tag — a container's "local" build of that very
+	// commit — can still be recognised as the one this launcher wants.
+	DefaultWebtmuxCommit = ""
 	// DefaultSource is the local-development seam. Empty (the release build)
 	// means "fetch from GitHub"; `make launcher-dev` bakes a local build
 	// directory into it, producing a launcher that needs no env var and no
@@ -47,20 +52,21 @@ var (
 )
 
 type options struct {
-	localPort  int
-	remotePort int
-	session    string
-	noBrowser  bool
-	defBrowser bool
-	auth       bool
-	forceCopy  bool
-	arch       string
-	tmuxPath   string
-	verbose    bool
-	showVer    bool
-	fresh      bool
-	adoptOnly  bool
-	forceSSH   bool
+	localPort     int
+	remotePort    int
+	session       string
+	noBrowser     bool
+	defBrowser    bool
+	auth          bool
+	forceCopy     bool
+	arch          string
+	tmuxPath      string
+	verbose       bool
+	showVer       bool
+	fresh         bool
+	adoptOnly     bool
+	forceSSH      bool
+	noUpdateCheck bool
 
 	webtmuxVersion string
 	webtmuxSource  string
@@ -121,6 +127,7 @@ func parseArgs(argv []string) (*options, error) {
 	fs.BoolVar(&o.fresh, "fresh", false, "ignore a running webtmux and start our own")
 	fs.BoolVar(&o.adoptOnly, "adopt-only", false, "fail rather than starting a webtmux")
 	fs.BoolVar(&o.forceSSH, "ssh", false, "connect over SSH even when the target is this machine")
+	fs.BoolVar(&o.noUpdateCheck, "no-update-check", false, "do not ask GitHub whether a newer release exists (also $"+noUpdateCheckEnv+")")
 	fs.StringVar(&o.webtmuxVersion, "webtmux-version", DefaultWebtmuxVersion, "release version to install, or \"latest\"")
 	fs.StringVar(&o.webtmuxSource, "webtmux-source", "", "directory of webtmux-<os>-<arch> builds to deploy from")
 	fs.StringVar(&o.webtmuxBinary, "webtmux-binary", "", "deploy this exact binary, whatever it is named")
@@ -185,6 +192,9 @@ func run(ctx context.Context, o *options) error {
 	if err := validateSourceConfig(o, os.Getenv); err != nil {
 		return err
 	}
+	// Asked now, answered after the probe: the two overlap, so the check
+	// normally costs a launch no time at all.
+	updates := startUpdateCheck(o, os.Getenv, launcherCacheRoot())
 
 	var ssh *sshRunner
 	var cfg *targetConfig
@@ -242,6 +252,9 @@ func run(ctx context.Context, o *options) error {
 		return err
 	}
 	o.platformHint = p.Platform
+	for _, line := range updates() {
+		fmt.Println(line)
+	}
 	if o.verbose {
 		fmt.Printf("target: %s %s (%s), tmux %s, home %s\n", p.OS, p.Arch, p.Platform,
 			strings.TrimPrefix(p.TmuxVer, "tmux "), p.Home)
@@ -320,7 +333,7 @@ func resolveBinary(ctx context.Context, o *options, ssh *sshRunner, p *probe) (*
 			p.WebtmuxPath, versionToken(p.WebtmuxVer), o.webtmuxVersion)
 	}
 
-	src, why, err := resolveSource(o, os.Getenv, filepath.Join(homeDir(), ".cache", "webtmux-launch"))
+	src, why, err := resolveSource(o, os.Getenv, launcherCacheRoot())
 	if err != nil {
 		return nil, err
 	}
@@ -602,29 +615,10 @@ func tieToConnection(cmd, logPath, run string) string {
 // tunnel plus the browser, and teardown removes only our own tunnel. Getting
 // that backwards would destroy the very persistence the user set up.
 func adopt(ctx context.Context, o *options, ssh *sshRunner, p *probe, cfg *targetConfig, inst *instance) error {
-	// The build comparison is BEST EFFORT and never blocks adoption. Adopting is
-	// step 1 of the priority order and must stay the cheap path: if no source is
-	// configured, or the release is unreachable, the right answer is to say the
-	// build is unknown and carry on connecting — not to fail on the way to a
-	// process that is already running perfectly well.
-	//
-	// It needs only Source.Digest, so even when it does run it never pulls 12 MB
-	// and never reads the local binary.
-	digest, srcDesc, err := bestEffortDigest(o, p)
-	match := ""
-	switch {
-	case err != nil:
-		match = "not compared (" + err.Error() + ")"
-	case inst.ExeSHA == "":
-		match = "unknown (could not read /proc/" + fmt.Sprint(inst.PID) + "/exe)"
-	case inst.ExeSHA == digest:
-		match = "matches " + srcDesc + " " + short12(digest)
-	case inst.Containerized:
-		match = "not the " + srcDesc + " binary (" + short12(digest) + "), as expected for a container's own build — informational, nothing to do"
-	default:
-		match = "not the " + srcDesc + " binary (" + short12(digest) + ") — informational; it is connected to as-is (--fresh starts the release build instead)"
+	for _, line := range inst.report(ssh.local) {
+		fmt.Println(line)
 	}
-	for _, line := range inst.report(match, ssh.local) {
+	for _, line := range compareRunningBuild(o, p, inst, ssh.where()) {
 		fmt.Println(line)
 	}
 
@@ -671,19 +665,54 @@ func adopt(ctx context.Context, o *options, ssh *sshRunner, p *probe, cfg *targe
 	return sup.run(ctx)
 }
 
-// bestEffortDigest answers "what would this launcher install?" without ever
-// being a reason to fail. Used only to annotate an adoption.
-func bestEffortDigest(o *options, p *probe) (digest, describe string, err error) {
-	src, _, err := resolveSource(o, os.Getenv, filepath.Join(homeDir(), ".cache", "webtmux-launch"))
-	if err != nil {
-		return "", "", err
+// compareRunningBuild says nothing when the adopted webtmux is the build this
+// launcher would have started, and otherwise names both — the running one
+// always with a date. It is BEST EFFORT and never blocks adoption: adopting is
+// the cheap path, and a release that cannot be reached is no reason to fail on
+// the way to a process that is already running perfectly well.
+//
+// The same binary (by sha, against the configured source) is a match outright;
+// that is the only test a local build directory allows. For a release, the
+// version stamps decide (sameBuild), which needs no network at all.
+func compareRunningBuild(o *options, p *probe, inst *instance, where string) []string {
+	src, _, srcErr := resolveSource(o, os.Getenv, launcherCacheRoot())
+	digest := ""
+	if srcErr == nil {
+		digest, _ = src.Digest(p.Platform)
 	}
-	d, err := src.Digest(p.Platform)
-	if err != nil {
-		return "", "", err
+	if digest != "" && inst.ExeSHA == digest {
+		return nil
 	}
-	return d, src.Kind(), nil
+	var wanted string
+	sameTag := false
+	switch s := src.(type) {
+	case *releaseSource:
+		want, ok := wantedBuild(s.version)
+		if !ok {
+			return nil // "latest" names no particular build to compare with
+		}
+		if sameBuild(want, inst.Build) {
+			return nil
+		}
+		sameTag = isTag(want.Version) && want.Version == inst.Build.Version
+		wanted = "webtmux " + want.name(sameTag)
+	case nil:
+		return nil
+	default:
+		wanted = "the webtmux at " + src.Location(p.Platform)
+		if digest != "" {
+			wanted += " (sha " + short12(digest) + ")"
+		}
+	}
+	var released time.Time
+	if inst.Build.Built.IsZero() && isTag(inst.Build.Version) {
+		released = releaseDate(launcherCacheRoot(), inst.Build.Version)
+	}
+	return versionMismatchNote(wanted, runningLine(inst.Build, sameTag, released, inst.ExeMTime), inst, where)
 }
+
+// launcherCacheRoot holds downloaded releases and cached GitHub answers.
+func launcherCacheRoot() string { return filepath.Join(homeDir(), ".cache", "webtmux-launch") }
 
 func contains(list []string, s string) bool {
 	for _, v := range list {
