@@ -159,6 +159,16 @@ const TMUX_MSG_TYPES = new Set([
 // is emphatically not "assume everything is fine".
 const CLOCK_GAP_MS = 7500;
 
+// After the browser comes back online (or the tab wakes), a closed socket is
+// retried at once and then in a short doubling burst, instead of on the server's
+// fixed --reconnect-time (10s by default). The tunnel behind the socket usually
+// returns a second or two after the network does: webtmux-launch reconnects on
+// the same network-change signal. A retry against a dead loopback port costs
+// nothing, so the burst can afford to be eager.
+const FAST_RETRY_FIRST_MS = 500;
+const FAST_RETRY_MAX_MS = 4000;
+const FAST_RETRY_WINDOW_MS = 45000;
+
 // Map any stored/legacy value onto a valid mode. The old two-state setting used
 // 'passthrough' for what is now 'app'.
 export function normalizeScrollMode(m) {
@@ -189,6 +199,8 @@ export class TerminalUnit {
     this.fitAddon = null;
     this.ws = null;
     this.reconnectInterval = null;
+    this._fastRetryUntil = 0;   // see FAST_RETRY_*
+    this._fastRetryDelay = 0;
     // Has this region's socket ever CLOSED? Latched, and never cleared, because it is
     // what separates "still opening for the first time" from "we had tmux and lost
     // it" — see connectionLost(). Without the latch the boot's own CONNECTING state
@@ -1482,7 +1494,7 @@ export class TerminalUnit {
       // longer hop to a different session on reconnect (that reset the view).
       if (this.reconnectInterval) {
         this.restorePending = true;
-        this._reconnectTimer = setTimeout(() => this.connect(), this.reconnectInterval * 1000);
+        this._reconnectTimer = setTimeout(() => this.connect(), this._retryDelay());
       }
     };
 
@@ -1495,6 +1507,25 @@ export class TerminalUnit {
   // because its tmux session went away (the last window in it closed), where the server
   // is fine and there is nothing to wait for. Also covers a server started without
   // --reconnect, where no timer was ever set. The post-reconnect restore runs as usual.
+  // The delay before the next retry of a closed socket: the server's interval,
+  // or the burst's next step while one is running.
+  _retryDelay() {
+    const normal = this.reconnectInterval * 1000;
+    if (Date.now() >= this._fastRetryUntil) return normal;
+    const d = Math.min(this._fastRetryDelay, normal);
+    this._fastRetryDelay = Math.min(this._fastRetryDelay * 2, FAST_RETRY_MAX_MS);
+    return d;
+  }
+
+  // The network (or the machine) just came back: if this region lost its socket,
+  // retry it now and keep retrying quickly for a while.
+  _retryBurst() {
+    if (this.destroyed || !this._wasClosed || this.isConnected()) return;
+    this._fastRetryUntil = Date.now() + FAST_RETRY_WINDOW_MS;
+    this._fastRetryDelay = FAST_RETRY_FIRST_MS;
+    this.reconnectNow();
+  }
+
   reconnectNow() {
     if (this.destroyed || this.isConnected()) return;
     if (this.ws && this.ws.readyState === WebSocket.CONNECTING) return;   // already on its way
@@ -2080,6 +2111,7 @@ export class TerminalUnit {
     this.link.setActive(true);
     this.link.resumed(Date.now());
     this._judge();
+    this._retryBurst();
   }
 
   noteHidden() {
@@ -2091,6 +2123,7 @@ export class TerminalUnit {
     this.link.setOnline(v);
     if (v) this.link.resumed(Date.now());
     this._judge();
+    if (v) this._retryBurst();
   }
 
   // live / slow / lost for THIS region — what the toolbar spinner is a picture of.

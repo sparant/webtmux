@@ -76,7 +76,8 @@ docker run --rm -v "$REPO":/src -v wtl-gomod:/go/pkg/mod -w /src wtl-client:test
   sh -c 'git config --global --add safe.directory /src
          make cross-compile && make -C webtmux-launch dev' >/dev/null
 
-RUNARGS=(--rm --name "$CLIENT_C" --network "$NET"
+# NET_ADMIN lets 3.16c take the client's network down and up again.
+RUNARGS=(--rm --name "$CLIENT_C" --network "$NET" --cap-add NET_ADMIN
          -v "$REPO":/src -v "$WORK":/keys -v wtl-gomod:/go/pkg/mod
          -e TARGET=dev@"$TARGET_C" -e SSH_KEY=/keys/id_ed25519 -e REPO=/src
          -e WEBTMUX_LAUNCH_SOURCE=/src/builds

@@ -48,6 +48,11 @@ type supervisor struct {
 	// Zero values mean the defaults below; tests shorten them.
 	healthEvery time.Duration
 	healthFails int
+
+	// netReady fires when the network changed and the SSH server is reachable
+	// again (see netwatch.go). run starts the watcher itself unless a test set
+	// this; local mode has no network between it and webtmux, so none.
+	netReady <-chan struct{}
 }
 
 // backoff bounds: start at 1s so a transient blip recovers almost instantly,
@@ -95,6 +100,9 @@ func (s *supervisor) run(ctx context.Context) error {
 		defer pr.Close()
 		defer pw.Close() // held open until run returns — that IS the liveness signal
 	}
+	if s.netReady == nil && !s.ssh.local {
+		s.netReady = watchNetwork(ctx, s.ssh.target)
+	}
 	for {
 		started := time.Now()
 		remote := ""
@@ -128,7 +136,29 @@ func (s *supervisor) run(ctx context.Context) error {
 			_ = cmd.Process.Kill()
 		})
 
-		err := cmd.Wait()
+		// While the attempt lives, a network change gets an immediate check
+		// rather than waiting for keepalives or the health check to give up
+		// (~15s each): after a switch the old TCP connection is usually dead,
+		// and a tunnel that still answers — a VPN coming up, a second
+		// interface — is left alone.
+		netBounced := make(chan struct{}, 1)
+		waited := make(chan error, 1)
+		go func() { waited <- cmd.Wait() }()
+		var err error
+	attemptLoop:
+		for {
+			select {
+			case err = <-waited:
+				break attemptLoop
+			case <-s.netReady:
+				go func() {
+					if !answers(&http.Client{Timeout: 3 * time.Second}, s.url) && attemptCtx.Err() == nil {
+						netBounced <- struct{}{}
+						_ = cmd.Process.Kill()
+					}
+				}()
+			}
+		}
 		endAttempt()
 		if ctx.Err() != nil {
 			return nil // Ctrl-C: the child is already going away with the context
@@ -159,6 +189,15 @@ func (s *supervisor) run(ctx context.Context) error {
 		}
 		attempt++
 		select {
+		case <-netBounced:
+			// Straight back in: the network that killed this attempt has been
+			// replaced by one the server is reachable on.
+			fmt.Fprintf(s.out, "\rnetwork changed and the tunnel stopped answering; reconnecting now\n")
+			delay = backoffMin
+			continue
+		default:
+		}
+		select {
 		case <-bounced:
 			if s.ssh.local {
 				fmt.Fprintf(s.out, "\rwebtmux stopped answering; restarting\n")
@@ -179,6 +218,11 @@ func (s *supervisor) run(ctx context.Context) error {
 			fmt.Fprintln(s.out)
 			return nil
 		case <-time.After(delay):
+		case <-s.netReady:
+			// A new network the server is reachable on: try it now, and start
+			// the backoff over — this is a fresh network, not a flapping one.
+			fmt.Fprintf(s.out, "\rnetwork changed; reconnecting now%s\n", strings.Repeat(" ", 24))
+			delay = backoffMin / 2 // doubled below, back to backoffMin
 		}
 		fmt.Fprintf(s.out, "\r%s\r", strings.Repeat(" ", 48))
 		if delay < backoffMax {

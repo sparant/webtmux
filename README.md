@@ -863,6 +863,14 @@ nothing for this machine; see
 The URL is generated once per target and reused, so an open browser tab
 reconnects by itself.
 
+**Changing networks.** A dropped link is retried with backoff (1s doubling to
+30s). The launcher also listens for the OS's network-change notifications. When
+the laptop joins a network on which the SSH server is reachable, it reconnects
+at once instead of finishing the backoff. If the link looks alive across a
+change, it is checked straight away, not after the ~15s keepalives take to give
+up. The browser tab does the same on its `online` event: it retries
+immediately, then in a short burst, instead of every 10s.
+
 **Which webtmux gets installed.** The launcher carries no webtmux binary, so a
 webtmux fix reaches existing launchers without updating them. It looks, in order:
 

@@ -230,6 +230,46 @@ fi
 kill_launcher "$pid"
 
 # ---------------------------------------------------------------------------
+step "3.16c network change: reconnect at once, not on the backoff timer"
+# ---------------------------------------------------------------------------
+# The laptop case: the link dies, the backoff grows while there is no network,
+# and when a network comes back the launcher must go straight back in rather
+# than finish a 16s sleep.
+if ip link set eth0 down 2>/dev/null && ip link set eth0 up 2>/dev/null; then
+  sleep 2
+  pid=$(launch_bg /tmp/run5.log)
+  if wait_for /tmp/run5.log 'ready: http' 60; then
+    U5=$(url_from /tmp/run5.log)
+    ip link set eth0 down
+    if wait_for /tmp/run5.log 'next in (8|16|30)s' 120; then
+      backoff=$(grep -oE 'next in [0-9]+s' /tmp/run5.log | tail -1)
+      ip link set eth0 up
+      t0=$(date +%s%N); code=""
+      for _ in $(seq 120); do
+        code=$(curl -s -m 2 -o /dev/null -w '%{http_code}' "$U5"); [ "$code" = 200 ] && break; sleep 0.25
+      done
+      ms=$(( ($(date +%s%N)-t0)/1000000 ))
+      if [ "$code" = 200 ] && [ "$ms" -lt 6000 ]; then
+        ok "serving ${ms}ms after the network came back (backoff stood at '$backoff')"
+      else
+        no "took ${ms}ms (http $code) after the network came back; backoff stood at '$backoff'"
+      fi
+      grep -q 'network changed; reconnecting now' /tmp/run5.log \
+        && ok "the console says the network change triggered it" \
+        || no "no 'network changed' line — the reconnect came from the timer"
+    else
+      ip link set eth0 up
+      no "backoff never grew while the network was down"
+    fi
+  else
+    no "launcher never became ready"
+  fi
+  kill_launcher "$pid"
+else
+  skip "3.16c needs NET_ADMIN (run.sh passes --cap-add NET_ADMIN)"
+fi
+
+# ---------------------------------------------------------------------------
 step "3.17 ETXTBSY non-regression"
 # ---------------------------------------------------------------------------
 reset_target
