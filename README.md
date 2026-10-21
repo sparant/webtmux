@@ -193,7 +193,7 @@ Keep an eye on specific windows while you work in others, and jump to them quick
 
 ### Split Views (Not tmux Panes)
 
-![Split view replayed: Ctrl+Alt+Enter adds a second live view (auto-picking the most recent unseen window), the divider drags to resize, Ctrl+Alt+X closes it](screenshots/split-view.gif)
+![Split view replayed: the ⊞ ▾ menu splits left | right, then top / bottom, then adds a full-width view; hovering a recents tab whose window another view shows previews it in the focused view while that view throbs its frame; a divider drags to resize; each view's ✕ closes it](screenshots/split-view.gif)
 
 **tmux panes subdivide a window, so they travel with it. Split views divide the browser, and each view is independent.** Every view shows any window from any session, and changing one never moves the others. Panes still work as usual: a window with panes shows them all inside whichever view displays it.
 

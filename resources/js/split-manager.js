@@ -3052,9 +3052,6 @@ export class SplitManager {
         }
       }, { passive: false, capture: true });
     }
-
-    // The sidebar's close-region × dispatches this (composed, cross shadow DOM).
-    window.addEventListener('webtmux-split-close', (e) => this.removeUnit(e.detail?.unit || this.focusedUnit));
   }
 }
 

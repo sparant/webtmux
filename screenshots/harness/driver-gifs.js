@@ -309,7 +309,9 @@ const clearLights = () => {
     });
     if (tb) {
       await glide({ x: tb.x + tb.width / 2, y: tb.y + tb.height / 2 }, 14);
-      await sleep(700);
+      // Linger: the view that already shows it throbs its frame while the preview
+      // sits in the focused view.
+      await sleep(2200);
       await page.mouse.click(tb.x + tb.width / 2, tb.y + tb.height / 2);
       await sleep(1300);
     }

@@ -313,6 +313,8 @@ async function main() {
   });
   if (row) { await page.mouse.move(row.x, row.y); await sleep(1200); }
   const throbSb = await mgr((m) => m.units.map((u) => u.region.classList.contains('holds-hovered')));
+  check('the split screen\'s sidebar has no close-view button (each view header has ✕)',
+    await mgr((m) => ![...m.sidebar.renderRoot.querySelectorAll('button')].some((b) => /Close this/.test(b.textContent))));
   check('hovering a sidebar row for a window another view shows throbs that view',
     !!row && throbSb.every((t, i) => t === (i === row.n)), `${JSON.stringify(row)} ${JSON.stringify(throbSb)}`);
   await page.mouse.move(400, 500);
