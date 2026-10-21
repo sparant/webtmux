@@ -131,7 +131,8 @@ func (s *supervisor) run(ctx context.Context) error {
 		// supervisor that only waits on the process waits that long too.
 		attemptCtx, endAttempt := context.WithCancel(ctx)
 		bounced := make(chan struct{}, 1)
-		go s.watch(attemptCtx, attempt > 0, func() {
+		up := new(atomic.Bool) // this attempt has answered at least once
+		go s.watch(attemptCtx, attempt > 0, up, func() {
 			bounced <- struct{}{}
 			_ = cmd.Process.Kill()
 		})
@@ -141,6 +142,15 @@ func (s *supervisor) run(ctx context.Context) error {
 		// (~15s each): after a switch the old TCP connection is usually dead,
 		// and a tunnel that still answers — a VPN coming up, a second
 		// interface — is left alone.
+		//
+		// Only once the attempt has answered, though. A Wi-Fi join reports its
+		// addresses one at a time over several seconds (IPv4, then each IPv6),
+		// and every one is a network change. A tunnel started on the first is
+		// still connecting when the next arrives: it cannot answer YET, and
+		// killing it for that restarted the tunnel once per address — the
+		// browser saw a gear flickering red and blue until the addresses
+		// stopped. A tunnel that has not come up is the readiness poll's
+		// business, as it is for watch.
 		netBounced := make(chan struct{}, 1)
 		waited := make(chan error, 1)
 		go func() { waited <- cmd.Wait() }()
@@ -151,6 +161,9 @@ func (s *supervisor) run(ctx context.Context) error {
 			case err = <-waited:
 				break attemptLoop
 			case <-s.netReady:
+				if !up.Load() {
+					continue
+				}
 				go func() {
 					if !answers(&http.Client{Timeout: 3 * time.Second}, s.url) && attemptCtx.Err() == nil {
 						netBounced <- struct{}{}
@@ -239,7 +252,7 @@ func (s *supervisor) run(ctx context.Context) error {
 // attempt, calling dead once the forward has failed healthFails checks in a
 // row. Failures before the first answer never count: a slow start is the
 // readiness timeout's business, not a reason to kill a connection mid-setup.
-func (s *supervisor) watch(ctx context.Context, reconnect bool, dead func()) {
+func (s *supervisor) watch(ctx context.Context, reconnect bool, up *atomic.Bool, dead func()) {
 	client := &http.Client{Timeout: 3 * time.Second}
 	if !s.awaitAnswer(ctx, client) {
 		if ctx.Err() == nil && !s.opened.Load() {
@@ -247,6 +260,7 @@ func (s *supervisor) watch(ctx context.Context, reconnect bool, dead func()) {
 		}
 		return
 	}
+	up.Store(true)
 	if s.opened.CompareAndSwap(false, true) {
 		fmt.Fprintf(s.out, "ready: %s\n", s.url)
 		if !s.noBrowser {

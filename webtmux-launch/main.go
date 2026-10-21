@@ -16,6 +16,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -499,7 +501,19 @@ func remoteCommand(dep *deployment, cfg *targetConfig, session string, tmuxPath 
 	for _, a := range o.tmuxArgs {
 		b.WriteString(" " + shellQuote(a))
 	}
-	return tieToConnection(b.String(), dep.logPath(cfg.RemotePort))
+	return tieToConnection(b.String(), dep.logPath(cfg.RemotePort), launchRun)
+}
+
+// launchRun names this launcher process to the webtmux instances it starts, so a
+// reconnect can tell its own leftover from anyone else's — see tieToConnection.
+var launchRun = newLaunchRun()
+
+func newLaunchRun() string {
+	var b [6]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("p%d", os.Getpid())
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // displayCommand is the webtmux invocation as the user should read it: the
@@ -557,9 +571,27 @@ func directLine(port int, onDrop string) string {
 // the console. When it exits non-zero the log's tail is replayed on stderr, so a
 // startup failure still reaches the user — and the supervisor's port-collision
 // check, which reads that stderr, still sees "address already in use".
-func tieToConnection(cmd, logPath string) string {
+//
+// The stdin watcher has a blind spot: after a network switch the old connection
+// is not closed, just unreachable, and sshd (with its default ClientAliveInterval
+// of 0) keeps that session — and so the webtmux inside it — alive indefinitely,
+// holding the port. The reconnect's webtmux then fails to bind, while the browser
+// briefly reaches the OLD one through the new tunnel: a gear flickering blue and
+// red until the collision retry moves to another port. So each start records
+// "<run> <pid>" beside the log, and a later start from the SAME launcher run
+// kills the pid it finds there first. Only the same run: that webtmux is
+// certainly an orphan, because this launcher killed the ssh that owned it before
+// reconnecting. Anyone else's webtmux — another launcher, another machine — is
+// never touched; the args check guards against a recycled pid.
+func tieToConnection(cmd, logPath, run string) string {
 	log := shellQuote(logPath)
-	return "mkdir -p " + shellQuote(path.Dir(logPath)) + "; exec 3<&0; { " + cmd + " >" + log + " 2>&1 & } ; p=$!; " +
+	pid := shellQuote(strings.TrimSuffix(logPath, ".log") + ".pid")
+	reap := "if [ -f " + pid + " ]; then read or op < " + pid + "; " +
+		"if [ \"$or\" = " + shellQuote(run) + " ] && ps -p \"$op\" -o args= 2>/dev/null | grep -q -- --url-path; then " +
+		"kill -TERM \"$op\" 2>/dev/null; i=0; while kill -0 \"$op\" 2>/dev/null && [ $i -lt 30 ]; do sleep 0.1; i=$((i+1)); done; " +
+		"kill -KILL \"$op\" 2>/dev/null; fi; fi; "
+	return "mkdir -p " + shellQuote(path.Dir(logPath)) + "; " + reap + "exec 3<&0; { " + cmd + " >" + log + " 2>&1 & } ; p=$!; " +
+		"echo " + shellQuote(run) + " $p > " + pid + "; " +
 		"{ cat <&3 >/dev/null; kill -TERM $p 2>/dev/null; } & r=$!; " +
 		"wait $p; ec=$?; kill $r 2>/dev/null; " +
 		"[ $ec -eq 0 ] || [ $ec -eq 143 ] || tail -n 20 " + log + " >&2; exit $ec"

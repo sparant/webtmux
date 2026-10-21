@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -130,5 +131,87 @@ func TestChromeCommandsPicksChromeWhenInstalled(t *testing.T) {
 	got = chromeCommands("windows", u, missing, onlyUser)
 	if len(got) != 1 || got[0][0] != `C:\LAD\Google\Chrome\Application\chrome.exe` {
 		t.Fatalf("windows = %q", got)
+	}
+}
+
+// syncBuf is an io.Writer the supervisor's goroutines can share with a test.
+type syncBuf struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (w *syncBuf) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.Write(p)
+}
+
+func (w *syncBuf) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.String()
+}
+
+// A Wi-Fi join reports its addresses one at a time, each one a network change.
+// A tunnel still coming up when the next one lands has not failed — it has not
+// answered YET — and must not be killed for it: that restarted the tunnel once
+// per address and left the browser flickering red and blue. Once the tunnel HAS
+// answered, a network change it cannot survive still bounces it at once.
+func TestNetworkChangeSparesATunnelStillComingUp(t *testing.T) {
+	var serving atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !serving.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	}))
+	defer srv.Close()
+
+	var starts atomic.Int32
+	netCh := make(chan struct{})
+	out := &syncBuf{}
+	s := &supervisor{
+		ssh:       newLocalRunner(false),
+		url:       srv.URL,
+		out:       out,
+		noBrowser: true,
+		netReady:  netCh,
+		remoteCmd: func() string { starts.Add(1); return "exec sleep 30" },
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { _ = s.run(ctx); close(done) }()
+	defer func() { cancel(); <-done }()
+
+	waitFor := func(what string, ok func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(10 * time.Second); !ok(); {
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for %s; console:\n%s", what, out.String())
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	waitFor("the first attempt", func() bool { return starts.Load() == 1 })
+
+	// Three address changes while the tunnel cannot answer yet.
+	for i := 0; i < 3; i++ {
+		netCh <- struct{}{}
+		time.Sleep(200 * time.Millisecond)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if n := starts.Load(); n != 1 {
+		t.Fatalf("network changes during setup restarted the tunnel: %d starts; console:\n%s", n, out.String())
+	}
+
+	serving.Store(true)
+	waitFor("ready", func() bool { return strings.Contains(out.String(), "ready: ") })
+
+	// Up, and then the network changes under it and it stops answering.
+	serving.Store(false)
+	netCh <- struct{}{}
+	waitFor("the bounce", func() bool { return starts.Load() == 2 })
+	if !strings.Contains(out.String(), "network changed and the tunnel stopped answering") {
+		t.Errorf("an answered tunnel that stops answering must be bounced and say so:\n%s", out.String())
 	}
 }

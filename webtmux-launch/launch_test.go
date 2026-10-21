@@ -3,9 +3,11 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRemoteCommandShape(t *testing.T) {
@@ -387,4 +389,71 @@ func TestAttachScriptSurvivesBash32EmptyArrays(t *testing.T) {
 			t.Errorf("attach script line %d expands SOCKARGS unguarded: %s", i+1, line)
 		}
 	}
+}
+
+// After a network switch the old ssh session is unreachable rather than closed,
+// so sshd keeps it — and the webtmux in it — alive, holding the port. A restart
+// from the SAME launcher run kills that leftover first; a webtmux recorded by
+// any other run is never touched.
+func TestWrapperReapsOnlyItsOwnRunsLeftover(t *testing.T) {
+	if _, err := exec.LookPath("ps"); err != nil {
+		t.Skip("needs ps")
+	}
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "logs", "webtmux-4242.log")
+	// Stands in for webtmux: long-lived, and --url-path in its args.
+	fake := "sh -c 'sleep 30' fake --url-path /x/"
+
+	pid := strings.TrimSuffix(logPath, ".log") + ".pid"
+	start := func(run string) (*exec.Cmd, *os.File) {
+		t.Helper()
+		b, _ := os.ReadFile(pid)
+		before := string(b)
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("/bin/sh", "-c", tieToConnection(fake, logPath, run))
+		cmd.Stdin = pr
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		pr.Close()
+		// Wait until this start has recorded itself over whatever was there.
+		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+			if b, _ := os.ReadFile(pid); strings.HasPrefix(string(b), run+" ") && string(b) != before {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("run %s never recorded its pid", run)
+			}
+		}
+		return cmd, pw
+	}
+	exited := func(cmd *exec.Cmd) bool {
+		ch := make(chan struct{})
+		go func() { _ = cmd.Wait(); close(ch) }()
+		select {
+		case <-ch:
+			return true
+		case <-time.After(4 * time.Second):
+			return false
+		}
+	}
+
+	first, keep1 := start("r1")
+	defer keep1.Close() // never closed earlier: the orphan's stdin stays open, as sshd's does
+	second, keep2 := start("r1")
+	defer keep2.Close()
+	if !exited(first) {
+		t.Fatal("a restart from the same run must kill the webtmux it left behind")
+	}
+
+	third, keep3 := start("r2")
+	if exited(second) {
+		t.Fatal("another run's webtmux must never be touched")
+	}
+	keep2.Close()
+	keep3.Close()
+	_ = third
 }
