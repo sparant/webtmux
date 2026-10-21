@@ -112,10 +112,10 @@ func TestPlatformMapping(t *testing.T) {
 }
 
 func TestTmuxInstallHint(t *testing.T) {
-	if got := tmuxInstallHint("fedora"); !strings.Contains(got, "dnf") {
+	if got := tmuxInstallHint("Linux", "fedora"); !strings.Contains(got, "dnf") {
 		t.Errorf("fedora hint: %s", got)
 	}
-	if got := tmuxInstallHint("weirdos"); !strings.Contains(got, "weirdos") {
+	if got := tmuxInstallHint("Linux", "weirdos"); !strings.Contains(got, "weirdos") {
 		t.Errorf("unknown distro hint should still name it: %s", got)
 	}
 }

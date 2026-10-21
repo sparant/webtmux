@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -27,6 +28,15 @@ type sshRunner struct {
 	// local runs every command with `sh -c` on this machine instead of over
 	// ssh, and the "tunnel" is the command alone (see local.go).
 	local bool
+	// wsl (with local) runs them in a WSL distro through wsl.exe instead of
+	// this machine's sh; distro "" is WSL's default (see wsl.go).
+	wsl    bool
+	distro string
+	// noMux leaves out the ControlMaster options. Windows' OpenSSH has no
+	// connection multiplexing — it fails on the mux socket outright — so there
+	// every setup step is its own connection: no difference with a key or an
+	// agent, one prompt per step for a password.
+	noMux bool
 }
 
 // newLocalRunner is the runner for a target that is this machine: same
@@ -37,6 +47,9 @@ func newLocalRunner(verbose bool) *sshRunner {
 
 // where names the machine webtmux runs on, for the console.
 func (r *sshRunner) where() string {
+	if r.wsl {
+		return "WSL"
+	}
 	if r.local {
 		return "this machine"
 	}
@@ -47,6 +60,17 @@ func (r *sshRunner) where() string {
 // the local shell in local mode. ssh starts the command in the user's home
 // with sshd's environment; the local shell is given the same starting point.
 func (r *sshRunner) command(ctx context.Context, args []string, remote string) *exec.Cmd {
+	if r.wsl {
+		wargs := wslArgs(r.distro, remote)
+		if r.verbose {
+			fmt.Fprintf(r.stderr, "+ wsl.exe %s\n", strings.Join(wargs, " "))
+		}
+		exe, err := wslExe()
+		if err != nil {
+			exe = "wsl.exe" // let Start report it
+		}
+		return exec.CommandContext(ctx, exe, wargs...)
+	}
 	if r.local {
 		if r.verbose {
 			fmt.Fprintf(r.stderr, "+ sh -c %s\n", shellQuote(remote))
@@ -80,6 +104,7 @@ func newSSHRunner(target string, verbose bool) *sshRunner {
 		controlPath: filepath.Join(dir, "cm-webtmux-"+hex.EncodeToString(sum[:])[:12]),
 		verbose:     verbose,
 		stderr:      os.Stderr,
+		noMux:       runtime.GOOS == "windows",
 	}
 }
 
@@ -99,6 +124,9 @@ func homeDir() string {
 // whichever call runs first becomes master and carries the keepalives;
 // everything later rides it.
 func (r *sshRunner) baseArgs() []string {
+	if r.noMux {
+		return append([]string(nil), keepaliveArgs...)
+	}
 	return append([]string{
 		"-o", "ControlMaster=auto",
 		"-o", "ControlPath=" + r.controlPath,
@@ -235,7 +263,7 @@ func (r *sshRunner) TunnelCommand(ctx context.Context, localPort, remotePort int
 // next run would silently move to a new URL. main calls this when it finds its
 // stored port busy for exactly that reason.
 func (r *sshRunner) Shutdown(ctx context.Context) {
-	if r.local {
+	if r.local || r.noMux {
 		return
 	}
 	args := append(r.baseArgs(), "-O", "exit", r.target)

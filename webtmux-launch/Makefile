@@ -1,7 +1,8 @@
 # webtmux-launch — the SSH launcher. Built independently of webtmux itself.
 #
 #   make          # host-platform dev build, deploying from ../builds
-#   make release  # darwin/arm64, darwin/amd64, linux/amd64 — no baked-in source
+#   make release  # darwin/arm64, darwin/amd64, linux/amd64, windows/amd64, windows/arm64
+#                 # — no baked-in source
 #   make test     # unit tests
 #   make e2e      # the full end-to-end suite against a throwaway sshd container
 #
@@ -14,7 +15,9 @@
 # The repo root's Makefile delegates `make launcher` / `make launcher-dev` here.
 
 NAME = webtmux-launch
-PLATFORMS = darwin/arm64 darwin/amd64 linux/amd64
+# windows/* runs the launcher only: webtmux itself needs tmux, so a Windows
+# launcher targets ssh hosts or WSL (wsl.go), and deploys a linux/darwin webtmux.
+PLATFORMS = darwin/arm64 darwin/amd64 linux/amd64 windows/amd64 windows/arm64
 
 # Binaries land in the REPO ROOT's builds/, next to the webtmux binaries. That is
 # deliberate: it is where release assets are published from, and it is the
@@ -89,9 +92,10 @@ release: check-toolchain
 	@for platform in $(PLATFORMS); do \
 		os=$$(echo $$platform | cut -d/ -f1); \
 		arch=$$(echo $$platform | cut -d/ -f2); \
+		ext=; if [ "$$os" = "windows" ]; then ext=.exe; fi; \
 		echo "  Building $$os/$$arch..."; \
 		GOOS=$$os GOARCH=$$arch go build $(BUILD_FLAGS) -ldflags "$(LDFLAGS)" \
-			-o $(OUTPUT_DIR)/$(NAME)-$$os-$$arch . || exit 1; \
+			-o $(OUTPUT_DIR)/$(NAME)-$$os-$$arch$$ext . || exit 1; \
 	done
 	@ls -lh $(OUTPUT_DIR)/$(NAME)-*
 
@@ -122,7 +126,7 @@ help:
 	@echo "webtmux-launch"
 	@echo ""
 	@echo "  make dev      Build for this machine, deploying webtmux from ../builds"
-	@echo "  make release  Cross-compile for darwin/arm64, darwin/amd64, linux/amd64"
+	@echo "  make release  Cross-compile for darwin/arm64, darwin/amd64, linux/amd64, windows/amd64, windows/arm64"
 	@echo "  make test     Unit tests + go vet"
 	@echo "  make e2e      End-to-end suite against a throwaway sshd container"
 	@echo "  make clean    Remove built launcher binaries"
