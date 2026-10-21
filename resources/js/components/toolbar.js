@@ -111,6 +111,8 @@ const mouseCaptureTooltip = (mouseCur, scrollCur) => {
 const SPLIT_TIP = [
   'Split view — split the focused view in two, left | right or top / bottom.',
   '',
+  'Unlike tmux panes, which subdivide one window and travel with it, each view is independent: it shows any window from any session.',
+  '',
   'Once split, the menu also adds a view across the whole screen: full height on the right, or full width along the bottom.',
   '',
   'The focused view has the bright frame; every switcher (recents, sidebar, Exposé) changes the window in it.',

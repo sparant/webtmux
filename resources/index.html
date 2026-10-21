@@ -120,6 +120,27 @@
       box-shadow: 0 0 0 3px rgba(79, 214, 255, 0.22), inset 0 0 14px rgba(79, 214, 255, 0.16);
       pointer-events: none;
     }
+    /* The view that already shows the window being hovered on the recents strip or the
+       preview bar: the focus frame again, throbbing, so the offer to bring the window
+       into the focused view comes with "it's already over here". */
+    #app.split-active .region.holds-hovered::before {
+      content: '';
+      position: absolute;
+      inset: 1px;
+      z-index: 15;
+      border: 2px solid #4fd6ff;
+      border-radius: 6px;
+      box-shadow: 0 0 0 3px rgba(79, 214, 255, 0.22), inset 0 0 14px rgba(79, 214, 255, 0.16);
+      pointer-events: none;
+      animation: holds-hovered-throb 0.9s ease-in-out infinite alternate;
+    }
+    @keyframes holds-hovered-throb {
+      from { opacity: 1; }
+      to { opacity: 0.15; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #app.split-active .region.holds-hovered::before { animation: none; opacity: 0.6; border-style: dashed; }
+    }
     /* A region on loan to a hover preview: it is showing some OTHER window's last
        captured screen, and its own window comes back the moment you move away. The
        dashed green frame says "this is a look, not a switch" — without it a preview

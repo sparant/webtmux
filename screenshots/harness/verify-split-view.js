@@ -71,6 +71,16 @@ const head = (i) => mgr((m, n) => {
     opacity: btns[0] ? getComputedStyle(btns[0]).opacity : null,
     buttons: btns.map((b) => b.className.replace('tbtn', '').trim()),
     label: h.shadowRoot.querySelector('.label')?.textContent || '',
+    // The stoplight sits left of the label, and wears the same class as the window's dot
+    // in the server-wide working map the recents tabs read.
+    light: (() => {
+      const d = h.shadowRoot.querySelector('.stoplight');
+      const l = h.shadowRoot.querySelector('.label');
+      if (!d || !l) return null;
+      const id = u.layout?.activeWindowId;
+      const want = m._work?.workingById?.get(id) ?? '';
+      return { left: d.getBoundingClientRect().right <= l.getBoundingClientRect().left, cls: d.className, want };
+    })(),
   };
 }, i);
 const headBtn = (i, cls) => mgr((m, [n, c]) => {
@@ -246,6 +256,7 @@ async function main() {
   check('bottom-right view offers ↑, ← and ✕ only',
     JSON.stringify([...near.buttons].sort()) === JSON.stringify(['close', 'move left', 'move up']), JSON.stringify(near.buttons));
   check('…and names its window', near.label.includes('window'), JSON.stringify(near.label));
+  check('…with its stoplight to the left of the name', !!near.light?.left, JSON.stringify(near.light));
   const hA = await head(0);
   check('the left view offers → and ✕ only', JSON.stringify([...hA.buttons].sort()) === JSON.stringify(['close', 'move right']), JSON.stringify(hA.buttons));
 
@@ -271,6 +282,11 @@ async function main() {
   await sleep(900);
   check('no pane picker grows off a hovered tab', await toolbar((el, rr) => !rr.querySelector('.rpick')));
   check('hovering a window another view shows previews it in the focused view', (await previewing()) === 0, `previewing ${await previewing()}`);
+  const throb = await mgr((m) => m.units.map((u) => u.region.classList.contains('holds-hovered')
+    && getComputedStyle(u.region, '::before').animationName));
+  if (process.env.SHOT) await page.screenshot({ path: `/src/screenshots/harness/${process.env.SHOT}` });
+  check('…and the view that already shows it throbs the focus frame',
+    throb[1] === 'holds-hovered-throb' && !throb[0] && !throb[2], JSON.stringify(throb));
   await page.mouse.click(box.x, box.y);
   await sleep(2800);
   const p5b = await panes();
@@ -278,6 +294,32 @@ async function main() {
   check('…the other view takes the focused view\'s old window (a trade)', p5b[1] === p5[0], `${p5.join(' ')} -> ${p5b.join(' ')}`);
   check('…and no other view changed', p5b[2] === p5[2], await mgr((m) => JSON.stringify(m.units.map((u) => [u.layout?.sessionName, m.logicalSession(u), u.layout?.activeWindowId, u._targetWindowId]))));
   check('…and the focus did not jump', (await focusedIdx()) === 0);
+  check('…and nothing throbs once it is picked', await mgr((m) => !document.querySelector('#app .region.holds-hovered')));
+  // The windows sidebar previews through the same hover, so it throbs the holder too.
+  await mgr((m) => { m.sidebar.collapsed = false; });
+  await sleep(800);
+  // The default sidebar lists the focused view's session, so aim at whichever other
+  // view's window has a row there.
+  const row = await mgr((m) => {
+    for (const [n, u] of m.units.entries()) {
+      if (u === m.focusedUnit) continue;
+      const el = m.sidebar.renderRoot.querySelector(`.window-tab[data-win="${u.layout?.activeWindowId}"]`);
+      if (!el) continue;
+      el.scrollIntoView({ block: 'nearest' });
+      const r = el.getBoundingClientRect();
+      return { n, x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    }
+    return null;
+  });
+  if (row) { await page.mouse.move(row.x, row.y); await sleep(1200); }
+  const throbSb = await mgr((m) => m.units.map((u) => u.region.classList.contains('holds-hovered')));
+  check('hovering a sidebar row for a window another view shows throbs that view',
+    !!row && throbSb.every((t, i) => t === (i === row.n)), `${JSON.stringify(row)} ${JSON.stringify(throbSb)}`);
+  await page.mouse.move(400, 500);
+  await sleep(1200);
+  check('…and stops when the pointer leaves the row', await mgr((m) => !document.querySelector('#app .region.holds-hovered')));
+  await mgr((m) => { m.hover.cancel(); m.sidebar.collapsed = true; });
+  await sleep(800);
   // A window that USED to be in view C, picked from A, lands in A — no stickiness.
   const wasInC = p5b[2];
   await clickView(2);
