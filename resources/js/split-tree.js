@@ -233,48 +233,49 @@ export function setSizesAt(node, path, sizes) {
   return { ...node, kids: node.kids.map((k, j) => (j === head ? setSizesAt(k, rest, sizes) : k)) };
 }
 
-// Exchange two regions' places — the views move, the slots (and their sizes) stay.
-export function swapKeys(node, a, b) {
-  if (!node || a === b) return node;
-  if (!isSplit(node)) {
-    if (node.key === a) return leaf(b);
-    if (node.key === b) return leaf(a);
-    return node;
-  }
-  return { ...node, kids: node.kids.map((k) => swapKeys(k, a, b)) };
-}
+// Move the view `key` one step in direction `dir` ('left' | 'right' | 'up' | 'down')
+// WITHOUT resizing anything. Walk up from the view to the first split that runs along
+// that axis (a left | right split for ← →, a top / bottom one for ↑ ↓) in which the
+// branch we came up through is not already at that edge, and swap that branch with
+// its neighbour there. Each branch keeps its own size — sizes travel with the nodes,
+// not with the slots — so the views come out exactly the dimensions they went in.
+//
+// When the view's own split runs the other way, the branch that moves is the whole
+// group the view sits in: in col[ row[A, B], C ], ↓ on A moves A and B down together
+// (giving col[ C, row[A, B] ]). Moving A alone would need room made for it, which is
+// exactly the resizing this exists to avoid. Every move is undone by the opposite one.
+//
+// Returns the new tree, or null when the view is already against that edge (or is
+// not in the tree) — which is also how a header knows not to offer the arrow.
+const AXIS = { left: ROW, right: ROW, up: COL, down: COL };
+const BACKWARD = { left: true, up: true, right: false, down: false };
 
-// The region next to `from` in direction `dir` ('left' | 'right' | 'up' | 'down'), by
-// what is on screen: `rects` maps each key to its box ({left, top, right, bottom}). A
-// candidate must lie wholly on that side and overlap `from` across the other axis; the
-// nearest wins, and among equally near ones the one sharing the most edge. Null when
-// `from` is already against that edge of the split. Geometry rather than tree walking
-// because "the one to my left" is a question about what you see — in a stacked split
-// the tree neighbour and the screen neighbour are often different regions.
-export function neighborToward(rects, from, dir) {
-  const r = rects.get(from);
-  if (!r) return null;
-  const SLOP = 3;   // a divider's width, plus rounding
-  let best = null;
-  for (const [key, c] of rects) {
-    if (key === from) continue;
-    let gap;
-    let overlap;
-    if (dir === 'left' || dir === 'right') {
-      gap = dir === 'left' ? r.left - c.right : c.left - r.right;
-      overlap = Math.min(r.bottom, c.bottom) - Math.max(r.top, c.top);
-    } else if (dir === 'up' || dir === 'down') {
-      gap = dir === 'up' ? r.top - c.bottom : c.top - r.bottom;
-      overlap = Math.min(r.right, c.right) - Math.max(r.left, c.left);
-    } else {
-      return null;
+export function moveBranch(node, key, dir) {
+  const axis = AXIS[dir];
+  if (!axis || !node) return null;
+  const step = BACKWARD[dir] ? -1 : 1;
+  // { found, moved }: whether `key` is below n, and n rebuilt with the move done.
+  const walk = (n) => {
+    if (!isSplit(n)) return { found: n.key === key, moved: null };
+    for (let i = 0; i < n.kids.length; i++) {
+      const r = walk(n.kids[i]);
+      if (!r.found) continue;
+      if (r.moved) {
+        const kids = [...n.kids];
+        kids[i] = r.moved;
+        return { found: true, moved: { ...n, kids } };
+      }
+      const j = i + step;
+      if (n.dir !== axis || j < 0 || j >= n.kids.length) return { found: true, moved: null };
+      const kids = [...n.kids];
+      const sizes = [...n.sizes];
+      [kids[i], kids[j]] = [kids[j], kids[i]];
+      [sizes[i], sizes[j]] = [sizes[j], sizes[i]];
+      return { found: true, moved: { ...n, kids, sizes } };
     }
-    if (gap < -SLOP || overlap <= 0) continue;
-    if (!best || gap < best.gap - SLOP || (Math.abs(gap - best.gap) <= SLOP && overlap > best.overlap)) {
-      best = { key, gap, overlap };
-    }
-  }
-  return best ? best.key : null;
+    return { found: false, moved: null };
+  };
+  return walk(node).moved;
 }
 
 // The same tree with every leaf key passed through `fn` — saved shapes name regions by

@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ROW, COL, leaf, leaves, rowOf, splitLeaf, removeLeaf, replaceKey, focusAfterClose,
-  toShape, fromShape, shapeSignature, sizesOf, withSizes, setSizesAt, swapKeys, neighborToward, mapKeys, splitAll,
+  toShape, fromShape, shapeSignature, sizesOf, withSizes, setSizesAt, moveBranch, mapKeys, splitAll,
 } from '../resources/js/split-tree.js';
 
 const id = (k) => k;
@@ -104,27 +104,46 @@ test('sizes are re-applied only to the shape they were measured on', () => {
   assert.notEqual(shapeSignature(t), shapeSignature(rowOf([0, 1, 2])));
 });
 
-test('swapping two views exchanges their places and keeps the slot sizes', () => {
-  const t = { dir: ROW, kids: [leaf('a'), { dir: COL, kids: [leaf('b'), leaf('c')], sizes: [1, 2] }], sizes: [3, 1] };
-  const s = swapKeys(t, 'a', 'c');
-  assert.deepEqual(leaves(s), ['c', 'b', 'a']);
-  assert.deepEqual(sizesOf(s), sizesOf(t));
+// col[ row[A, B], C ] — side by side on top, a full-width view along the bottom.
+const stacked = () => ({
+  dir: COL,
+  kids: [{ dir: ROW, kids: [leaf('a'), leaf('b')], sizes: [2, 1] }, leaf('c')],
+  sizes: [3, 1],
 });
 
-test('the neighbour in a direction is the one you see there', () => {
-  // a | b over c   (a is full height on the left; b top-right, c bottom-right)
-  const rects = new Map([
-    ['a', { left: 0, top: 0, right: 100, bottom: 200 }],
-    ['b', { left: 104, top: 0, right: 200, bottom: 98 }],
-    ['c', { left: 104, top: 102, right: 200, bottom: 200 }],
-  ]);
-  assert.equal(neighborToward(rects, 'b', 'down'), 'c');
-  assert.equal(neighborToward(rects, 'c', 'up'), 'b');
-  assert.equal(neighborToward(rects, 'c', 'left'), 'a');
-  assert.equal(neighborToward(rects, 'b', 'left'), 'a');
-  assert.equal(neighborToward(rects, 'a', 'right') !== null, true, 'a has something to its right');
-  assert.equal(neighborToward(rects, 'a', 'left'), null, 'against the edge');
-  assert.equal(neighborToward(rects, 'a', 'up'), null);
+test('↑ on the full-width bottom view puts it on top, the side-by-side pair beneath', () => {
+  const t = moveBranch(stacked(), 'c', 'up');
+  assert.deepEqual(t, {
+    dir: COL,
+    kids: [leaf('c'), { dir: ROW, kids: [leaf('a'), leaf('b')], sizes: [2, 1] }],
+    sizes: [1, 3],
+  }, 'every branch keeps its own size');
+});
+
+test('a move is undone by the opposite move', () => {
+  assert.deepEqual(moveBranch(moveBranch(stacked(), 'c', 'up'), 'c', 'down'), stacked());
+});
+
+test('when the view\'s own split runs the other way, its whole group moves', () => {
+  // ↓ on A: its parent is left | right, so the pair moves down under C together.
+  const t = moveBranch(stacked(), 'a', 'down');
+  assert.deepEqual(leaves(t), ['c', 'a', 'b']);
+  assert.equal(t.kids[1].dir, ROW, 'A and B are still side by side');
+});
+
+test('within a split that runs the right way only the view itself moves', () => {
+  const t = moveBranch(stacked(), 'b', 'left');
+  assert.deepEqual(t.kids[0], { dir: ROW, kids: [leaf('b'), leaf('a')], sizes: [1, 2] });
+  assert.deepEqual(t.kids[1], leaf('c'), 'the full-width view is untouched');
+});
+
+test('against an edge there is no move', () => {
+  assert.equal(moveBranch(stacked(), 'c', 'down'), null);
+  assert.equal(moveBranch(stacked(), 'a', 'left'), null);
+  assert.equal(moveBranch(stacked(), 'a', 'up'), null);
+  assert.equal(moveBranch(stacked(), 'c', 'left'), null, 'nothing beside a full-width view');
+  assert.equal(moveBranch(leaf('a'), 'a', 'up'), null);
+  assert.equal(moveBranch(stacked(), 'zz', 'up'), null);
 });
 
 test('mapKeys renames every leaf', () => {

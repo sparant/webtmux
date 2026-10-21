@@ -1,7 +1,7 @@
 // The strip above each split view: which window the view shows, and — when the
 // pointer comes near the top of the view — the controls that act on the view itself:
-// move it left / right / up / down (it trades places with the view on that side) and
-// close it.
+// move it left / right / up / down (keeping every view's size — see split-tree.js
+// moveBranch) and close it.
 //
 // The strip only exists while the screen is split, and it RESERVES its height rather
 // than floating over the terminal. Floating, it would sit on the first rows of the
@@ -103,7 +103,7 @@ class WebtmuxRegionHead extends LitElement {
           <button
             class="tbtn move ${dir}"
             aria-label="Move this view ${words}"
-            @mouseenter=${(e) => this._tip.enter(e, `Move this view ${words}.\n\nIt trades places with the view on that side; both keep their windows.`)}
+            @mouseenter=${(e) => this._tip.enter(e, `Move this view ${words}.\n\nEvery view keeps its size and its window. If this view sits in a group running the other way, the whole group moves with it.`)}
             @mouseleave=${() => this._tip.leave()}
             @click=${() => this._act(() => this.manager?.moveRegion(this.unit, dir))}
           >${glyph}</button>
