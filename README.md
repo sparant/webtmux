@@ -890,14 +890,14 @@ reconnects by itself.
 would have installed, the launcher still connects and prints a note naming both:
 
 ```text
-note: this launcher wanted webtmux v0.3.0, but build c4a9ae0, built 2026-10-21 is running on linuxbox
+note: this launcher wanted webtmux v0.4.0, but build c4a9ae0, built 2026-10-21 is running on linuxbox
       connecting to it as is — it is its container's own build; rebuilding the container updates it
 ```
 
 A build is named by its release tag where it has one, and otherwise by its
 commit, which is also what the UI's build chip shows. The running build always
 gets a date. That is its build date if it has one (`webtmux --version` prints it
-from v0.3.1 on). An older binary falls back to its release date, or failing that
+from v0.4.0 on). An older binary falls back to its release date, or failing that
 the date on its file. When the running build matches, the launcher prints no note.
 
 **Updates.** A launcher downloaded from a release checks GitHub for a newer
@@ -906,7 +906,7 @@ than 3 seconds. If there is a newer release, it says so and recommends
 downloading it:
 
 ```text
-update available: webtmux v0.4.0 (released 2026-11-02) — this launcher is v0.3.0
+update available: webtmux v0.5.0 (released 2026-12-02) — this launcher is v0.4.0
   recommended: download webtmux-launch-darwin-arm64 from https://github.com/sparant/webtmux/releases/latest
 ```
 
@@ -937,7 +937,7 @@ webtmux fix reaches existing launchers without updating them. It looks, in order
    connection, so **a target never strictly needs internet.**
 
 The version is **pinned** at build time — each launcher installs the release it
-shipped in (`v0.3.0` for this one; `webtmux-launch --version` says) — so a launcher never
+shipped in (`v0.4.0` for this one; `webtmux-launch --version` says) — so a launcher never
 upgrades your remote mid-session; `--webtmux-version` overrides. Binaries are
 cached by hash under `~/.cache/webtmux/webtmux-<sha>`, so repeat launches transfer
 nothing and versions coexist.

@@ -129,7 +129,7 @@ for pid in $pids; do
   p CGROUP "$pid $(head -1 /proc/$pid/cgroup 2>/dev/null)"
   # Which build is running, asked of the running file itself: /proc/<pid>/exe
   # is the binary that process was started from, even one since replaced on
-  # disk or living inside a container. Since v0.3.1 --version also prints the
+  # disk or living inside a container. Since v0.4.0 --version also prints the
   # commit and build time; the file's mtime is the fallback date for older ones.
   p EXEVER "$pid $($wtl_to /proc/$pid/exe --version 2>/dev/null | head -3 | tr '\n' ' ')"
   p EXEMTIME "$pid $(stat -L -c %Y /proc/$pid/exe 2>/dev/null)"

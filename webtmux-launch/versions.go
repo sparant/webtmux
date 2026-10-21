@@ -45,9 +45,9 @@ func isTag(v string) bool { return tagPattern.MatchString(v) }
 // parseBuildID reads `webtmux --version` output, with its lines joined by
 // spaces:
 //
-//	webtmux version v0.3.1 commit 1a2b3c4 built 2026-10-21_08:44:00
+//	webtmux version v0.4.0 commit 1a2b3c4 built 2026-10-21_08:44:00
 //
-// Builds before v0.3.1 print only the first line.
+// Builds before v0.4.0 print only the first line.
 func parseBuildID(s string) buildID {
 	var b buildID
 	f := strings.Fields(s)

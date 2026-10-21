@@ -17,13 +17,13 @@ func TestParseBuildID(t *testing.T) {
 		in   string
 		want buildID
 	}{
-		// v0.3.1 on: three lines, joined by the probe.
-		{"webtmux version v0.3.1 commit 1a2b3c4 built 2026-10-21_08:44:00 ",
-			buildID{"v0.3.1", "1a2b3c4", time.Date(2026, 10, 21, 8, 44, 0, 0, time.UTC)}},
+		// v0.4.0 on: three lines, joined by the probe.
+		{"webtmux version v0.4.0 commit 1a2b3c4 built 2026-10-21_08:44:00 ",
+			buildID{"v0.4.0", "1a2b3c4", time.Date(2026, 10, 21, 8, 44, 0, 0, time.UTC)}},
 		// A container's build: no tag, but the commit the build chip shows.
 		{"webtmux version local commit c4a9ae0 built 2026-10-21_07:00:00",
 			buildID{"local", "c4a9ae0", time.Date(2026, 10, 21, 7, 0, 0, 0, time.UTC)}},
-		// Before v0.3.1: the version line only.
+		// Before v0.4.0: the version line only.
 		{"webtmux version v0.2.0", buildID{Version: "v0.2.0"}},
 		// git describe past a tag carries its commit.
 		{"webtmux version v0.3.0-16-gc4a9ae0", buildID{Version: "v0.3.0-16-gc4a9ae0", Commit: "c4a9ae0"}},
@@ -100,7 +100,7 @@ func TestNewerTag(t *testing.T) {
 		newer bool
 	}{
 		{"v0.4.0", "v0.3.0", true},
-		{"v0.3.1", "v0.3.0", true},
+		{"v0.4.0", "v0.3.0", true},
 		{"v0.10.0", "v0.9.0", true}, // numeric, not string, order
 		{"v1.0.0", "v0.99.99", true},
 		{"v0.3.0", "v0.3.0", false},

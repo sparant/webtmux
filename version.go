@@ -13,7 +13,7 @@ import (
 var Version = "unknown_version"
 
 // printVersion is `webtmux --version`. The first line is the long-standing
-// "webtmux version <version>", unchanged: launchers before v0.3.1 read only
+// "webtmux version <version>", unchanged: launchers before v0.4.0 read only
 // that line, and the release script checks it against the tag. The commit and
 // build-time lines after it
 // let webtmux-launch name a running build that is not a tag — a container's
