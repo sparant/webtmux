@@ -107,3 +107,25 @@ func TestDefaultsAndBackendFlags(t *testing.T) {
 		t.Errorf("CloseTimeout = %d, want the default -1", backendOptions.CloseTimeout)
 	}
 }
+
+// --version keeps "webtmux version <v>" as its first line — older launchers and
+// the release script read only that — and adds the build chip's two stamps.
+func TestVersionPrintsCommitAndBuildTime(t *testing.T) {
+	savedCommit, savedTime, savedVersion := server.BuildCommit, server.BuildTime, Version
+	t.Cleanup(func() { server.BuildCommit, server.BuildTime, Version = savedCommit, savedTime, savedVersion })
+	server.BuildCommit, server.BuildTime, Version = "c4a9ae0", "2026-10-21_07:00:00", "local"
+
+	cmd, _, err := newRootCommand(&server.Options{}, &localcommand.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	cmd.Writer = &out
+	if err := cmd.Run(context.Background(), []string{"webtmux", "--version"}); err != nil {
+		t.Fatal(err)
+	}
+	want := "webtmux version local\ncommit c4a9ae0\nbuilt 2026-10-21_07:00:00\n"
+	if out.String() != want {
+		t.Errorf("--version printed %q, want %q", out.String(), want)
+	}
+}

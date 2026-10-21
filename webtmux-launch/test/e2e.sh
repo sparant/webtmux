@@ -318,7 +318,9 @@ pid=$(launch_bg /tmp/adopt1.log)
 if wait_for /tmp/adopt1.log 'ready: http' 45; then
   grep -q 'adopting webtmux pid' /tmp/adopt1.log && ok "adopts rather than starting a second instance" || no "did not adopt"
   grep -q 'port 8123' /tmp/adopt1.log && ok "reports the adopted port" || no "port not reported"
-  grep -q 'build: matches' /tmp/adopt1.log && ok "reports a matching build" || skip "build match line: $(grep '  build:' /tmp/adopt1.log)"
+  # The hand-started binary IS the one the launcher deployed: nothing to say.
+  grep -q 'this launcher wanted' /tmp/adopt1.log && no "flagged its own build as different: $(grep -A1 'this launcher wanted' /tmp/adopt1.log)" \
+                                                 || ok "says nothing about a running build that matches"
   grep -q '^deployed:' /tmp/adopt1.log && no "adopt mode deployed a binary" || ok "adopt mode deployed nothing"
   grep -qE 'creating session|attaching to existing' /tmp/adopt1.log && no "adopt mode touched sessions" || ok "adopt mode created no session"
   # The adopted instance's port is used for the run, never saved as the
@@ -340,6 +342,18 @@ wt_running && ok "adopted webtmux survived launcher SIGINT" || no "SIGINT killed
 pid=$(launch_bg /tmp/adopt2.log); wait_for /tmp/adopt2.log 'ready: http' 45
 kill -KILL "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; sleep 1
 wt_running && ok "adopted webtmux survived launcher SIGKILL" || no "SIGKILL killed the adopted process"
+# A launcher that wanted some other build still connects, and names both — the
+# running one with a date the probe read from the running file itself.
+pid=$(launch_bg /tmp/adopt3.log --adopt-only --webtmux-binary /bin/sh)
+if wait_for /tmp/adopt3.log 'ready: http' 45; then
+  line=$(grep 'this launcher wanted the webtmux at /bin/sh' /tmp/adopt3.log)
+  echo "$line" | grep -qE 'but .*, (built|file dated) [0-9]{4}-[0-9]{2}-[0-9]{2} is running on' \
+    && ok "a different running build is named, with its date, and connected to anyway" \
+    || no "mismatch note missing or undated: ${line:-$(grep -A1 'adopting' /tmp/adopt3.log)}"
+else
+  no "adopting a different build never became ready"; cat /tmp/adopt3.log
+fi
+kill_launcher "$pid"
 
 # 3.14c edge cases
 out=$(timeout 25 "$LAUNCH" --no-browser --fresh --adopt-only "$TARGET" 2>&1); echo "$out" | grep -q contradict \

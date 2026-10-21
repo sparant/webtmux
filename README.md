@@ -886,6 +886,7 @@ nothing for this machine; see
 | `--webtmux-version vX.Y.Z\|latest` | which release to install                                                    |
 | `--verbose`                        | echo the ssh command lines and say which binary source won                  |
 | `--ssh`                            | go over SSH even when the target is this machine                            |
+| `--no-update-check`                | do not ask GitHub whether a newer release exists                            |
 
 ## How webtmux-launch works
 
@@ -902,6 +903,33 @@ nothing for this machine; see
 
 The URL is generated once per target and reused, so an open browser tab
 reconnects by itself.
+
+**Which build is running.** When it adopts a webtmux that is not the build it
+would have installed, the launcher still connects and prints a note naming both:
+
+```text
+note: this launcher wanted webtmux v0.3.0, but build c4a9ae0, built 2026-10-21 is running on linuxbox
+      connecting to it as is — it is its container's own build; rebuilding the container updates it
+```
+
+A build is named by its release tag where it has one, and otherwise by its
+commit, which is also what the UI's build chip shows. The running build always
+gets a date. That is its build date if it has one (`webtmux --version` prints it
+from v0.3.1 on). An older binary falls back to its release date, or failing that
+the date on its file. When the running build matches, the launcher prints no note.
+
+**Updates.** A launcher downloaded from a release checks GitHub for a newer
+release. It asks at most every 12 hours, caches the answer, and waits no more
+than 3 seconds. If there is a newer release, it says so and recommends
+downloading it:
+
+```text
+update available: webtmux v0.4.0 (released 2026-11-02) — this launcher is v0.3.0
+  recommended: download webtmux-launch-darwin-arm64 from https://github.com/sparant/webtmux/releases/latest
+```
+
+`--no-update-check` or `WEBTMUX_LAUNCH_NO_UPDATE_CHECK=1` turns it off. Dev builds
+of the launcher never check.
 
 **Changing networks.** A dropped link is retried with backoff (1s doubling to
 30s). The launcher also listens for the OS's network-change notifications. When

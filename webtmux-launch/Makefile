@@ -38,12 +38,18 @@ VERSION ?= $(shell git describe --tags --dirty 2>/dev/null || echo "dev")
 REPO_OWNER ?= sparant
 REPO_NAME ?= webtmux
 WEBTMUX_VERSION ?= v0.1.0
+# That tag's commit, so the launcher can recognise a running build of it that
+# reports no tag (a container's "local" build). Empty outside a checkout that
+# has the tag — the release build passes it explicitly — and empty only means
+# such a build is reported as different.
+WEBTMUX_COMMIT ?= $(shell git rev-parse --short '$(WEBTMUX_VERSION)^{commit}' 2>/dev/null)
 
 LDFLAGS = -s -w \
   -X main.Version=$(VERSION) \
   -X main.RepoOwner=$(REPO_OWNER) \
   -X main.RepoName=$(REPO_NAME) \
-  -X main.DefaultWebtmuxVersion=$(WEBTMUX_VERSION)
+  -X main.DefaultWebtmuxVersion=$(WEBTMUX_VERSION) \
+  -X main.DefaultWebtmuxCommit=$(WEBTMUX_COMMIT)
 
 # reproducibility, for the same reasons as the root Makefile — see its header.
 # -trimpath: without it the binary embeds the build directory, so the same

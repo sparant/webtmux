@@ -57,6 +57,26 @@ func TestParseProbe(t *testing.T) {
 	}
 }
 
+// The probe asks each running webtmux's own file which build it is.
+func TestParseProbeReadsTheRunningBuild(t *testing.T) {
+	out := sampleProbe +
+		"WTL_EXEVER=4242 webtmux version local commit c4a9ae0 built 2026-10-21_07:00:00 \n" +
+		"WTL_EXEMTIME=4242 1790000000\n"
+	i := parseProbe(out).Instances[0]
+	if i.Build.Version != "local" || i.Build.Commit != "c4a9ae0" || day(i.Build.Built) != "2026-10-21" {
+		t.Errorf("build: %+v", i.Build)
+	}
+	if i.ExeMTime.Unix() != 1790000000 {
+		t.Errorf("mtime: %v", i.ExeMTime)
+	}
+	// An exe that would not run (or a probe from an older launcher) leaves
+	// both empty rather than inventing anything.
+	i = parseProbe(sampleProbe + "WTL_EXEVER=4242 \nWTL_EXEMTIME=4242 \n").Instances[0]
+	if i.Build.known() || !i.ExeMTime.IsZero() {
+		t.Errorf("empty answers should stay empty: %+v %v", i.Build, i.ExeMTime)
+	}
+}
+
 func TestProbeDurabilityWarningIsAdvisory(t *testing.T) {
 	p := parseProbe(sampleProbe)
 	w := p.durabilityWarning()
@@ -132,7 +152,7 @@ func TestContainerizedInstanceSoftensReporting(t *testing.T) {
 	if i.Container != "9f8e7d6c5b4a" {
 		t.Errorf("container id = %q", i.Container)
 	}
-	report := strings.Join(i.report("differs", false), "\n")
+	report := strings.Join(i.report(false), "\n")
 	if strings.Contains(report, "WARNING: bound to") {
 		t.Errorf("container-relative bind must not raise the exposure warning:\n%s", report)
 	}

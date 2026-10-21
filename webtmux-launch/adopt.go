@@ -22,6 +22,10 @@ type instance struct {
 	PIDNS     string
 	Cgroup    string
 	UptimeSec int
+	// Build is what the running file's own --version says; ExeMTime is that
+	// file's modification time, the date to show when Build carries none.
+	Build    buildID
+	ExeMTime time.Time
 
 	// parsed out of Cmdline / Env
 	Port          int
@@ -127,7 +131,7 @@ func (i *instance) credentialRecoverable() bool {
 }
 
 // report describes what is about to be adopted, plus any warnings.
-func (i *instance) report(buildMatch string, local bool) []string {
+func (i *instance) report(local bool) []string {
 	lines := []string{}
 	desc := fmt.Sprintf("adopting webtmux pid %d on port %d", i.PID, i.Port)
 	if i.Session != "" {
@@ -144,9 +148,6 @@ func (i *instance) report(buildMatch string, local bool) []string {
 		}
 	}
 	lines = append(lines, desc)
-	if buildMatch != "" {
-		lines = append(lines, "  build: "+buildMatch)
-	}
 	// A 0.0.0.0 bind means that instance is exposed on the box's network, not
 	// just loopback — but only if the value means what it says. In a container
 	// it is the in-container bind and says nothing about host exposure.

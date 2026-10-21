@@ -13,9 +13,13 @@ set -euo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 HERE="$REPO/webtmux-launch/test"
-NET=wtl-net
-TARGET_C=wtl-target
-CLIENT_C=wtl-client
+# WTL_RIG prefixes the network and container names, so two checkouts can run
+# the suite at once: with the same names, each run's cleanup removes the other's
+# containers mid-run.
+RIG="${WTL_RIG:-wtl}"
+NET=$RIG-net
+TARGET_C=$RIG-target
+CLIENT_C=$RIG-client
 KEEP=0
 MODE=run
 
