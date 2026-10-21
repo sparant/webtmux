@@ -163,6 +163,7 @@ A tab flashes amber when its window has stopped working, and an arrow flashes wh
 
 - Up to 5 (configurable) most-recently-used window tabs.
   - `Ctrl+Option+N`/`P` step through them; `Ctrl+Option+L` cycles every window, including previewed ones.
+  - In split view, `Ctrl+Option+L` counts focusing a view as a visit. A window another view already shows is reached by moving the focus to that view, so the chord flips between two views just as it flips between two windows.
   - Windows beyond the tab count, or that don't fit a narrow browser, wait in line. The strip never scrolls sideways, and the next window slides in when a slot frees up.
   - Only the hover-revealed × removes a window for good. To clear the whole strip and its queue, hover **Recent ▾** for a ✕ or use its menu. It asks first and only clears the list; windows keep running and split regions keep their views.
   - From the **Recent ▾** menu you can show the session before the name, or trim a name to what follows its first space ("ssh web-01" → "web-01"). Preview tiles use the same labels.

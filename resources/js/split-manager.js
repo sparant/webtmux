@@ -727,7 +727,9 @@ export class SplitManager {
     return out;
   }
 
-  focus(unit) {
+  // quiet: move the focus without recording an access — the MRU walk's mid-walk
+  // hops, whose landing is committed once on release (_endMruCycle).
+  focus(unit, { quiet = false } = {}) {
     if (!unit) return;
     // Focusing a region is a deliberate act, so it settles any transient preview:
     // clicking INTO the region that is showing one is "yes, this window" (commit);
@@ -753,7 +755,7 @@ export class SplitManager {
     // preview-suppression so it can't swallow this or a later real access.
     unit._suppressAccessNext = false;
     const win = unit.layout?.activeWindowId;
-    if (win) { unit._accessSeenId = win; this.noteAccess(win, this._metaFor(unit, win)); }
+    if (win && !quiet) { unit._accessSeenId = win; this.noteAccess(win, this._metaFor(unit, win)); }
     else this._refreshToolbar();
     unit.terminal?.focus();
     // Which region is focused is per-client viewport state → ClientStore (a reload
@@ -2307,6 +2309,12 @@ export class SplitManager {
   // reloads fine — it rides @wt_state). The candidate set is now the server-wide
   // window directory, which arrives with every layout push whether or not anything is
   // capturing. See mru-order.js.
+  //
+  // Windows other views show are stops on the walk too, and landing on one moves the
+  // FOCUS to that view rather than pulling the window into this one: focusing a view
+  // is an access (focus() notes it), so "last" after switching views is the view you
+  // came from, and the chord flips between them like tmux's last-pane. Anything not on
+  // screen loads into the view the walk started in (c.unit), which takes the focus back.
   navigateMru(dir) {
     const focused = this.focusedUnit;
     if (!focused) return;
@@ -2318,7 +2326,6 @@ export class SplitManager {
         accessed: this.captureCache.accessed,
         currentId: focused.layout?.activeWindowId,
         currentSession: this.logicalSession(focused),
-        occupied: this.occupiedWindowIds(focused),
       });
       // Fewer than two stops means there is nowhere to go — no layout has landed yet,
       // or this really is the only window. Either way, do nothing rather than
@@ -2333,10 +2340,21 @@ export class SplitManager {
       c.last = t;
       // DEFER the recency commit until the chord is released: each hop only PREVIEWS
       // the window (like arrow-browsing the sidebar), so mid-walk hops don't re-rank
-      // recency and make the order squirm under you. Suppress this hop's access-note;
-      // the window we finally land on is committed once in _endMruCycle.
-      focused._suppressAccessIds.add(t.id);
-      this.goToWindow(t.id, t.session);
+      // recency and make the order squirm under you. Suppress this hop's access-note
+      // (and focus quietly); the window we finally land on is committed once in
+      // _endMruCycle.
+      const holder = this.units.includes(c.unit) ? this._unitShowing(t.id, c.unit) : null;
+      if (holder) {
+        c.landed = holder;
+        this.hover.cancel();
+        this.focus(holder, { quiet: true });
+        return;
+      }
+      if (!this.units.includes(c.unit)) c.unit = this.focusedUnit;
+      c.landed = c.unit;
+      if (c.unit !== this.focusedUnit) this.focus(c.unit, { quiet: true });
+      c.unit._suppressAccessIds.add(t.id);
+      this.goToWindowIn(c.unit, t.id, t.session);
     }
   }
 
@@ -2349,7 +2367,8 @@ export class SplitManager {
     const c = this._mruCycle;
     this._mruCycle = null;
     if (!c || !c.last) return;
-    const unit = c.unit || this.focusedUnit;
+    // The view the walk ended in: the start view, or the one whose window it landed on.
+    const unit = [c.landed, c.unit, this.focusedUnit].find((u) => u && this.units.includes(u));
     if (!unit) return;
     const t = c.last;
     // Drop the walk's per-hop suppressions: rapid taps are coalesced by the 500ms
@@ -2357,7 +2376,7 @@ export class SplitManager {
     // otherwise sit in the set forever — silently swallowing the access note the
     // next time one of those windows is genuinely visited. The landed window is
     // covered by _accessSeenId below, not by its (now removed) suppress entry.
-    for (const e of c.order) unit._suppressAccessIds.delete(e.id);
+    if (c.unit?._suppressAccessIds) for (const e of c.order) c.unit._suppressAccessIds.delete(e.id);
     unit._accessSeenId = t.id;   // it's the shown window now; keep the layout path from re-noting
     const cap = this.captureCache.get(t.id);
     // Label the new strip entry from the pane's live window list, then the capture,
