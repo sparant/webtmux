@@ -16,126 +16,46 @@ A web-based terminal with tmux-specific features. Access your tmux sessions from
 ## Quick Start
 
 Two ways in: reach tmux on another machine from your laptop with `webtmux-launch`,
-or run webtmux directly on the machine whose tmux you want.
+or run webtmux on the machine whose tmux you want.
 
 ### tmux on another machine — `webtmux-launch`
 
-The easiest way to control tmux running on another machine, such as a server you
-reach from your laptop. Download the launcher for your laptop from the
-[latest GitHub release](https://github.com/sparant/webtmux/releases/latest):
+Download the launcher for your laptop from the
+[latest release](https://github.com/sparant/webtmux/releases/latest)
+([Apple Silicon](https://github.com/sparant/webtmux/releases/latest/download/webtmux-launch-darwin-arm64),
+[Intel Mac](https://github.com/sparant/webtmux/releases/latest/download/webtmux-launch-darwin-amd64),
+[Linux x64](https://github.com/sparant/webtmux/releases/latest/download/webtmux-launch-linux-amd64),
+[Windows x64](https://github.com/sparant/webtmux/releases/latest/download/webtmux-launch-windows-amd64.exe),
+[Windows on Arm](https://github.com/sparant/webtmux/releases/latest/download/webtmux-launch-windows-arm64.exe)),
+then point it at any box you can already SSH to:
 
 ```bash
 curl -fsSL -o webtmux-launch \
   https://github.com/sparant/webtmux/releases/latest/download/webtmux-launch-darwin-arm64
 chmod +x webtmux-launch
+./webtmux-launch linuxbox        # or you@203.0.113.10, ssh://you@host:38242, an ~/.ssh/config alias
 ```
 
-Assets: [`webtmux-launch-darwin-arm64`](https://github.com/sparant/webtmux/releases/latest/download/webtmux-launch-darwin-arm64) (Apple Silicon),
-[`webtmux-launch-darwin-amd64`](https://github.com/sparant/webtmux/releases/latest/download/webtmux-launch-darwin-amd64) (Intel Mac),
-[`webtmux-launch-linux-amd64`](https://github.com/sparant/webtmux/releases/latest/download/webtmux-launch-linux-amd64) (Linux x64),
-[`webtmux-launch-windows-amd64.exe`](https://github.com/sparant/webtmux/releases/latest/download/webtmux-launch-windows-amd64.exe) (Windows x64),
-[`webtmux-launch-windows-arm64.exe`](https://github.com/sparant/webtmux/releases/latest/download/webtmux-launch-windows-arm64.exe) (Windows on Arm) — or browse the
-[latest release](https://github.com/sparant/webtmux/releases/latest) page. To build it yourself instead, run
-`make launcher` in a checkout (binaries land in `builds/`).
+It installs webtmux on the target if needed, starts it, tunnels it back to your
+laptop, opens your browser, and reconnects when the link drops. **The target
+needs nothing but `ssh` and `tmux`** — if `ssh <target>` works,
+`webtmux-launch <target>` works. Missing one? See
+[Installing ssh and tmux](#installing-ssh-and-tmux). More:
+[naming the target](#naming-the-target), [flags](#webtmux-launch-flags),
+[how it works](#how-webtmux-launch-works).
 
-Then point it at any box you can already SSH to:
+### tmux on this machine
 
-```bash
-./webtmux-launch linuxbox
-```
+**With the launcher.** Run it with no target (or `localhost`, or one of this
+machine's own addresses): `./webtmux-launch`. It installs and starts webtmux
+here, opens your browser, and keeps it running until you quit. On Windows,
+`webtmux-launch wsl` does the same for tmux in WSL.
 
-It installs webtmux on the target if needed, starts it, tunnels it back to
-your laptop and opens your browser. **The target needs nothing but `ssh` and
-`tmux`.** If `ssh <target>` works, `webtmux-launch <target>` works.
-
-**Naming the target.** The target is handed to `ssh` exactly as you type it, so
-anything `ssh` accepts as a destination works:
-
-| You have | Run |
-|---|---|
-| a host on port 22 | `./webtmux-launch linuxbox` or `./webtmux-launch you@203.0.113.10` |
-| SSH on another port | `./webtmux-launch ssh://you@203.0.113.10:38242` |
-| an IPv6 address | `./webtmux-launch ssh://you@[2001:db8::5]:38242` |
-| a `~/.ssh/config` entry | `./webtmux-launch mybox` |
-
-`user@host:port` does **not** work — `ssh` reads that as a host literally named
-`host:port`. A port goes either in an `ssh://` URL, as above, or in
-`~/.ssh/config`, which is also where a jump host, a key file or anything else you
-would pass to `ssh` as a flag belongs:
-
-```
-Host mybox
-    HostName 203.0.113.10
-    Port 38242
-    User you
-    # ProxyJump bastion.example.com
-```
-
-A short alias also names the launcher's saved settings for that machine
-(`~/.config/webtmux-launch/mybox.json`), so `ssh mybox` and
-`webtmux-launch mybox` stay the same thing.
-
-**This machine.** With no target — or `localhost`, `127.0.0.1`, `::1`, or one of
-this machine's own addresses — the launcher skips SSH entirely: it makes sure
-the right webtmux binary is installed here, starts it on `127.0.0.1` directly
-(no tunnel), and stops it when the launcher exits, exactly as a remote one stops
-with its connection. tmux and its sessions keep running. All those spellings
-share one saved URL. A target with another user (`other@localhost`) or another
-port (`ssh://localhost:2222`, typically a container's sshd) still goes over
-SSH, and `--ssh` forces SSH for any target.
-
-**Windows.** The launcher runs natively on Windows, but webtmux itself cannot:
-it needs tmux and a Unix terminal. So from Windows you reach tmux either on
-another machine over SSH, or in **WSL** on the same PC:
-
-| From Windows, tmux is… | Run (PowerShell or cmd) |
-|---|---|
-| on a Linux/Mac box you SSH to | `.\webtmux-launch-windows-amd64.exe you@linuxbox` |
-| in your default WSL distro | `.\webtmux-launch-windows-amd64.exe wsl` (or no target at all) |
-| in a named WSL distro | `.\webtmux-launch-windows-amd64.exe wsl:Ubuntu-24.04` |
-
-A WSL target needs no SSH: commands go through `wsl.exe`, the Linux webtmux
-runs in the distro, and WSL forwards its `127.0.0.1` port to Windows, so your
-Windows browser opens it directly. (If you set `localhostForwarding=false` in
-`.wslconfig`, turn it back on.) Alternatively, run the **Linux** launcher inside
-the WSL shell itself — that is ordinary "this machine" mode, and the URL opens in
-the Windows browser (via `wslview` if installed, else `cmd.exe /c start`).
-
-Windows' built-in OpenSSH has no connection multiplexing, so with a password
-(rather than a key or agent) you are asked once per setup step instead of once.
-`ssh-keygen` + adding your key to the target's `~/.ssh/authorized_keys` avoids it.
-
-#### Installing ssh and tmux
-
-The launcher needs an **ssh client where you run it** (not for "this machine"
-or WSL), and **tmux where webtmux runs**. It checks both and prints the right
-command when one is missing; for reference:
-
-| Where | ssh client | tmux |
-|---|---|---|
-| macOS | built in (`/usr/bin/ssh`) | `brew install tmux` — no Homebrew? install it from [brew.sh](https://brew.sh) first (or MacPorts: `sudo port install tmux`) |
-| Debian/Ubuntu (incl. in WSL) | `sudo apt install openssh-client` | `sudo apt install tmux` |
-| Fedora/RHEL | `sudo dnf install openssh-clients` | `sudo dnf install tmux` |
-| Arch | `sudo pacman -S openssh` | `sudo pacman -S tmux` |
-| Alpine | `sudo apk add openssh-client` | `sudo apk add tmux` |
-| Windows 10 1809+ / 11, native | built in; if missing: Settings → System → Optional features → **OpenSSH Client**, or admin PowerShell `Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0` | not available — use WSL or another machine |
-| Windows → WSL | not needed | admin PowerShell `wsl --install`, reboot, open Ubuntu once to create your user, then `sudo apt install tmux` |
-
-See [`webtmux-launch` flags](#webtmux-launch-flags) for options, and
-[How webtmux-launch works](#how-webtmux-launch-works) for what it connects to,
-which binary it installs, and its security model.
-
-### tmux on this machine — `webtmux`
-
-An alternative to the launcher — you don't need `webtmux-launch` at all. Put
-webtmux directly on the machine whose tmux you want and run it there. The
-trade-off: connecting to it is up to you. The launcher's tunnel, reconnects and
-secret URL are not involved, so reaching it from another machine means setting up
-your own access (for example `ssh -L 8080:localhost:8080 <host>`, then browse to
-<http://localhost:8080> on your laptop).
-
-Download the binary for your platform from the
-[latest GitHub release](https://github.com/sparant/webtmux/releases/latest) and run it:
+**With `webtmux` directly.** You don't need the launcher at all: put webtmux on
+the machine whose tmux you want and run it there. The trade-off: connecting to
+it is up to you — no tunnel, reconnects or secret URL — so reaching it from
+another machine means your own access (for example
+`ssh -L 8080:localhost:8080 <host>`, then <http://localhost:8080> on your laptop).
 
 ```bash
 curl -fsSL -o webtmux \
@@ -592,6 +512,26 @@ For agents and long-running TUIs that report their own status, two escape hatche
 
 An agent lifecycle integration is then just three writes: `1` when work starts, `2` from a "needs your input" hook, `0` when it goes idle or exits.
 
+## Installing ssh and tmux
+
+`webtmux-launch` needs an **ssh client where you run it** (not for this machine
+or WSL), and **tmux where webtmux runs**. It checks both and prints the right
+command when one is missing; for reference:
+
+| Where | ssh client | tmux |
+|---|---|---|
+| macOS | built in (`/usr/bin/ssh`) | `brew install tmux` — no Homebrew? install it from [brew.sh](https://brew.sh) first (or MacPorts: `sudo port install tmux`) |
+| Debian/Ubuntu (incl. in WSL) | `sudo apt install openssh-client` | `sudo apt install tmux` |
+| Fedora/RHEL | `sudo dnf install openssh-clients` | `sudo dnf install tmux` |
+| Arch | `sudo pacman -S openssh` | `sudo pacman -S tmux` |
+| Alpine | `sudo apk add openssh-client` | `sudo apk add tmux` |
+| Windows 10 1809+ / 11, native | built in; if missing: Settings → System → Optional features → **OpenSSH Client**, or admin PowerShell `Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0` | not available — use WSL or another machine |
+| Windows → WSL | not needed | admin PowerShell `wsl --install`, reboot, open Ubuntu once to create your user, then `sudo apt install tmux` |
+
+Windows' built-in OpenSSH has no connection multiplexing, so with a password
+(rather than a key or agent) you are asked once per setup step instead of once.
+`ssh-keygen` + adding your key to the target's `~/.ssh/authorized_keys` avoids it.
+
 ## Manual Installation
 
 For when you want webtmux on a machine permanently rather than launched on
@@ -873,7 +813,7 @@ needs you".
 
 `webtmux-launch [flags] [<target>]` — the target is anything `ssh` accepts, or
 nothing for this machine; see
-[Naming the target](#tmux-on-another-machine--webtmux-launch) for ports, IPv6 and
+[Naming the target](#naming-the-target) for ports, IPv6 and
 `~/.ssh/config` aliases.
 
 | Flag                               | Effect                                                                      |
@@ -889,6 +829,52 @@ nothing for this machine; see
 | `--no-update-check`                | do not ask GitHub whether a newer release exists                            |
 
 ## How webtmux-launch works
+
+### Naming the target
+
+The target is handed to `ssh` exactly as you type it, so anything `ssh` accepts
+as a destination works:
+
+| You have | Run |
+|---|---|
+| a host on port 22 | `./webtmux-launch linuxbox` or `./webtmux-launch you@203.0.113.10` |
+| SSH on another port | `./webtmux-launch ssh://you@203.0.113.10:38242` |
+| an IPv6 address | `./webtmux-launch ssh://you@[2001:db8::5]:38242` |
+| a `~/.ssh/config` entry | `./webtmux-launch mybox` |
+| this machine | `./webtmux-launch` (or `localhost`, or one of its own addresses) |
+| tmux in WSL, from Windows | `webtmux-launch wsl`, or `wsl:Ubuntu-24.04` for a named distro |
+
+`user@host:port` does **not** work — `ssh` reads that as a host literally named
+`host:port`. A port goes either in an `ssh://` URL, as above, or in
+`~/.ssh/config`, which is also where a jump host, a key file or anything else you
+would pass to `ssh` as a flag belongs:
+
+```
+Host mybox
+    HostName 203.0.113.10
+    Port 38242
+    User you
+    # ProxyJump bastion.example.com
+```
+
+A short alias also names the launcher's saved settings for that machine
+(`~/.config/webtmux-launch/mybox.json`), so `ssh mybox` and
+`webtmux-launch mybox` stay the same thing.
+
+**This machine** skips SSH entirely: webtmux runs on `127.0.0.1` directly (no
+tunnel) and stops when the launcher exits; tmux and its sessions keep running.
+All its spellings share one saved URL. Another user (`other@localhost`) or
+another port (`ssh://localhost:2222`, typically a container's sshd) still goes
+over SSH, and `--ssh` forces SSH for any target.
+
+**WSL** needs no SSH either: commands go through `wsl.exe`, the Linux webtmux
+runs in the distro, and WSL forwards its `127.0.0.1` port to Windows, so the
+Windows browser opens it directly (if you set `localhostForwarding=false` in
+`.wslconfig`, turn it back on). The Linux launcher run inside WSL works too —
+that is ordinary "this machine" mode, and the URL opens in the Windows browser.
+webtmux itself can't run natively on Windows: it needs tmux and a Unix terminal.
+
+### What it does
 
 **What it connects to**, in order:
 
